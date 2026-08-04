@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sbi_core/tls_config.hpp"
+
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 
@@ -11,9 +13,13 @@
 
 // Minimal HTTP/2 server built directly on nghttp2's C session API, driven by Boost.Asio for the
 // socket I/O loop. This exists because vcpkg does not package upstream nghttp2's own asio_http2
-// ("nghttp2-asio") convenience library -- see docs/DECISIONS.md ADR-0004. Cleartext h2c only for
-// now (no TLS/ALPN); see ADR-0005 for why that's an acceptable Phase 0 lab simplification and what
-// it will take to add mTLS in front of it later.
+// ("nghttp2-asio") convenience library -- see docs/DECISIONS.md ADR-0004.
+//
+// TLS 1.3 + mTLS only (see ADR-0011): every connection is wrapped in boost::asio::ssl::stream, the
+// server requires and verifies a client certificate against the configured CA, and ALPN must
+// negotiate "h2" or the handshake is rejected outright -- there is no cleartext/h2c fallback and no
+// TLS version below 1.3. TlsConfig is a required constructor argument specifically so a caller
+// cannot accidentally stand up an unauthenticated or unencrypted server by omission.
 //
 // Routing is a simple exact-segment matcher supporting "{param}" path segments (e.g.
 // "/nnrf-nfm/v1/nf-instances/{nfInstanceId}"), which is what Nnrf_NFManagement needs; it is not a
@@ -21,6 +27,11 @@
 // replace this matcher entirely once real per-NF path sets exist.
 
 namespace sbi_core::http2 {
+
+// TlsConfig (cert_path/key_path/ca_path) is defined in tls_config.hpp, shared with
+// http2_client.hpp. Server's constructor throws std::runtime_error if any path is
+// missing/unreadable or the certificate/key can't be loaded -- fails loudly rather than silently
+// falling back to an unauthenticated/unencrypted listener.
 
 struct Request {
     std::string method;
@@ -42,7 +53,7 @@ using Handler = std::function<Response(const Request&)>;
 
 class Server {
 public:
-    Server(boost::asio::io_context& ioc, std::string address, unsigned short port);
+    Server(boost::asio::io_context& ioc, std::string address, unsigned short port, TlsConfig tls);
     ~Server();
 
     Server(const Server&) = delete;

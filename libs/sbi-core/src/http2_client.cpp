@@ -41,7 +41,7 @@ std::size_t write_header_callback(char* ptr, std::size_t size, std::size_t nmemb
 
 } // namespace
 
-Client::Client() {
+Client::Client(TlsConfig tls) : tls_(std::move(tls)) {
     ensure_curl_global_init();
     curl_ = curl_easy_init();
 }
@@ -60,8 +60,19 @@ tl::expected<ClientResponse, std::string> Client::send(const ClientRequest& requ
     curl_easy_reset(curl);
 
     curl_easy_setopt(curl, CURLOPT_URL, request.url.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
+    // CURL_HTTP_VERSION_2TLS: negotiate HTTP/2 via ALPN over TLS, as opposed to
+    // CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE (cleartext h2c, no longer used -- see ADR-0011).
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, request.method.c_str());
+
+    // TLS 1.3 + mTLS, non-negotiable (CLAUDE.md). No option here disables verification -- if the
+    // cert/key/CA paths are wrong this fails closed (curl_easy_perform returns an error), not open.
+    curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_3);
+    curl_easy_setopt(curl, CURLOPT_SSLCERT, tls_.cert_path.c_str());
+    curl_easy_setopt(curl, CURLOPT_SSLKEY, tls_.key_path.c_str());
+    curl_easy_setopt(curl, CURLOPT_CAINFO, tls_.ca_path.c_str());
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
 
     if (!request.body.empty() || request.method == "PUT" || request.method == "POST" ||
         request.method == "PATCH") {

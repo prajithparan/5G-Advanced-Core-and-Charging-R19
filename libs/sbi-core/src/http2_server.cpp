@@ -1,15 +1,45 @@
 #include "sbi_core/http2_server.hpp"
 
+#include <boost/asio/ssl.hpp>
 #include <boost/asio/write.hpp>
 #include <nghttp2/nghttp2.h>
+#include <openssl/ssl.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <array>
 #include <cstring>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <unordered_map>
+
+namespace {
+
+// The only protocol this server will ever negotiate -- see TlsConfig's doc comment: no h2c
+// fallback, no HTTP/1.1. Wire format for SSL_select_next_proto: 1-byte length prefix + bytes.
+constexpr unsigned char kAlpnH2Wire[] = {2, 'h', '2'};
+
+int alpn_select_callback(SSL* /*ssl*/,
+                         const unsigned char** out,
+                         unsigned char* outlen,
+                         const unsigned char* in,
+                         unsigned int inlen,
+                         void* /*arg*/) {
+    if (SSL_select_next_proto(const_cast<unsigned char**>(out),
+                              outlen,
+                              kAlpnH2Wire,
+                              sizeof(kAlpnH2Wire),
+                              in,
+                              inlen) != OPENSSL_NPN_NEGOTIATED) {
+        // Client didn't offer "h2" -- reject the handshake rather than fall back to HTTP/1.1 or
+        // proceed with no negotiated protocol. See TlsConfig's doc comment: h2 is not optional.
+        return SSL_TLSEXT_ERR_ALERT_FATAL;
+    }
+    return SSL_TLSEXT_ERR_OK;
+}
+
+} // namespace
 
 namespace sbi_core::http2 {
 
@@ -77,10 +107,14 @@ struct StreamContext {
     std::size_t response_offset = 0;
 };
 
+using SslStream = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>;
+
 class Connection : public std::enable_shared_from_this<Connection> {
 public:
-    Connection(boost::asio::ip::tcp::socket socket, const std::vector<Route>& routes)
-        : socket_(std::move(socket)), routes_(routes) {}
+    Connection(boost::asio::ip::tcp::socket socket,
+               boost::asio::ssl::context& ssl_ctx,
+               const std::vector<Route>& routes)
+        : socket_(std::move(socket), ssl_ctx), routes_(routes) {}
 
     ~Connection() {
         if (session_ != nullptr) {
@@ -89,6 +123,20 @@ public:
     }
 
     void start() {
+        auto self = shared_from_this();
+        socket_.async_handshake(
+            boost::asio::ssl::stream_base::server, [self](boost::system::error_code ec) {
+                if (ec) {
+                    spdlog::warn("sbi-core: TLS handshake failed: {}", ec.message());
+                    self->close();
+                    return;
+                }
+                self->on_handshake_complete();
+            });
+    }
+
+private:
+    void on_handshake_complete() {
         nghttp2_session_callbacks* callbacks = nullptr;
         nghttp2_session_callbacks_new(&callbacks);
         nghttp2_session_callbacks_set_on_begin_headers_callback(callbacks,
@@ -109,11 +157,16 @@ public:
         do_write();
     }
 
-private:
+    // No TLS close_notify is sent -- just an abrupt close of the underlying TCP socket. A fully
+    // correct async_shutdown (sending close_notify and waiting for the peer's, without blocking
+    // the io_context thread) would need its own timeout handling to avoid an unresponsive peer
+    // leaking the Connection indefinitely; skipped here as a disclosed simplification (see
+    // docs/DECISIONS.md ADR-0011) rather than half-implemented. Every close() call site here is
+    // already a teardown/error path, not graceful application-level connection reuse handoff.
     void close() {
         boost::system::error_code ec;
-        socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-        socket_.close(ec);
+        socket_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+        socket_.lowest_layer().close(ec);
     }
 
     void do_read() {
@@ -231,9 +284,9 @@ private:
     // make_nv(":status", ...)) would materialize a temporary std::string that's destroyed at the
     // end of the full expression, leaving the returned nghttp2_nv's pointer dangling into freed
     // stack memory by the time nghttp2_submit_response's caller actually reads it. ASan caught this
-    // in CI (stack-use-after-scope, ":status" is 7 bytes -- matched the reported read size exactly).
-    // string_view has no such trap: it just wraps whatever storage the caller already owns
-    // (a literal's static storage, or resp.headers'/status_str_storage's buffers).
+    // in CI (stack-use-after-scope, ":status" is 7 bytes -- matched the reported read size
+    // exactly). string_view has no such trap: it just wraps whatever storage the caller already
+    // owns (a literal's static storage, or resp.headers'/status_str_storage's buffers).
     static nghttp2_nv make_nv(std::string_view name, std::string_view value) {
         nghttp2_nv nv{};
         nv.name = reinterpret_cast<std::uint8_t*>(const_cast<char*>(name.data()));
@@ -342,7 +395,7 @@ private:
         return 0;
     }
 
-    boost::asio::ip::tcp::socket socket_;
+    SslStream socket_;
     const std::vector<Route>& routes_;
     nghttp2_session* session_ = nullptr;
     std::array<std::uint8_t, 65536> read_buf_{};
@@ -352,12 +405,44 @@ private:
 
 } // namespace
 
+namespace {
+
+boost::asio::ssl::context make_server_ssl_context(const TlsConfig& tls) {
+    // tlsv13_server, not the generic tlsv13: restricts the negotiable method set to TLS 1.3 server
+    // mode specifically. Combined with no SSLv3/TLS1.0-1.2 context ever being constructed, there is
+    // no downgrade path -- this is enforced by which OpenSSL method table gets selected, not just a
+    // set_options() flag that could be forgotten.
+    boost::asio::ssl::context ctx(boost::asio::ssl::context::tlsv13_server);
+
+    try {
+        ctx.use_certificate_chain_file(tls.cert_path);
+        ctx.use_private_key_file(tls.key_path, boost::asio::ssl::context::pem);
+        ctx.load_verify_file(tls.ca_path);
+    } catch (const boost::system::system_error& e) {
+        throw std::runtime_error("sbi-core: failed to load TLS material (cert=" + tls.cert_path +
+                                 ", key=" + tls.key_path + ", ca=" + tls.ca_path +
+                                 "): " + e.what());
+    }
+
+    // mTLS: require a client certificate and verify it against the CA above. No anonymous/
+    // unauthenticated clients accepted -- see docs/DECISIONS.md ADR-0011.
+    ctx.set_verify_mode(boost::asio::ssl::verify_peer |
+                        boost::asio::ssl::verify_fail_if_no_peer_cert);
+
+    SSL_CTX_set_alpn_select_cb(ctx.native_handle(), alpn_select_callback, nullptr);
+
+    return ctx;
+}
+
+} // namespace
+
 class Server::Impl {
 public:
-    Impl(boost::asio::io_context& ioc, std::string address, unsigned short port)
+    Impl(boost::asio::io_context& ioc, std::string address, unsigned short port, TlsConfig tls)
         : ioc_(ioc),
           acceptor_(ioc,
-                    boost::asio::ip::tcp::endpoint(boost::asio::ip::make_address(address), port)) {}
+                    boost::asio::ip::tcp::endpoint(boost::asio::ip::make_address(address), port)),
+          ssl_ctx_(make_server_ssl_context(tls)) {}
 
     void add_route(std::string method, std::string path_pattern, Handler handler) {
         std::transform(method.begin(), method.end(), method.begin(), [](unsigned char c) {
@@ -375,7 +460,7 @@ private:
         acceptor_.async_accept(
             [this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
                 if (!ec) {
-                    auto conn = std::make_shared<Connection>(std::move(socket), routes_);
+                    auto conn = std::make_shared<Connection>(std::move(socket), ssl_ctx_, routes_);
                     conn->start();
                 }
                 do_accept();
@@ -384,11 +469,15 @@ private:
 
     boost::asio::io_context& ioc_;
     boost::asio::ip::tcp::acceptor acceptor_;
+    boost::asio::ssl::context ssl_ctx_;
     std::vector<Route> routes_;
 };
 
-Server::Server(boost::asio::io_context& ioc, std::string address, unsigned short port)
-    : impl_(std::make_unique<Impl>(ioc, std::move(address), port)) {}
+Server::Server(boost::asio::io_context& ioc,
+               std::string address,
+               unsigned short port,
+               TlsConfig tls)
+    : impl_(std::make_unique<Impl>(ioc, std::move(address), port, std::move(tls))) {}
 
 Server::~Server() = default;
 
