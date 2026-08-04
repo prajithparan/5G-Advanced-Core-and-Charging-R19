@@ -31,3 +31,13 @@ validation) plus `tests/conformance/validate_structural_conformance.py` (the emi
 names checked against the real OpenAPI schema's `required`/`properties`, not a hand-copied
 expectation). This is Phase 1 infrastructure proof, not a Phase 2 NF implementation -- no NF
 procedure yet consumes these generated types.
+
+## Transport security (pre-Phase-2)
+
+Not a procedure row (infrastructure). `libs/sbi-core`'s HTTP/2 server and client now require TLS
+1.3 + mTLS (`docs/DECISIONS.md` ADR-0011, superseding ADR-0005's h2c-only Phase 0 state) --
+`scripts/gen-lab-pki.sh` generates a lab CA and per-NF certs, and the hello-nf/stub-nrf integration
+test proves the full flow works over a real mTLS handshake, not h2c. Proven additionally by manual
+`openssl s_client` checks recorded in ADR-0011 (mTLS actually rejects clients without a cert; ALPN
+negotiates `h2`). This closes a non-negotiable-rules gap that existed since Phase 0; still ahead of
+any Phase 2 NF procedure.

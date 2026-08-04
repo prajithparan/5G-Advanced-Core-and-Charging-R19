@@ -80,7 +80,12 @@ int main() {
 
     constexpr unsigned short kPort = 7777;
     boost::asio::io_context ioc;
-    sbi_core::http2::Server server(ioc, "127.0.0.1", kPort);
+    sbi_core::http2::TlsConfig tls{
+        .cert_path = CERTS_DIR "/stub-nrf/cert.pem",
+        .key_path = CERTS_DIR "/stub-nrf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Server server(ioc, "127.0.0.1", kPort, std::move(tls));
 
     auto registry = std::make_shared<Registry>();
 
@@ -170,7 +175,8 @@ int main() {
                      });
 
     server.start();
-    spdlog::info("stub-nrf: listening on http://127.0.0.1:{} (h2c, Phase 0 throwaway)", kPort);
+    spdlog::info("stub-nrf: listening on https://127.0.0.1:{} (TLS 1.3 + mTLS, Phase 0 throwaway)",
+                 kPort);
     ioc.run();
     return 0;
 }

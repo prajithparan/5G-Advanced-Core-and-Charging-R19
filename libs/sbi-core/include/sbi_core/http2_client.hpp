@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sbi_core/tls_config.hpp"
+
 #include <map>
 #include <string>
 #include <tl/expected.hpp>
@@ -9,7 +11,9 @@
 // ADR-0006 for why that's an acceptable Phase 0 simplification and what integrating it with the
 // Boost.Asio event loop (curl_multi + asio) would take later.
 //
-// h2c (cleartext, prior-knowledge) only for now, matching http2_server.hpp's lack of TLS.
+// TLS 1.3 + mTLS only (see ADR-0011): every request presents the client's own certificate and
+// verifies the server's against the configured CA. There is no cleartext fallback -- pass a `url`
+// with anything other than an https:// scheme and the request fails.
 
 namespace sbi_core::http2 {
 
@@ -28,7 +32,7 @@ struct ClientResponse {
 
 class Client {
 public:
-    Client();
+    explicit Client(TlsConfig tls);
     ~Client();
 
     Client(const Client&) = delete;
@@ -38,6 +42,7 @@ public:
 
 private:
     void* curl_ = nullptr; // CURL*, opaque here to avoid leaking <curl/curl.h> into every includer
+    TlsConfig tls_;
 };
 
 } // namespace sbi_core::http2

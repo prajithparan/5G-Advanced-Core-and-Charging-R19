@@ -26,7 +26,7 @@ namespace {
 
 using nlohmann::json;
 
-constexpr const char* kNrfBase = "http://127.0.0.1:7777";
+constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 
 bool wait_for_nrf(sbi_core::http2::Client& client, int max_attempts = 20) {
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
@@ -54,7 +54,12 @@ int main() {
     const std::string nf_instance_id = sbi_core::generate_uuid_v4();
     spdlog::info("hello-nf: starting, nfInstanceId={}", nf_instance_id);
 
-    sbi_core::http2::Client http_client;
+    sbi_core::http2::TlsConfig tls{
+        .cert_path = CERTS_DIR "/hello-nf/cert.pem",
+        .key_path = CERTS_DIR "/hello-nf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client http_client(std::move(tls));
 
     if (!wait_for_nrf(http_client)) {
         spdlog::error("hello-nf: stub-nrf never became reachable at {}", kNrfBase);
