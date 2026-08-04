@@ -1,0 +1,53 @@
+cmake_minimum_required(VERSION 3.28)
+
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+endif()
+
+project(5gc-r19
+    VERSION 0.1.0
+    DESCRIPTION "5G-Advanced (3GPP Release 19) service-based core network ecosystem"
+    LANGUAGES CXX
+)
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+endif()
+
+option(5GC_ENABLE_ASAN "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+option(5GC_ENABLE_TSAN "Build with ThreadSanitizer" OFF)
+option(5GC_BUILD_TESTS "Build tests" ON)
+
+add_library(5gc_project_options INTERFACE)
+target_compile_options(5gc_project_options INTERFACE
+    -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
+)
+
+if(5GC_ENABLE_ASAN AND 5GC_ENABLE_TSAN)
+    message(FATAL_ERROR "5GC_ENABLE_ASAN and 5GC_ENABLE_TSAN are mutually exclusive")
+endif()
+
+if(5GC_ENABLE_ASAN)
+    target_compile_options(5gc_project_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(5gc_project_options INTERFACE -fsanitize=address,undefined)
+endif()
+
+if(5GC_ENABLE_TSAN)
+    target_compile_options(5gc_project_options INTERFACE -fsanitize=thread -fno-omit-frame-pointer)
+    target_link_options(5gc_project_options INTERFACE -fsanitize=thread)
+endif()
+
+include(CTest)
+
+add_subdirectory(libs/sbi-core)
+add_subdirectory(nfs/stub-nrf)
+add_subdirectory(nfs/hello-nf)
+
+if(5GC_BUILD_TESTS AND BUILD_TESTING)
+    add_subdirectory(tests/integration)
+endif()

@@ -1,0 +1,32 @@
+{
+  "name": "5gc-r19",
+  "version": "0.1.0",
+  "description": "5G-Advanced (3GPP Release 19) service-based core network ecosystem, lab-grade reference implementation",
+  "license": "Apache-2.0",
+  "builtin-baseline": "f1d4bbc72f183441403ba5107cb19d75a5abc2a2",
+  "dependencies": [
+    "nghttp2",
+    "boost-asio",
+    "boost-beast",
+    "openssl",
+    "nlohmann-json",
+    "simdjson",
+    "spdlog",
+    "tl-expected",
+    {
+      "name": "curl",
+      "features": [
+        "http2"
+      ]
+    },
+    {
+      "name": "opentelemetry-cpp",
+      "features": [
+        "otlp-http"
+      ]
+    },
+    {
+      "name": "gtest"
+    }
+  ]
+}
