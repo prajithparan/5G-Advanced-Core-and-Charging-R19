@@ -16,3 +16,18 @@ meeting the full 8-point Definition of Done, is Phase 2 work and gets its own ro
 procedures land, one per turn per CLAUDE.md's working style.
 
 No other procedures are implemented yet.
+
+## Codegen infrastructure (Phase 1)
+
+Not a procedure row (this is infrastructure, not a business-logic procedure), noted separately:
+`tools/sbi-codegen` generates C++ DTOs + JSON serializers for the full transitive `$ref` closure of
+`TS29510_Nnrf_NFManagement.yaml`, `TS29518_Namf_Communication.yaml`, and `TS29571_CommonData.yaml`
+(1076 types across 22 source YAML files, merged into 11 output file-groups -- see
+`docs/DECISIONS.md` ADR-0010 for why). Every generated file carries a header comment citing its
+source TS number(s), YAML filename(s), and commit `bca84b60a37773133bcae97e5c6c0d10a93b47b6`.
+Proven by `tests/conformance/test_round_trip.cpp` (C++ round-trip: construct -> to_json -> from_json
+-> equality, including an anyOf-open-enum value outside the known list, and `AmfId`'s pattern
+validation) plus `tests/conformance/validate_structural_conformance.py` (the emitted JSON's field
+names checked against the real OpenAPI schema's `required`/`properties`, not a hand-copied
+expectation). This is Phase 1 infrastructure proof, not a Phase 2 NF implementation -- no NF
+procedure yet consumes these generated types.

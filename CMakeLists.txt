@@ -45,9 +45,11 @@ endif()
 include(CTest)
 
 add_subdirectory(libs/sbi-core)
+add_subdirectory(libs/sbi-generated)
 add_subdirectory(nfs/stub-nrf)
 add_subdirectory(nfs/hello-nf)
 
 if(5GC_BUILD_TESTS AND BUILD_TESTING)
     add_subdirectory(tests/integration)
+    add_subdirectory(tests/conformance)
 endif()

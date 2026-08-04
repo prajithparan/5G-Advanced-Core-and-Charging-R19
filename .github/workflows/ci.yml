@@ -32,6 +32,9 @@ jobs:
       - name: Install Ninja
         run: sudo apt-get update -qq && sudo apt-get install -y ninja-build
 
+      - name: Install sbi-codegen Python deps
+        run: pip install -r tools/sbi-codegen/requirements.txt
+
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
@@ -67,6 +70,9 @@ jobs:
 
       - name: Install Ninja
         run: sudo apt-get update -qq && sudo apt-get install -y ninja-build
+
+      - name: Install sbi-codegen Python deps
+        run: pip install -r tools/sbi-codegen/requirements.txt
 
       - name: Configure (ASan+UBSan)
         if: matrix.sanitizer == 'asan-ubsan'
@@ -112,6 +118,9 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Install sbi-codegen Python deps
+        run: pip install -r tools/sbi-codegen/requirements.txt
 
       - name: Configure (for compile_commands.json)
         run: >
