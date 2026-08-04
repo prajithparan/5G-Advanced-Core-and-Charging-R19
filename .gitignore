@@ -22,3 +22,6 @@ node_modules/
 
 .spec/
 .claude/
+
+__pycache__/
+*.pyc
