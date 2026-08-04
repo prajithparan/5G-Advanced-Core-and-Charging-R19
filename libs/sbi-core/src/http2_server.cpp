@@ -8,6 +8,7 @@
 #include <array>
 #include <cstring>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 
 namespace sbi_core::http2 {
@@ -226,7 +227,14 @@ private:
                                 ctx.response_body.empty() ? nullptr : &data_prd);
     }
 
-    static nghttp2_nv make_nv(const std::string& name, const std::string& value) {
+    // string_view, not const std::string&: a const-ref parameter bound to a string literal (e.g.
+    // make_nv(":status", ...)) would materialize a temporary std::string that's destroyed at the
+    // end of the full expression, leaving the returned nghttp2_nv's pointer dangling into freed
+    // stack memory by the time nghttp2_submit_response's caller actually reads it. ASan caught this
+    // in CI (stack-use-after-scope, ":status" is 7 bytes -- matched the reported read size exactly).
+    // string_view has no such trap: it just wraps whatever storage the caller already owns
+    // (a literal's static storage, or resp.headers'/status_str_storage's buffers).
+    static nghttp2_nv make_nv(std::string_view name, std::string_view value) {
         nghttp2_nv nv{};
         nv.name = reinterpret_cast<std::uint8_t*>(const_cast<char*>(name.data()));
         nv.value = reinterpret_cast<std::uint8_t*>(const_cast<char*>(value.data()));
