@@ -1,13 +1,14 @@
-# 5gc-r19
+# 5G Advanced Core and Charging R-19
 
 A modular, standards-faithful 5G Core (5GC) implementation in modern C++, targeting 3GPP
 **Release 19 (5G-Advanced)**. Every Network Function's northbound API is meant to be **generated**
 from the official 3GPP OpenAPI YAML — never hand-written — with a TM Forum SID-aligned
 charging/BSS domain, a JSON-schema-driven operator GUI, and AI/ML pipelines wired into NWDAF.
 
-This is a **lab-grade, spec-traceable reference implementation** of a meaningful subset of a 5GC —
-useful for labs, demos, and interop experiments. It is explicitly not, and does not aim to be, a
-production carrier core. See [`docs/DECISIONS.md`](docs/DECISIONS.md) for why, and for every
+This targets a **production-grade, spec-traceable reference implementation** (raised from an
+original lab-grade scope — see `docs/DECISIONS.md` ADR-0009 for why and what that changed).
+Repo slug (`5gc-r19`) and technical identifiers (CMake project name, vcpkg package name) stay as
+short slugs; this is the display name. See [`docs/DECISIONS.md`](docs/DECISIONS.md) for every
 architectural choice made (and rejected) along the way.
 
 [![CI](https://github.com/prajithparan/5gc-r19/actions/workflows/ci.yml/badge.svg)](https://github.com/prajithparan/5gc-r19/actions/workflows/ci.yml)
@@ -25,7 +26,8 @@ spec text. Full conventions are in [`CLAUDE.md`](CLAUDE.md).
 | Phase | What | Status |
 |---|---|---|
 | 0 | Foundations: CMake+vcpkg skeleton, `libs/sbi-core` (HTTP/2, OAuth2, ProblemDetails, headers, logging, tracing), hello-nf/stub-nrf proof of concept | Done |
-| 1 | Codegen spine: `tools/sbi-codegen`, generated DTOs/serializers from the R19 YAML | In progress |
+| 1 | Codegen spine: `tools/sbi-codegen`, generated DTOs/serializers from the R19 YAML | Done |
+| — | TLS 1.3 + mTLS across `libs/sbi-core` (closes ADR-0005, required before Phase 2 per ADR-0009) | Done |
 | 2 | Control-plane core: NRF, AMF, SMF, UDM, UDR, AUSF, PCF | Not started |
 | 3 | User plane: N4/PFCP, UPF datapath | Not started |
 | 4 | Charging + TM Forum SID/BSS layer | Not started |

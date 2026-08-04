@@ -6,7 +6,7 @@ endif()
 
 project(5gc-r19
     VERSION 0.1.0
-    DESCRIPTION "5G-Advanced (3GPP Release 19) service-based core network ecosystem"
+    DESCRIPTION "5G Advanced Core and Charging R-19"
     LANGUAGES CXX
 )
 
