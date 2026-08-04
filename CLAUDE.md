@@ -10,8 +10,9 @@ A modular, standards-faithful 5G Core (5GC) implementation in modern C++
 where every Network Function's northbound API is **generated** from the
 official 3GPP OpenAPI YAML (forge.3gpp.org/rep/all/5G_APIs, REL-19 branch),
 with a TM Forum SID-aligned charging/BSS domain, a JSON-schema-driven GUI,
-and AI/ML pipelines wired into NWDAF. Target: a lab-grade, spec-traceable
-reference implementation — explicitly **not** a production carrier core.
+and AI/ML pipelines wired into NWDAF. Target: a production-grade,
+spec-traceable reference implementation (raised from the original
+lab-grade scope — see ADR-0009 in `docs/DECISIONS.md`).
 
 ## Source of truth (strict)
 
@@ -198,12 +199,21 @@ reference implementation — explicitly **not** a production carrier core.
 
 - A conformant multi-NF 5GC is a multi-engineer, multi-quarter program.
   Open5GS and free5GC each represent years of work, and neither covers
-  R19. The realistic outcome here is a high-quality, spec-traceable
-  reference implementation of a meaningful subset — good for lab, demos,
-  interop experiments — not a carrier-grade core.
+  R19. The target is production-grade (ADR-0009), which is a
+  substantially larger undertaking than the project's original lab-grade
+  framing — treat every phase's Definition of Done as the real bar, not
+  an aspiration: full procedure coverage, real TLS/mTLS, no permanent
+  stubs. A single solo session will not get there in one pass; this is
+  still built incrementally, phase by phase, NF by NF — the destination
+  changed, not the pace.
 - Build-vs-fork (study/fork Open5GS (C) or free5GC (Go) vs. greenfield)
-  is a first-order decision affecting project economics — resolve before
-  Phase 0 architecture is locked in.
+  is a first-order decision affecting project economics — resolved
+  greenfield (ADR-0001).
 - Dev machine (MX450, CUDA 12.6) is fine for control-plane dev and ONNX
   inference; UPF datapath and serious model training will want a larger
   lab tier.
+- Known debt against the production-grade bar, tracked in
+  `docs/DECISIONS.md` ADR-0009: Phase 0's h2c-only transport (no
+  TLS/mTLS yet), stub-nrf's unsigned fake OAuth2 token, the synchronous
+  HTTP/2 client, and ~40 outstanding `clang-tidy` style warnings. None
+  of these are acceptable as a final state anymore.
