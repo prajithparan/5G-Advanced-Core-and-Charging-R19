@@ -21,12 +21,14 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29510_Nnrf_NFDiscovery.yaml
     TS29510_Nnrf_AccessToken.yaml
     TS29518_Namf_Communication.yaml
+    TS29502_Nsmf_PDUSession.yaml
     TS29571_CommonData.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFDiscovery.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_AccessToken.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29502_Nsmf_PDUSession.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_Communication.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29571_CommonData.yaml
 )

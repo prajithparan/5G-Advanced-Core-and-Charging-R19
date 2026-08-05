@@ -24,6 +24,7 @@ add_library(sbi_core STATIC
     src/oauth2_client.cpp
     src/jwt.cpp
     src/multipart.cpp
+    src/json_body.cpp
 )
 
 target_include_directories(sbi_core PUBLIC
