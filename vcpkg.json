@@ -13,6 +13,7 @@
     "simdjson",
     "spdlog",
     "tl-expected",
+    "jwt-cpp",
     {
       "name": "curl",
       "features": [
@@ -22,7 +23,8 @@
     {
       "name": "opentelemetry-cpp",
       "features": [
-        "otlp-http"
+        "otlp-http",
+        "prometheus"
       ]
     },
     {

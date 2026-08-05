@@ -24,7 +24,7 @@ CERTS_DIR="${REPO_ROOT}/certs"
 
 NF_NAMES=("$@")
 if [ ${#NF_NAMES[@]} -eq 0 ]; then
-    NF_NAMES=(stub-nrf hello-nf)
+    NF_NAMES=(nrf hello-nf)
 fi
 
 mkdir -p "${CERTS_DIR}/ca"
@@ -73,5 +73,20 @@ EOF
     rm -f "${nf_dir}/csr.pem"
     echo "  generated ${nf_dir}/{key,cert}.pem (serverAuth+clientAuth, SAN=127.0.0.1/localhost/${nf})"
 done
+
+echo "== NRF OAuth2 JWT signing key (ES256) =="
+# Deliberately a SEPARATE keypair from any NF's mTLS transport cert above -- reusing a transport
+# key for JOSE signing mixes usages that real PKI practice (and TS 33.501) keeps apart. This is
+# NRF's own signing key; every NF's copy of nrf-jwt/public.pem is what they use to verify tokens
+# NRF issues (see sbi_core::jwt::Verifier). See docs/DECISIONS.md ADR-0012.
+JWT_KEY_DIR="${CERTS_DIR}/nrf-jwt"
+mkdir -p "${JWT_KEY_DIR}"
+if [ ! -f "${JWT_KEY_DIR}/private.pem" ]; then
+    openssl ecparam -name prime256v1 -genkey -noout -out "${JWT_KEY_DIR}/private.pem"
+    openssl ec -in "${JWT_KEY_DIR}/private.pem" -pubout -out "${JWT_KEY_DIR}/public.pem" 2>/dev/null
+    echo "  generated ${JWT_KEY_DIR}/{private,public}.pem"
+else
+    echo "  ${JWT_KEY_DIR}/private.pem already exists, reusing"
+fi
 
 echo "== Done. CA: ${CERTS_DIR}/ca/ca.crt =="

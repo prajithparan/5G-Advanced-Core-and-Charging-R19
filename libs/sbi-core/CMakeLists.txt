@@ -10,6 +10,7 @@ find_package(spdlog CONFIG REQUIRED)
 find_package(CURL REQUIRED)
 find_package(opentelemetry-cpp CONFIG REQUIRED)
 find_package(tl-expected CONFIG REQUIRED)
+find_package(jwt-cpp CONFIG REQUIRED)
 
 add_library(sbi_core STATIC
     src/problem_details.cpp
@@ -17,9 +18,11 @@ add_library(sbi_core STATIC
     src/uuid.cpp
     src/logging.cpp
     src/otel.cpp
+    src/metrics.cpp
     src/http2_server.cpp
     src/http2_client.cpp
     src/oauth2_client.cpp
+    src/jwt.cpp
 )
 
 target_include_directories(sbi_core PUBLIC
@@ -36,9 +39,12 @@ target_link_libraries(sbi_core PUBLIC
     spdlog::spdlog
     CURL::libcurl
     opentelemetry-cpp::trace
+    opentelemetry-cpp::metrics
     opentelemetry-cpp::ostream_span_exporter
     opentelemetry-cpp::otlp_http_exporter
+    opentelemetry-cpp::prometheus_exporter
     tl::expected
+    jwt-cpp::jwt-cpp
 )
 
 target_compile_features(sbi_core PUBLIC cxx_std_23)

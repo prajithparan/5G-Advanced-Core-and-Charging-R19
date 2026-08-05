@@ -30,9 +30,11 @@ std::string form_urlencode(const std::string& value) {
 OAuth2Client::OAuth2Client(http2::Client& http_client,
                            std::string nrf_token_endpoint,
                            std::string nf_instance_id,
-                           std::string scope)
+                           std::string scope,
+                           std::string target_nf_type)
     : http_client_(http_client), nrf_token_endpoint_(std::move(nrf_token_endpoint)),
-      nf_instance_id_(std::move(nf_instance_id)), scope_(std::move(scope)) {}
+      nf_instance_id_(std::move(nf_instance_id)), scope_(std::move(scope)),
+      target_nf_type_(std::move(target_nf_type)) {}
 
 tl::expected<std::string, std::string> OAuth2Client::get_bearer_token() {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -61,6 +63,7 @@ tl::expected<OAuth2Token, std::string> OAuth2Client::fetch_token() {
     body << "grant_type=" << form_urlencode("client_credentials");
     body << "&nfInstanceId=" << form_urlencode(nf_instance_id_);
     body << "&scope=" << form_urlencode(scope_);
+    body << "&targetNfType=" << form_urlencode(target_nf_type_);
     req.body = body.str();
 
     auto resp = http_client_.send(req);

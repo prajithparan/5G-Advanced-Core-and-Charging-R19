@@ -410,6 +410,157 @@ updated to match current behavior -- the transport it describes has since change
 
 ---
 
+## ADR-0012: jwt-cpp + ES256 for NRF's OAuth2 token issuance/verification
+
+**Date:** 2026-08-05
+**Status:** Accepted
+
+**Context:** `TS29510_Nnrf_AccessToken.yaml`'s `AccessTokenClaims` schema (lines 361-406) requires
+`iss`, `sub`, `aud`, `scope`, `exp` -- real signed JWTs, not stub-nrf's Phase 0 unsigned placeholder
+(ADR-0009 already flagged that as needing to close). Needed: a JWS/JWT library.
+
+**Decision:** `jwt-cpp` (header-only, MIT, vcpkg-available, uses OpenSSL under the hood -- no new
+crypto backend). Algorithm: ES256 (ECDSA P-256), not RS256. The lab PKI
+(`scripts/gen-lab-pki.sh`) already generates P-256 keys for every NF's mTLS cert, so ES256 keeps
+the codebase to one curve/algorithm family instead of two; EC keys are also smaller and faster to
+verify than RSA at an equivalent security level. NRF's JWT signing keypair
+(`certs/nrf-jwt/{private,public}.pem`) is generated separately from any NF's mTLS transport
+cert -- reusing a transport key for JOSE signing mixes usages that real PKI practice (and
+TS 33.501) keeps apart.
+
+**Verification (not just chosen, checked to work):** a standalone round-trip test
+(issue -> verify valid, issue -> tamper one byte -> verify rejects with "invalid signature", issue
+-> verify against a Verifier expecting a different issuer -> rejects with "claim value does not
+match expected value") passed before this was wired into NRF's request handlers. Re-verified live
+against the running NRF over the real TLS+mTLS transport: a request with `Authorization: Bearer
+<token>tampered` gets a real 401 with `ProblemDetails{"detail":"invalid signature", ...}`, not a
+silent accept.
+
+**Rejected alternative:** RS256. No functional reason against it, but see above -- would have
+added a second key type/algorithm family to the codebase for no benefit over ES256 in a lab
+context with no interop requirement forcing RSA specifically.
+
+**Consequence:** `sbi_core::jwt::Verifier` lives in `libs/sbi-core` (not `nfs/nrf`), specifically
+because every future NF needs to verify incoming bearer tokens NRF issued, not just NRF itself --
+NRF only needs the `Issuer` side.
+
+---
+
+## ADR-0013: Prometheus metrics via opentelemetry-cpp's own exporter, not a separate prometheus-cpp dependency
+
+**Date:** 2026-08-05
+**Status:** Accepted
+
+**Context:** CLAUDE.md's Definition of Done requires "OpenTelemetry spans + Prometheus metrics
+emitted" per NF. Tracing (spans) already exists via opentelemetry-cpp (`otel.hpp`, Phase 0).
+Metrics export does not exist yet anywhere in the project.
+
+**Decision:** Enable opentelemetry-cpp's `prometheus` vcpkg feature
+(`opentelemetry-cpp[prometheus]`) rather than adding `prometheus-cpp` as an independent top-level
+dependency. `libs/sbi-core/include/sbi_core/metrics.hpp` mirrors `otel.hpp`'s shape
+(`init_metrics(bind_address)` / `get_meter(name)`). Pull model: `PrometheusExporterFactory`
+starts a small HTTP listener (civetweb, bundled transitively) that Prometheus scrapes directly at
+`/metrics` -- no push/collector step, unlike the OTLP tracing path.
+
+**Rejected alternative:** `prometheus-cpp` directly. It's what opentelemetry-cpp's Prometheus
+feature uses internally anyway (visible in the vcpkg dependency resolution:
+`prometheus-cpp[compression,core,pull]` gets pulled in transitively) -- depending on it directly
+would mean two ways to create/register metrics in the same codebase (raw prometheus-cpp registry
+API vs. the OTel Meter API already used for consistency with tracing) for no benefit.
+
+**Verification:** NRF exposes `nrf_registrations_total`, `nrf_deregistrations_total`,
+`nrf_heartbeats_total`, `nrf_tokens_issued_total` (counters) and `nrf_registered_nf_count` (an
+`ObservableGauge` reading the live registry size via callback). Confirmed live:
+`curl http://127.0.0.1:9464/metrics` returns real Prometheus text-format output with
+`nrf_registered_nf_count{otel_scope_name="nrf"} 0` visible before any registration.
+
+**API note for future NFs using this:** `opentelemetry::metrics::Counter<T>`/`ObservableInstrument`
+are only forward-declared in `meter.h` (used for the `Meter` interface's return types); a caller
+needs `#include <opentelemetry/metrics/sync_instruments.h>`,
+`<opentelemetry/metrics/async_instruments.h>`, and `<opentelemetry/metrics/observer_result.h>`
+directly to get complete types before calling `->Add(...)` or `->AddCallback(...)` -- otherwise it
+fails to compile with "invalid use of incomplete type". `metrics.hpp` already pulls these in so
+callers of `sbi_core::get_meter()` don't hit this themselves.
+
+---
+
+## ADR-0014: NRF Docker image -- Ubuntu 24.04 multi-stage, PKI generated at container start
+
+**Date:** 2026-08-05
+**Status:** Accepted
+
+**Context:** No NF has been containerized before this (Phase 0's binaries were throwaways, never
+built a Dockerfile). `nfs/nrf/CMakeLists.txt` bakes `CERTS_DIR` in as a compile-time absolute path
+(`${CMAKE_SOURCE_DIR}/certs`, an already-disclosed Phase 0/ADR-0011 simplification) -- this has a
+direct, concrete consequence for how the image has to be built.
+
+**Decision:** `deploy/docker/nrf.Dockerfile`, multi-stage: `builder` (Ubuntu 24.04, full build
+toolchain + vcpkg + codegen Python deps, builds the `nrf` target only -- `-D5GC_BUILD_TESTS=OFF`),
+`runtime` (Ubuntu 24.04 + `openssl`/`ca-certificates` only, copies the built binary). Both stages
+use `/build` as `WORKDIR` specifically so the compile-time `CERTS_DIR` path resolves at runtime
+too. The entrypoint runs `scripts/gen-lab-pki.sh nrf` fresh on every container start (ephemeral
+CA/certs per container instance by default -- consistent with this being a lab image, not a
+provisioned deployment).
+
+**Real build issues hit and fixed, not just anticipated:**
+- Docker build context initially copied the host's `build/` directory (stale `CMakeCache.txt`
+  pointing at the host's absolute path) -- CMake correctly refused to reuse it inside the
+  container. Fixed with `.dockerignore` excluding `build/`, `build-*/`, `certs/`, `.git/`, etc.
+- `git clone --depth 1` for vcpkg inside the Dockerfile failed vcpkg's own baseline resolution:
+  `vcpkg.json`'s `builtin-baseline` pins a specific historical commit, but a shallow clone only
+  fetches the current tip of the default branch, which does not contain that commit object. Fixed
+  with a full clone + explicit `git checkout <pinned-commit>`.
+
+**Verification:** actually built (`docker build -f deploy/docker/nrf.Dockerfile -t 5gc-nrf:test .`)
+and ran in this environment, not just written-but-unverified Dockerfile text -- see
+`docs/TRACEABILITY.md` for the concrete command/output this ADR's claims are backed by.
+
+**Rejected alternative:** a distroless or Alpine runtime base for a smaller image. Rejected for
+now on time/complexity grounds (musl vs. glibc ABI concerns with the vcpkg-built static libs
+weren't worth resolving for a first Docker pass); worth revisiting once image size actually
+matters for the lab.
+
+**Disclosed gap:** no non-root `USER` directive yet -- the container currently runs as root. Real
+gap against container-security best practice, not fixed in this pass; flagged rather than silently
+shipped as if it were fine.
+
+---
+
+## ADR-0015: NRF-specific simplifications (in-memory storage, partial discovery/subscription semantics)
+
+**Date:** 2026-08-05
+**Status:** Accepted (disclosed, tracked)
+
+Consolidates the Phase 2 NRF-specific gaps that don't warrant their own ADR individually but need
+to be findable in one place rather than scattered only as code comments:
+
+- **In-memory storage only** (`nfs/nrf/src/registry.hpp`'s `NfRegistry`/`SubscriptionRegistry`),
+  no persistence across restarts. A restart loses every registered NF and subscription; every NF
+  would need to re-register (which real NFs do periodically via heartbeat anyway, so this is a
+  softer gap than it sounds for NFs already running, but a hard one for anything mid-flight during
+  a restart).
+- **`SearchNFInstances` filters on `target-nf-type` only.** `TS29510_Nnrf_NFDiscovery.yaml`'s real
+  query parameter set is much larger (service-names, snssais, dnn, requester-nf-instance-fqdn,
+  ...); only the one mandatory discriminating parameter needed for a single-NRF lab to be useful
+  is implemented. Real per CLAUDE.md's source-of-truth rule -- not a fabricated subset, a
+  disclosed incomplete one.
+- **Subscription notification fan-out ignores `subscrCond`.** `SubscriptionData.subscrCond` is a
+  real, conditionally-typed filter (which NF types/events a subscriber cares about); this
+  implementation delivers every `NF_REGISTERED`/`NF_PROFILE_CHANGED`/`NF_DEREGISTERED` event to
+  every active subscriber regardless of what they actually asked for.
+- **Notification delivery is synchronous best-effort** (log a warning on failure, no retry) --
+  consistent with ADR-0006's synchronous HTTP/2 client; a slow or unreachable subscriber blocks
+  the NRF request that triggered the notification for the duration of that one delivery attempt.
+- **`GetNFInstances` (list-all) has no pagination** -- `TS29510_Nnrf_NFManagement.yaml` doesn't
+  mandate it for this operation, but a very large registry would return an unbounded response
+  body; not a problem at lab scale, flagged for whenever it might become one.
+- **`/shared-data*` (multi-NRF federation) and `/scp-domain-routing-info*` (SCP-specific) are not
+  implemented at all** -- explicitly out of scope for this pass per the agreed procedure list, not
+  silently dropped from consideration. No second NRF instance exists in this lab and SCP isn't
+  built yet, so neither is exercisable regardless.
+
+---
+
 ## PHASE0-NOTES: build validation outcome
 
 Resolved during the "build and run locally" pass (2026-08-04), g++ 13.3 / vcpkg baseline
