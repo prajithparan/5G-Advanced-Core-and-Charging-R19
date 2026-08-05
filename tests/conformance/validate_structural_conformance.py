@@ -65,7 +65,7 @@ def main() -> int:
         print(f"FAIL: {guami_path} not found -- did the C++ round-trip test run first?", file=sys.stderr)
         return 1
     guami_instance = json.loads(guami_path.read_text())
-    guami_schema, _ = registry.schemas["Guami"]
+    guami_schema = registry.schemas[("TS29571_CommonData.yaml", "Guami")]
     all_errors.extend(
         check_object(guami_schema, guami_instance, registry, "TS29571_CommonData.yaml", "Guami")
     )
@@ -80,7 +80,7 @@ def main() -> int:
         print(f"FAIL: {nftype_path} not found", file=sys.stderr)
         return 1
     nftype_value = json.loads(nftype_path.read_text())
-    nftype_schema, _ = registry.schemas["NFType"]
+    nftype_schema = registry.schemas[("TS29510_Nnrf_NFManagement.yaml", "NFType")]
     any_of = nftype_schema.get("anyOf", [])
     open_string_branch = any(m.get("type") == "string" and "enum" not in m for m in any_of)
     if not (open_string_branch and isinstance(nftype_value, str)):
