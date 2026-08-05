@@ -27,7 +27,6 @@
 #include "sbi_core/metrics.hpp"
 #include "sbi_core/otel.hpp"
 #include "sbi_core/problem_details.hpp"
-#include "sbi_core/uuid.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <nlohmann/json.hpp>
@@ -46,8 +45,18 @@ using nlohmann::json;
 #endif
 
 constexpr unsigned short kPort = 7777;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9464";  // see the SBI server bind for why
+constexpr const char* kMetricsBindAddress = "0.0.0.0:9464"; // see the SBI server bind for why
 constexpr const char* kNfType = "NRF";
+
+// NRF's own nfInstanceId, fixed rather than randomly generated per run (unlike every other NF's,
+// which self-generate one via sbi_core::generate_uuid_v4() since nobody else needs to know it in
+// advance). NRF is every other NF's OAuth2 issuer (AccessTokenClaims.iss); a
+// sbi_core::jwt::Verifier must be constructed with the exact expected issuer id, which means any
+// NF other than NRF itself has no way to know that id if it were randomly regenerated every NRF
+// restart. Discovered as a real bootstrapping gap while wiring AMF's Verifier (previously latent
+// because NRF is the only process that both issues and, until now, ever verified its own tokens,
+// so it could just pass itself its own freshly-generated id -- see docs/DECISIONS.md ADR-0018.
+constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
 
 sbi_core::http2::Response
 problem_response(int status, const std::string& title, const std::string& detail) {
@@ -131,7 +140,7 @@ int main() {
     const sbi_core::http2::TlsConfig client_tls = server_tls; // NRF is also a client for
                                                               // notification delivery.
 
-    const std::string nrf_instance_id = sbi_core::generate_uuid_v4();
+    const std::string nrf_instance_id = kNrfInstanceId;
     spdlog::info("nrf: starting, nfInstanceId={}", nrf_instance_id);
 
     sbi_core::jwt::Issuer issuer(certs_dir + "/nrf-jwt/private.pem", nrf_instance_id);

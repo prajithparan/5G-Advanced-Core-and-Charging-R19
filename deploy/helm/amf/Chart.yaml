@@ -1,0 +1,16 @@
+apiVersion: v2
+name: amf
+description: >
+  AMF (Access and Mobility Management Function) -- TS 29.518 Namf_Communication. Lab-grade Helm
+  chart; see docs/DECISIONS.md for what "lab-grade" means here (in-memory UE context/subscription
+  storage, no HA). DISCLOSED GAP, not silently shipped: this chart does not provision PKI at all
+  (unlike deploy/docker/docker-compose.yml's pki-init service) -- amf and nrf are separate Helm
+  releases with no shared-secret mechanism between them yet, so deploying both charts to a cluster
+  as-is would leave each pod unable to construct working TLS material for mTLS with the other
+  (matches the CA-mismatch bug documented in ADR-0019, unresolved here for k8s specifically).
+  Proper fix (a shared Secret provisioned by a one-shot Job or an external cert-manager Issuer) is
+  real, non-trivial scope deferred to Phase 8 (lab packaging and conformance) rather than
+  attempted piecemeal per-NF-chart.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
