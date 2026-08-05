@@ -3,34 +3,34 @@
 // bca84b60a37773133bcae97e5c6c0d10a93b47b6). Phase 2's second NF (PROMPT.md/CLAUDE.md order:
 // NRF -> AMF -> SMF -> UDM -> UDR -> AUSF -> PCF).
 //
-// In scope (see the procedure list agreed before this NF was built): ReleaseUEContext,
-// EBIAssignment, UEContextTransfer, RegistrationStatusUpdate, N1N2MessageTransfer,
-// N1N2MessageSubscribe, N1N2MessageUnSubscribe, NonUeN2MessageTransfer, NonUeN2InfoSubscribe,
-// NonUeN2InfoUnSubscribe, AMFStatusChangeSubscribe, AMFStatusChangeUnSubscribe,
-// AMFStatusChangeSubscribeModfy -- every Namf_Communication operationId that has a real
-// application/json request-body alternative in the YAML.
+// In scope: every Namf_Communication operationId -- ReleaseUEContext, EBIAssignment,
+// UEContextTransfer, RegistrationStatusUpdate, N1N2MessageTransfer, N1N2MessageSubscribe,
+// N1N2MessageUnSubscribe, NonUeN2MessageTransfer, NonUeN2InfoSubscribe, NonUeN2InfoUnSubscribe,
+// AMFStatusChangeSubscribe, AMFStatusChangeUnSubscribe, AMFStatusChangeSubscribeModfy (all
+// application/json-capable, built first), plus CreateUEContext, RelocateUEContext,
+// CancelRelocateUEContext (multipart/related-ONLY per spec -- initially deferred, then built once
+// sbi_core::multipart landed; see docs/DECISIONS.md ADR-0020).
 //
-// Deliberately deferred, not dropped: CreateUEContext, RelocateUEContext, CancelRelocateUEContext
-// are multipart/related-ONLY per spec (no application/json alternative exists) and
-// libs/sbi-core has no multipart/related support yet -- see docs/DECISIONS.md ADR-0016's
-// discussion. Consequence: nothing in this process ever populates UeContextStore, so
-// ReleaseUEContext/EBIAssignment/UEContextTransfer/RegistrationStatusUpdate can only be exercised
-// on their "no such UE context" (404) branch until CreateUEContext lands in a later turn -- their
-// "found" branches are still implemented for real, just unreachable/unverified for now (disclosed,
-// not hidden).
-//
-// Also disclosed: subscriptions (N1N2Message*, NonUeN2Info*, AMFStatusChange*) are created/removed
-// for real, but notification DELIVERY is not implemented -- there is no trigger path yet (no
-// NGAP/N2, no real UE, no multi-AMF deployment) that would ever fire one. Error responses use the
-// generic ProblemDetails shape (sbi_core::ProblemDetails, application/problem+json) rather than
-// each operation's bespoke *Error schema (AssignEbiError, N1N2MessageTransferError,
-// N2InformationTransferError) -- same simplification NRF already uses for its own error paths.
+// Disclosed simplifications, real and not hidden:
+// - CreateUEContext/RelocateUEContext are the inter-AMF mobility/handover operations
+//   (UeContextCreateData/UeContextRelocateData mandate a real source AMF's N2/NGAP payload,
+//   NgRanTargetId, etc.) -- this lab has exactly one AMF and no NGAP stack, so these are
+//   implemented per-spec (real field validation, real store writes) but their N2 content fields
+//   are stub placeholders (see the handlers below), not real inter-AMF state transfer.
+// - Subscriptions (N1N2Message*, NonUeN2Info*, AMFStatusChange*) are created/removed for real, but
+//   notification DELIVERY is not implemented -- there is no trigger path yet (no NGAP/N2, no real
+//   UE, no multi-AMF deployment) that would ever fire one.
+// - Error responses use the generic ProblemDetails shape (sbi_core::ProblemDetails,
+//   application/problem+json) rather than each operation's bespoke *Error schema (AssignEbiError,
+//   N1N2MessageTransferError, N2InformationTransferError, UeContextCreateError) -- same
+//   simplification NRF already uses for its own error paths.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
 #include "sbi_core/jwt.hpp"
 #include "sbi_core/logging.hpp"
 #include "sbi_core/metrics.hpp"
+#include "sbi_core/multipart.hpp"
 #include "sbi_core/oauth2_client.hpp"
 #include "sbi_core/otel.hpp"
 #include "sbi_core/problem_details.hpp"
@@ -110,6 +110,41 @@ std::optional<T> parse_json_body(const sbi_core::http2::Request& req,
         return json::parse(req.body).get<T>();
     } catch (const json::parse_error& e) {
         err_out = problem_response(400, "Malformed JSON", e.what());
+    } catch (const json::exception& e) {
+        err_out = problem_response(400, "Missing or invalid mandatory IE", e.what());
+    }
+    return std::nullopt;
+}
+
+// Same contract as parse_json_body<T>, but for the three operations that are multipart/related-
+// ONLY per spec (CreateUEContext, RelocateUEContext, CancelRelocateUEContext -- see
+// docs/DECISIONS.md ADR-0020). Extracts and parses the root (jsonData) part; binary parts
+// (N2/GTP-C content) are validated as present in the wire format but not otherwise interpreted --
+// there is nothing in this build that consumes real NGAP/GTP-C bytes yet.
+template <typename T>
+std::optional<T> parse_multipart_json_body(const sbi_core::http2::Request& req,
+                                           sbi_core::http2::Response& err_out) {
+    const auto content_type_it = req.headers.find("content-type");
+    if (content_type_it == req.headers.end() ||
+        !sbi_core::multipart::is_multipart_related(content_type_it->second)) {
+        err_out = problem_response(
+            400, "Unsupported Media Type", "This operation requires a multipart/related body");
+        return std::nullopt;
+    }
+    auto parts = sbi_core::multipart::parse(content_type_it->second, req.body);
+    if (!parts.has_value()) {
+        err_out = problem_response(400, "Malformed multipart body", parts.error());
+        return std::nullopt;
+    }
+    if (parts->empty() || (*parts)[0].content_type.find("application/json") == std::string::npos) {
+        err_out = problem_response(
+            400, "Malformed multipart body", "first part (jsonData) must be application/json");
+        return std::nullopt;
+    }
+    try {
+        return json::parse((*parts)[0].body).get<T>();
+    } catch (const json::parse_error& e) {
+        err_out = problem_response(400, "Malformed JSON in jsonData part", e.what());
     } catch (const json::exception& e) {
         err_out = problem_response(400, "Missing or invalid mandatory IE", e.what());
     }
@@ -241,10 +276,52 @@ int main() {
                                                    "Total N1N2MessageTransfer calls");
     auto non_ue_n2_counter = meter->CreateUInt64Counter("amf_non_ue_n2_message_transfer_total",
                                                         "Total NonUeN2MessageTransfer calls");
+    auto create_counter =
+        meter->CreateUInt64Counter("amf_create_ue_context_total", "Total CreateUEContext calls");
+    auto relocate_counter = meter->CreateUInt64Counter("amf_relocate_ue_context_total",
+                                                       "Total RelocateUEContext calls");
+    auto cancel_relocate_counter = meter->CreateUInt64Counter(
+        "amf_cancel_relocate_ue_context_total", "Total CancelRelocateUEContext calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
     sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+
+    server.add_route(
+        "PUT",
+        std::string(kApiRoot) + "/ue-contexts/{ueContextId}",
+        [&verifier, &ue_contexts, &create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_multipart_json_body<sbi_gen::UeContextCreateData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_context_id = req.path_params.at("ueContextId");
+            // Disclosed simplification: stores only that a context now exists, not the source
+            // AMF's full UeContextCreateData -- this lab has one AMF and no real inter-AMF
+            // mobility/handover logic, so nothing downstream needs that detail (see file header).
+            ue_contexts.put(ue_context_id, json{{"ueContextId", ue_context_id}});
+            create_counter->Add(1);
+
+            // Disclosed simplification: targetToSourceData.ngapData.contentId is a placeholder,
+            // not a reference to any real attached binary part -- no NGAP stack exists in this
+            // build to produce real N2 content for it to point at.
+            sbi_gen::UeContextCreatedData resp_data;
+            resp_data.ueContext = sbi_gen::UeContext{};
+            resp_data.targetToSourceData.ngapData.contentId = "stub-n2-content";
+            resp_data.pduSessionList = {};
+            json j = resp_data;
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kApiRoot) + "/ue-contexts/" + ue_context_id);
+            resp.body = j.dump();
+            return resp;
+        });
 
     server.add_route(
         "POST",
@@ -319,6 +396,57 @@ int main() {
             resp_data.ueContext = sbi_gen::UeContext{};
             json j = resp_data;
             return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kApiRoot) + "/ue-contexts/{ueContextId}/relocate",
+        [&verifier, &ue_contexts, &relocate_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_multipart_json_body<sbi_gen::UeContextRelocateData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_context_id = req.path_params.at("ueContextId");
+            if (!ue_contexts.get(ue_context_id).has_value()) {
+                return problem_response(404, "Not Found", "No UE context with id " + ue_context_id);
+            }
+            relocate_counter->Add(1);
+            sbi_gen::UeContextRelocatedData resp_data;
+            resp_data.ueContext = sbi_gen::UeContext{};
+            json j = resp_data;
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace(
+                "location", std::string(kApiRoot) + "/ue-contexts/" + ue_context_id + "/relocate");
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kApiRoot) + "/ue-contexts/{ueContextId}/cancel-relocate",
+        [&verifier, &ue_contexts, &cancel_relocate_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_multipart_json_body<sbi_gen::UeContextCancelRelocateData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_context_id = req.path_params.at("ueContextId");
+            if (!ue_contexts.get(ue_context_id).has_value()) {
+                return problem_response(404, "Not Found", "No UE context with id " + ue_context_id);
+            }
+            cancel_relocate_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     server.add_route(

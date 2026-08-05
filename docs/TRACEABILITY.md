@@ -58,16 +58,20 @@ proper automated test, not asserted as fully proven end-to-end.
 All rows below: source `specs/5G_APIs-REL-19/TS29518_Namf_Communication.yaml` (commit
 `bca84b60a37773133bcae97e5c6c0d10a93b47b6`), implemented in `nfs/amf/src/main.cpp`, proven by
 `tests/integration/test_amf_namf_communication.cpp` (real subprocess-to-subprocess: `nrf` + `amf`,
-real TLS 1.3 + mTLS, real signed JWT) plus manual `curl` verification recorded below. Deferred
-(multipart/related-only, not implemented): `CreateUEContext`, `RelocateUEContext`,
-`CancelRelocateUEContext` -- see `docs/DECISIONS.md` ADR-0019.
+real TLS 1.3 + mTLS, real signed JWT) plus manual `curl` verification recorded below. Every
+Namf_Communication operationId is now implemented -- `CreateUEContext`/`RelocateUEContext`/
+`CancelRelocateUEContext` were initially deferred (multipart/related-only, ADR-0019) then built
+once `sbi_core::multipart` landed (ADR-0020).
 
 | Procedure | TS clause / operationId | Test |
 |---|---|---|
-| ReleaseUEContext | `POST /namf-comm/v1/ue-contexts/{ueContextId}/release` | Integration test (`MissingUeContextIs404...`, 404 branch) + manual curl. "Found" branch unverified -- see ADR-0019 |
-| EBIAssignment | `POST /namf-comm/v1/ue-contexts/{ueContextId}/assign-ebi` | Manual curl only (404 branch). "Found" branch unverified -- see ADR-0019 |
-| UEContextTransfer | `POST /namf-comm/v1/ue-contexts/{ueContextId}/transfer` | Not exercised by any test yet -- implemented, unverified beyond compiling (same "found"-branch gap as the other three per-ueContextId ops; the 404 branch specifically was not separately curled for this operation). Disclosed gap |
+| CreateUEContext | `PUT /namf-comm/v1/ue-contexts/{ueContextId}` (multipart/related) | Integration test (`CreateUEContextOverMultipartThenEBIAssignmentAndRelease`, real 201 + real `UeContextCreatedData` deserialization) + (`RelocateAndCancelRelocateUEContextOverMultipart`, wrong-content-type 400 case) |
+| ReleaseUEContext | `POST /namf-comm/v1/ue-contexts/{ueContextId}/release` | Integration test, both branches: `MissingUeContextIs404...` (404) and `CreateUEContextOverMultipartThenEBIAssignmentAndRelease` (204 on a real context, then 404 on double-release) |
+| EBIAssignment | `POST /namf-comm/v1/ue-contexts/{ueContextId}/assign-ebi` | Integration test (`CreateUEContextOverMultipartThenEBIAssignmentAndRelease`, real 200 on a real context) |
+| UEContextTransfer | `POST /namf-comm/v1/ue-contexts/{ueContextId}/transfer` | Not exercised by any test yet -- implemented, unverified beyond compiling. Disclosed gap |
 | RegistrationStatusUpdate | `POST /namf-comm/v1/ue-contexts/{ueContextId}/transfer-update` | Not exercised by any test yet -- implemented, unverified beyond compiling. Disclosed gap |
+| RelocateUEContext | `POST /namf-comm/v1/ue-contexts/{ueContextId}/relocate` (multipart/related) | Integration test (`RelocateAndCancelRelocateUEContextOverMultipart`, real 201 + real `UeContextRelocatedData` deserialization, plus 404 on a nonexistent context) |
+| CancelRelocateUEContext | `POST /namf-comm/v1/ue-contexts/{ueContextId}/cancel-relocate` (multipart/related) | Integration test (`RelocateAndCancelRelocateUEContextOverMultipart`, real 204) |
 | N1N2MessageTransfer | `POST /namf-comm/v1/ue-contexts/{ueContextId}/n1-n2-messages` | Manual curl (400 on malformed body verified during development; 404-on-no-context path shares the same code as the other per-context ops) |
 | N1N2MessageSubscribe | `POST /namf-comm/v1/ue-contexts/{ueContextId}/n1-n2-messages/subscriptions` | Integration test (`N1N2SubscribeAndUnsubscribe`, real 201 + body) |
 | N1N2MessageUnSubscribe | `DELETE /namf-comm/v1/ue-contexts/{ueContextId}/n1-n2-messages/subscriptions/{subscriptionId}` | Integration test (`N1N2SubscribeAndUnsubscribe`, 204 then 404 on double-remove) |
@@ -106,6 +110,23 @@ $ curl ... -X POST https://127.0.0.1:7778/namf-comm/v1/non-ue-n2-messages/transf
 $ curl http://127.0.0.1:9465/metrics | grep ^amf_
 -> real Prometheus counters, e.g. amf_non_ue_n2_message_transfer_total{...} 1
 ```
+
+## multipart/related codec infrastructure (pre-SMF)
+
+Not a procedure row (shared infrastructure, RFC 2046/2387 -- not a 3GPP-specific format). See
+`docs/DECISIONS.md` ADR-0020 for why this was built now (SMF's `CreateSMContext`, the actual
+AMF-triggered PDU Session Establishment trigger, turned out to be multipart/related-ONLY, same
+wall AMF's `CreateUEContext` hit first). `libs/sbi-core/include/sbi_core/multipart.hpp` +
+`src/multipart.cpp`, proven by 8 unit tests (`tests/conformance/test_multipart.cpp`: encode-then-
+parse round-trips including genuinely opaque binary bytes, a hand-crafted body shaped like
+`CreateUEContext`'s real wire format, 4 malformed-input rejection cases) and, more importantly,
+proven end-to-end over real HTTP/2: `tests/integration/test_amf_namf_communication.cpp`'s
+`CreateUEContextOverMultipartThenEBIAssignmentAndRelease` and
+`RelocateAndCancelRelocateUEContextOverMultipart` construct real multipart wire bytes via this
+codec, send them over real TLS 1.3 + mTLS to a running `amf` process, and confirm `amf`'s own use
+of the same codec parses them correctly. One disclosed, unverified assumption: the `Content-Id`
+bracket convention (see ADR-0020) has no real external SBI peer in this lab to interop-test
+against yet.
 
 ## Codegen infrastructure (Phase 1)
 

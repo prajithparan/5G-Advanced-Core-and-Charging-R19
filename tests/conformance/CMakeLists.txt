@@ -1,6 +1,6 @@
 find_package(GTest CONFIG REQUIRED)
 
-add_executable(conformance_tests test_round_trip.cpp)
+add_executable(conformance_tests test_round_trip.cpp test_multipart.cpp)
 target_link_libraries(conformance_tests PRIVATE GTest::gtest GTest::gtest_main sbi_generated)
 target_compile_features(conformance_tests PRIVATE cxx_std_23)
 
