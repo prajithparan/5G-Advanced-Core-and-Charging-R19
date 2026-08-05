@@ -111,22 +111,67 @@ $ curl http://127.0.0.1:9465/metrics | grep ^amf_
 -> real Prometheus counters, e.g. amf_non_ue_n2_message_transfer_total{...} 1
 ```
 
-## multipart/related codec infrastructure (pre-SMF)
+## multipart/related codec infrastructure (consumed by AMF and SMF)
 
 Not a procedure row (shared infrastructure, RFC 2046/2387 -- not a 3GPP-specific format). See
-`docs/DECISIONS.md` ADR-0020 for why this was built now (SMF's `CreateSMContext`, the actual
+`docs/DECISIONS.md` ADR-0020 for why this was built (SMF's `CreateSMContext`, the actual
 AMF-triggered PDU Session Establishment trigger, turned out to be multipart/related-ONLY, same
 wall AMF's `CreateUEContext` hit first). `libs/sbi-core/include/sbi_core/multipart.hpp` +
 `src/multipart.cpp`, proven by 8 unit tests (`tests/conformance/test_multipart.cpp`: encode-then-
 parse round-trips including genuinely opaque binary bytes, a hand-crafted body shaped like
 `CreateUEContext`'s real wire format, 4 malformed-input rejection cases) and, more importantly,
-proven end-to-end over real HTTP/2: `tests/integration/test_amf_namf_communication.cpp`'s
-`CreateUEContextOverMultipartThenEBIAssignmentAndRelease` and
-`RelocateAndCancelRelocateUEContextOverMultipart` construct real multipart wire bytes via this
-codec, send them over real TLS 1.3 + mTLS to a running `amf` process, and confirm `amf`'s own use
-of the same codec parses them correctly. One disclosed, unverified assumption: the `Content-Id`
-bracket convention (see ADR-0020) has no real external SBI peer in this lab to interop-test
-against yet.
+proven end-to-end over real HTTP/2 by both consumers: `tests/integration/test_amf_namf_communication.cpp`'s
+`CreateUEContextOverMultipartThenEBIAssignmentAndRelease`/`RelocateAndCancelRelocateUEContextOverMultipart`
+and `tests/integration/test_smf_pdu_session.cpp`'s `FullSmContextLifecycleOverRealHttp2` all
+construct real multipart wire bytes via this codec, send them over real TLS 1.3 + mTLS to a
+running `amf`/`smf` process, and confirm the NF's own use of the same codec parses them correctly.
+One disclosed, unverified assumption: the `Content-Id` bracket convention (see ADR-0020) has no
+real external SBI peer in this lab to interop-test against yet.
+
+## SMF (Phase 2, third NF)
+
+All rows below: source `specs/5G_APIs-REL-19/TS29502_Nsmf_PDUSession.yaml` (commit
+`bca84b60a37773133bcae97e5c6c0d10a93b47b6`), implemented in `nfs/smf/src/main.cpp` +
+`nfs/smf/src/sm_context_store.cpp`, proven by `tests/integration/test_smf_pdu_session.cpp` (real
+subprocess-to-subprocess: `nrf` + `smf`, real TLS 1.3 + mTLS, real signed JWT, real multipart/
+related `CreateSMContext`) plus manual `curl` verification recorded below. Scope: the `/sm-contexts`
+collection only -- see `docs/DECISIONS.md` ADR-0021 for what's deferred (`/pdu-sessions`,
+`SendMoData`/`TransferMoData`, `Nsmf_EventExposure.yaml`, `Nsmf_NIDD.yaml`) and why.
+
+| Procedure | TS clause / operationId | Test |
+|---|---|---|
+| CreateSMContext | `POST /nsmf-pdusession/v1/sm-contexts` (multipart/related-only) | Integration test (`FullSmContextLifecycleOverRealHttp2`, real 201 + real `SmContextCreatedData` deserialization + Location header) + (`...NonMultipartCreateIs400`, wrong-content-type 400 case) |
+| RetrieveSMContext | `POST /nsmf-pdusession/v1/sm-contexts/{smContextRef}/retrieve` | Integration test (`FullSmContextLifecycleOverRealHttp2`, real 200 with NO request body -- proves the spec's `required: false` is honored) + (`MissingSmContextIs404...`, 404 branch) |
+| UpdateSMContext | `POST /nsmf-pdusession/v1/sm-contexts/{smContextRef}/modify` | Integration test (`FullSmContextLifecycleOverRealHttp2`, real 204 on a real context) |
+| ReleaseSMContext | `POST /nsmf-pdusession/v1/sm-contexts/{smContextRef}/release` | Integration test (`FullSmContextLifecycleOverRealHttp2`, real 204 then 404 on double-release) |
+| OAuth2 registration/heartbeat as an SBI client | N/A (`nfs/smf/src/main.cpp`'s `run_nrf_lifecycle`, dedicated thread per ADR-0006/ADR-0019) | Manual verification below (`smf: registered with NRF (HTTP 201)` log line) + every integration test above implicitly depends on it succeeding |
+
+**Manual verification (2026-08-05, not captured in an automated test -- recorded here so it's not
+lost):**
+```
+$ ./nfs/nrf/nrf &   # then ./nfs/smf/smf &
+[smf] [info] smf: registered with NRF (HTTP 201)
+
+$ curl --http2 --cacert certs/ca/ca.crt --cert certs/hello-nf/cert.pem --key certs/hello-nf/key.pem \
+    -X POST https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts \
+    -H "authorization: Bearer <token, scope=nsmf-pdusession, targetNfType=SMF>" \
+    -H 'content-type: multipart/related; boundary="testboundary123"; type="application/json"' \
+    --data-binary $'--testboundary123\r\nContent-Type: application/json\r\n\r\n{"servingNfId":"amf-1","servingNetwork":{"mcc":"999","mnc":"70"},"anType":"3GPP_ACCESS","smContextStatusUri":"https://example.com/status"}\r\n--testboundary123--\r\n'
+-> 201, {}, location: /nsmf-pdusession/v1/sm-contexts/smctx-1
+
+$ curl ... -X POST https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts/smctx-1/retrieve
+-> 200, {"ueEpsPdnConnection":""}
+
+$ curl ... -X POST https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts/smctx-1/modify \
+    -d '{"upCnxState":"ACTIVATED"}'
+-> 204
+
+$ curl ... -X POST https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts/smctx-1/release
+-> 204 (then 404 on a second call)
+
+$ curl http://127.0.0.1:9466/metrics | grep ^smf_
+-> real Prometheus counters, e.g. smf_create_sm_context_total{...} 1
+```
 
 ## Codegen infrastructure (Phase 1)
 
@@ -178,6 +223,20 @@ between separate Helm releases (see `deploy/helm/amf/Chart.yaml`'s description a
 `docker compose up` (both `nrf` and `amf` containers actually mTLS-registering with each other) was
 NOT run this session -- same disclosed-not-silently-assumed gap ADR-0014 already recorded for NRF
 alone.
+
+## Deployment infrastructure (Phase 2, SMF)
+
+Not a procedure row. `deploy/docker/smf.Dockerfile` (multi-stage Ubuntu 24.04 build, mirrors
+`amf.Dockerfile`), actually built in this environment (`docker build -f deploy/docker/smf.Dockerfile
+-t 5gc-smf:test .` succeeded, ~1239s -- mostly compiling the now-larger generated DTO translation
+unit, TS29502_Nsmf_PDUSession.yaml having grown the type count to 1240). `deploy/docker/
+docker-compose.yml` updated with an `smf` service (added to `pki-init`'s shared-volume
+provisioning, same pattern as ADR-0019). `deploy/helm/smf/` (mirrors `deploy/helm/amf/`, including
+the same disclosed cross-chart shared-PKI gap noted in `deploy/helm/smf/Chart.yaml`) -- not proven
+by `helm install`/`helm template`, same disclosed gap as NRF/AMF's charts. `docker compose up`
+(all three containers actually mTLS-registering with each other) was NOT run this session -- same
+disclosed-not-silently-assumed gap ADR-0014 already recorded for NRF alone. See
+`docs/DECISIONS.md` ADR-0021.
 
 ## RAN/UE simulator infrastructure (still not wired to any NF)
 

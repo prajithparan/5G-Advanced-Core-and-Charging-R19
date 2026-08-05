@@ -1,0 +1,14 @@
+apiVersion: v2
+name: smf
+description: >
+  SMF (Session Management Function) -- TS 29.502 Nsmf_PDUSession /sm-contexts. Lab-grade Helm
+  chart; see docs/DECISIONS.md for what "lab-grade" means here (in-memory SM context storage, no
+  HA, no real UPF/PCF/UDM behind it). DISCLOSED GAP, not silently shipped: same as
+  deploy/helm/amf/Chart.yaml -- this chart does not provision PKI at all, and smf/amf/nrf are
+  separate Helm releases with no shared-secret mechanism between them yet, so deploying multiple
+  of these charts to a cluster as-is would leave each pod unable to construct working TLS material
+  for mTLS with the others. Proper fix deferred to Phase 8 (lab packaging and conformance) per
+  PROMPT.md, same as amf's chart.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
