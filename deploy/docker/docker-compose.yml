@@ -1,0 +1,14 @@
+# Lab bring-up for the NFs built so far. Run from the repo root:
+#   docker compose -f deploy/docker/docker-compose.yml up --build
+# Each NF generates its own lab PKI at container start (see nrf.Dockerfile) -- there is
+# deliberately no shared certs volume by default, since a fresh CA per `up` is simpler than cert
+# lifecycle management for a lab. This will grow to one service per NF as Phase 2 adds more.
+
+services:
+  nrf:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/nrf.Dockerfile
+    ports:
+      - "7777:7777"   # Nnrf_NFManagement / Nnrf_NFDiscovery / Nnrf_AccessToken (TLS 1.3 + mTLS)
+      - "9464:9464"   # Prometheus /metrics

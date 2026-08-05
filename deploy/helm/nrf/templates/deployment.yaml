@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-nrf
+  labels:
+    app.kubernetes.io/name: nrf
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  # Single replica: NRF's in-memory registry (see docs/DECISIONS.md) has no shared state across
+  # pods -- scaling this deployment would give each replica a different, inconsistent view of
+  # registered NFs. Fine for a lab, not for anything beyond it; a real multi-replica NRF needs the
+  # shared-data federation this build explicitly deferred (see nfs/nrf/src/main.cpp's file header).
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nrf
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nrf
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: nrf
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: sbi
+              containerPort: 7777
+              protocol: TCP
+            - name: metrics
+              containerPort: 9464
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

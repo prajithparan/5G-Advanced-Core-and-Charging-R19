@@ -1,9 +1,10 @@
-// hello-nf: Phase 0 proof that libs/sbi-core's HTTP/2 client, OAuth2 client-credentials flow,
-// and 3gpp-Sbi-* header handling work end-to-end against a real (if throwaway) NRF over the wire.
-// Not a real NF -- no NFType in TS29510_Nnrf_NFManagement.yaml's enum fits "hello world", so this
-// registers itself with nfType="AMF" as a placeholder (the schema's NFType is an open anyOf
-// [enum, plain string], so any string is technically schema-valid; AMF is chosen only because it's
-// next in the Phase 2 build order, not because this process implements any AMF behaviour).
+// hello-nf: exercises libs/sbi-core's HTTP/2 client, OAuth2 client-credentials flow (now with a
+// real signed JWT, verified by the real NRF -- see nfs/nrf), and 3gpp-Sbi-* header handling
+// end-to-end over real TLS 1.3 + mTLS. Not a real NF -- no NFType in
+// TS29510_Nnrf_NFManagement.yaml's enum fits "hello world", so this registers itself with
+// nfType="AMF" as a placeholder (the schema's NFType is an open anyOf [enum, plain string], so any
+// string is technically schema-valid; AMF is chosen only because it's next in the Phase 2 build
+// order, not because this process implements any AMF behaviour).
 //
 // Lifecycle: fetch OAuth2 token -> PUT register -> PATCH heartbeat -> DELETE deregister -> exit.
 // Exit code 0 iff every step succeeded, so tests/integration can drive this as a subprocess and
@@ -62,12 +63,12 @@ int main() {
     sbi_core::http2::Client http_client(std::move(tls));
 
     if (!wait_for_nrf(http_client)) {
-        spdlog::error("hello-nf: stub-nrf never became reachable at {}", kNrfBase);
+        spdlog::error("hello-nf: nrf never became reachable at {}", kNrfBase);
         return 1;
     }
 
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", nf_instance_id, "nnrf-nfm");
+        http_client, std::string(kNrfBase) + "/oauth2/token", nf_instance_id, "nnrf-nfm", "NRF");
 
     tl::expected<std::string, std::string> token;
     {

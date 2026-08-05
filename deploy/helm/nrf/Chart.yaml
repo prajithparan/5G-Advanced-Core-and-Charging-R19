@@ -1,0 +1,6 @@
+apiVersion: v2
+name: nrf
+description: NRF (NF Repository Function) -- TS 29.510 Nnrf_NFManagement/NFDiscovery/AccessToken. Lab-grade Helm chart; see docs/DECISIONS.md for what "lab-grade" means here (in-memory storage, self-generated PKI, no HA).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

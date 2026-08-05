@@ -1,6 +1,7 @@
-// Drives stub-nrf and hello-nf as real, separate OS processes talking over an actual TCP/HTTP2
-// socket -- this is deliberately not a same-process/mocked test. If sbi-core's hand-rolled nghttp2
-// server, libcurl client, or OAuth2 client-credentials flow are broken, this is what catches it.
+// Drives nrf and hello-nf as real, separate OS processes talking over an actual TCP/HTTP2 socket
+// with real TLS 1.3 + mTLS -- this is deliberately not a same-process/mocked test. If sbi-core's
+// hand-rolled nghttp2 server, libcurl client, TLS/mTLS, or OAuth2 client-credentials + JWT flow
+// are broken, this is what catches it.
 
 #include <chrono>
 #include <csignal>
@@ -23,12 +24,12 @@ pid_t spawn(const char* path) {
 
 } // namespace
 
-TEST(HelloNfIntegration, RegistersHeartbeatsAndDeregistersAgainstStubNrf) {
-    const pid_t nrf_pid = spawn(STUB_NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork stub-nrf";
+TEST(HelloNfIntegration, RegistersHeartbeatsAndDeregistersAgainstRealNrf) {
+    const pid_t nrf_pid = spawn(NRF_PATH);
+    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
 
-    // Belt-and-suspenders: hello-nf itself retries on connection failure, but give stub-nrf a
-    // moment to finish process startup before we even try.
+    // Belt-and-suspenders: hello-nf itself retries on connection failure, but give nrf a moment to
+    // finish process startup before we even try.
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     const pid_t hello_pid = spawn(HELLO_NF_PATH);
