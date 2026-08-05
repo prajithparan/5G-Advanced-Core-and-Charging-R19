@@ -1,0 +1,29 @@
+# ransim lab gNB config for UERANSIM's nr-gnb.
+# Format is UERANSIM's own (see vendor/UERANSIM/config/custom-gnb.yaml after fetching) --
+# not a 3GPP-defined schema, just this simulator's config file.
+#
+# NOT FUNCTIONAL YET: AMF has no NGAP/N2 listener as of docs/DECISIONS.md ADR-0016. This
+# config is a placeholder for when that lands -- running nr-gnb against it today will fail
+# to connect (SCTP ECONNREFUSED).
+
+mcc: '999'          # Test PLMN -- not a real network. See ADR-0016.
+mnc: '70'
+
+nci: '0x000000010'  # NR Cell Identity (36-bit)
+idLength: 32         # NR gNB ID length in bits [22...32]
+tac: 1               # Tracking Area Code
+
+linkIp: 127.0.0.1    # gNB's local IP for the simulated radio link (gNB <-> UE)
+ngapIp: 127.0.0.1    # gNB's local IP for N2 (gNB <-> AMF)
+gtpIp: 127.0.0.1      # gNB's local IP for N3 (gNB <-> UPF)
+
+# AMF's future N2 listener. Port 38412 is NGAP's IANA-assigned SCTP port (TS 38.412).
+amfConfigs:
+  - address: 127.0.0.5
+    port: 38412
+
+slices:
+  - sst: 1
+    sd: 1
+
+ignoreStreamIds: true

@@ -90,3 +90,17 @@ docker-compose.yml` and `deploy/helm/nrf/` (Chart.yaml + deployment/service temp
 are not proven by this session's testing beyond `docker build` succeeding for the image itself --
 `docker compose up` and `helm install`/`helm template` were not run. Disclosed gap, not silently
 assumed to work.
+
+## RAN/UE simulator infrastructure (pre-AMF)
+
+Not a procedure row (external test tool, not an implemented NF). `simulators/ransim/` wraps
+UERANSIM v3.3.0 (commit `6bf5a1a96aaef6ae8778b9d8b477ac6e2bbf8156`, AGPL-3.0, arms-length external
+process -- see `docs/DECISIONS.md` ADR-0016). Actually fetched and built in this environment
+(`simulators/ransim/fetch-and-build.sh` produced real `nr-gnb`/`nr-ue`/`nr-cli` binaries, `nr-gnb
+--version` reports `v3.3.0`, matching the pinned tag). Manually ran `nr-gnb -c config/gnb.yaml`:
+it correctly attempts a real SCTP connection to `127.0.0.5:38412` and gets `Connection refused` --
+the expected, disclosed state, since AMF has no NGAP/N2 listener yet. **Not wired to any NF**:
+AMF's `Namf_Communication` SBI surface (procedure list agreed with the user, not yet built) and
+its NGAP/N2 termination (TS 38.413, SCTP transport -- a separate, larger effort, deliberately
+deferred per ADR-0016) are both still open work. This simulator cannot register a UE against
+anything in this repository yet.
