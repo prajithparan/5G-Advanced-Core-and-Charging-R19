@@ -2,9 +2,21 @@
 transitive closure of $ref'd types (from any file) via a worklist so each
 named type is converted exactly once regardless of how many pilot files
 reference it.
+
+Types are keyed internally by (source_file, yaml_name) -- not by yaml_name
+alone -- because different files can legitimately define different schemas
+under the same local name (see loader.py's docstring and
+docs/DECISIONS.md ADR-0017). A final disambiguation pass
+(Converter._disambiguate) runs once the full transitive closure is known,
+assigning every (source_file, yaml_name) key a guaranteed-unique C++ type
+name: the plain sanitized name when no other file's schema collides with it
+(the overwhelming majority), or that name qualified with a source-file tag
+when it does.
 """
 
 from __future__ import annotations
+
+import re
 
 from .ir import AliasType, FieldIR, IRType, ObjectType, OpaqueType, OpenEnumType, TypeRef
 from .loader import SchemaRegistry
@@ -81,38 +93,90 @@ def _is_open_enum_anyof(schema: dict) -> list[str] | None:
     return None
 
 
+def _file_tag(source_file: str) -> str:
+    """'TS29510_Nnrf_NFManagement.yaml' -> 'Nnrf_NFManagement'. Used only to
+    build a disambiguating suffix for colliding schema names -- derived from
+    3GPP's own repo filename convention, not invented. See ADR-0017."""
+    stem = source_file[:-5] if source_file.endswith(".yaml") else source_file
+    return re.sub(r"^TS\d{5}_", "", stem)
+
+
 class Converter:
     def __init__(self, registry: SchemaRegistry):
         self.registry = registry
-        self.result: dict[str, IRType] = {}
+        # Keyed by (source_file, yaml_name) -- see module docstring and
+        # ADR-0017 for why yaml_name alone is not a safe key.
+        self.result: dict[tuple[str, str], IRType] = {}
         self._worklist: list[tuple[str, dict, str]] = []
-        self._queued: set[str] = set()
+        self._queued: set[tuple[str, str]] = set()
 
     def convert_files(self, filenames: list[str]) -> dict[str, IRType]:
         for filename in filenames:
             self.registry.load_file(filename)
-            for name, (schema, source_file) in list(self.registry.schemas.items()):
+            for (source_file, name), schema in list(self.registry.schemas.items()):
                 if source_file == filename:
                     self._enqueue(name, schema, source_file)
 
         while self._worklist:
             name, schema, source_file = self._worklist.pop(0)
-            if name in self.result:
+            key = (source_file, name)
+            if key in self.result:
                 continue
-            self.result[name] = self._convert_one(name, schema, source_file)
+            self.result[key] = self._convert_one(name, schema, source_file)
 
-        return self.result
+        return self._disambiguate()
+
+    def _disambiguate(self) -> dict[str, IRType]:
+        """Assigns every (source_file, yaml_name) key a final, guaranteed-
+        unique C++ type name, then patches every IRType.name and every
+        TypeRef.cpp_name (via TypeRef.ref_key) to match. A plain
+        cpp_type_name(yaml_name) is kept as-is when only one source_file
+        defines that name; when multiple files each locally define a
+        same-named-but-different schema (real, confirmed cases: see
+        loader.py's docstring), every one of them is qualified with a
+        source-file tag so all survive as distinct types instead of one
+        silently overwriting another. See ADR-0017."""
+        keys_by_plain_name: dict[str, list[tuple[str, str]]] = {}
+        for source_file, yaml_name in self.result:
+            plain = cpp_type_name(yaml_name)
+            keys_by_plain_name.setdefault(plain, []).append((source_file, yaml_name))
+
+        final_name: dict[tuple[str, str], str] = {}
+        for plain, keys in keys_by_plain_name.items():
+            if len(keys) == 1:
+                final_name[keys[0]] = plain
+            else:
+                for key in keys:
+                    final_name[key] = f"{plain}_{_file_tag(key[0])}"
+
+        def rewrite_ref(ref: TypeRef) -> None:
+            if ref.kind == "array":
+                rewrite_ref(ref.array_of)
+            elif ref.kind == "ref" and ref.ref_key is not None:
+                ref.cpp_name = final_name[ref.ref_key]
+
+        renamed: dict[str, IRType] = {}
+        for key, t in self.result.items():
+            t.name = final_name[key]
+            if isinstance(t, ObjectType):
+                for f in t.fields:
+                    rewrite_ref(f.type_ref)
+            renamed[t.name] = t
+        return renamed
 
     def _enqueue(self, name: str, schema: dict, source_file: str) -> None:
-        if name in self._queued:
+        key = (source_file, name)
+        if key in self._queued:
             return
-        self._queued.add(name)
+        self._queued.add(key)
         self._worklist.append((name, schema, source_file))
 
     def _resolve_ref_typeref(self, ref: str, from_file: str) -> TypeRef:
         name, schema, source_file = self.registry.resolve_ref(ref, from_file)
         self._enqueue(name, schema, source_file)
-        return TypeRef(kind="ref", cpp_name=cpp_type_name(name))
+        return TypeRef(
+            kind="ref", cpp_name=cpp_type_name(name), ref_key=(source_file, name)
+        )
 
     def _property_type_ref(self, prop_schema: dict, from_file: str, context_name: str) -> TypeRef:
         if "$ref" in prop_schema:

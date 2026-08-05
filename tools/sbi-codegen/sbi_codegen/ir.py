@@ -20,6 +20,13 @@ class TypeRef:
     cpp_name: str
     # For arrays: the element TypeRef. None otherwise.
     array_of: "TypeRef | None" = None
+    # For kind == "ref": (source_file, yaml_name) of the referenced type, as
+    # registered in Converter.result. Used only during conversion to patch
+    # cpp_name in a second pass once collision disambiguation (see
+    # schema_to_ir.Converter._disambiguate) has assigned final, guaranteed-
+    # unique C++ names -- see docs/DECISIONS.md ADR-0017. None for
+    # kind == "primitive", where no rename pass is needed.
+    ref_key: "tuple[str, str] | None" = None
 
 
 @dataclass
