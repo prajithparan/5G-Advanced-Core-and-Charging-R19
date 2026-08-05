@@ -53,6 +53,60 @@ inconclusive manual test (see docs/DECISIONS.md ADR-0015 note on this). Disclose
 proper automated test, not asserted as fully proven end-to-end.
 ```
 
+## AMF (Phase 2, second NF)
+
+All rows below: source `specs/5G_APIs-REL-19/TS29518_Namf_Communication.yaml` (commit
+`bca84b60a37773133bcae97e5c6c0d10a93b47b6`), implemented in `nfs/amf/src/main.cpp`, proven by
+`tests/integration/test_amf_namf_communication.cpp` (real subprocess-to-subprocess: `nrf` + `amf`,
+real TLS 1.3 + mTLS, real signed JWT) plus manual `curl` verification recorded below. Deferred
+(multipart/related-only, not implemented): `CreateUEContext`, `RelocateUEContext`,
+`CancelRelocateUEContext` -- see `docs/DECISIONS.md` ADR-0019.
+
+| Procedure | TS clause / operationId | Test |
+|---|---|---|
+| ReleaseUEContext | `POST /namf-comm/v1/ue-contexts/{ueContextId}/release` | Integration test (`MissingUeContextIs404...`, 404 branch) + manual curl. "Found" branch unverified -- see ADR-0019 |
+| EBIAssignment | `POST /namf-comm/v1/ue-contexts/{ueContextId}/assign-ebi` | Manual curl only (404 branch). "Found" branch unverified -- see ADR-0019 |
+| UEContextTransfer | `POST /namf-comm/v1/ue-contexts/{ueContextId}/transfer` | Not exercised by any test yet -- implemented, unverified beyond compiling (same "found"-branch gap as the other three per-ueContextId ops; the 404 branch specifically was not separately curled for this operation). Disclosed gap |
+| RegistrationStatusUpdate | `POST /namf-comm/v1/ue-contexts/{ueContextId}/transfer-update` | Not exercised by any test yet -- implemented, unverified beyond compiling. Disclosed gap |
+| N1N2MessageTransfer | `POST /namf-comm/v1/ue-contexts/{ueContextId}/n1-n2-messages` | Manual curl (400 on malformed body verified during development; 404-on-no-context path shares the same code as the other per-context ops) |
+| N1N2MessageSubscribe | `POST /namf-comm/v1/ue-contexts/{ueContextId}/n1-n2-messages/subscriptions` | Integration test (`N1N2SubscribeAndUnsubscribe`, real 201 + body) |
+| N1N2MessageUnSubscribe | `DELETE /namf-comm/v1/ue-contexts/{ueContextId}/n1-n2-messages/subscriptions/{subscriptionId}` | Integration test (`N1N2SubscribeAndUnsubscribe`, 204 then 404 on double-remove) |
+| NonUeN2MessageTransfer | `POST /namf-comm/v1/non-ue-n2-messages/transfer` | Integration test (`AmfStatusChangeSubscribeAndNonUeN2Transfer`, real 200 + body) |
+| NonUeN2InfoSubscribe | `POST /namf-comm/v1/non-ue-n2-messages/subscriptions` | Manual curl only (201) -- no automated test yet, disclosed gap |
+| NonUeN2InfoUnSubscribe | `DELETE /namf-comm/v1/non-ue-n2-messages/subscriptions/{n2NotifySubscriptionId}` | Manual curl only -- no automated test yet, disclosed gap |
+| AMFStatusChangeSubscribe | `POST /namf-comm/v1/subscriptions` | Integration test (`AmfStatusChangeSubscribeAndNonUeN2Transfer`, real 201 + Location header) |
+| AMFStatusChangeUnSubscribe | `DELETE /namf-comm/v1/subscriptions/{subscriptionId}` | Manual curl only -- no automated test yet, disclosed gap |
+| AMFStatusChangeSubscribeModfy | `PUT /namf-comm/v1/subscriptions/{subscriptionId}` | Not exercised by any test yet -- implemented, unverified beyond compiling. Disclosed gap |
+| OAuth2 registration/heartbeat as an SBI client | N/A (`nfs/amf/src/main.cpp`'s `run_nrf_lifecycle`, dedicated thread per ADR-0019) | Manual verification below (`amf: registered with NRF (HTTP 201)` log line) + every integration test above implicitly depends on it succeeding |
+
+**Manual verification (2026-08-05, not captured in an automated test -- recorded here so it's not
+lost):**
+```
+$ ./nfs/nrf/nrf &   # then ./nfs/amf/amf &
+[amf] [info] amf: registered with NRF (HTTP 201)
+
+$ curl --http2 --cacert certs/ca/ca.crt --cert certs/hello-nf/cert.pem --key certs/hello-nf/key.pem \
+    -X POST https://127.0.0.1:7778/namf-comm/v1/ue-contexts/imsi-999700000000001/release \
+    -H "authorization: Bearer <token, scope=namf-comm, targetNfType=AMF>" \
+    -d '{"ngapCause":{"group":0,"value":0}}'
+-> 404, {"detail":"No UE context with id imsi-999700000000001",...}
+
+$ curl ... -X POST https://127.0.0.1:7778/namf-comm/v1/ue-contexts/imsi-1/n1-n2-messages/subscriptions \
+    -d '{"n1NotifyCallbackUri":"https://example.com/n1"}'
+-> 201, {"n1n2NotifySubscriptionId":"n1n2sub-1"}, Location header present
+
+$ curl ... -X POST https://127.0.0.1:7778/namf-comm/v1/subscriptions \
+    -d '{"amfStatusUri":"https://example.com/amfstatus"}'
+-> 201, {"amfStatusUri":"https://example.com/amfstatus"}
+
+$ curl ... -X POST https://127.0.0.1:7778/namf-comm/v1/non-ue-n2-messages/transfer \
+    -d '{"n2Information":{"n2InformationClass":"PWS"}}'
+-> 200, {"result":"N2_INFO_TRANSFER_INITIATED"}
+
+$ curl http://127.0.0.1:9465/metrics | grep ^amf_
+-> real Prometheus counters, e.g. amf_non_ue_n2_message_transfer_total{...} 1
+```
+
 ## Codegen infrastructure (Phase 1)
 
 Not a procedure row (this is infrastructure, not a business-logic procedure), noted separately:
@@ -91,7 +145,20 @@ are not proven by this session's testing beyond `docker build` succeeding for th
 `docker compose up` and `helm install`/`helm template` were not run. Disclosed gap, not silently
 assumed to work.
 
-## RAN/UE simulator infrastructure (pre-AMF)
+## Deployment infrastructure (Phase 2, AMF)
+
+Not a procedure row. `deploy/docker/amf.Dockerfile` (multi-stage Ubuntu 24.04 build, mirrors
+`nrf.Dockerfile`), actually built in this environment (`docker build -f deploy/docker/amf.Dockerfile
+-t 5gc-amf:test .` -- see `docs/DECISIONS.md` ADR-0019 for the result and the shared-PKI bug found
+and fixed in `deploy/docker/docker-compose.yml` along the way). `deploy/helm/amf/` exists (mirrors
+`deploy/helm/nrf/`) but, like NRF's chart, is not proven by `helm install`/`helm template` this
+session -- and additionally has a disclosed, unresolved gap of its own: no shared-PKI mechanism
+between separate Helm releases (see `deploy/helm/amf/Chart.yaml`'s description and ADR-0019).
+`docker compose up` (both `nrf` and `amf` containers actually mTLS-registering with each other) was
+NOT run this session -- same disclosed-not-silently-assumed gap ADR-0014 already recorded for NRF
+alone.
+
+## RAN/UE simulator infrastructure (still not wired to any NF)
 
 Not a procedure row (external test tool, not an implemented NF). `simulators/ransim/` wraps
 UERANSIM v3.3.0 (commit `6bf5a1a96aaef6ae8778b9d8b477ac6e2bbf8156`, AGPL-3.0, arms-length external
@@ -99,8 +166,7 @@ process -- see `docs/DECISIONS.md` ADR-0016). Actually fetched and built in this
 (`simulators/ransim/fetch-and-build.sh` produced real `nr-gnb`/`nr-ue`/`nr-cli` binaries, `nr-gnb
 --version` reports `v3.3.0`, matching the pinned tag). Manually ran `nr-gnb -c config/gnb.yaml`:
 it correctly attempts a real SCTP connection to `127.0.0.5:38412` and gets `Connection refused` --
-the expected, disclosed state, since AMF has no NGAP/N2 listener yet. **Not wired to any NF**:
-AMF's `Namf_Communication` SBI surface (procedure list agreed with the user, not yet built) and
-its NGAP/N2 termination (TS 38.413, SCTP transport -- a separate, larger effort, deliberately
-deferred per ADR-0016) are both still open work. This simulator cannot register a UE against
-anything in this repository yet.
+the expected, disclosed state. **Still not wired to any NF**: AMF's `Namf_Communication` SBI
+surface now exists (this session, see the AMF section above), but its NGAP/N2 termination
+(TS 38.413, SCTP transport -- a separate, larger effort, deliberately deferred per ADR-0016) does
+not. This simulator still cannot register a UE against anything in this repository.

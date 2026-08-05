@@ -1,14 +1,52 @@
 # Lab bring-up for the NFs built so far. Run from the repo root:
 #   docker compose -f deploy/docker/docker-compose.yml up --build
-# Each NF generates its own lab PKI at container start (see nrf.Dockerfile) -- there is
-# deliberately no shared certs volume by default, since a fresh CA per `up` is simpler than cert
-# lifecycle management for a lab. This will grow to one service per NF as Phase 2 adds more.
+#
+# PKI is provisioned ONCE by pki-init into the shared certs_data volume, which every NF container
+# mounts read-write at /build/certs. This replaced an earlier design where each NF generated its
+# own lab PKI independently at container start (fine with only one NF/container in the compose
+# file, which is all that existed then) -- discovered broken while adding amf as a second
+# container: two independently-generated CAs would not trust each other's leaf certs, so the mTLS
+# handshake between nrf and amf would fail. See docs/DECISIONS.md ADR-0019.
 
 services:
+  pki-init:
+    image: ubuntu:24.04
+    working_dir: /build
+    volumes:
+      - certs_data:/build/certs
+      - ../../scripts:/build/scripts:ro
+    entrypoint:
+      - /bin/bash
+      - -c
+      - "apt-get update >/dev/null && apt-get install -y --no-install-recommends openssl >/dev/null && ./scripts/gen-lab-pki.sh nrf amf"
+
   nrf:
     build:
       context: ../..
       dockerfile: deploy/docker/nrf.Dockerfile
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+    volumes:
+      - certs_data:/build/certs
     ports:
       - "7777:7777"   # Nnrf_NFManagement / Nnrf_NFDiscovery / Nnrf_AccessToken (TLS 1.3 + mTLS)
       - "9464:9464"   # Prometheus /metrics
+
+  amf:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/amf.Dockerfile
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+      nrf:
+        condition: service_started
+    volumes:
+      - certs_data:/build/certs
+    ports:
+      - "7778:7778"   # Namf_Communication (TLS 1.3 + mTLS)
+      - "9465:9465"   # Prometheus /metrics
+
+volumes:
+  certs_data:
