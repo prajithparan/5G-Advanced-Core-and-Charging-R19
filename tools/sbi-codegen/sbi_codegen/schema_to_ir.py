@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 
 from .ir import AliasType, FieldIR, IRType, ObjectType, OpaqueType, OpenEnumType, TypeRef
-from .loader import SchemaRegistry
+from .loader import SchemaRegistry, pure_ref_target
 
 _PRIMITIVE_MAP = {
     "string": "std::string",
@@ -114,7 +114,12 @@ class Converter:
         for filename in filenames:
             self.registry.load_file(filename)
             for (source_file, name), schema in list(self.registry.schemas.items()):
-                if source_file == filename:
+                # Pure-$ref entries (see loader.pure_ref_target / ADR-0024) never get their own
+                # IR type -- anything that references this name resolves straight through to the
+                # real target via registry.resolve_ref, so generating a spurious standalone type
+                # under the local alias name here would be wrong (and, worse, would collide-and-
+                # disambiguate against the real type for no reason).
+                if source_file == filename and pure_ref_target(schema) is None:
                     self._enqueue(name, schema, source_file)
 
         while self._worklist:

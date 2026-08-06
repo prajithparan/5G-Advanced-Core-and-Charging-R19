@@ -29,6 +29,18 @@ import pathlib
 import yaml
 
 
+def pure_ref_target(schema: dict) -> str | None:
+    """If schema is nothing but `{"$ref": X}` -- a pure indirection, not a real
+    shape of its own -- returns X, else None. Real pattern in the R19 YAML
+    (TS29505_Subscription_Data.yaml re-exports ~25 of TS29503_Nudm_UECM.yaml's
+    and TS29503_Nudm_SDM.yaml's schemas verbatim by reference under its own
+    local names, e.g. `SmfRegistration: {$ref: 'TS29503_Nudm_UECM.yaml#/
+    components/schemas/SmfRegistration'}`) -- see docs/DECISIONS.md ADR-0024."""
+    if isinstance(schema, dict) and set(schema.keys()) == {"$ref"}:
+        return schema["$ref"]
+    return None
+
+
 class SchemaRegistry:
     def __init__(self, specs_dir: pathlib.Path):
         self.specs_dir = specs_dir
@@ -56,14 +68,7 @@ class SchemaRegistry:
         for name, schema in (doc.get("components", {}).get("schemas") or {}).items():
             self.schemas[(filename, name)] = schema
 
-    def resolve_ref(self, ref: str, from_file: str) -> tuple[str, dict, str]:
-        """Resolves a $ref string (internal '#/components/schemas/X' or
-        external 'OtherFile.yaml#/components/schemas/X') to
-        (type_name, schema_dict, source_file). An internal ref always
-        resolves within from_file's own namespace -- it can never accidentally
-        pick up a same-named schema some other file happened to load first.
-        Loads and registers the target file's schemas as a side effect if not
-        already loaded."""
+    def _resolve_ref_one_hop(self, ref: str, from_file: str) -> tuple[str, dict, str]:
         if "#" not in ref:
             raise ValueError(f"unsupported $ref with no fragment: {ref}")
         file_part, frag = ref.split("#", 1)
@@ -78,3 +83,32 @@ class SchemaRegistry:
         if key not in self.schemas:
             raise KeyError(f"$ref target '{name}' not found in {target_file}")
         return name, self.schemas[key], target_file
+
+    def resolve_ref(self, ref: str, from_file: str) -> tuple[str, dict, str]:
+        """Resolves a $ref string (internal '#/components/schemas/X' or
+        external 'OtherFile.yaml#/components/schemas/X') to
+        (type_name, schema_dict, source_file). An internal ref always
+        resolves within from_file's own namespace -- it can never accidentally
+        pick up a same-named schema some other file happened to load first.
+        Loads and registers the target file's schemas as a side effect if not
+        already loaded.
+
+        Transparently follows pure-$ref indirection schemas (see
+        pure_ref_target) to their real target, so a caller always gets back
+        an actual shape to convert, never a bare pass-through wrapper --
+        otherwise every one of TS29505_Subscription_Data.yaml's re-exported
+        names would generate as a spurious, disconnected OpaqueType instead
+        of correctly resolving to the same type UDM already generates. See
+        docs/DECISIONS.md ADR-0024.
+        """
+        name, schema, target_file = self._resolve_ref_one_hop(ref, from_file)
+        seen = {(target_file, name)}
+        while True:
+            inner_ref = pure_ref_target(schema)
+            if inner_ref is None:
+                return name, schema, target_file
+            name, schema, target_file = self._resolve_ref_one_hop(inner_ref, target_file)
+            key = (target_file, name)
+            if key in seen:
+                raise ValueError(f"circular pure-$ref alias chain detected at {key}")
+            seen.add(key)
