@@ -1,5 +1,7 @@
 #pragma once
 
+#include "aka_crypto/milenage.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -14,6 +16,52 @@
 // simplification as every other NF's store so far (ADR-0015).
 
 namespace udm {
+
+// Backs Nudm_UEAU's GenerateAuthData. Keyed by SUPI. In-memory-only subscriber authentication
+// data (K, OPc, SQN, AMF, and which method -- 5G_AKA or EAP_AKA_PRIME -- this subscriber uses) --
+// in a real deployment this is UDR-provisioned data (Nudr_DataRepository's authentication-data
+// group), which nfs/udr deliberately does not implement yet (see docs/DECISIONS.md ADR-0025's
+// deferred list). Seeded at startup with a small, fixed set of test subscribers -- see
+// nfs/udm/src/main.cpp -- not provisionable via any API. See ADR-0026 for what SQN handling is
+// and is not implemented (no resynchronisation/AUTS, no windowing -- a bare monotonic counter).
+struct AuthenticationSubscription {
+    aka_crypto::Key128 k;
+    aka_crypto::Key128 opc;
+    aka_crypto::Sqn sqn;
+    aka_crypto::Amf amf;
+    std::string authentication_method;  // "5G_AKA" or "EAP_AKA_PRIME"
+};
+
+class AuthenticationSubscriptionStore {
+public:
+    void seed(const std::string& supi, AuthenticationSubscription sub);
+    // Returns the subscriber's current data and, in the same locked step, advances its stored SQN
+    // by 1 (mod 2^48) so the next GenerateAuthData call for this SUPI gets a fresh vector.
+    // nullopt if supi is unknown.
+    std::optional<AuthenticationSubscription> get_and_advance_sqn(const std::string& supi);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, AuthenticationSubscription> subs_;
+};
+
+// Backs Nudm_UEAU's ConfirmAuth (create) and DeleteAuth (remove). Keyed by a UDM-generated
+// authEventId; also tracks the owning supi so DeleteAuth can be scoped correctly, same pattern as
+// nfs/udm's own SdmSubscriptionStore.
+class AuthEventStore {
+public:
+    std::string create(const std::string& supi, nlohmann::json event);
+    bool remove(const std::string& supi, const std::string& auth_event_id);
+
+private:
+    struct Entry {
+        std::string supi;
+        nlohmann::json event;
+    };
+    std::mutex mutex_;
+    std::unordered_map<std::string, Entry> events_;
+    std::uint64_t next_id_ = 1;
+};
 
 // Backs Nudm_UECM's AMF-3GPP-access registration group (3GppRegistration, Get3GppRegistration,
 // Update3GppRegistration, deregAMF). Keyed by ueId (Supi) -- one AMF registration per UE, per

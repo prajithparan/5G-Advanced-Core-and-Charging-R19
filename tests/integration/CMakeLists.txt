@@ -5,6 +5,7 @@ add_executable(integration_tests
     test_amf_namf_communication.cpp
     test_smf_pdu_session.cpp
     test_udm_uecm_sdm.cpp
+    test_udm_ueau.cpp
     test_udr_context_data.cpp
 )
 target_link_libraries(integration_tests PRIVATE sbi_core sbi_generated GTest::gtest GTest::gtest_main)
