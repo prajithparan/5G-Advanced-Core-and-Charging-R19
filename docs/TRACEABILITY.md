@@ -173,6 +173,57 @@ $ curl http://127.0.0.1:9466/metrics | grep ^smf_
 -> real Prometheus counters, e.g. smf_create_sm_context_total{...} 1
 ```
 
+## UDM (Phase 2, fourth NF)
+
+All rows below: source `specs/5G_APIs-REL-19/TS29503_Nudm_UECM.yaml`,
+`specs/5G_APIs-REL-19/TS29503_Nudm_SDM.yaml` (commit `bca84b60a37773133bcae97e5c6c0d10a93b47b6`),
+implemented in `nfs/udm/src/main.cpp` + `nfs/udm/src/stores.cpp`, proven by
+`tests/integration/test_udm_uecm_sdm.cpp` (real subprocess-to-subprocess: `nrf` + `udm`, real
+TLS 1.3 + mTLS, real signed JWT) plus manual `curl` verification recorded below. Scope: the AMF
+and SMF registration groups of `Nudm_UECM`, and `Nudm_SDM`'s subscriber-data-retrieval +
+subscription operations -- see `docs/DECISIONS.md` ADR-0023 for what's deferred and why.
+
+| Procedure | TS clause / operationId | Test |
+|---|---|---|
+| 3GppRegistration | `PUT /nudm-uecm/v1/{ueId}/registrations/amf-3gpp-access` | Integration test (`AmfRegistrationLifecycle`, real 201 then idempotent 200 on replace) |
+| Get3GppRegistration | `GET /nudm-uecm/v1/{ueId}/registrations/amf-3gpp-access` | Integration test (`AmfRegistrationLifecycle`, 200 then 404 after deregister) + (`MissingRegistrationIs404...`, 404/401 paths) |
+| Update3GppRegistration | `PATCH /nudm-uecm/v1/{ueId}/registrations/amf-3gpp-access` (RFC 7396 merge-patch) | Integration test (`AmfRegistrationLifecycle`, confirms merge semantics: patched field changes, untouched fields survive) |
+| deregAMF | `POST /nudm-uecm/v1/{ueId}/registrations/amf-3gpp-access/dereg-amf` | Integration test (`AmfRegistrationLifecycle`, real 204) |
+| Registration (SMF) | `PUT /nudm-uecm/v1/{ueId}/registrations/smf-registrations/{pduSessionId}` | Integration test (`SmfRegistrationLifecycle`, real 201) |
+| GetSmfRegistration | `GET /nudm-uecm/v1/{ueId}/registrations/smf-registrations` | Integration test (`SmfRegistrationLifecycle`, real collection-list) |
+| RetrieveSmfRegistration | `GET /nudm-uecm/v1/{ueId}/registrations/smf-registrations/{pduSessionId}` | Integration test (`SmfRegistrationLifecycle`, 200 then 404 after delete) |
+| UpdateSmfRegistration | `PATCH /nudm-uecm/v1/{ueId}/registrations/smf-registrations/{pduSessionId}` (RFC 7396 merge-patch) | Integration test (`SmfRegistrationLifecycle`, confirms merge semantics) |
+| SmfDeregistration | `DELETE /nudm-uecm/v1/{ueId}/registrations/smf-registrations/{pduSessionId}` | Integration test (`SmfRegistrationLifecycle`, real 204) |
+| GetAmData | `GET /nudm-sdm/v2/{supi}/am-data` | Integration test (`SdmDataRetrievalAndSubscriptions`, real 200, real deserialization) |
+| GetSmfSelData | `GET /nudm-sdm/v2/{supi}/smf-select-data` | Integration test (`SdmDataRetrievalAndSubscriptions`, real 200) |
+| GetSmData | `GET /nudm-sdm/v2/{supi}/sm-data` | Integration test (`SdmDataRetrievalAndSubscriptions`, real 200) |
+| Subscribe | `POST /nudm-sdm/v2/{ueId}/sdm-subscriptions` | Integration test (`SdmDataRetrievalAndSubscriptions`, real 201 + Location header) |
+| Unsubscribe | `DELETE /nudm-sdm/v2/{ueId}/sdm-subscriptions/{subscriptionId}` | Integration test (`SdmDataRetrievalAndSubscriptions`, 204 then 404 on double-unsubscribe) |
+| OAuth2 registration/heartbeat as an SBI client | N/A (`nfs/udm/src/main.cpp`'s `run_nrf_lifecycle`, dedicated thread per ADR-0006/ADR-0019) | Manual verification below (`udm: registered with NRF (HTTP 201)` log line) + every integration test above implicitly depends on it succeeding |
+
+**Manual verification (2026-08-06, not captured in an automated test -- recorded here so it's not
+lost):**
+```
+$ ./nfs/nrf/nrf &   # then ./nfs/udm/udm &
+[udm] [info] udm: registered with NRF (HTTP 201)
+
+$ curl --http2 --cacert certs/ca/ca.crt --cert certs/hello-nf/cert.pem --key certs/hello-nf/key.pem \
+    -X PUT https://127.0.0.1:7780/nudm-uecm/v1/imsi-999700000000001/registrations/amf-3gpp-access \
+    -H "authorization: Bearer <token, scope=nudm-uecm, targetNfType=UDM>" \
+    -d '{"amfInstanceId":"...","deregCallbackUri":"...","guami":{...},"ratType":"NR"}'
+-> 201
+
+$ curl ... -X PATCH .../registrations/amf-3gpp-access -H "content-type: application/merge-patch+json" \
+    -d '{"guami":{"plmnId":{"mcc":"999","mnc":"70"},"amfId":"FEDCBA"}}'
+-> 200, amfId changed, amfInstanceId/deregCallbackUri unchanged (real RFC 7396 merge, not replace)
+
+$ curl ... "https://127.0.0.1:7780/nudm-sdm/v2/imsi-999700000000001/am-data" -H "authorization: Bearer <token, scope=nudm-sdm>"
+-> 200, {} (disclosed stub -- no UDR yet, see ADR-0023)
+
+$ curl http://127.0.0.1:9467/metrics | grep ^udm_
+-> real Prometheus counters, e.g. udm_amf_registration_total{...} 1
+```
+
 ## Codegen infrastructure (Phase 1)
 
 Not a procedure row (this is infrastructure, not a business-logic procedure), noted separately:
@@ -237,6 +288,18 @@ by `helm install`/`helm template`, same disclosed gap as NRF/AMF's charts. `dock
 (all three containers actually mTLS-registering with each other) was NOT run this session -- same
 disclosed-not-silently-assumed gap ADR-0014 already recorded for NRF alone. See
 `docs/DECISIONS.md` ADR-0021.
+
+## Deployment infrastructure (Phase 2, UDM)
+
+Not a procedure row. `deploy/docker/udm.Dockerfile` (multi-stage Ubuntu 24.04 build, mirrors
+`smf.Dockerfile`), actually built in this environment (`docker build -f deploy/docker/udm.Dockerfile
+-t 5gc-udm:test .` succeeded). `deploy/docker/docker-compose.yml` updated with a `udm` service
+(added to `pki-init`'s shared-volume provisioning, same pattern as ADR-0019). `deploy/helm/udm/`
+(mirrors `deploy/helm/smf/`, including the same disclosed cross-chart shared-PKI gap noted in
+`deploy/helm/udm/Chart.yaml`) -- not proven by `helm install`/`helm template`, same disclosed gap
+as NRF/AMF/SMF's charts. `docker compose up` (all four containers actually mTLS-registering with
+each other) was NOT run this session -- same disclosed-not-silently-assumed gap ADR-0014 already
+recorded for NRF alone. See `docs/DECISIONS.md` ADR-0023.
 
 ## RAN/UE simulator infrastructure (still not wired to any NF)
 

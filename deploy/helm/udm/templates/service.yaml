@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-udm
+  labels:
+    app.kubernetes.io/name: udm
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/name: udm
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: sbi
+      port: 7780
+      targetPort: sbi
+      protocol: TCP
+    - name: metrics
+      port: 9467
+      targetPort: metrics
+      protocol: TCP
