@@ -224,6 +224,48 @@ $ curl http://127.0.0.1:9467/metrics | grep ^udm_
 -> real Prometheus counters, e.g. udm_amf_registration_total{...} 1
 ```
 
+## UDR (Phase 2, fifth NF)
+
+All rows below: source `specs/5G_APIs-REL-19/TS29505_Subscription_Data.yaml` (commit
+`bca84b60a37773133bcae97e5c6c0d10a93b47b6`), implemented in `nfs/udr/src/main.cpp` +
+`nfs/udr/src/stores.cpp`, proven by `tests/integration/test_udr_context_data.cpp` (real
+subprocess-to-subprocess: `nrf` + `udr`, real TLS 1.3 + mTLS, real signed JWT) plus manual `curl`
+verification recorded below. Scope: the `context-data` group's AMF 3GPP-access context and SMF
+registration context resources -- see `docs/DECISIONS.md` ADR-0025 for what's deferred and why,
+and for the RFC 6902-vs-RFC 7396 distinction from UDM.
+
+| Procedure | TS clause / operationId | Test |
+|---|---|---|
+| QueryAmfContext3gpp | `GET /nudr-dr/v2/subscription-data/{ueId}/context-data/amf-3gpp-access` | Integration test (`AmfContextLifecycle`, real 200) + (`MissingResourceIs404...`, 404/401 paths) |
+| CreateAmfContext3gpp | `PUT /nudr-dr/v2/subscription-data/{ueId}/context-data/amf-3gpp-access` | Integration test (`AmfContextLifecycle`, real 201 then idempotent 204 on replace) |
+| AmfContext3gpp | `PATCH /nudr-dr/v2/subscription-data/{ueId}/context-data/amf-3gpp-access` (RFC 6902 JSON Patch) | Integration test (`AmfContextLifecycle`, confirms patch semantics: only `/guami/amfId` changes, `amfInstanceId`/`deregCallbackUri` survive) |
+| QuerySmfRegList | `GET /nudr-dr/v2/subscription-data/{ueId}/context-data/smf-registrations` | Integration test (`SmfRegistrationLifecycle`, real collection GET via generated `sbi_gen::SmfRegList`) |
+| QuerySmfRegistration | `GET /nudr-dr/v2/subscription-data/{ueId}/context-data/smf-registrations/{pduSessionId}` | Integration test (`SmfRegistrationLifecycle`, 200 then 404 after delete) |
+| CreateOrUpdateSmfRegistration | `PUT /nudr-dr/v2/subscription-data/{ueId}/context-data/smf-registrations/{pduSessionId}` | Integration test (`SmfRegistrationLifecycle`, real 201) |
+| UpdateSmfContext | `PATCH /nudr-dr/v2/subscription-data/{ueId}/context-data/smf-registrations/{pduSessionId}` (RFC 6902 JSON Patch) | Integration test (`SmfRegistrationLifecycle`, adds `/smfSetId`, confirms `pduSessionId` survives) |
+| DeleteSmfRegistration | `DELETE /nudr-dr/v2/subscription-data/{ueId}/context-data/smf-registrations/{pduSessionId}` | Integration test (`SmfRegistrationLifecycle`, real 204 then 404 on re-delete) |
+| OAuth2 registration/heartbeat as an SBI client | N/A (`nfs/udr/src/main.cpp`'s `run_nrf_lifecycle`, dedicated thread per ADR-0006/ADR-0019) | Manual verification below (`udr: registered with NRF (HTTP 201)` log line) + every integration test above implicitly depends on it succeeding |
+
+**Manual verification (2026-08-06, not captured in an automated test -- recorded here so it's not
+lost):**
+```
+$ ./nfs/nrf/nrf &   # then ./nfs/udr/udr &
+[udr] [info] udr: registered with NRF (HTTP 201)
+
+$ curl --http2 --cacert certs/ca/ca.crt --cert certs/hello-nf/cert.pem --key certs/hello-nf/key.pem \
+    -X PUT https://127.0.0.1:7781/nudr-dr/v2/subscription-data/imsi-999700000000001/context-data/amf-3gpp-access \
+    -H "authorization: Bearer <token, scope=nudr-dr, targetNfType=UDR>" \
+    -d '{"amfInstanceId":"...","deregCallbackUri":"...","guami":{...},"ratType":"NR"}'
+-> 201
+
+$ curl ... -X PATCH .../context-data/amf-3gpp-access -H "content-type: application/json-patch+json" \
+    -d '[{"op":"replace","path":"/guami/amfId","value":"FEDCBA"}]'
+-> 204, amfId changed, amfInstanceId/deregCallbackUri unchanged (real RFC 6902 patch, not merge)
+
+$ curl http://127.0.0.1:9468/metrics | grep ^udr_
+-> real Prometheus counters
+```
+
 ## Codegen infrastructure (Phase 1)
 
 Not a procedure row (this is infrastructure, not a business-logic procedure), noted separately:
@@ -300,6 +342,18 @@ Not a procedure row. `deploy/docker/udm.Dockerfile` (multi-stage Ubuntu 24.04 bu
 as NRF/AMF/SMF's charts. `docker compose up` (all four containers actually mTLS-registering with
 each other) was NOT run this session -- same disclosed-not-silently-assumed gap ADR-0014 already
 recorded for NRF alone. See `docs/DECISIONS.md` ADR-0023.
+
+## Deployment infrastructure (Phase 2, UDR)
+
+Not a procedure row. `deploy/docker/udr.Dockerfile` (multi-stage Ubuntu 24.04 build, mirrors
+`udm.Dockerfile`), built in this environment (`docker build -f deploy/docker/udr.Dockerfile -t
+5gc-udr:test .`). `deploy/docker/docker-compose.yml` updated with a `udr` service (added to
+`pki-init`'s shared-volume provisioning, same pattern as ADR-0019). `deploy/helm/udr/` (mirrors
+`deploy/helm/udm/`, including the same disclosed cross-chart shared-PKI gap noted in
+`deploy/helm/udr/Chart.yaml`) -- not proven by `helm install`/`helm template`, same disclosed gap
+as NRF/AMF/SMF/UDM's charts. `docker compose up` (all five containers actually mTLS-registering
+with each other) was NOT run this session -- same disclosed-not-silently-assumed gap ADR-0014
+already recorded for NRF alone. See `docs/DECISIONS.md` ADR-0025.
 
 ## RAN/UE simulator infrastructure (still not wired to any NF)
 

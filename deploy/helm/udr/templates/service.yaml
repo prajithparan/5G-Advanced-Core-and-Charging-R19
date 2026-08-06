@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-udr
+  labels:
+    app.kubernetes.io/name: udr
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/name: udr
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: sbi
+      port: 7781
+      targetPort: sbi
+      protocol: TCP
+    - name: metrics
+      port: 9468
+      targetPort: metrics
+      protocol: TCP

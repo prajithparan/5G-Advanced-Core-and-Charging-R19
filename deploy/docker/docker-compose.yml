@@ -18,7 +18,7 @@ services:
     entrypoint:
       - /bin/bash
       - -c
-      - "apt-get update >/dev/null && apt-get install -y --no-install-recommends openssl >/dev/null && ./scripts/gen-lab-pki.sh nrf amf smf udm"
+      - "apt-get update >/dev/null && apt-get install -y --no-install-recommends openssl >/dev/null && ./scripts/gen-lab-pki.sh nrf amf smf udm udr"
 
   nrf:
     build:
@@ -77,6 +77,21 @@ services:
     ports:
       - "7780:7780"   # Nudm_UECM / Nudm_SDM (TLS 1.3 + mTLS)
       - "9467:9467"   # Prometheus /metrics
+
+  udr:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/udr.Dockerfile
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+      nrf:
+        condition: service_started
+    volumes:
+      - certs_data:/build/certs
+    ports:
+      - "7781:7781"   # Nudr_DataRepository context-data group (TLS 1.3 + mTLS)
+      - "9468:9468"   # Prometheus /metrics
 
 volumes:
   certs_data:

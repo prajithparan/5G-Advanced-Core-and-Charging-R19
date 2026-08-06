@@ -24,6 +24,7 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29502_Nsmf_PDUSession.yaml
     TS29503_Nudm_UECM.yaml
     TS29503_Nudm_SDM.yaml
+    TS29505_Subscription_Data.yaml
     TS29571_CommonData.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
@@ -34,6 +35,7 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_Communication.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29503_Nudm_UECM.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29503_Nudm_SDM.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29505_Subscription_Data.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29571_CommonData.yaml
 )
 

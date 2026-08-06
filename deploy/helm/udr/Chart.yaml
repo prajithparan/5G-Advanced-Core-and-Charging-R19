@@ -1,0 +1,13 @@
+apiVersion: v2
+name: udr
+description: >
+  UDR (Unified Data Repository) -- TS 29.505 Nudr_DataRepository context-data group
+  (amf-3gpp-access AMF context, smf-registrations). Lab-grade Helm chart; see docs/DECISIONS.md
+  for what "lab-grade" means here (in-memory storage, no HA, RFC 6902 JSON Patch on both
+  resources). DISCLOSED GAP, not silently shipped: same as deploy/helm/udm/Chart.yaml -- this
+  chart does not provision PKI at all, and udr/udm/smf/amf/nrf are separate Helm releases with no
+  shared-secret mechanism between them yet. Proper fix deferred to Phase 8 (lab packaging and
+  conformance) per PROMPT.md.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
