@@ -27,6 +27,15 @@
 
 namespace sbi_gen {
 
+{% if forward_declared_types %}
+// Forward declarations for types in a genuine mutual-reference cycle in 3GPP's own schemas
+// (not a generator artifact -- see docs/DECISIONS.md ADR-0022). Needed because the types below
+// reference each other before either's full definition is available; each is still fully defined
+// exactly once, further down, in its normal position.
+{% for name in forward_declared_types %}
+struct {{ name }};
+{% endfor %}
+{% endif %}
 {% for t in opaque_types %}
 // OPAQUE FALLBACK for {{ t.name }}: {{ t.reason }}
 using {{ t.name }} = nlohmann::json;
