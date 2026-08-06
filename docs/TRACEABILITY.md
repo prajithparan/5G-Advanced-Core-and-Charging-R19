@@ -266,6 +266,50 @@ $ curl http://127.0.0.1:9468/metrics | grep ^udr_
 -> real Prometheus counters
 ```
 
+## UDM: Nudm_UEAU extension (this turn, prep for AUSF)
+
+All rows below: source `specs/5G_APIs-REL-19/TS29503_Nudm_UEAU.yaml` (commit
+`bca84b60a37773133bcae97e5c6c0d10a93b47b6`) for the SBI surface, `libs/aka-crypto` (TS 35.205/35.206
+MILENAGE, TS 33.220 Annex B.2.0 generic KDF, TS 33.501 Annex A key derivations -- no OpenAPI YAML,
+implemented from the public algorithm definitions per `docs/DECISIONS.md` ADR-0026) for the crypto,
+implemented in `nfs/udm/src/main.cpp` + `nfs/udm/src/stores.cpp`, proven by
+`tests/integration/test_udm_ueau.cpp` (real subprocess-to-subprocess: `nrf` + `udm`, real TLS 1.3 +
+mTLS, real signed JWT) plus `tests/conformance/test_milenage.cpp` + `test_eap_aka_prime.cpp` (real
+TS 35.207 Test Set 1 vectors, real RFC 5448/4187 packet round-trips) plus manual `curl` verification
+recorded below. Scope: GenerateAuthData, ConfirmAuth, DeleteAuth only -- see ADR-0026 for what's
+deferred and why, and for why this extends an already-committed NF instead of landing inside AUSF's
+own (still-future) turn.
+
+| Procedure | TS clause / operationId | Test |
+|---|---|---|
+| GenerateAuthData (5G-AKA) | `POST /nudm-ueau/v1/{supiOrSuci}/security-information/generate-auth-data` | Integration test (`GenerateAuthDataFor5GAkaSubscriberProducesDistinctVectors`, real `Av5GHeAka` vector, two consecutive calls produce distinct RAND/AUTN/KAUSF) + conformance test (`Milenage.TS35207TestSet1`, `AkaKdf.*`, real published vectors) |
+| GenerateAuthData (EAP-AKA') | `POST /nudm-ueau/v1/{supiOrSuci}/security-information/generate-auth-data` | Integration test (`GenerateAuthDataForEapAkaPrimeSubscriberReturnsEapAkaPrimeVector`, real `AvEapAkaPrime` vector) + conformance test (`EapAkaPrime.*`, real PRF'/MK derivation + packet round-trips) |
+| ConfirmAuth | `POST /nudm-ueau/v1/{supi}/auth-events` | Integration test (`ConfirmAuthThenDeleteAuthLifecycle`, real 201 + Location header) |
+| DeleteAuth | `PUT /nudm-ueau/v1/{supi}/auth-events/{authEventId}` (confirmed a PUT via the YAML, not a DELETE despite the operationId) | Integration test (`ConfirmAuthThenDeleteAuthLifecycle`, real 204 then 404 on re-delete) |
+| Unknown-SUPI / tampered-token error paths | N/A | Integration test (`GenerateAuthDataUnknownSupiIs404AndTamperedTokenIs401`) |
+
+**Manual verification (2026-08-06, not captured in an automated test -- recorded here so it's not
+lost):**
+```
+$ ./nfs/nrf/nrf &   # then ./nfs/udm/udm &
+[udm] [info] udm: registered with NRF (HTTP 201)
+
+$ curl --http2 --cacert certs/ca/ca.crt --cert certs/hello-nf/cert.pem --key certs/hello-nf/key.pem \
+    -X POST https://127.0.0.1:7780/nudm-ueau/v1/imsi-999700000000001/security-information/generate-auth-data \
+    -H "authorization: Bearer <token, scope=nudm-ueau, targetNfType=UDM>" \
+    -d '{"servingNetworkName":"5G:mnc070.mcc999.3gppnetwork.org","ausfInstanceId":"..."}'
+-> 200, real Av5GHeAka: {"authType":"5G_AKA","authenticationVector":{"autn":"...","avType":"5G_HE_AKA",
+   "kausf":"<64 hex chars>","rand":"<32 hex chars>","xresStar":"<32 hex chars>"},"supi":"imsi-999700000000001"}
+   (field byte-lengths verified programmatically: autn/rand/xresStar 16 bytes, kausf 32 bytes)
+
+$ curl ... -X POST .../imsi-999700000000002/security-information/generate-auth-data -d '{...}'
+-> 200, real AvEapAkaPrime: {"authType":"EAP_AKA_PRIME","authenticationVector":{"avType":"EAP_AKA_PRIME",
+   "ckPrime":"...","ikPrime":"...","rand":"...","xres":"<16 hex chars>"},"supi":"imsi-999700000000002"}
+
+$ curl http://127.0.0.1:9467/metrics | grep udm_generate_auth_data_total
+-> udm_generate_auth_data_total{otel_scope_name="udm"} 3   # real Prometheus counter, incremented per call
+```
+
 ## Codegen infrastructure (Phase 1)
 
 Not a procedure row (this is infrastructure, not a business-logic procedure), noted separately:

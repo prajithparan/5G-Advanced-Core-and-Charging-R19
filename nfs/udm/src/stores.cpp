@@ -113,4 +113,43 @@ bool SdmSubscriptionStore::remove(const std::string& subscription_id) {
     return subscriptions_.erase(subscription_id) > 0;
 }
 
+void AuthenticationSubscriptionStore::seed(const std::string& supi,
+                                           AuthenticationSubscription sub) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    subs_[supi] = std::move(sub);
+}
+
+std::optional<AuthenticationSubscription> AuthenticationSubscriptionStore::get_and_advance_sqn(
+    const std::string& supi) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subs_.find(supi);
+    if (it == subs_.end()) {
+        return std::nullopt;
+    }
+    const AuthenticationSubscription current = it->second;
+    for (size_t i = it->second.sqn.size(); i-- > 0;) {
+        if (++it->second.sqn[i] != 0) {
+            break;
+        }
+    }
+    return current;
+}
+
+std::string AuthEventStore::create(const std::string& supi, nlohmann::json event) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "authevent-" + std::to_string(next_id_++);
+    events_.emplace(id, Entry{.supi = supi, .event = std::move(event)});
+    return id;
+}
+
+bool AuthEventStore::remove(const std::string& supi, const std::string& auth_event_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = events_.find(auth_event_id);
+    if (it == events_.end() || it->second.supi != supi) {
+        return false;
+    }
+    events_.erase(it);
+    return true;
+}
+
 } // namespace udm

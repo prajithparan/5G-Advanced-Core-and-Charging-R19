@@ -46,6 +46,7 @@ include(CTest)
 
 add_subdirectory(libs/sbi-core)
 add_subdirectory(libs/sbi-generated)
+add_subdirectory(libs/aka-crypto)
 add_subdirectory(nfs/nrf)
 add_subdirectory(nfs/amf)
 add_subdirectory(nfs/smf)
