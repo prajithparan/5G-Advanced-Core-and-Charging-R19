@@ -66,9 +66,25 @@ class RenderField:
         self.cpp_type = f"std::optional<{inner}>" if optional else inner
 
 
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def _referenced_names(t) -> list[str]:
     """Named types directly referenced by t (for dependency graphs, both
-    file-level and type-level)."""
+    file-level and type-level).
+
+    AliasType has no structured TypeRef for its element (cpp_underlying is
+    already a rendered string like "std::vector<Foo>") -- extracted here via
+    identifier tokenization rather than adding one, since the only thing that
+    matters for dependency tracking is which *names* appear, and callers
+    already filter the result against a known-names set (stray tokens like
+    "std"/"vector" that aren't real type names are harmless noise, not
+    false dependencies). See docs/DECISIONS.md ADR-0022 for why this exists:
+    without it, an alias whose underlying type names a struct/enum defined
+    later in the same merged group compiles with "not declared in this
+    scope", since header.hpp.j2 always emits the alias block before the
+    enum/object blocks regardless of computed order.
+    """
     names: list[str] = []
 
     def walk(ref: TypeRef) -> None:
@@ -80,6 +96,8 @@ def _referenced_names(t) -> list[str]:
     if isinstance(t, ObjectType):
         for f in t.fields:
             walk(f.type_ref)
+    elif isinstance(t, AliasType):
+        names.extend(_IDENTIFIER_RE.findall(t.cpp_underlying))
     return names
 
 
@@ -130,43 +148,88 @@ def _tarjan_scc(nodes: list[str], edges: dict[str, set[str]]) -> list[list[str]]
     return result
 
 
-def _topo_sort_types(names: list[str], types_by_name: dict, all_names_in_group: set[str]) -> list[str]:
+def _topo_sort_types(
+    names: list[str], types_by_name: dict, all_names_in_group: set[str]
+) -> tuple[list[str], set[str]]:
     """Topologically sorts types within a group by field-level dependency (only
     counting deps on other types in the same group -- cross-group deps are
-    #includes, already satisfied). Falls back to input order for any residual
-    cycle (rare -- none observed in the R19 pilot files; flagged rather than
-    silently assumed impossible)."""
+    #includes, already satisfied).
+
+    Real, genuine cycles exist in 3GPP's own schemas within a single merged
+    group (found compiling the R19 pilot files once TS29503_Nudm_SDM.yaml was
+    added: SharedData.sharedAmData -> AccessAndMobilitySubscriptionData ->
+    AccessAndMobilitySubscriptionData.sharedDataList -> SharedData, a real
+    "shared data aggregates per-type subscription data, per-type subscription
+    data can itself be shared" pattern -- not a generator artifact). A prior
+    version of this function fell back to raw input order for the WHOLE group
+    the moment ANY cycle was found anywhere in it -- which, since a single
+    2-type cycle poisons the traversal, silently discarded the correct
+    ordering for potentially hundreds of unrelated, perfectly acyclic types in
+    the same group too, producing "used before declared" compile errors far
+    from the actual cycle. See docs/DECISIONS.md ADR-0022.
+
+    Fixed properly via SCC condensation: strongly-connected components (each a
+    genuine cycle, or a lone acyclic type) are computed via Tarjan's
+    algorithm, the condensation graph over those components is always a DAG
+    (SCCs cannot cycle with each other by construction) and is topologically
+    sorted normally, and only the members of a real multi-type SCC are
+    reported back as needing a forward declaration (emitted by the caller
+    before any of that SCC's members are defined) -- everything outside an
+    actual cycle still gets a fully correct dependency order. Only ObjectType
+    nodes can have outgoing edges (see _referenced_names), so a multi-member
+    SCC can only ever consist of ObjectTypes -- forward-declaring `struct X;`
+    is always the right (and only) declaration shape needed here.
+
+    Returns (ordered_names, cyclic_names): cyclic_names is the set of type
+    names that participate in a real (size > 1) cycle and need a forward
+    declaration before their first use.
+    """
     edges = {n: set() for n in names}
     for n in names:
         for dep in _referenced_names(types_by_name[n]):
             if dep in all_names_in_group and dep != n:
                 edges[n].add(dep)
 
-    visited: set[str] = set()
-    temp_mark: set[str] = set()
-    order: list[str] = []
-    had_cycle = False
+    sccs = _tarjan_scc(names, edges)
 
-    def visit(n: str) -> None:
-        nonlocal had_cycle
-        if n in visited:
-            return
-        if n in temp_mark:
-            had_cycle = True
-            return
-        temp_mark.add(n)
-        for dep in edges[n]:
-            visit(dep)
-        temp_mark.discard(n)
-        visited.add(n)
-        order.append(n)
+    scc_index: dict[str, int] = {}
+    for i, scc in enumerate(sccs):
+        for n in scc:
+            scc_index[n] = i
 
+    condensed_edges: dict[int, set[int]] = {i: set() for i in range(len(sccs))}
     for n in names:
-        visit(n)
+        for dep in edges[n]:
+            if scc_index[dep] != scc_index[n]:
+                condensed_edges[scc_index[n]].add(scc_index[dep])
 
-    if had_cycle:
-        return names
-    return order
+    order_indices: list[int] = []
+    visited: set[int] = set()
+    temp_mark: set[int] = set()
+
+    def visit(i: int) -> None:
+        if i in visited:
+            return
+        temp_mark.add(i)
+        for dep_i in condensed_edges[i]:
+            visit(dep_i)
+        temp_mark.discard(i)
+        visited.add(i)
+        order_indices.append(i)
+
+    for i in range(len(sccs)):
+        visit(i)
+
+    ordered_names: list[str] = []
+    cyclic_names: set[str] = set()
+    for i in order_indices:
+        scc = sccs[i]
+        if len(scc) > 1:
+            cyclic_names.update(scc)
+        # Preserve original relative order within an SCC for deterministic output.
+        ordered_names.extend(n for n in names if n in scc)
+
+    return ordered_names, cyclic_names
 
 
 def render(ir_types: dict, commit: str, out_dir: pathlib.Path) -> list[pathlib.Path]:
@@ -228,35 +291,56 @@ def render(ir_types: dict, commit: str, out_dir: pathlib.Path) -> list[pathlib.P
     for group in groups:
         group_name = group["name"]
         all_names_in_group = set(group["types"])
-        ordered_names = _topo_sort_types(group["types"], name_to_type, all_names_in_group)
+        ordered_names, cyclic_names = _topo_sort_types(
+            group["types"], name_to_type, all_names_in_group
+        )
 
         deps: set[str] = set()
         object_types = []
         open_enum_types = []
         alias_types = []
         opaque_types = []
+        # header.hpp.j2 always emits opaque, then alias, then open-enum, then object blocks in
+        # that fixed order, regardless of ordered_names' computed interleaving (only the relative
+        # order *within* each block follows ordered_names). So any AliasType that depends on a
+        # struct/enum type in this same group needs a forward declaration -- that dependency can
+        # never otherwise be satisfied by emission order alone, cyclic or not. See ADR-0022.
+        alias_forward_decls: set[str] = set()
 
         for n in ordered_names:
             t = name_to_type[n]
+            # Cross-group #include tracking applies to every kind that can reference a named
+            # type, not just ObjectType -- AliasType's cpp_underlying can too (e.g. `using X =
+            # std::vector<Y>` where Y lives in another merged group).
+            for dep_name in _referenced_names(t):
+                dep_file = name_to_file.get(dep_name)
+                if dep_file is not None:
+                    dep_stem = file_stems[dep_file]
+                    dep_group = group_name_for_stem[dep_stem]
+                    if dep_group != group_name:
+                        deps.add(dep_group)
+
             if isinstance(t, ObjectType):
                 render_fields = []
                 for f in t.fields:
                     optional = (not f.required) or f.nullable
                     render_fields.append(RenderField(f, optional))
                 object_types.append((t, render_fields))
-                for dep_name in _referenced_names(t):
-                    dep_file = name_to_file.get(dep_name)
-                    if dep_file is not None:
-                        dep_stem = file_stems[dep_file]
-                        dep_group = group_name_for_stem[dep_stem]
-                        if dep_group != group_name:
-                            deps.add(dep_group)
             elif isinstance(t, OpenEnumType):
                 open_enum_types.append(t)
             elif isinstance(t, AliasType):
                 alias_types.append(t)
+                for dep_name in _referenced_names(t):
+                    if dep_name in all_names_in_group:
+                        dep_type = name_to_type[dep_name]
+                        if isinstance(dep_type, (ObjectType, OpenEnumType)):
+                            alias_forward_decls.add(dep_name)
             elif isinstance(t, OpaqueType):
                 opaque_types.append(t)
+
+        # Deterministic emission order for the forward-declaration block -- see
+        # _topo_sort_types' docstring and ADR-0022.
+        forward_declared_types = sorted(cyclic_names | alias_forward_decls)
 
         citations = [
             (ts_number_from_filename(pathlib.Path(sf).stem), sf) for sf in sorted(group["source_files"])
@@ -267,6 +351,7 @@ def render(ir_types: dict, commit: str, out_dir: pathlib.Path) -> list[pathlib.P
             "citations": citations,
             "commit": commit,
             "deps": sorted(deps),
+            "forward_declared_types": forward_declared_types,
             "object_types": object_types,
             "open_enum_types": open_enum_types,
             "alias_types": alias_types,
