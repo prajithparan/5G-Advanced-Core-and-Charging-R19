@@ -7,15 +7,17 @@ add_executable(integration_tests
     test_udm_uecm_sdm.cpp
     test_udm_ueau.cpp
     test_udr_context_data.cpp
+    test_ausf_ue_authentication.cpp
 )
-target_link_libraries(integration_tests PRIVATE sbi_core sbi_generated GTest::gtest GTest::gtest_main)
-add_dependencies(integration_tests nrf amf smf udm udr hello-nf)
+target_link_libraries(integration_tests PRIVATE sbi_core sbi_generated aka_crypto GTest::gtest GTest::gtest_main)
+add_dependencies(integration_tests nrf amf smf udm udr ausf hello-nf)
 target_compile_definitions(integration_tests PRIVATE
     NRF_PATH="$<TARGET_FILE:nrf>"
     AMF_PATH="$<TARGET_FILE:amf>"
     SMF_PATH="$<TARGET_FILE:smf>"
     UDM_PATH="$<TARGET_FILE:udm>"
     UDR_PATH="$<TARGET_FILE:udr>"
+    AUSF_PATH="$<TARGET_FILE:ausf>"
     HELLO_NF_PATH="$<TARGET_FILE:hello-nf>"
     CERTS_DIR="${CMAKE_SOURCE_DIR}/certs"
 )

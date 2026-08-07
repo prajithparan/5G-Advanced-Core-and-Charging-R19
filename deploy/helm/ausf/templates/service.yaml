@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-ausf
+  labels:
+    app.kubernetes.io/name: ausf
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/name: ausf
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: sbi
+      port: 7782
+      targetPort: sbi
+      protocol: TCP
+    - name: metrics
+      port: 9469
+      targetPort: metrics
+      protocol: TCP

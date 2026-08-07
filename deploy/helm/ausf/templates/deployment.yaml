@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-ausf
+  labels:
+    app.kubernetes.io/name: ausf
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  # Single replica: AUSF's in-memory auth-context storage (see docs/DECISIONS.md ADR-0027,
+  # nfs/ausf/src/main.cpp's file header) has no shared state across pods -- scaling this
+  # deployment would give each replica a different, inconsistent view. Same rationale as
+  # nrf's/amf's/smf's/udm's/udr's charts.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ausf
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ausf
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: ausf
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: sbi
+              containerPort: 7782
+              protocol: TCP
+            - name: metrics
+              containerPort: 9469
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

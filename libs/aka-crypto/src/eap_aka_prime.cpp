@@ -157,7 +157,15 @@ DerivedKeys derive_keys(const std::array<uint8_t, 16>& ck_prime,
     std::vector<uint8_t> key(ik_prime.begin(), ik_prime.end());  // MK = PRF'(IK'||CK', ...)
     append(key, std::vector<uint8_t>(ck_prime.begin(), ck_prime.end()));
 
-    std::vector<uint8_t> seed(std::string("EAP-AKA'").begin(), std::string("EAP-AKA'").end());
+    // NOT std::string("EAP-AKA'").begin()/.end() as two separate expressions -- that constructs
+    // TWO distinct temporary std::string objects (one per call) and takes begin() from one, end()
+    // from the other, an iterator range spanning two unrelated objects. That's undefined behavior,
+    // not merely "the same short string twice" -- found via this turn's cross-process integration
+    // test (tests/integration/test_ausf_ue_authentication.cpp), which caught it because it compares
+    // AUSF's derived key against an independently-computed one in a different process. See
+    // docs/DECISIONS.md ADR-0027.
+    static const std::string kEapAkaPrimeLabel = "EAP-AKA'";
+    std::vector<uint8_t> seed(kEapAkaPrimeLabel.begin(), kEapAkaPrimeLabel.end());
     append(seed, std::vector<uint8_t>(identity.begin(), identity.end()));
 
     const auto mk = prf_prime(key, seed, 16 + 32 + 32 + 64 + 64);

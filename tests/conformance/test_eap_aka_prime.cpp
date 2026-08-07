@@ -60,6 +60,31 @@ TEST(EapAkaPrime, DeriveKeysProducesDistinctNonZeroKeys) {
               std::vector<uint8_t>(keys.emsk.begin(), keys.emsk.end()));
 }
 
+// Regression test for a real bug (see docs/DECISIONS.md ADR-0027): derive_keys used to build its
+// internal seed via std::string("EAP-AKA'").begin(), std::string("EAP-AKA'").end() -- two SEPARATE
+// temporary std::string objects, so the iterator range spanned two unrelated objects (undefined
+// behavior, not "the same short string twice"). That bug produced output that varied by stack
+// layout, so it was silent under every previous test in this file (each only ever called
+// derive_keys once, self-consistently) -- only caught by a cross-process integration test
+// comparing independently-computed keys. This test calls derive_keys twice with byte-identical
+// inputs and asserts byte-identical output, which the buggy version would have failed.
+TEST(EapAkaPrime, DeriveKeysIsDeterministicForIdenticalInputs) {
+    std::array<uint8_t, 16> ck_prime{};
+    ck_prime.fill(0xcc);
+    std::array<uint8_t, 16> ik_prime{};
+    ik_prime.fill(0xdd);
+    const std::string identity = "imsi-999700000000002";
+
+    const auto keys_a = aka_crypto::eap::derive_keys(ck_prime, ik_prime, identity);
+    const auto keys_b = aka_crypto::eap::derive_keys(ck_prime, ik_prime, identity);
+
+    EXPECT_EQ(keys_a.k_encr, keys_b.k_encr);
+    EXPECT_EQ(keys_a.k_aut, keys_b.k_aut);
+    EXPECT_EQ(keys_a.k_re, keys_b.k_re);
+    EXPECT_EQ(keys_a.msk, keys_b.msk);
+    EXPECT_EQ(keys_a.emsk, keys_b.emsk);
+}
+
 TEST(EapAkaPrime, ChallengeRequestRoundTripsAndMacVerifies) {
     const auto rand = make_rand();
     std::array<uint8_t, 16> autn{};
