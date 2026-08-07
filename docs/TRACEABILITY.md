@@ -362,6 +362,55 @@ $ curl http://127.0.0.1:9469/metrics | grep ^ausf_
 -> ausf_ue_authentications_total{otel_scope_name="ausf"} 1   # real Prometheus counter
 ```
 
+## PCF (Phase 2, seventh NF)
+
+All rows below: source `specs/5G_APIs-REL-19/TS29507_Npcf_AMPolicyControl.yaml` +
+`TS29512_Npcf_SMPolicyControl.yaml` (commit `bca84b60a37773133bcae97e5c6c0d10a93b47b6`),
+implemented in `nfs/pcf/src/main.cpp` + `nfs/pcf/src/stores.cpp`, proven by
+`tests/integration/test_pcf_policy_control.cpp` (real subprocess-to-subprocess: `nrf` + `pcf`, real
+TLS 1.3 + mTLS, real signed JWT) plus manual `curl` verification recorded below. Scope: the
+`CreateIndividualAMPolicyAssociation`/`ReadIndividualAMPolicyAssociation`/
+`DeleteIndividualAMPolicyAssociation`/`ReportObservedEventTriggersForIndividualAMPolicyAssociation`
+group and the `CreateSMPolicy`/`GetSMPolicy`/`UpdateSMPolicy`/`DeleteSMPolicy` group -- see
+`docs/DECISIONS.md` ADR-0028 for what's deferred and why (including AMF/SMF not calling this PCF
+yet) and for the disclosed fixed-default policy decisioning.
+
+| Procedure | TS clause / operationId | Test |
+|---|---|---|
+| CreateIndividualAMPolicyAssociation | `POST /npcf-am-policy-control/v1/policies` | Integration test (`AmPolicyAssociationFullLifecycle`, real 201 + Location, default session AMBR applied) |
+| ReadIndividualAMPolicyAssociation | `GET /npcf-am-policy-control/v1/policies/{polAssoId}` | Integration test (`AmPolicyAssociationFullLifecycle`, 200 then 404 after delete) + (`MissingResourceIs404...`) |
+| ReportObservedEventTriggersForIndividualAMPolicyAssociation | `POST /npcf-am-policy-control/v1/policies/{polAssoId}/update` | Integration test (`AmPolicyAssociationFullLifecycle`, real `PolicyUpdate` response, confirms the update is really persisted via a follow-up GET, not just echoed) |
+| DeleteIndividualAMPolicyAssociation | `DELETE /npcf-am-policy-control/v1/policies/{polAssoId}` | Integration test (`AmPolicyAssociationFullLifecycle`, real 204 then 404 on re-delete) |
+| CreateSMPolicy | `POST /npcf-smpolicycontrol/v1/sm-policies` | Integration test (`SmPolicyFullLifecycleUsesRequestSuppliedDefaults`, real 201 body is `SmPolicyDecision` only per the YAML, decision reflects the request's own `subsSessAmbr`/`subsDefQos`) + (`SmPolicyWithoutSubscribedDefaultsUsesFixedFallback`, confirms the documented 1 Gbps/5QI-9 fallback when the request supplies neither) |
+| GetSMPolicy | `GET /npcf-smpolicycontrol/v1/sm-policies/{smPolicyId}` | Integration test (`SmPolicyFullLifecycleUsesRequestSuppliedDefaults`, real `SmPolicyControl` `{context, policy}` body, 200 then 404 after delete) |
+| UpdateSMPolicy | `POST /npcf-smpolicycontrol/v1/sm-policies/{smPolicyId}/update` | Integration test (`SmPolicyFullLifecycleUsesRequestSuppliedDefaults`, real 200 with a re-derived `SmPolicyDecision`) |
+| DeleteSMPolicy | `POST /npcf-smpolicycontrol/v1/sm-policies/{smPolicyId}/delete` | Integration test (`SmPolicyFullLifecycleUsesRequestSuppliedDefaults`, real 204 then 404 on re-delete) |
+| Unknown-resource / tampered-token error paths | N/A | Integration test (`MissingResourceIs404AndTamperedTokenIs401`) |
+| OAuth2 registration/heartbeat as an SBI client | N/A (`nfs/pcf/src/main.cpp`'s `run_nrf_lifecycle`) | Manual verification below (`pcf: registered with NRF (HTTP 201)` log line) + every integration test above implicitly depends on it succeeding |
+
+**Manual verification (2026-08-07, not captured in an automated test -- recorded here so it's not
+lost):**
+```
+$ ./nfs/nrf/nrf &   # then ./nfs/pcf/pcf &
+[pcf] [info] pcf: registered with NRF (HTTP 201)
+
+$ curl --http2 --cacert certs/ca/ca.crt --cert certs/hello-nf/cert.pem --key certs/hello-nf/key.pem \
+    -X POST https://127.0.0.1:7783/npcf-smpolicycontrol/v1/sm-policies \
+    -H "authorization: Bearer <token, scope=npcf-smpolicycontrol, targetNfType=PCF>" \
+    -d '{"supi":"imsi-999700000000001","pduSessionId":5,"pduSessionType":"IPV4","dnn":"internet",
+        "notificationUri":"https://example.com/notify","sliceInfo":{"sst":1}}'
+-> 201, Location: /npcf-smpolicycontrol/v1/sm-policies/smpolicy-1
+   {"sessRules":{"default":{"authDefQos":{"5qi":9,"arp":{"preemptCap":"NOT_PREEMPT",
+   "preemptVuln":"NOT_PREEMPTABLE","priorityLevel":8}},"authSessAmbr":{"downlink":"1 Gbps",
+   "uplink":"1 Gbps"},"sessRuleId":"default"}},"suppFeat":""}
+
+$ curl ... "https://127.0.0.1:7783/npcf-smpolicycontrol/v1/sm-policies/smpolicy-1"
+-> 200, {"context":{...real echoed SmPolicyContextData...},"policy":{...same decision as above...}}
+
+$ curl http://127.0.0.1:9470/metrics | grep ^pcf_sm_policy_create_total
+-> pcf_sm_policy_create_total{otel_scope_name="pcf"} 1   # real Prometheus counter
+```
+
 ## Codegen infrastructure (Phase 1)
 
 Not a procedure row (this is infrastructure, not a business-logic procedure), noted separately:
@@ -464,6 +513,19 @@ as NRF/AMF/SMF/UDM/UDR's charts. `docker compose up` (all six containers actuall
 with each other, and AUSF actually calling UDM inside the compose network) was NOT run this
 session -- same disclosed-not-silently-assumed gap ADR-0014 already recorded for NRF alone. See
 `docs/DECISIONS.md` ADR-0027.
+
+## Deployment infrastructure (Phase 2, PCF)
+
+Not a procedure row. `deploy/docker/pcf.Dockerfile` (multi-stage Ubuntu 24.04 build, mirrors
+`ausf.Dockerfile`), built in this environment (`docker build -f deploy/docker/pcf.Dockerfile -t
+5gc-pcf:test .`). `deploy/docker/docker-compose.yml` updated with a `pcf` service (added to
+`pki-init`'s shared-volume provisioning; `depends_on` is just `nrf`, since PCF doesn't call any
+other NF this turn -- see ADR-0028's deferred AMF/SMF wiring). `deploy/helm/pcf/` (mirrors
+`deploy/helm/ausf/`, including the same disclosed cross-chart shared-PKI gap noted in
+`deploy/helm/pcf/Chart.yaml`) -- not proven by `helm install`/`helm template`, same disclosed gap
+as NRF/AMF/SMF/UDM/UDR/AUSF's charts. `docker compose up` and `helm install`/`helm template` were
+NOT run this session -- same disclosed-not-silently-assumed gap ADR-0014 already recorded for NRF
+alone. See `docs/DECISIONS.md` ADR-0028.
 
 ## RAN/UE simulator infrastructure (still not wired to any NF)
 

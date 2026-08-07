@@ -1,0 +1,13 @@
+apiVersion: v2
+name: pcf
+description: >
+  PCF (Policy Control Function) -- TS 29.507 Npcf_AMPolicyControl (individual AM Policy
+  Association) and TS 29.512 Npcf_SMPolicyControl (individual SM Policy). Lab-grade Helm chart;
+  see docs/DECISIONS.md for what "lab-grade" means here (in-memory policy storage, no HA, fixed
+  default policy decisions -- no real UDR-backed subscriber data). DISCLOSED GAP, not silently
+  shipped: same as deploy/helm/ausf/Chart.yaml -- this chart does not provision PKI at all, and
+  pcf/ausf/udr/udm/smf/amf/nrf are separate Helm releases with no shared-secret mechanism between
+  them yet. Proper fix deferred to Phase 8 (lab packaging and conformance) per PROMPT.md.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
