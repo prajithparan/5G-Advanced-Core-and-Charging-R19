@@ -310,6 +310,58 @@ $ curl http://127.0.0.1:9467/metrics | grep udm_generate_auth_data_total
 -> udm_generate_auth_data_total{otel_scope_name="udm"} 3   # real Prometheus counter, incremented per call
 ```
 
+## AUSF (Phase 2, sixth NF)
+
+All rows below: source `specs/5G_APIs-REL-19/TS29509_Nausf_UEAuthentication.yaml` (commit
+`bca84b60a37773133bcae97e5c6c0d10a93b47b6`) for the SBI surface, `libs/aka-crypto` for the crypto,
+implemented in `nfs/ausf/src/main.cpp` + `nfs/ausf/src/stores.cpp`, proven by
+`tests/integration/test_ausf_ue_authentication.cpp` (real subprocess-to-subprocess: `nrf` + `udm` +
+`ausf`, real TLS 1.3 + mTLS, real signed JWT -- the first integration test in this build where one
+NF's handler makes a real business-logic call to a second NF, not just to NRF) plus manual `curl`
+verification recorded below. Scope: the `ue-authentications` resource group only -- see
+`docs/DECISIONS.md` ADR-0027 for what's deferred and why, the mid-implementation KAUSF/EAP-AKA'
+question resolved with the user, and a real pre-existing `libs/aka-crypto` bug (from ADR-0026's
+turn) this turn's cross-process testing caught and fixed.
+
+| Procedure | TS clause / operationId | Test |
+|---|---|---|
+| UEAuthenticate (5G-AKA) | `POST /nausf-auth/v1/ue-authentications` | Integration test (`FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf`, real `Av5gAka`, HXRES* independently re-derived and compared byte-for-byte) |
+| UEAuthenticate (EAP-AKA') | `POST /nausf-auth/v1/ue-authentications` | Integration test (`EapAkaPrimeSuccessfulAuthenticationCrossChecksMacKseafAndMsk`, real base64 EAP-AKA' Request/Challenge packet, AT_MAC independently re-verified) |
+| Confirm5gAkaAuthentication | `PUT /nausf-auth/v1/ue-authentications/{authCtxId}/5g-aka-confirmation` | Integration test (`FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf`, KSEAF independently re-derived and compared; `FiveGAkaWrongResStarIsAuthenticationFailure`, wrong RES* -> `AUTHENTICATION_FAILURE`, no KSEAF, same HTTP 200 either way per the YAML) |
+| Delete5gAkaAuthenticationResult | `DELETE /nausf-auth/v1/ue-authentications/{authCtxId}/5g-aka-confirmation` | Integration test (`FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf`, real 204 then 404 on re-delete) |
+| EapAuthMethod | `POST /nausf-auth/v1/ue-authentications/{authCtxId}/eap-session` | Integration test (`EapAkaPrimeSuccessfulAuthenticationCrossChecksMacKseafAndMsk`, real EAP-Success packet decoded and checked, KSEAF/MSK independently re-derived and compared; `EapAkaPrimeWrongResIsAuthenticationFailure`, wrong RES -> real EAP-Failure packet) |
+| DeleteEapAuthenticationResult | `DELETE /nausf-auth/v1/ue-authentications/{authCtxId}/eap-session` | Integration test (`EapAkaPrimeSuccessfulAuthenticationCrossChecksMacKseafAndMsk`, real 204) |
+| UEAuthenticationsDeregister | `POST /nausf-auth/v1/ue-authentications/deregister` | Integration test (`DeregisterRemovesContextThenSecondDeregisterIs404`, real 204 then 404) |
+| Unknown-SUPI / tampered-token error paths | N/A | Integration test (`UnknownSupiIs404AndTamperedTokenIs401`, UDM's 404 mapped through to AUSF's documented "User does not exist in the HPLMN" wording) |
+| OAuth2 registration/heartbeat as an SBI client | N/A (`nfs/ausf/src/main.cpp`'s `run_nrf_lifecycle`) | Manual verification below (`ausf: registered with NRF (HTTP 201)` log line) + every integration test above implicitly depends on it succeeding |
+| AUSF -> UDM `GenerateAuthData` as an SBI client | N/A (separate `http2::Client`/`OAuth2Client` pair used from route handlers) | Every `POST /ue-authentications` integration test above -- these only pass if the real call to a real `udm` process, over real mTLS with a real token, succeeds |
+
+**Manual verification (2026-08-07, not captured in an automated test -- recorded here so it's not
+lost):**
+```
+$ ./nfs/nrf/nrf &   # then ./nfs/udm/udm &   # then ./nfs/ausf/ausf &
+[ausf] [info] ausf: registered with NRF (HTTP 201)
+
+$ curl --http2 --cacert certs/ca/ca.crt --cert certs/hello-nf/cert.pem --key certs/hello-nf/key.pem \
+    -X POST https://127.0.0.1:7782/nausf-auth/v1/ue-authentications \
+    -H "authorization: Bearer <token, scope=nausf-auth, targetNfType=AUSF>" \
+    -d '{"supiOrSuci":"imsi-999700000000001","servingNetworkName":"5G:mnc070.mcc999.3gppnetwork.org"}'
+-> 201, Location: /nausf-auth/v1/ue-authentications/authctx-1
+   {"5gAuthData":{"autn":"bcf8c5087f4eb9b9041d060c59dcdca0","hxresStar":"25fef92aa5815fde22cd537b69169adb",
+   "rand":"bbfe5fb338759e64d80ad99d279e17dd"},"_links":{"5g-aka":{"href":".../authctx-1/5g-aka-confirmation"}},
+   "authType":"5G_AKA","servingNetworkName":"5G:mnc070.mcc999.3gppnetwork.org"}
+   (this is a real call to the real udm process running alongside -- not a stub)
+
+$ curl ... -X DELETE .../authctx-1/5g-aka-confirmation
+-> 204
+
+$ curl ... -X POST .../ue-authentications/deregister -d '{"supi":"imsi-999700000000001"}'
+-> 404, {"detail":"No authentication context for supi imsi-999700000000001",...}  # already deleted above
+
+$ curl http://127.0.0.1:9469/metrics | grep ^ausf_
+-> ausf_ue_authentications_total{otel_scope_name="ausf"} 1   # real Prometheus counter
+```
+
 ## Codegen infrastructure (Phase 1)
 
 Not a procedure row (this is infrastructure, not a business-logic procedure), noted separately:
@@ -398,6 +450,20 @@ Not a procedure row. `deploy/docker/udr.Dockerfile` (multi-stage Ubuntu 24.04 bu
 as NRF/AMF/SMF/UDM's charts. `docker compose up` (all five containers actually mTLS-registering
 with each other) was NOT run this session -- same disclosed-not-silently-assumed gap ADR-0014
 already recorded for NRF alone. See `docs/DECISIONS.md` ADR-0025.
+
+## Deployment infrastructure (Phase 2, AUSF)
+
+Not a procedure row. `deploy/docker/ausf.Dockerfile` (multi-stage Ubuntu 24.04 build, mirrors
+`udr.Dockerfile`), built in this environment (`docker build -f deploy/docker/ausf.Dockerfile -t
+5gc-ausf:test .`). `deploy/docker/docker-compose.yml` updated with an `ausf` service (added to
+`pki-init`'s shared-volume provisioning; the first NF service whose `depends_on` includes another
+NF besides `nrf` -- `udm`, since AUSF's own handlers call it). `deploy/helm/ausf/` (mirrors
+`deploy/helm/udr/`, including the same disclosed cross-chart shared-PKI gap noted in
+`deploy/helm/ausf/Chart.yaml`) -- not proven by `helm install`/`helm template`, same disclosed gap
+as NRF/AMF/SMF/UDM/UDR's charts. `docker compose up` (all six containers actually mTLS-registering
+with each other, and AUSF actually calling UDM inside the compose network) was NOT run this
+session -- same disclosed-not-silently-assumed gap ADR-0014 already recorded for NRF alone. See
+`docs/DECISIONS.md` ADR-0027.
 
 ## RAN/UE simulator infrastructure (still not wired to any NF)
 
