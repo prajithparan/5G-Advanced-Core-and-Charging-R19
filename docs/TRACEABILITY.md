@@ -173,6 +173,55 @@ $ curl http://127.0.0.1:9466/metrics | grep ^smf_
 -> real Prometheus counters, e.g. smf_create_sm_context_total{...} 1
 ```
 
+## SMF: PCF wiring (SM Policy Association Establishment/Termination, this turn)
+
+Not new procedures -- extends CreateSMContext/ReleaseSMContext above with a real call to a real
+PCF, source `specs/5G_APIs-REL-19/TS29512_Npcf_SMPolicyControl.yaml` (commit
+`bca84b60a37773133bcae97e5c6c0d10a93b47b6`) for the client-side call shape, implemented in
+`nfs/smf/src/main.cpp`, proven by the updated `tests/integration/test_smf_pdu_session.cpp` (now
+real subprocess-to-subprocess: `nrf` + `smf` + `pcf`) plus manual `curl` verification recorded
+below. See `docs/DECISIONS.md` ADR-0029 for the AMF-side deferral this turn also decided.
+
+| Procedure | TS clause / operationId | Test |
+|---|---|---|
+| CreateSMContext now really calls PCF's CreateSMPolicy | TS 23.502 §4.3.2.2.1 | Integration test (`FullSmContextLifecycleOverRealHttp2`, queries PCF directly after CreateSMContext and confirms a real `SmPolicyControl` with matching supi/dnn and a `default` session rule exists -- not just that SMF returned 201) |
+| CreateSMContext fails closed if PCF is unreachable | N/A (this build's own fail-closed policy, ADR-0029) | Integration test (`CreateSMContextFailsClosedWhenPcfUnreachable`, SMF spawned with no PCF process at all -> real 500, not a silent success) |
+| CreateSMContext requires supi/pduSessionId/dnn/sNssai | N/A (disclosed narrowing vs. SmContextCreateData's own schema, ADR-0029) | Integration test (`CreateSMContextRequiresSupiPduSessionIdDnnAndSNssai`, the old ADR-0020-era minimal body now gets a real 400) |
+| ReleaseSMContext now really calls PCF's DeleteSMPolicy (best-effort) | TS 23.502 §4.3.2.2.1 | Integration test (`FullSmContextLifecycleOverRealHttp2`, queries PCF directly after ReleaseSMContext and confirms the SM Policy is really gone -- 404, not just that SMF returned 204) |
+| SMF -> PCF as an SBI client (OAuth2 token, mTLS) | N/A (`nfs/smf/src/main.cpp`'s second `http2::Client`/`OAuth2Client` pair) | Every PCF-dependent assertion above implicitly depends on this succeeding for real |
+
+**Manual verification (2026-08-07, not captured in an automated test -- recorded here so it's not
+lost):**
+```
+$ ./nfs/nrf/nrf &   # then ./nfs/pcf/pcf &   # then ./nfs/smf/smf &
+
+$ curl --http2 --cacert certs/ca/ca.crt --cert certs/hello-nf/cert.pem --key certs/hello-nf/key.pem \
+    -X POST https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts \
+    -H "authorization: Bearer <token, scope=nsmf-pdusession, targetNfType=SMF>" \
+    -H 'content-type: multipart/related; boundary=boundary123' \
+    --data-binary $'--boundary123\r\nContent-Type: application/json\r\n\r\n{"servingNfId":"...",
+    "servingNetwork":{"mcc":"999","mnc":"70"},"anType":"3GPP_ACCESS","smContextStatusUri":"...",
+    "supi":"imsi-999700000000001","pduSessionId":5,"dnn":"internet","sNssai":{"sst":1}}\r\n--boundary123--\r\n'
+-> 201, {"pduSessionId":5,"sNssai":{"sst":1}}, location: /nsmf-pdusession/v1/sm-contexts/smctx-1
+
+$ curl ... "https://127.0.0.1:7783/npcf-smpolicycontrol/v1/sm-policies/smpolicy-1" \
+    -H "authorization: Bearer <token, scope=npcf-smpolicycontrol, targetNfType=PCF>"
+-> 200, real SmPolicyControl: {"context":{"dnn":"internet","notificationUri":
+   "https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts/smctx-1/pcf-notify","pduSessionId":5,
+   "pduSessionType":"IPV4","sliceInfo":{"sst":1},"supi":"imsi-999700000000001"},"policy":{...}}
+   (this is a real call to the real pcf process running alongside -- not a stub)
+
+$ curl ... -X POST https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts/smctx-1/release -d '{}'
+-> 204
+
+$ curl ... "https://127.0.0.1:7783/npcf-smpolicycontrol/v1/sm-policies/smpolicy-1" -H "authorization: Bearer <pcf token>"
+-> 404, {"detail":"No SM policy smpolicy-1",...}   # confirms DeleteSMPolicy was really called
+
+$ curl http://127.0.0.1:9466/metrics | grep ^smf_pcf_
+-> smf_pcf_sm_policy_create_total{otel_scope_name="smf"} 1
+-> smf_pcf_sm_policy_delete_total{otel_scope_name="smf"} 1
+```
+
 ## UDM (Phase 2, fourth NF)
 
 All rows below: source `specs/5G_APIs-REL-19/TS29503_Nudm_UECM.yaml`,
