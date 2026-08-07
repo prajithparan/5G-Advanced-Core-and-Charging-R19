@@ -27,6 +27,8 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29503_Nudm_UEAU.yaml
     TS29505_Subscription_Data.yaml
     TS29509_Nausf_UEAuthentication.yaml
+    TS29507_Npcf_AMPolicyControl.yaml
+    TS29512_Npcf_SMPolicyControl.yaml
     TS29571_CommonData.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
@@ -40,6 +42,8 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29503_Nudm_UEAU.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29505_Subscription_Data.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29509_Nausf_UEAuthentication.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29507_Npcf_AMPolicyControl.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29512_Npcf_SMPolicyControl.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29571_CommonData.yaml
 )
 
