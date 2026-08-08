@@ -628,23 +628,25 @@ in this table. `ue.yaml`'s `op` field and three missing UAC fields were fixed as
 found along the way (ADR-0030/ADR-0032) -- this config file had never actually been run against
 real `nr-ue` before this staged effort.
 
-## UPF PFCP/N4 (staged plan, Phase 3 Stage 0-1, ADR-0039/ADR-0040)
+## UPF PFCP/N4 (staged plan, Phase 3 Stage 0-2, ADR-0039/ADR-0040/ADR-0041)
 
 PFCP (TS 29.244) has no OpenAPI YAML -- see ADR-0039 for the real spec source used instead (the
 official 3GPP TS 29.244 V14.3.0 PDF, vendored at `specs/PFCP/29244-e30.pdf`).
 
+**As of ADR-0041, Sx Association Setup is verified by two independently-built processes (real
+`smf` + real `upf`) genuinely interoperating over real PFCP wire bytes** -- not just a hand-crafted
+test script anymore (superseding the "Not reachable live" style caveat this table would otherwise
+carry, matching how the AMF/NGAP table above was superseded once real `nr-ue` interop landed).
+
 | Procedure | TS clause / message | Test |
 |---|---|---|
 | PFCP message header encode/decode (node-related and session-related forms) | TS 29.244 §7.2.2 | 5 unit tests (`tests/conformance/test_pfcp_core.cpp`, `PfcpHeader.*`) -- byte-exact layout checks against the real spec figures, round-trips, malformed-input rejection |
-| PFCP Information Element TLV encode/decode | TS 29.244 §8.1.1 | 2 unit tests (`PfcpIe.*`) plus 5 more for the specific IEs Stage 1 uses (Cause, Recovery Time Stamp, Node ID IPv4, UP/CP Function Features -- `PfcpCommonIes.*`) |
+| PFCP Information Element TLV encode/decode | TS 29.244 §8.1.1 | 2 unit tests (`PfcpIe.*`) plus 5 more for the specific IEs used (Cause, Recovery Time Stamp, Node ID IPv4, UP/CP Function Features -- `PfcpCommonIes.*`) |
 | UPF -> NRF `PUT /nnrf-nfm/v1/nf-instances/{id}` (`NFType=UPF`, real `upfInfo`) | TS 29.510 `Nnrf_NFManagement` | Real interop: real NRF, real HTTP 201, confirmed in `nrf`'s own log (`registered new NF instance ... type=UPF`) |
-| Sx Heartbeat Request/Response | TS 29.244 §7.4.2 | Real interop: a hand-crafted PFCP datagram (genuine wire bytes built via this project's own `pfcp_core` codec, not `libpfcp` or any third-party PFCP library) sent over a real UDP socket to real `upf` on port 8805; response decoded byte-for-byte as expected |
-| Sx Association Setup Request/Response | TS 29.244 §7.4.4.1/§7.4.4.2 | Real interop, same methodology: Node ID/Cause/Recovery Time Stamp/UP Function Features all decoded correctly and in the exact TLV order this build encodes them |
+| SMF -> NRF `GET /nnrf-disc/v1/nf-instances?target-nf-type=UPF` (`SearchNFInstances`) | TS 29.510 `Nnrf_NFDiscovery` | Real interop: real HTTP 200 from real NRF, real UPF `ipv4Addresses` extracted -- confirmed in `smf`'s own log (`discovered UPF at 127.0.0.1 via Nnrf_NFDiscovery`). First real use of this NRF capability anywhere in this project; every other NF-to-NF call still uses a hardcoded base URL -- see ADR-0041 |
+| Sx Heartbeat Request/Response | TS 29.244 §7.4.2 | Real interop, verified two ways: (1) a hand-crafted PFCP datagram (ADR-0040) and (2) implicitly exercised by the same codec paths Association Setup below proves against a real independent peer |
+| Sx Association Setup Request/Response | TS 29.244 §7.4.4.1/§7.4.4.2 | Real interop between two independently-built processes: real `smf` (client) and real `upf` (server), neither aware of the other's internals. `smf`'s log: `PFCP Sx Association established with UPF at 127.0.0.1`; `upf`'s own independently-generated log: `Sx Association Setup accepted from 127.0.0.1`. Node ID/Cause/Recovery Time Stamp/CP-and-UP Function Features all decoded correctly on both sides. See ADR-0041 |
 
-**Disclosed limitation, not shared with the AMF/NGAP staging above**: this stage's "real interop"
-is against a hand-crafted test script speaking this project's own understanding of PFCP, not an
-independent third-party PFCP implementation (unlike UERANSIM for NGAP/NAS) -- no such reference
-peer is vendored in this project yet. It proves internal consistency (encoder and decoder agree,
-and match the real spec's byte layout), not interop with an independent real-world PFCP peer.
-Stage 2 (SMF as a real PFCP client performing a real Association Setup against `upf` at startup)
-closes this gap for real. See ADR-0040.
+**Disclosed, deliberate scope limit (not yet a gap to close)**: the established Sx Association's
+UPF endpoint is not yet persisted anywhere `CreateSMContext` can read it -- nothing needs it until
+Stage 3 (real N4 Session Establishment) actually wires a session through it. See ADR-0041.
