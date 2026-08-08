@@ -2914,3 +2914,110 @@ triggered by a real PDU Session Establishment procedure end to end) is now genui
 Stage 4 (the eBPF/XDP datapath itself, ADR-0039's own evaluated-and-approved choice) is the only
 remaining increment before Phase 3's stated scope ("User plane: N4/PFCP, UPF datapath") is fully
 met.
+
+## ADR-0043: Phase 3 Stage 4 -- eBPF/XDP GTP-U decapsulation datapath (code complete, runtime UNVERIFIED)
+
+**Date:** 2026-08-08
+**Status:** Accepted, with an explicit, prominent disclosed gap -- read this ADR's "What is NOT
+verified" section before relying on any claim below about this stage actually working.
+
+**Context:** ADR-0042 (Stage 3) closed Phase 3's control-plane arc: a real N4 session is created,
+UPF allocates a real F-TEID, but no packet has ever actually flowed through it. This stage builds
+the real datapath ADR-0039 evaluated and chose (eBPF/XDP over DPDK/VPP) to close that gap.
+
+**Environment blocker, disclosed as it happened rather than worked around silently.** Loading and
+attaching an XDP program needs `CAP_BPF`/`CAP_NET_ADMIN` (and, on this kernel, apparently
+`CAP_SYS_ADMIN` too for the `RLIMIT_MEMLOCK` bump `bpf_object__probe_loading` performs); creating
+the veth pair and TUN device this design needs also requires `CAP_NET_ADMIN`. This session's
+shell environment has an empty active capability set and `sudo` requires a password that cannot be
+supplied non-interactively (confirmed: `sudo -n true` fails; a real `bpftool prog load` attempt
+against the compiled object failed with a plain `EPERM`, not a verifier rejection). The user chose,
+explicitly asked via `AskUserQuestion`, to grant the built UPF binary the needed capabilities via
+`setcap` themselves rather than have this turn stop here or proceed with zero testing. `libbpf-dev`
+and `clang` were installed by the user (`sudo apt install -y libbpf-dev clang`) enabling real
+compilation. **The `setcap` grant itself was not completed during this turn** -- after being asked
+directly and given the exact command, and after several subsequent "keep going" instructions with
+no confirmation the command had been run, the turn proceeded on the reasonable reading that the
+user wanted the code finished and disclosed as untested rather than the turn blocked indefinitely.
+This is recorded plainly, not glossed over: this is the first stage in this entire project's
+NGAP/PFCP staged work where the code was NOT verified against real, live execution before being
+called done.
+
+**Real spec research, done properly regardless of the above.** TS 29.281 (GTPv1-U) V10.3.0's real
+spec PDF was fetched (WebSearch/WebFetch, ARIB archive mirror, same methodology as PFCP's own
+ADR-0039) and read directly: Figure 5.1-1 "Outline of the GTP-U Header" (the mandatory 8-octet
+header: version/PT/E/S/PN flags, message type, length, TEID), Table 6.1-1 (message type 255 =
+G-PDU, the only message type carrying real T-PDU payload), and clause 4.4.2.3 (UDP destination
+port 2152). The XDP program's header parsing is built from this real spec text, not memory.
+
+**Design: XDP does real in-kernel parsing/matching; a boring, certainly-correct userspace write()
+does final delivery.** New `nfs/upf/bpf/gtpu_decap.bpf.c`: parses Ethernet/IPv4/UDP/GTP-U headers
+with full bounds checks (required for BPF verifier acceptance -- every pointer dereference is
+preceded by a `data_end` comparison), looks up the TEID in a `BPF_MAP_TYPE_HASH` populated by
+UPF's own control plane (wired into Stage 3's existing F-TEID allocation in
+`nfs/upf/src/main.cpp`), and on match extracts the T-PDU into a `BPF_MAP_TYPE_RINGBUF` using the
+standard "mask the dynamic length to a provable power-of-two bound" idiom BPF's verifier needs for
+a non-constant `bpf_ringbuf_reserve` size. **Deliberately does NOT use `bpf_redirect`/
+`XDP_REDIRECT`** to inject the decapsulated packet into a TUN device directly from kernel context:
+whether `XDP_REDIRECT` can target a TUN device specifically could not be confirmed from current,
+authoritative documentation without risking kernel code that looks plausible but silently fails at
+runtime -- a risk this ADR is explicitly unwilling to take silently, consistent with every other
+"verify, don't assume" decision this project has made. Instead, `nfs/upf/src/datapath.cpp`'s
+background thread polls the ring buffer (`ring_buffer__poll`) and writes each decapsulated T-PDU
+to a TUN device (`upf-tun0`, created via the real `TUNSETIFF` ioctl) with an ordinary `write()` --
+XDP does exactly the part it's good at (fast in-kernel header parsing and TEID matching), and the
+part with unverified kernel-API risk is avoided entirely rather than gambled on.
+
+**veth pair (`upf-n3`/`upf-n3-peer`) instead of loopback.** Whether loopback's SKB layout at the
+XDP layer reliably presents a real Ethernet header (this program's parser assumes one) was also
+not something this project could confirm confidently -- veth pairs are the standard,
+unambiguously-Ethernet-framed interface type XDP tutorials and the kernel's own BPF selftests use,
+and creating one needs no more privilege than the datapath already requires. Interface/address
+setup (`ip link add ... type veth`, `ip addr add`, `ip link set ... up`) is delegated to a
+shell-out to `ip` (iproute2) rather than hand-written netlink code -- a disclosed, deliberate
+simplification (netlink message construction is a substantial separate scope this stage's actual
+goal, correct GTP-U decapsulation, doesn't need to justify).
+
+**Compile-time toolchain, separate from this project's normal C++ build.** New
+`find_program(CLANG_EXECUTABLE ...)` + `add_custom_command` in `nfs/upf/CMakeLists.txt` invokes
+`clang -target bpf` (a completely different backend from the x86-64 C++ compilation the rest of
+this project uses) to produce a BPF ELF object; `PkgConfig::libbpf` links the userspace loader
+side. `libbpf-dev`/`clang` are new build dependencies for this one NF only.
+
+**What IS verified (real, not claimed):**
+- The BPF C program compiles cleanly with `clang -target bpf` -- zero warnings, zero errors.
+- The compiled object's structure is correct, confirmed via static inspection that needs no
+  kernel privileges (`llvm-objdump -h`: real `xdp`/`.maps`/`.BTF`/`license` ELF sections present;
+  `bpftool btf dump file` -- read-only static analysis, does NOT load anything into the kernel --
+  confirms `teid_map` is a `BPF_MAP_TYPE_HASH` with `__u32` key/value and 64 max entries exactly as
+  written, `tpdu_ringbuf` is `BPF_MAP_TYPE_RINGBUF` with 262144 max entries exactly as written, and
+  `gtpu_decap_prog`'s BTF function signature correctly takes a `struct xdp_md*`).
+- `nfs/upf/src/datapath.cpp`/`main.cpp` compile and link cleanly against real `libbpf`, real
+  `<linux/if_tun.h>`, and real POSIX socket/ioctl APIs -- including catching and fixing (during
+  this same turn, via code review before any attempted execution) a real correctness bug in an
+  earlier draft of the BPF program: reserving/copying a fixed 1500-byte ring buffer slot
+  regardless of the actual packet's length, which would have leaked adjacent kernel memory bytes
+  into every decapsulated T-PDU shorter than 1500 bytes -- fixed with the length-masking idiom
+  described above before this was ever run.
+- Full `ctest` suite (117 tests, none new this stage -- see below) re-run clean after adding this
+  stage's code, confirming zero regressions to every previously-verified stage.
+
+**What is NOT verified (the actual gap):**
+- Whether the BPF *verifier* (not just the compiler) accepts this program -- bounds-checking
+  logic that looks correct to a human reviewer is a well-known source of BPF verifier rejections
+  that only a real load attempt reveals.
+- Whether the veth pair, TUN device, and XDP attach actually succeed at runtime.
+- Whether a real GTP-U packet sent to the attached interface is actually matched, decapsulated,
+  and correctly delivered to the TUN device -- i.e., whether the datapath does what it claims to
+  do at all. A test script (`gtpu_test.py`, kept in the scratchpad, not committed -- it has no
+  purpose until the code above can actually run) was prepared but never executed.
+- No new unit tests were added this stage for exactly this reason: a unit test asserting behavior
+  that has never been observed to occur would be worse than no test, since it would look like
+  verification without being any.
+
+**Consequence:** Phase 3's code is now complete for its full stated scope (control plane through
+ADR-0042, datapath through this ADR), but this stage's real-world correctness is genuinely
+unknown, not just formally caveated. The next session (or this one, once the capability grant
+lands) must run `gtpu_test.py` against a real, privileged `upf` process and report the actual
+result -- success, a verifier rejection needing a fix, or a runtime bug -- before this stage can
+be considered done in the sense every other stage in this project has been.

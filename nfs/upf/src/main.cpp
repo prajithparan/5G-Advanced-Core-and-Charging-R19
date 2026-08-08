@@ -25,6 +25,8 @@
 // (no Modification/Deletion/Report handler exists), so storing it now would be exactly the kind
 // of "design for a hypothetical future requirement" CLAUDE.md's engineering rules warn against.
 
+#include "datapath.hpp"
+
 #include "pfcp_core/common_ies.hpp"
 #include "pfcp_core/header.hpp"
 #include "pfcp_core/ie.hpp"
@@ -217,7 +219,7 @@ struct SessionEstablishmentResult {
 // single thread.
 std::optional<SessionEstablishmentResult> build_session_establishment_response_ies(
     const std::vector<std::uint8_t>& request_ies, std::array<std::uint8_t, 4> node_ipv4,
-    std::uint64_t& next_seid, std::uint32_t& next_teid) {
+    std::uint64_t& next_seid, std::uint32_t& next_teid, upf::Datapath* datapath) {
     const auto ies = pfcp_core::decode_ies(request_ies);
     if (!ies.has_value()) {
         return std::nullopt;
@@ -276,6 +278,12 @@ std::optional<SessionEstablishmentResult> build_session_establishment_response_i
             pfcp_core::encode_ie(ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::CreatedPdr),
                                  created_pdr);
             spdlog::info("upf: allocated F-TEID {:#x} for PDR ID {}", allocated_teid, *pdr_id);
+            // ADR-0043: registers the TEID with the real XDP program so it actually recognizes
+            // and decapsulates uplink traffic for this PDR -- a no-op (logged, not fatal) if no
+            // datapath was created (e.g. missing privileges, see datapath.hpp's own comment).
+            if (datapath != nullptr) {
+                datapath->register_teid(allocated_teid);
+            }
         }
     }
 
@@ -288,7 +296,7 @@ std::optional<SessionEstablishmentResult> build_session_establishment_response_i
 // Runs on the main thread (blocking UDP I/O, same "blocking transport gets its own thread"
 // discipline ADR-0006/ADR-0030 already established -- here it's simply the only thread, since
 // UPF has no HTTP2 server to share time with). Never returns.
-void run_pfcp_lifecycle(std::time_t start_time) {
+void run_pfcp_lifecycle(std::time_t start_time, upf::Datapath* datapath) {
     boost::asio::io_context ioc;
     boost::asio::ip::udp::socket socket(
         ioc, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), pfcp_core::kPfcpPort));
@@ -340,8 +348,8 @@ void run_pfcp_lifecycle(std::time_t start_time) {
             resp_ies = build_association_setup_response_ies(start_time, kNodeIpv4);
             spdlog::info("upf: Sx Association Setup accepted from {}", sender.address().to_string());
         } else if (header->message_type == pfcp_core::MessageType::SessionEstablishmentRequest) {
-            const auto result = build_session_establishment_response_ies(ie_bytes, kNodeIpv4,
-                                                                          next_seid, next_teid);
+            const auto result = build_session_establishment_response_ies(
+                ie_bytes, kNodeIpv4, next_seid, next_teid, datapath);
             if (!result.has_value()) {
                 spdlog::warn("upf: malformed Session Establishment Request from {}, ignoring",
                             sender.address().to_string());
@@ -381,7 +389,17 @@ int main() {
 
     const std::time_t start_time = std::time(nullptr);
 
+    // ADR-0043: real eBPF/XDP GTP-U decapsulation datapath. Failure is disclosed and non-fatal --
+    // PFCP control-plane signalling (Stages 1-3) works identically with or without it (see
+    // datapath.hpp's own comment for why, and what privileges a real datapath needs).
+    auto datapath = upf::Datapath::create();
+    if (!datapath.has_value()) {
+        spdlog::warn("upf: eBPF/XDP datapath not started (see preceding error) -- PFCP "
+                    "control-plane signalling still works, but no uplink packet will actually "
+                    "be decapsulated/forwarded");
+    }
+
     std::thread(run_nrf_lifecycle, upf_instance_id).detach();
-    run_pfcp_lifecycle(start_time); // blocks forever, main thread
+    run_pfcp_lifecycle(start_time, datapath.has_value() ? &*datapath : nullptr); // blocks forever
     return 0;
 }

@@ -628,7 +628,12 @@ in this table. `ue.yaml`'s `op` field and three missing UAC fields were fixed as
 found along the way (ADR-0030/ADR-0032) -- this config file had never actually been run against
 real `nr-ue` before this staged effort.
 
-## UPF PFCP/N4 (staged plan, Phase 3 Stage 0-3, ADR-0039/ADR-0040/ADR-0041/ADR-0042)
+## UPF PFCP/N4 (staged plan, Phase 3 Stage 0-4, ADR-0039/ADR-0040/ADR-0041/ADR-0042/ADR-0043)
+
+**Stage 4 (eBPF/XDP datapath) is code-complete but NOT live-verified** -- see ADR-0043 in full
+before relying on anything below about the datapath actually working. This is the only stage in
+this project's entire staged-NGAP/PFCP effort where that is true; every row below it is marked
+accordingly rather than presented at the same confidence level as everything above it.
 
 PFCP (TS 29.244) has no OpenAPI YAML -- see ADR-0039 for the real spec source used instead (the
 official 3GPP TS 29.244 V14.3.0 PDF, vendored at `specs/PFCP/29244-e30.pdf`).
@@ -647,10 +652,12 @@ table above met once real `nr-ue` interop landed, now met for the N4 side too.
 | Sx Heartbeat Request/Response | TS 29.244 §7.4.2 | Real interop, verified two ways: (1) a hand-crafted PFCP datagram (ADR-0040) and (2) implicitly exercised by the same codec paths Association Setup below proves against a real independent peer |
 | Sx Association Setup Request/Response | TS 29.244 §7.4.4.1/§7.4.4.2 | Real interop between two independently-built processes: real `smf` (client) and real `upf` (server), neither aware of the other's internals. `smf`'s log: `PFCP Sx Association established with UPF at 127.0.0.1`; `upf`'s own independently-generated log: `Sx Association Setup accepted from 127.0.0.1`. Node ID/Cause/Recovery Time Stamp/CP-and-UP Function Features all decoded correctly on both sides. See ADR-0041 |
 | Sx Session Establishment Request/Response (one uplink PDR/FAR: Source Interface=Access, F-TEID CH-allocation, FAR Apply Action=FORW/Destination Interface=Core) | TS 29.244 §7.5.2/§7.5.3 | Real interop, triggered by a real `nr-ue` PDU Session Establishment via real `amf`->`smf`->`upf`. `smf`'s log: `N4 Session Establishment succeeded for pduSessionId 1, UPF F-SEID=0x1, allocated uplink F-TEID=0x1`, correctly ordered before the PDU Session Establishment Accept delivery (matching TS 23.502's real step order). `upf`'s own independently-generated log: `allocated F-TEID 0x1 for PDR ID 1` / `Sx Session established from 127.0.0.1`. See ADR-0042 |
+| GTP-U (TS 29.281) header parse + TEID match + decapsulation, real in-kernel XDP program | TS 29.281 §5.1 (header), Table 6.1-1 (G-PDU=255), §4.4.2.3 (UDP port 2152) | **NOT live-verified -- see ADR-0043 in full.** Compiles cleanly with `clang -target bpf`; static BTF inspection (`bpftool btf dump file`, no kernel privileges needed) confirms the map definitions and program signature are exactly as written. The BPF *verifier*'s acceptance, and whether a real packet is actually matched/decapsulated/delivered, have never been observed -- blocked on `CAP_BPF`/`CAP_NET_ADMIN` this session's shell could not self-grant. No unit tests: asserting behavior never observed to occur would look like verification without being any |
 
-**Disclosed gap, not yet closed**: only an uplink PDR/FAR is created -- the downlink direction
-needs the gNB's real N3 GTP-U endpoint (TEID+IP), which requires NGAP PDU Session Resource Setup
-(still not implemented). No packet forwarding datapath exists yet either (Stage 4, eBPF/XDP --
-ADR-0039's own evaluated choice): UPF allocates a real F-TEID and echoes it back, but no packet
-ever actually flows through it. Both disclosed plainly in `nfs/upf/src/main.cpp`'s own header
-comment, not left for a reader to discover. See ADR-0042.
+**Disclosed gaps**: only an uplink PDR/FAR is created -- the downlink direction needs the gNB's
+real N3 GTP-U endpoint (TEID+IP), which requires NGAP PDU Session Resource Setup (still not
+implemented), disclosed in `nfs/upf/src/main.cpp`'s own header comment (ADR-0042). Separately and
+more significantly (ADR-0043): the datapath code exists and compiles but its actual runtime
+correctness -- BPF verifier acceptance, real decapsulation, real delivery to the TUN device -- is
+unknown, not just formally caveated. This is the one row in this entire document, across every
+staged effort, that does not meet the "real interop, actually observed" bar every other row does.
