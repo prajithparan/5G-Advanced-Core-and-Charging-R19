@@ -665,7 +665,9 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::
 void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
                                               sbi_core::http2::Client& pcf_client,
                                               sbi_core::OAuth2Client& pcf_oauth,
-                                              UeContextStore& ue_contexts, UeAuthState& auth_state,
+                                              UeContextStore& ue_contexts,
+                                              NgapUeRegistry& ue_ngap_registry,
+                                              UeAuthState& auth_state,
                                               const InitiatingMessage_t& msg) {
     const auto nas_pdu_bytes_opt = extract_uplink_nas_pdu(msg);
     if (!nas_pdu_bytes_opt.has_value()) {
@@ -710,6 +712,16 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
                 "expected -- this build's RegistrationAccept carries no GUTI/NSSAI change, see "
                 "UeAuthState::Phase's comment), requesting AM Policy Association from PCF",
                 auth_state.supi);
+
+    // Register this UE's live association so a later Namf_Communication N1N2MessageTransfer call
+    // (arriving on the SBI HTTP/2 server's thread, from SMF once it has a real PDU Session
+    // Establishment Accept to deliver) can reach it -- ADR-0038. downlink_count=2: RegistrationAccept
+    // just used 1, so the next secured downlink message (the eventual Accept) is genuinely 2.
+    ue_ngap_registry.register_ue(
+        auth_state.supi,
+        NgapUeRegistry::Entry{&assoc, static_cast<std::uint32_t>(auth_state.amf_ue_id),
+                              static_cast<std::uint32_t>(auth_state.ran_ue_id), *auth_state.knas_int,
+                              *auth_state.knas_enc, /*next_downlink_count=*/2});
 
     auto token = pcf_oauth.get_bearer_token();
     if (!token.has_value()) {
@@ -770,15 +782,13 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
 // (nfs/smf/src/main.cpp requires it, matching TS 29.502's schema).
 //
 // Deliberately does NOT decode the actual 5GSM PDU Session Establishment Request payload
-// container (see amf::nas::decode_ul_nas_transport's own comment) and, symmetrically, does NOT
-// send anything back to the UE afterward: SMF's current CreateSMContext response
-// (SmContextCreatedData) carries no n1SmMsg (nfs/smf/src/main.cpp only ever sets pduSessionId/
-// sNssai on it -- its own disclosed scope, predating this turn), so there is no real PDU Session
-// Establishment Accept content for AMF to forward. Synthesizing one here would mean AMF fabricating
-// SM-layer decisions (PDU session type, QoS rules, session-AMBR) that are properly SMF's job --
-// worse than disclosing the gap. This is this project's final implemented step of the procedure;
-// the UE-visible Accept/Reject is a disclosed gap for a future SMF turn to close, not silently
-// faked here.
+// container itself (see amf::nas::decode_ul_nas_transport's own comment) -- it forwards the
+// captured container bytes to SMF opaquely as n1SmMsg, and SMF is the one that decodes it. This
+// function also does NOT send anything back to the UE directly: the real TS 23.502 mechanism for
+// that is asynchronous (Namf_Communication N1N2MessageTransfer, called BY SMF once it has built a
+// real PDU Session Establishment Accept, handled by the N1N2MessageTransfer route in main.cpp, not
+// here) -- see ADR-0038, which closed the "no N1 SM Accept to forward" gap this comment used to
+// describe.
 void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Client& smf_client,
                                                             sbi_core::OAuth2Client& smf_oauth,
                                                             const std::string& amf_instance_id,
@@ -853,11 +863,22 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
         snssai.sd = std::string(sd_hex);
     }
     create_data.sNssai = snssai;
+    // Real N1 SM content (ADR-0038), not the opaque-and-dropped gap ADR-0036 disclosed: the
+    // payload container bytes decode_ul_nas_transport captured verbatim, forwarded to SMF as the
+    // real TS 29.502 mechanism intends -- AMF stays opaque to the content (contentId is an
+    // arbitrary label, not itself meaningful), only SMF decodes it.
+    sbi_gen::RefToBinaryData n1_sm_msg_ref{};
+    n1_sm_msg_ref.contentId = "n1SmMsg";
+    create_data.n1SmMsg = n1_sm_msg_ref;
 
     sbi_core::multipart::Part json_part;
     json_part.content_type = "application/json";
     json_part.body = nlohmann::json(create_data).dump();
-    const auto encoded = sbi_core::multipart::encode({json_part});
+    sbi_core::multipart::Part n1_sm_part;
+    n1_sm_part.content_type = "application/vnd.3gpp.5gnas";
+    n1_sm_part.content_id = "n1SmMsg";
+    n1_sm_part.body.assign(outcome->payload_container.begin(), outcome->payload_container.end());
+    const auto encoded = sbi_core::multipart::encode({json_part, n1_sm_part});
 
     sbi_core::http2::ClientRequest http_req;
     http_req.method = "POST";
@@ -877,9 +898,9 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
         return;
     }
 
-    spdlog::info("amf-ngap: SM context established with SMF for SUPI {}, pduSessionId={} -- PDU "
-                "Session Establishment procedure complete (no N1 SM Accept to forward -- see "
-                "this function's own disclosed-gap comment)",
+    spdlog::info("amf-ngap: SM context established with SMF for SUPI {}, pduSessionId={} -- SMF "
+                "will deliver the PDU Session Establishment Accept via a separate "
+                "N1N2MessageTransfer call (ADR-0038)",
                 auth_state.supi, outcome->pdu_session_id);
 }
 
@@ -887,13 +908,16 @@ void handle_association(ngap_core::SctpSocket assoc, sbi_core::http2::Client& au
                         sbi_core::OAuth2Client& ausf_oauth, sbi_core::http2::Client& pcf_client,
                         sbi_core::OAuth2Client& pcf_oauth, sbi_core::http2::Client& smf_client,
                         sbi_core::OAuth2Client& smf_oauth, const std::string& amf_instance_id,
-                        UeContextStore& ue_contexts) {
+                        UeContextStore& ue_contexts, NgapUeRegistry& ue_ngap_registry) {
     spdlog::info("amf-ngap: gNB association established");
     UeAuthState auth_state{}; // this association's single UE, see UeAuthState's own comment
     while (true) {
         auto bytes = assoc.receive();
         if (bytes.empty()) {
             spdlog::info("amf-ngap: gNB association closed");
+            if (!auth_state.supi.empty()) {
+                ue_ngap_registry.unregister_ue(auth_state.supi);
+            }
             return;
         }
 
@@ -925,7 +949,8 @@ void handle_association(ngap_core::SctpSocket assoc, sbi_core::http2::Client& au
                 break;
             case UeAuthState::Phase::AwaitingSecurityModeComplete:
                 handle_uplink_nas_transport_smc_complete(assoc, pcf_client, pcf_oauth, ue_contexts,
-                                                         auth_state, *pdu->choice.initiatingMessage);
+                                                         ue_ngap_registry, auth_state,
+                                                         *pdu->choice.initiatingMessage);
                 break;
             case UeAuthState::Phase::AwaitingPduSessionEstablishmentRequest:
                 handle_uplink_nas_transport_pdu_session_establishment(
@@ -951,9 +976,34 @@ void handle_association(ngap_core::SctpSocket assoc, sbi_core::http2::Client& au
 
 } // namespace
 
+void NgapUeRegistry::register_ue(const std::string& supi, Entry entry) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    entries_[supi] = entry;
+}
+
+void NgapUeRegistry::unregister_ue(const std::string& supi) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    entries_.erase(supi);
+}
+
+bool NgapUeRegistry::send_dl_nas_transport(const std::string& supi, std::uint8_t pdu_session_id,
+                                           const std::vector<std::uint8_t>& n1_sm_container) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = entries_.find(supi);
+    if (it == entries_.end() || it->second.socket == nullptr) {
+        return false;
+    }
+    Entry& entry = it->second;
+    const auto nas_bytes = amf::nas::encode_dl_nas_transport(
+        entry.knas_int, entry.knas_enc, entry.next_downlink_count, pdu_session_id, n1_sm_container);
+    send_downlink_nas_transport(*entry.socket, entry.amf_ue_id, entry.ran_ue_id, nas_bytes);
+    entry.next_downlink_count += 1;
+    return true;
+}
+
 void run_ngap_lifecycle(const std::string& bind_address, unsigned short bind_port,
                         const std::string& amf_instance_id, const std::string& nrf_base,
-                        UeContextStore& ue_contexts) {
+                        UeContextStore& ue_contexts, NgapUeRegistry& ue_ngap_registry) {
     ngap_core::SctpSocket listener;
     listener.bind_and_listen(bind_address, bind_port);
     spdlog::info("amf-ngap: listening for NGAP/N2 (SCTP) on {}:{}", bind_address, bind_port);
@@ -998,7 +1048,7 @@ void run_ngap_lifecycle(const std::string& bind_address, unsigned short bind_por
         // one gNB/one UE at a time (see docs/DECISIONS.md ADR-0031); a real AMF would handle
         // multiple concurrent associations.
         handle_association(std::move(assoc), ausf_client, ausf_oauth, pcf_client, pcf_oauth,
-                           smf_client, smf_oauth, amf_instance_id, ue_contexts);
+                           smf_client, smf_oauth, amf_instance_id, ue_contexts, ue_ngap_registry);
     }
 }
 

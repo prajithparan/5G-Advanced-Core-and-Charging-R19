@@ -576,17 +576,22 @@ as NRF/AMF/SMF/UDM/UDR/AUSF's charts. `docker compose up` and `helm install`/`he
 NOT run this session -- same disclosed-not-silently-assumed gap ADR-0014 already recorded for NRF
 alone. See `docs/DECISIONS.md` ADR-0028.
 
-## AMF NGAP/N2 + NAS-5GS Registration and PDU Session Establishment (staged plan, Stages 0-5, plus ADR-0036/ADR-0037)
+## AMF NGAP/N2 + NAS-5GS Registration and PDU Session Establishment (staged plan, Stages 0-5, plus ADR-0036/ADR-0037/ADR-0038)
 
-**As of ADR-0037, the full table below is verified by a single real, unmodified `nr-ue` run,
-first attempt, zero retries or failures anywhere in Registration or SM-context creation** -- not
+**As of ADR-0038, the full table below is verified by a single real, unmodified `nr-ue` run,
+first attempt, zero retries or failures anywhere in the entire procedure -- both directions** -- not
 just each row independently. Real `nrf`/`udr`/`udm`/`ausf`/`pcf`/`smf`/`amf` plus real
 `nr-gnb`/`nr-ue`: NG Setup → Initial Registration → AuthenticationFailure (SQN out of range) →
 SQN-resync AuthenticationRequest accepted → SecurityModeCommand/Complete verified →
 RegistrationAccept sent → AM Policy Association established with PCF → PDU Session Establishment
-Request verified → SM context established with SMF. `nr-ue` logged `Initial Registration is
-successful` immediately followed by `Sending PDU Session Establishment Request`. This supersedes
-every "Not reachable live (SQN gap)" note this table previously carried.
+Request verified → SM context established with SMF → real PDU Session Establishment Accept built
+from PCF's actual QoS decision → delivered to AMF via `Namf_Communication` `N1N2MessageTransfer` →
+forwarded to the UE via `DownlinkNASTransport`. `nr-ue` logged `Initial Registration is successful`,
+then `Sending PDU Session Establishment Request`, then `PDU Session Establishment Accept received`
+and `PDU Session establishment is successful PSI[1]` -- the complete procedure, both directions,
+with no gap left unimplemented. This supersedes every "Not reachable live (SQN gap)" note this
+table previously carried, and closes the PDU Session Establishment Accept gap ADR-0036/ADR-0037
+both disclosed.
 
 | Procedure | TS clause / message | Test |
 |---|---|---|
@@ -604,17 +609,15 @@ every "Not reachable live (SQN gap)" note this table previously carried.
 | NAS RegistrationAccept encode / RegistrationComplete decode | TS 24.501 §8.2.7/§8.2.6 | RegistrationAccept: real `nr-ue` interop, accepted first attempt. RegistrationComplete decode: **confirmed via real interop that a real UE never sends this message** for this build's minimal RegistrationAccept content (no GUTI/NSSAI change) -- TS 24.501's conditional-send rule, confirmed against UERANSIM's own `receiveInitialRegistrationAccept`. `decode_registration_complete` is kept (4 unit tests, spec-correct) but is not called by any production handler -- see ADR-0037 |
 | AMF -> PCF `POST /npcf-am-policy-control/v1/policies` (`CreateIndividualAMPolicyAssociation`) | TS 29.507 `Npcf_AMPolicyControl` | Real `nr-ue` interop: real HTTP 201 + genuine `PolicyAssociation` from real PCF, first attempt, immediately after RegistrationAccept is sent (ADR-0037's phase-machine fix). Also previously verified directly via `curl` with a genuine NRF-issued token -- see ADR-0035 |
 | NAS UlNasTransport decode (PDU Session Establishment Request routing) | TS 24.501 §8.2.10, §9.11.3.5 (payload container type), §9.11.3.41 (PDU session ID), §9.11.2.8 (S-NSSAI), §9.11.2.1a (DNN, TS 23.003 §9.1 label encoding) | Real `nr-ue` interop: pduSessionId=1, dnn=internet correctly extracted, MAC verified OK first attempt. 4 unit tests (`NasCodec.DecodeUlNasTransport*`). The 5GSM payload container itself (the PDU Session Establishment Request's own content) is deliberately never decoded -- see ADR-0036 |
-| AMF -> SMF `POST /nsmf-pdusession/v1/sm-contexts` (`CreateSMContext`) | TS 29.502 `Nsmf_PDUSession`, `multipart/related` | Real `nr-ue` interop: real HTTP 201 + genuine `SmContextCreatedData` from real SMF, first attempt -- also confirming SMF's own internal call to PCF succeeded as part of the same request. Also previously verified directly via `curl` -- see ADR-0036 |
+| AMF -> SMF `POST /nsmf-pdusession/v1/sm-contexts` (`CreateSMContext`, now including real `n1SmMsg`) | TS 29.502 `Nsmf_PDUSession`, `multipart/related` | Real `nr-ue` interop: real HTTP 201 + genuine `SmContextCreatedData` from real SMF, first attempt -- also confirming SMF's own internal call to PCF succeeded as part of the same request. AMF now forwards the real captured payload-container bytes as `n1SmMsg` (previously dropped) -- see ADR-0038 |
+| 5GSM PDU Session Establishment Request decode (header only) / Accept encode | TS 24.501 §8.3.1/§8.3.5, §9.11.4.13 (QoS rules), §9.11.4.14 (session-AMBR) | Real `nr-ue` interop: the real UE decoded and accepted this build's Accept content (`PDU Session Establishment Accept received` -> `PDU Session establishment is successful PSI[1]`), not just a MAC-verified opaque blob -- QFI/session-AMBR sourced from PCF's real `SmPolicyDecision`, not fabricated. 7 unit tests (`tests/conformance/test_nas_5gsm_codec.cpp`). See ADR-0038 |
+| SMF -> AMF `POST /namf-comm/v1/ue-contexts/{ueContextId}/n1-n2-messages` (`N1N2MessageTransfer`) | TS 29.518 `Namf_Communication` | Real `nr-ue` interop: real HTTP 200 from real AMF, first attempt, on two independent clean runs. AMF's pre-existing stub (JSON-only, no real delivery) replaced with a real `multipart/related` handler + `NgapUeRegistry` cross-thread handoff to the live NGAP association. See ADR-0038 |
+| NAS DlNasTransport encode (delivering the Accept to the UE) | TS 24.501 §8.2.9 | Real `nr-ue` interop: the real UE received and correctly decoded/deciphered/MAC-verified this message before decoding the 5GSM Accept inside it. Unit test `NasCodec.EncodesDlNasTransportWithCorrectEnvelopeAndDecryptsToExpectedInner`. See ADR-0038 |
 
-**Disclosed gap specific to PDU Session Establishment, not shared with the registration rows
-above**: AMF sends nothing back to the UE after the SMF call succeeds. SMF's real
-`CreateSMContext` response carries no `n1SmMsg` (`nfs/smf/src/main.cpp`'s own disclosed scope,
-predating this turn) -- there is no real PDU Session Establishment Accept content for AMF to
-forward, and synthesizing one would mean AMF fabricating SM-layer decisions that are properly
-SMF's job. See ADR-0036. Consequence, confirmed via real interop (ADR-0037): the real `nr-ue`
-retransmits its PDU Session Establishment Request on `T3580` expiry after not receiving an Accept;
-AMF handles the retransmit gracefully via its pre-existing `Done`-phase fallback (logs and ignores,
-no crash, no bad state) rather than mishandling it as a new procedure.
+The PDU Session Establishment Accept gap ADR-0036/ADR-0037 both disclosed (AMF had nothing real to
+send back to the UE after `CreateSMContext`, so a real `nr-ue` would retransmit under `T3580` and
+eventually give up) is closed by the four rows above -- ADR-0038. Real end-to-end interop, first
+attempt, zero retries anywhere in the chain, confirmed on two independent clean process sets.
 
 Not a procedure row: `simulators/ransim/` wraps UERANSIM v3.3.0 (commit
 `6bf5a1a96aaef6ae8778b9d8b477ac6e2bbf8156`, AGPL-3.0, arms-length external process -- see

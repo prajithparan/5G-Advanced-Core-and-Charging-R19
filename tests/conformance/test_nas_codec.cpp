@@ -344,6 +344,9 @@ TEST(NasCodec, DecodeUlNasTransportExtractsPduSessionIdSnssaiAndDnn) {
     ASSERT_TRUE(outcome->snssai_sd.has_value());
     const std::array<std::uint8_t, 3> expected_sd{0x00, 0x00, 0x01};
     EXPECT_EQ(*outcome->snssai_sd, expected_sd);
+    // ADR-0038: the opaque payload container bytes are now captured verbatim, not just skipped.
+    const std::vector<std::uint8_t> expected_container = {0xaa, 0xbb, 0xcc};
+    EXPECT_EQ(outcome->payload_container, expected_container);
 }
 
 TEST(NasCodec, DecodeUlNasTransportRejectsTamperedMac) {
@@ -387,4 +390,39 @@ TEST(NasCodec, DecodeUlNasTransportRejectsWrongSecurityHeaderType) {
     aka_crypto::NasEncKey knas_enc{};
     const std::vector<std::uint8_t> nas_pdu = {0x7e, 0x03, 0, 0, 0, 0, 0x02, 0xaa};
     EXPECT_FALSE(amf::nas::decode_ul_nas_transport(knas_int, knas_enc, 2, nas_pdu).has_value());
+}
+
+// ADR-0038: encode_dl_nas_transport is AMF's delivery vehicle for SMF's real PDU Session
+// Establishment Accept (Namf_Communication N1N2MessageTransfer). Verified end-to-end against a
+// real nr-ue (docs/DECISIONS.md ADR-0038); this test locks the byte layout down deterministically.
+TEST(NasCodec, EncodesDlNasTransportWithCorrectEnvelopeAndDecryptsToExpectedInner) {
+    aka_crypto::NasIntKey knas_int{};
+    knas_int.fill(0x55);
+    aka_crypto::NasEncKey knas_enc{};
+    knas_enc.fill(0x66);
+
+    const std::vector<std::uint8_t> n1_sm_container = {0xde, 0xad, 0xbe, 0xef};
+    const auto nas_pdu = amf::nas::encode_dl_nas_transport(knas_int, knas_enc, /*downlink_count=*/2,
+                                                            /*pdu_session_id=*/1, n1_sm_container);
+
+    // outer(7) + inner(epd+sht+msgtype+payloadContainerType+containerLen(2)+container(4)+
+    // pduSessionIdIEI+pduSessionId = 3+1+2+4+2 = 12) = 19
+    ASSERT_EQ(nas_pdu.size(), 19u);
+    EXPECT_EQ(nas_pdu[0], 0x7e);
+    EXPECT_EQ(nas_pdu[1], 0x02); // INTEGRITY_PROTECTED_AND_CIPHERED
+    EXPECT_EQ(nas_pdu[6], 0x02); // sequence number == downlink_count
+
+    const std::vector<std::uint8_t> ciphered(nas_pdu.begin() + 7, nas_pdu.end());
+    const auto plain = aka_crypto::nea2_apply(knas_enc, /*count=*/2, /*bearer=*/1, /*direction=*/1, ciphered);
+    ASSERT_EQ(plain.size(), 12u);
+    EXPECT_EQ(plain[0], 0x7e);
+    EXPECT_EQ(plain[1], 0x00);
+    EXPECT_EQ(plain[2], 0x68); // DL_NAS_TRANSPORT
+    EXPECT_EQ(plain[3], 0x01); // payloadContainerType: N1_SM_INFORMATION
+    EXPECT_EQ(plain[4], 0x00);
+    EXPECT_EQ(plain[5], 0x04); // payloadContainer length = 4
+    const std::vector<std::uint8_t> container(plain.begin() + 6, plain.begin() + 10);
+    EXPECT_EQ(container, n1_sm_container);
+    EXPECT_EQ(plain[10], 0x12); // pduSessionId IEI
+    EXPECT_EQ(plain[11], 0x01); // pduSessionId value
 }

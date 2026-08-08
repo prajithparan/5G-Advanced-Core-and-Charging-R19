@@ -37,15 +37,16 @@ spec text. Full conventions are in [`CLAUDE.md`](CLAUDE.md).
 | 8 | Lab packaging (`make lab-up`) | Not started |
 
 All 7 Phase 2 NFs are implemented, and both target procedures (TS 23.502 §4.2.2.2.2 UE
-Registration, §4.3.2.2.1 PDU Session Establishment) are wired end-to-end — real NGAP/N2 (SCTP +
-ASN.1 PER) and NAS-5GS, through AUSF/PCF/SMF, no narrowed slice — and verified in a single real
-`nr-gnb`/`nr-ue` interop run, first attempt, with zero retries or failures anywhere in Registration
-or SM-context creation: NG Setup → Initial Registration (including a real SQN resynchronization,
+Registration, §4.3.2.2.1 PDU Session Establishment) are wired end-to-end in both directions — real
+NGAP/N2 (SCTP + ASN.1 PER) and NAS-5GS, through AUSF/PCF/SMF, no narrowed slice — and verified in a
+single real `nr-gnb`/`nr-ue` interop run, first attempt, with zero retries or failures anywhere in
+the procedure: NG Setup → Initial Registration (including a real SQN resynchronization,
 TS 33.102 §6.3.3) → SecurityModeCommand/Complete → RegistrationAccept → a real AM Policy
-Association with PCF → a real PDU Session Establishment Request → a real SM context with SMF. One
-disclosed gap remains downstream of that: SMF's `CreateSMContext` response carries no `n1SmMsg`, so
-AMF has no real PDU Session Establishment Accept content to send back to the UE yet — see
-`docs/DECISIONS.md` ADR-0032–ADR-0037 and `docs/TRACEABILITY.md` for exactly what was proven how.
+Association with PCF → a real PDU Session Establishment Request → a real SM context with SMF → a
+real PDU Session Establishment Accept, built from PCF's actual QoS decision and delivered back to
+the UE via `Namf_Communication`'s `N1N2MessageTransfer`. `nr-ue`'s own log: `PDU Session
+Establishment Accept received` → `PDU Session establishment is successful` — see
+`docs/DECISIONS.md` ADR-0032–ADR-0038 and `docs/TRACEABILITY.md` for exactly what was proven how.
 
 Full phase plan: [`PROMPT.md`](PROMPT.md). Per-procedure spec traceability:
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md).
