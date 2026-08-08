@@ -1,0 +1,47 @@
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+
+// Real eBPF/XDP GTP-U decapsulation datapath -- Phase 3 Stage 4 (docs/DECISIONS.md ADR-0043).
+// Wraps: a veth pair (upf-n3 / upf-n3-peer, representing UPF's N3-facing interface -- no
+// dedicated NIC exists in this lab, matching every other loopback/virtual-interface assumption
+// already made throughout this project), a TUN device (upf-tun0, representing the DN/N6-facing
+// egress a decapsulated T-PDU is delivered to), the compiled XDP program
+// (nfs/upf/bpf/gtpu_decap.bpf.c, attached to upf-n3 in generic/SKB-mode XDP), and a background
+// thread polling the program's BPF ring buffer, writing each decapsulated T-PDU to the TUN
+// device via an ordinary write() syscall.
+//
+// Needs CAP_NET_ADMIN (veth/TUN interface creation) and CAP_BPF (loading/attaching the XDP
+// program) -- this build does not attempt to gain them itself (no setuid, no capability-dropping
+// logic); the operator grants them to the built binary (e.g. via setcap) before running it.
+// Datapath::create() returns std::nullopt on any failure, including missing privileges, and the
+// caller (main()) treats that as a disclosed, non-fatal degradation: PFCP control-plane
+// signalling (Stages 1-3) works identically with or without a datapath, exactly as it did before
+// this stage existed.
+
+namespace upf {
+
+class Datapath {
+public:
+    static std::optional<Datapath> create();
+
+    Datapath(Datapath&& other) noexcept;
+    Datapath& operator=(Datapath&& other) noexcept;
+    Datapath(const Datapath&) = delete;
+    Datapath& operator=(const Datapath&) = delete;
+    ~Datapath();
+
+    // Registers a TEID as belonging to a real uplink PDR -- called from run_pfcp_lifecycle
+    // whenever Session Establishment (ADR-0042) allocates one. Returns false if the underlying
+    // BPF map update fails.
+    bool register_teid(std::uint32_t teid);
+
+private:
+    Datapath();
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+} // namespace upf
