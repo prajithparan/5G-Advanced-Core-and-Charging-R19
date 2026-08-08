@@ -1,0 +1,945 @@
+diff -ru asn1c-orig-mirror/skeletons/asn_bit_data.c asn1c-patched-mirror2/skeletons/asn_bit_data.c
+--- asn1c-orig-mirror/skeletons/asn_bit_data.c	2026-08-07 16:21:17.523417005 +0530
++++ asn1c-patched-mirror2/skeletons/asn_bit_data.c	2026-08-07 20:25:01.584746900 +0530
+@@ -310,6 +310,26 @@
+ }
+ 
+ 
++/*
++ * X.691 octet-alignment primitives (see ADR-0031). nboff, after normalization inside
++ * asn_get_few_bits/asn_put_few_bits, always tracks the bit position within the current octet in
++ * its low 3 bits regardless of how large it grows between calls (mod-8 arithmetic), so no
++ * separate absolute bit counter is needed here.
++ */
++int32_t
++asn_get_align(asn_bit_data_t *pd) {
++	unsigned pad = (unsigned)((8 - (pd->nboff & 0x07)) & 0x07);
++	if(pad == 0) return 0;
++	return asn_get_few_bits(pd, (int)pad);
++}
++
++int
++asn_put_align(asn_bit_outp_t *po) {
++	unsigned pad = (unsigned)((8 - (po->nboff & 0x07)) & 0x07);
++	if(pad == 0) return 0;
++	return asn_put_few_bits(po, 0, (int)pad);
++}
++
+ int
+ asn_put_aligned_flush(asn_bit_outp_t *po) {
+     uint32_t unused_bits = (0x7 & (8 - (po->nboff & 0x07)));
+diff -ru asn1c-orig-mirror/skeletons/asn_bit_data.h asn1c-patched-mirror2/skeletons/asn_bit_data.h
+--- asn1c-orig-mirror/skeletons/asn_bit_data.h	2026-08-07 16:21:17.521505765 +0530
++++ asn1c-patched-mirror2/skeletons/asn_bit_data.h	2026-08-07 20:25:01.582819136 +0530
+@@ -21,6 +21,11 @@
+          size_t  moved;   /* Number of bits moved through this bit stream */
+   int (*refill)(struct asn_bit_data_s *);
+   void *refill_key;
++  /* X.691 Aligned vs Unaligned PER (see ADR-0031): when set, the length-determinant and
++   * constrained-whole-number helpers in per_support.c insert X.691-mandated octet-alignment
++   * padding; when clear, behavior is unchanged Unaligned PER. Set by the top-level aper_decode*
++   * entry points, left 0 by uper_decode* and by asn_bit_data_new_contiguous's default. */
++  int aligned;
+ } asn_bit_data_t;
+ 
+ /*
+@@ -50,6 +55,11 @@
+ /* Non-thread-safe debugging function, don't use it */
+ char *asn_bit_data_string(asn_bit_data_t *);
+ 
++/* X.691 octet-alignment primitive for the decode side (see ADR-0031). Consumes/discards padding
++ * bits to bring the stream to the next octet boundary. No-op (returns 0) if already aligned.
++ * Returns -1 on I/O failure. */
++int32_t asn_get_align(asn_bit_data_t *pd);
++
+ /*
+  * This structure supports forming bit output.
+  */
+@@ -61,6 +71,8 @@
+ 	int (*output)(const void *data, size_t size, void *op_key);
+ 	void *op_key;		/* Key for (output) data callback */
+ 	size_t flushed_bytes;	/* Bytes already flushed through (output) */
++	/* See asn_bit_data_s::aligned above. */
++	int aligned;
+ } asn_bit_outp_t;
+ 
+ /* Output a small number of bits (<= 31) */
+@@ -76,6 +88,11 @@
+  */
+ int asn_put_aligned_flush(asn_bit_outp_t *);
+ 
++/* X.691 octet-alignment primitive for the encode side (see ADR-0031). Emits 0 padding bits to
++ * bring the stream to the next octet boundary. No-op (returns 0) if already aligned. Returns -1
++ * on I/O failure. */
++int asn_put_align(asn_bit_outp_t *po);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff -ru asn1c-orig-mirror/skeletons/BIT_STRING.c asn1c-patched-mirror2/skeletons/BIT_STRING.c
+--- asn1c-orig-mirror/skeletons/BIT_STRING.c	2026-08-07 16:21:17.547095589 +0530
++++ asn1c-patched-mirror2/skeletons/BIT_STRING.c	2026-08-07 20:25:01.604325583 +0530
+@@ -375,6 +375,11 @@
+ 	/* X.691, #16.7: long fixed length encoding (up to 64K octets) */
+ 	if(csiz->effective_bits == 0) {
+ 		int ret;
++        /* ALIGNED PER (see ADR-0031): #16.7 -- fixed-size content wider than 2 octets (16
++         * bits) is octet-aligned before the content; #16.6's <=2-octet case is not. */
++        if(pd->aligned && csiz->upper_bound > 16) {
++            if(per_get_align(pd) < 0) RETURN(RC_WMORE);
++        }
+         ASN_DEBUG("Encoding BIT STRING size %ld", csiz->upper_bound);
+         ret = per_get_many_bits(pd, st->buf, 0, csiz->upper_bound);
+ 		if(ret < 0) RETURN(RC_WMORE);
+@@ -493,9 +498,19 @@
+             st->size, size_in_bits - csiz->lower_bound, csiz->effective_bits,
+             add_trailer,
+             add_trailer ? 0 : (ssize_t)size_in_bits - csiz->lower_bound);
+-        ret = per_put_few_bits(
+-            po, add_trailer ? 0 : (ssize_t)size_in_bits - csiz->lower_bound,
+-            csiz->effective_bits);
++        if(csiz->effective_bits == 0) {
++            /* ALIGNED PER (see ADR-0031): #16.6/#16.7 -- fixed-size content wider than 2
++             * octets (16 bits) is octet-aligned before the content. */
++            if(po->aligned && csiz->upper_bound > 16) {
++                if(per_put_align(po)) ASN__ENCODE_FAILED;
++            }
++            ret = per_put_few_bits(po, 0, 0);
++        } else {
++            int nbits = aper_align_length_put_nbits(po, csiz->effective_bits);
++            if(nbits < 0) ASN__ENCODE_FAILED;
++            ret = per_put_few_bits(
++                po, add_trailer ? 0 : (ssize_t)size_in_bits - csiz->lower_bound, nbits);
++        }
+         if(ret) ASN__ENCODE_FAILED;
+         ret = per_put_many_bits(po, st->buf, size_in_bits);
+         if(ret) ASN__ENCODE_FAILED;
+diff -ru asn1c-orig-mirror/skeletons/constr_CHOICE.c asn1c-patched-mirror2/skeletons/constr_CHOICE.c
+--- asn1c-orig-mirror/skeletons/constr_CHOICE.c	2026-08-07 16:21:17.554083910 +0530
++++ asn1c-patched-mirror2/skeletons/constr_CHOICE.c	2026-08-07 20:25:01.612827523 +0530
+@@ -870,6 +870,12 @@
+ 	}
+ 
+ 	if(ct && ct->range_bits >= 0) {
++		/* ALIGNED PER (see ADR-0031): unlike an ordinary constrained-whole-number VALUE field
++		 * (per_support.h's aper_align_get_nbits), the CHOICE presence index has its own
++		 * dedicated X.691 procedure and is NEVER octet-aligned, regardless of range_bits --
++		 * confirmed empirically against a real gNB (the extension-presence bit and this index
++		 * are packed with zero padding between them). Same bit-packed behavior in both PER
++		 * variants, so no aligned-vs-unaligned branch is needed here at all. */
+ 		value = per_get_few_bits(pd, ct->range_bits);
+ 		if(value < 0) ASN__DECODE_STARVED;
+ 		ASN_DEBUG("CHOICE %s got index %d in range %d",
+@@ -995,6 +1001,8 @@
+     }
+ 
+     if(ct && ct->range_bits >= 0) {
++        /* ALIGNED PER (see ADR-0031): symmetric with the decode-side comment above -- never
++         * octet-aligned, in either PER variant. */
+         if(per_put_few_bits(po, present_enc, ct->range_bits))
+             ASN__ENCODE_FAILED;
+ 
+diff -ru asn1c-orig-mirror/skeletons/constr_SEQUENCE_OF.c asn1c-patched-mirror2/skeletons/constr_SEQUENCE_OF.c
+--- asn1c-orig-mirror/skeletons/constr_SEQUENCE_OF.c	2026-08-07 16:21:17.549982849 +0530
++++ asn1c-patched-mirror2/skeletons/constr_SEQUENCE_OF.c	2026-08-07 20:25:01.606791967 +0530
+@@ -180,9 +180,13 @@
+     }
+ 
+     if(ct && ct->effective_bits >= 0) {
+-        /* X.691, #19.5: No length determinant */
+-        if(per_put_few_bits(po, list->count - ct->lower_bound,
+-                            ct->effective_bits))
++        /* X.691, #19.5: No length determinant -- but the count value itself is still an
++         * ordinary constrained whole number per #11.5, IS octet-aligned/widened by the ALIGNED
++         * variant. See constr_SET_OF.c's decode-side mirror of this comment for the empirical
++         * evidence and ADR-0031. */
++        int nbits = aper_align_length_put_nbits(po, ct->effective_bits);
++        if(nbits < 0) ASN__ENCODE_FAILED;
++        if(per_put_few_bits(po, list->count - ct->lower_bound, nbits))
+             ASN__ENCODE_FAILED;
+     } else if(list->count == 0) {
+         /* When the list is empty add only the length determinant
+diff -ru asn1c-orig-mirror/skeletons/constr_SET_OF.c asn1c-patched-mirror2/skeletons/constr_SET_OF.c
+--- asn1c-orig-mirror/skeletons/constr_SET_OF.c	2026-08-07 16:21:17.552387822 +0530
++++ asn1c-patched-mirror2/skeletons/constr_SET_OF.c	2026-08-07 20:25:01.609554467 +0530
+@@ -943,8 +943,18 @@
+ 	}
+ 
+ 	if(ct && ct->effective_bits >= 0) {
+-		/* X.691, #19.5: No length determinant */
+-		nelems = per_get_few_bits(pd, ct->effective_bits);
++		/* X.691, #19.5: No length determinant -- but the count value itself is still an
++		 * ordinary constrained whole number per #11.5, so it IS octet-aligned/widened by the
++		 * ALIGNED variant like any other VALUE field (see ADR-0031's per_support.h note on
++		 * aper_align_get/put_nbits). "#19.5: No length determinant" means no *additional*,
++		 * separately-aligned length prefix is added on top of this count -- it does not mean
++		 * the count itself skips alignment. Confirmed empirically against a real gNB: a real
++		 * NGSetupRequest's ConcreteProtocolIE-Container count (effective_bits=16, from
++		 * maxProtocolIEs=65535) only decoded correctly once this alignment was restored after
++		 * first (incorrectly) being removed. */
++		int nbits = aper_align_length_get_nbits(pd, ct->effective_bits);
++		if(nbits < 0) ASN__DECODE_STARVED;
++		nelems = per_get_few_bits(pd, nbits);
+ 		ASN_DEBUG("Preparing to fetch %ld+%ld elements from %s",
+ 			(long)nelems, ct->lower_bound, td->name);
+ 		if(nelems < 0)  ASN__DECODE_STARVED;
+diff -ru asn1c-orig-mirror/skeletons/NativeEnumerated.c asn1c-patched-mirror2/skeletons/NativeEnumerated.c
+--- asn1c-orig-mirror/skeletons/NativeEnumerated.c	2026-08-07 16:21:17.555574741 +0530
++++ asn1c-patched-mirror2/skeletons/NativeEnumerated.c	2026-08-07 20:25:01.615620742 +0530
+@@ -118,6 +118,10 @@
+ 	}
+ 
+ 	if(ct && ct->range_bits >= 0) {
++		/* ALIGNED PER (see ADR-0031): X.691 clause 21 (ENUMERATED) has its own dedicated
++		 * encoding procedure, distinct from an ordinary constrained-whole-number VALUE field
++		 * (per_support.h's aper_align_get_nbits) -- never octet-aligned, same as CHOICE's
++		 * presence index (constr_CHOICE.c). Same bit-packed behavior in both PER variants. */
+ 		value = per_get_few_bits(pd, ct->range_bits);
+ 		if(value < 0) ASN__DECODE_STARVED;
+ 		if(value >= (specs->extension
+@@ -204,6 +208,7 @@
+ 	}
+ 
+ 	if(ct && ct->range_bits >= 0) {
++		/* ALIGNED PER (see ADR-0031): symmetric with the decode-side comment above. */
+ 		if(per_put_few_bits(po, value, ct->range_bits))
+ 			ASN__ENCODE_FAILED;
+ 		ASN__ENCODED_OK(er);
+diff -ru asn1c-orig-mirror/skeletons/OCTET_STRING.c asn1c-patched-mirror2/skeletons/OCTET_STRING.c
+--- asn1c-orig-mirror/skeletons/OCTET_STRING.c	2026-08-07 16:21:17.543434679 +0530
++++ asn1c-patched-mirror2/skeletons/OCTET_STRING.c	2026-08-07 20:25:01.600824168 +0530
+@@ -1410,19 +1410,19 @@
+ 	case ASN_OSUBV_STR:
+ 		canonical_unit_bits = unit_bits = 8;
+ 		if(cval->flags & APC_CONSTRAINED)
+-			unit_bits = cval->range_bits;
++			unit_bits = aper_char_unit_bits(pd->aligned, (unsigned)cval->range_bits);
+ 		bpc = OS__BPC_CHAR;
+ 		break;
+ 	case ASN_OSUBV_U16:
+ 		canonical_unit_bits = unit_bits = 16;
+ 		if(cval->flags & APC_CONSTRAINED)
+-			unit_bits = cval->range_bits;
++			unit_bits = aper_char_unit_bits(pd->aligned, (unsigned)cval->range_bits);
+ 		bpc = OS__BPC_U16;
+ 		break;
+ 	case ASN_OSUBV_U32:
+ 		canonical_unit_bits = unit_bits = 32;
+ 		if(cval->flags & APC_CONSTRAINED)
+-			unit_bits = cval->range_bits;
++			unit_bits = aper_char_unit_bits(pd->aligned, (unsigned)cval->range_bits);
+ 		bpc = OS__BPC_U32;
+ 		break;
+ 	}
+@@ -1464,6 +1464,11 @@
+ 	/* X.691, #16.7: long fixed length encoding (up to 64K octets) */
+ 	if(csiz->effective_bits == 0) {
+ 		int ret;
++		/* ALIGNED PER (see ADR-0031): #16.7 -- fixed-size content wider than 2 octets (16
++		 * bits) is octet-aligned before the content; #16.6's <=2-octet case is not. */
++		if(pd->aligned && unit_bits * csiz->upper_bound > 16) {
++			if(per_get_align(pd) < 0) RETURN(RC_WMORE);
++		}
+ 		if(bpc) {
+ 			ASN_DEBUG("Encoding OCTET STRING size %ld",
+ 				csiz->upper_bound);
+@@ -1504,6 +1509,12 @@
+ 		if(!p) RETURN(RC_FAIL);
+ 		st->buf = (uint8_t *)p;
+ 
++        /* ALIGNED PER (see ADR-0031, per_support.h's aper_char_unit_bits comment): character
++         * content starts octet-aligned, separately from the length determinant's own alignment
++         * (a length with effective_bits<=8, like AMFName's, is read with no preceding padding,
++         * so the position right after it is not itself byte-aligned). No-op when already
++         * aligned, so safe to call unconditionally here. */
++        if(pd->aligned && per_get_align(pd) < 0) RETURN(RC_WMORE);
+         ret = OCTET_STRING_per_get_characters(pd, &st->buf[st->size], raw_len,
+                                               bpc, unit_bits, cval->lower_bound,
+                                               cval->upper_bound, pc);
+@@ -1562,14 +1573,14 @@
+ 	case ASN_OSUBV_STR:
+ 		canonical_unit_bits = unit_bits = 8;
+ 		if(cval->flags & APC_CONSTRAINED)
+-			unit_bits = cval->range_bits;
++			unit_bits = aper_char_unit_bits(po->aligned, (unsigned)cval->range_bits);
+ 		bpc = OS__BPC_CHAR;
+ 		size_in_units = st->size;
+ 		break;
+ 	case ASN_OSUBV_U16:
+ 		canonical_unit_bits = unit_bits = 16;
+ 		if(cval->flags & APC_CONSTRAINED)
+-			unit_bits = cval->range_bits;
++			unit_bits = aper_char_unit_bits(po->aligned, (unsigned)cval->range_bits);
+ 		bpc = OS__BPC_U16;
+ 		size_in_units = st->size >> 1;
+ 		if(st->size & 1) {
+@@ -1580,7 +1591,7 @@
+ 	case ASN_OSUBV_U32:
+ 		canonical_unit_bits = unit_bits = 32;
+ 		if(cval->flags & APC_CONSTRAINED)
+-			unit_bits = cval->range_bits;
++			unit_bits = aper_char_unit_bits(po->aligned, (unsigned)cval->range_bits);
+ 		bpc = OS__BPC_U32;
+ 		size_in_units = st->size >> 2;
+ 		if(st->size & 3) {
+@@ -1622,9 +1633,35 @@
+     if(csiz->effective_bits >= 0 && !inext) {
+         ASN_DEBUG("Encoding %" ASN_PRI_SIZE " bytes (%ld), length in %d bits", st->size,
+                   size_in_units - csiz->lower_bound, csiz->effective_bits);
+-        ret = per_put_few_bits(po, size_in_units - csiz->lower_bound,
+-                               csiz->effective_bits);
+-        if(ret) ASN__ENCODE_FAILED;
++        if(csiz->effective_bits == 0) {
++            /* ALIGNED PER (see ADR-0031): #16.6/#16.7 -- fixed-size content wider than 2 octets
++             * (16 bits) is octet-aligned before the content; the effective_bits==0 "length" write
++             * below is a no-op either way. IMPORTANT: no *further* alignment call belongs after
++             * this branch -- a short (<=2 octet) fixed-size OCTET/BIT STRING (e.g. NGAP's SST)
++             * must NOT be aligned at all per #16.6, and this branch already handles the >2-octet
++             * case itself. A first version of this patch wrongly added an unconditional
++             * content-alignment call after this whole if/else (matching AMFName's variable-length
++             * case below), which corrupted every short fixed-size field's value -- found via a
++             * standalone S-NSSAI round-trip test (sst=1 silently became sst=0) after the real
++             * gNB's AMF-selection logic rejected our NGSetupResponse for exactly this reason. */
++            if(po->aligned && unit_bits * size_in_units > 16) {
++                if(per_put_align(po)) ASN__ENCODE_FAILED;
++            }
++            ret = per_put_few_bits(po, 0, 0);
++            if(ret) ASN__ENCODE_FAILED;
++        } else {
++            /* ALIGNED PER: #11.5.7.4 via the effective_bits threshold. */
++            int nbits = aper_align_length_put_nbits(po, csiz->effective_bits);
++            if(nbits < 0) ASN__ENCODE_FAILED;
++            ret = per_put_few_bits(po, size_in_units - csiz->lower_bound, nbits);
++            if(ret) ASN__ENCODE_FAILED;
++            /* ALIGNED PER (see ADR-0031): character content starts octet-aligned, separately
++             * from the length's own alignment -- see the decode-side comment in
++             * OCTET_STRING_decode_uper's variable-length loop for the empirical evidence (this
++             * is the effective_bits<=8, e.g. AMFName, case that motivated it). No-op when
++             * already aligned. */
++            if(po->aligned && per_put_align(po)) ASN__ENCODE_FAILED;
++        }
+         ret = OCTET_STRING_per_put_characters(po, st->buf, size_in_units, bpc,
+                                               unit_bits, cval->lower_bound,
+                                               cval->upper_bound, pc);
+@@ -1644,6 +1681,8 @@
+         ASN_DEBUG("Encoding %" ASN_PRI_SSIZE " of %" ASN_PRI_SIZE "%s", may_save, size_in_units,
+                   need_eom ? ",+EOM" : "");
+ 
++        /* ALIGNED PER (see ADR-0031): symmetric with the decode-side content alignment above. */
++        if(po->aligned && per_put_align(po)) ASN__ENCODE_FAILED;
+         ret = OCTET_STRING_per_put_characters(po, buf, may_save, bpc, unit_bits,
+                                               cval->lower_bound,
+                                               cval->upper_bound, pc);
+diff -ru asn1c-orig-mirror/skeletons/per_decoder.c asn1c-patched-mirror2/skeletons/per_decoder.c
+--- asn1c-orig-mirror/skeletons/per_decoder.c	2026-08-07 16:21:17.536551306 +0530
++++ asn1c-patched-mirror2/skeletons/per_decoder.c	2026-08-07 20:25:01.595822770 +0530
+@@ -7,13 +7,18 @@
+  * The complete encoding contains at least one byte, and is an integral
+  * multiple of 8 bytes.
+  */
+-asn_dec_rval_t
+-uper_decode_complete(const asn_codec_ctx_t *opt_codec_ctx,
+-                     const asn_TYPE_descriptor_t *td, void **sptr,
+-                     const void *buffer, size_t size) {
++static asn_dec_rval_t per_decode_internal(const asn_codec_ctx_t *opt_codec_ctx,
++                                          const asn_TYPE_descriptor_t *td, void **sptr,
++                                          const void *buffer, size_t size, int skip_bits,
++                                          int unused_bits, int aligned);
++
++static asn_dec_rval_t
++per_decode_complete_internal(const asn_codec_ctx_t *opt_codec_ctx,
++                             const asn_TYPE_descriptor_t *td, void **sptr,
++                             const void *buffer, size_t size, int aligned) {
+     asn_dec_rval_t rval;
+ 
+-	rval = uper_decode(opt_codec_ctx, td, sptr, buffer, size, 0, 0);
++	rval = per_decode_internal(opt_codec_ctx, td, sptr, buffer, size, 0, 0, aligned);
+ 	if(rval.consumed) {
+ 		/*
+ 		 * We've always given 8-aligned data,
+@@ -38,10 +43,16 @@
+ 	return rval;
+ }
+ 
+-asn_dec_rval_t
+-uper_decode(const asn_codec_ctx_t *opt_codec_ctx,
+-            const asn_TYPE_descriptor_t *td, void **sptr, const void *buffer,
+-            size_t size, int skip_bits, int unused_bits) {
++/*
++ * Shared by uper_decode() and aper_decode() (see ADR-0031): both dispatch through the same
++ * per-type td->op->uper_decoder function pointer -- alignment behavior is selected at runtime via
++ * pd.aligned, consulted by the length-determinant/constrained-whole-number helpers in
++ * per_support.c, not by which function is generated.
++ */
++static asn_dec_rval_t
++per_decode_internal(const asn_codec_ctx_t *opt_codec_ctx,
++                    const asn_TYPE_descriptor_t *td, void **sptr, const void *buffer,
++                    size_t size, int skip_bits, int unused_bits, int aligned) {
+     asn_codec_ctx_t s_codec_ctx;
+ 	asn_dec_rval_t rval;
+ 	asn_per_data_t pd;
+@@ -69,6 +80,7 @@
+ 
+ 	/* Fill in the position indicator */
+ 	memset(&pd, 0, sizeof(pd));
++	pd.aligned = aligned;
+ 	pd.buffer = (const uint8_t *)buffer;
+ 	pd.nboff = skip_bits;
+ 	pd.nbits = 8 * size - unused_bits; /* 8 is CHAR_BIT from <limits.h> */
+@@ -95,3 +107,31 @@
+ 	return rval;
+ }
+ 
++asn_dec_rval_t
++uper_decode_complete(const asn_codec_ctx_t *opt_codec_ctx,
++                     const asn_TYPE_descriptor_t *td, void **sptr,
++                     const void *buffer, size_t size) {
++    return per_decode_complete_internal(opt_codec_ctx, td, sptr, buffer, size, 0);
++}
++
++asn_dec_rval_t
++aper_decode_complete(const asn_codec_ctx_t *opt_codec_ctx,
++                     const asn_TYPE_descriptor_t *td, void **sptr,
++                     const void *buffer, size_t size) {
++    return per_decode_complete_internal(opt_codec_ctx, td, sptr, buffer, size, 1);
++}
++
++asn_dec_rval_t
++uper_decode(const asn_codec_ctx_t *opt_codec_ctx,
++            const asn_TYPE_descriptor_t *td, void **sptr, const void *buffer,
++            size_t size, int skip_bits, int unused_bits) {
++    return per_decode_internal(opt_codec_ctx, td, sptr, buffer, size, skip_bits, unused_bits, 0);
++}
++
++asn_dec_rval_t
++aper_decode(const asn_codec_ctx_t *opt_codec_ctx,
++           const asn_TYPE_descriptor_t *td, void **sptr, const void *buffer,
++           size_t size, int skip_bits, int unused_bits) {
++    return per_decode_internal(opt_codec_ctx, td, sptr, buffer, size, skip_bits, unused_bits, 1);
++}
++
+diff -ru asn1c-orig-mirror/skeletons/per_decoder.h asn1c-patched-mirror2/skeletons/per_decoder.h
+--- asn1c-orig-mirror/skeletons/per_decoder.h	2026-08-07 16:21:17.534000953 +0530
++++ asn1c-patched-mirror2/skeletons/per_decoder.h	2026-08-07 20:25:01.593822211 +0530
+@@ -27,6 +27,19 @@
+ );
+ 
+ /*
++ * Aligned PER decoder of a "complete encoding" (X.691). See ADR-0031: this project's own addition
++ * on top of vanilla asn1c 0.9.29, which only ships Unaligned PER. Dispatches through the same
++ * per-type td->op->uper_decoder as uper_decode_complete() -- only the alignment behavior differs.
++ */
++asn_dec_rval_t aper_decode_complete(
++    const struct asn_codec_ctx_s *opt_codec_ctx,
++    const struct asn_TYPE_descriptor_s *type_descriptor,
++    void **struct_ptr,
++    const void *buffer,
++    size_t size
++);
++
++/*
+  * Unaligned PER decoder of any ASN.1 type. May be invoked by the application.
+  * WARNING: This call returns the number of BITS read from the stream. Beware.
+  */
+@@ -40,6 +53,17 @@
+     int unused_bits     /* Number of unused tailing bits, 0..7 */
+ );
+ 
++/* Aligned PER variant of uper_decode(). See ADR-0031. */
++asn_dec_rval_t aper_decode(
++    const struct asn_codec_ctx_s *opt_codec_ctx,
++    const struct asn_TYPE_descriptor_s *type_descriptor,
++    void **struct_ptr,
++    const void *buffer,
++    size_t size,
++    int skip_bits,
++    int unused_bits
++);
++
+ 
+ /*
+  * Type of the type-specific PER decoder function.
+diff -ru asn1c-orig-mirror/skeletons/per_encoder.c asn1c-patched-mirror2/skeletons/per_encoder.c
+--- asn1c-orig-mirror/skeletons/per_encoder.c	2026-08-07 16:21:17.531693036 +0530
++++ asn1c-patched-mirror2/skeletons/per_encoder.c	2026-08-07 20:25:01.591517912 +0530
+@@ -12,10 +12,18 @@
+     return 0;
+ }
+ 
+-asn_enc_rval_t
+-uper_encode(const asn_TYPE_descriptor_t *td,
+-            const asn_per_constraints_t *constraints, const void *sptr,
+-            asn_app_consume_bytes_f *cb, void *app_key) {
++/*
++ * Shared by uper_encode() and aper_encode() (see ADR-0031): both dispatch through the same
++ * per-type td->op->uper_encoder function pointer -- asn1c generates one PER encoder per type
++ * regardless of alignment; alignment behavior is selected at runtime via po.aligned, consulted by
++ * the length-determinant/constrained-whole-number helpers in per_support.c, not by which function
++ * is generated. "aligned" here means Aligned PER (X.691), not the confusingly-similar-sounding
++ * "uper_encoder" member name (a legacy name predating that split).
++ */
++static asn_enc_rval_t
++per_encode_internal(const asn_TYPE_descriptor_t *td,
++                    const asn_per_constraints_t *constraints, const void *sptr,
++                    asn_app_consume_bytes_f *cb, void *app_key, int aligned) {
+     asn_per_outp_t po;
+     asn_enc_rval_t er;
+ 
+@@ -31,6 +39,7 @@
+     po.output = cb ? cb : ignore_output;
+     po.op_key = app_key;
+     po.flushed_bytes = 0;
++    po.aligned = aligned;
+ 
+     er = td->op->uper_encoder(td, constraints, sptr, &po);
+     if(er.encoded != -1) {
+@@ -47,6 +56,20 @@
+     return er;
+ }
+ 
++asn_enc_rval_t
++uper_encode(const asn_TYPE_descriptor_t *td,
++            const asn_per_constraints_t *constraints, const void *sptr,
++            asn_app_consume_bytes_f *cb, void *app_key) {
++    return per_encode_internal(td, constraints, sptr, cb, app_key, 0);
++}
++
++asn_enc_rval_t
++aper_encode(const asn_TYPE_descriptor_t *td,
++           const asn_per_constraints_t *constraints, const void *sptr,
++           asn_app_consume_bytes_f *cb, void *app_key) {
++    return per_encode_internal(td, constraints, sptr, cb, app_key, 1);
++}
++
+ /*
+  * Argument type and callback necessary for uper_encode_to_buffer().
+  */
+@@ -81,6 +104,20 @@
+     return uper_encode(td, constraints, sptr, encode_to_buffer_cb, &key);
+ }
+ 
++asn_enc_rval_t
++aper_encode_to_buffer(const asn_TYPE_descriptor_t *td,
++                      const asn_per_constraints_t *constraints,
++                      const void *sptr, void *buffer, size_t buffer_size) {
++    enc_to_buf_arg key;
++
++    key.buffer = buffer;
++    key.left = buffer_size;
++
++    if(td) ASN_DEBUG("Encoding \"%s\" using ALIGNED PER", td->name);
++
++    return per_encode_internal(td, constraints, sptr, encode_to_buffer_cb, &key, 1);
++}
++
+ typedef struct enc_dyn_arg {
+ 	void *buffer;
+ 	size_t length;
+@@ -110,16 +147,16 @@
+     arg->length += size;
+     return 0;
+ }
+-ssize_t
+-uper_encode_to_new_buffer(const asn_TYPE_descriptor_t *td,
+-                          const asn_per_constraints_t *constraints,
+-                          const void *sptr, void **buffer_r) {
++static ssize_t
++per_encode_to_new_buffer_internal(const asn_TYPE_descriptor_t *td,
++                                  const asn_per_constraints_t *constraints,
++                                  const void *sptr, void **buffer_r, int aligned) {
+     asn_enc_rval_t er;
+ 	enc_dyn_arg key;
+ 
+ 	memset(&key, 0, sizeof(key));
+ 
+-	er = uper_encode(td, constraints, sptr, encode_dyn_cb, &key);
++	er = per_encode_internal(td, constraints, sptr, encode_dyn_cb, &key, aligned);
+ 	switch(er.encoded) {
+ 	case -1:
+ 		FREEMEM(key.buffer);
+@@ -141,6 +178,20 @@
+ 	}
+ }
+ 
++ssize_t
++uper_encode_to_new_buffer(const asn_TYPE_descriptor_t *td,
++                          const asn_per_constraints_t *constraints,
++                          const void *sptr, void **buffer_r) {
++    return per_encode_to_new_buffer_internal(td, constraints, sptr, buffer_r, 0);
++}
++
++ssize_t
++aper_encode_to_new_buffer(const asn_TYPE_descriptor_t *td,
++                          const asn_per_constraints_t *constraints,
++                          const void *sptr, void **buffer_r) {
++    return per_encode_to_new_buffer_internal(td, constraints, sptr, buffer_r, 1);
++}
++
+ /*
+  * Internally useful functions.
+  */
+diff -ru asn1c-orig-mirror/skeletons/per_encoder.h asn1c-patched-mirror2/skeletons/per_encoder.h
+--- asn1c-orig-mirror/skeletons/per_encoder.h	2026-08-07 16:21:17.529279329 +0530
++++ asn1c-patched-mirror2/skeletons/per_encoder.h	2026-08-07 20:25:01.589821093 +0530
+@@ -29,6 +29,20 @@
+ );
+ 
+ /*
++ * Aligned PER encoder of any ASN.1 type (X.691). See ADR-0031: this project's own addition on top
++ * of vanilla asn1c 0.9.29, which only ships Unaligned PER. Dispatches through the same per-type
++ * td->op->uper_encoder as uper_encode() -- only the alignment behavior (threaded via
++ * asn_per_outp_t::aligned) differs.
++ */
++asn_enc_rval_t aper_encode(
++    const struct asn_TYPE_descriptor_s *type_descriptor,
++    const asn_per_constraints_t *constraints,
++    const void *struct_ptr,
++    asn_app_consume_bytes_f *consume_bytes_cb,
++    void *app_key
++);
++
++/*
+  * A variant of uper_encode() which encodes data into the existing buffer
+  * WARNING: This function returns the number of encoded bits in the .encoded
+  * field of the return value.
+@@ -41,6 +55,15 @@
+     size_t buffer_size      /* Initial buffer size (max) */
+ );
+ 
++/* Aligned PER variant of uper_encode_to_buffer(). See ADR-0031. */
++asn_enc_rval_t aper_encode_to_buffer(
++    const struct asn_TYPE_descriptor_s *type_descriptor,
++    const asn_per_constraints_t *constraints,
++    const void *struct_ptr,
++    void *buffer,
++    size_t buffer_size
++);
++
+ /*
+  * A variant of uper_encode_to_buffer() which allocates buffer itself.
+  * Returns the number of bytes in the buffer or -1 in case of failure.
+@@ -55,6 +78,14 @@
+     void **buffer_r         /* Buffer allocated and returned */
+ );
+ 
++/* Aligned PER variant of uper_encode_to_new_buffer(). See ADR-0031. */
++ssize_t aper_encode_to_new_buffer(
++    const struct asn_TYPE_descriptor_s *type_descriptor,
++    const asn_per_constraints_t *constraints,
++    const void *struct_ptr,
++    void **buffer_r
++);
++
+ /*
+  * Type of the generic PER encoder function.
+  */
+diff -ru asn1c-orig-mirror/skeletons/per_opentype.c asn1c-patched-mirror2/skeletons/per_opentype.c
+--- asn1c-orig-mirror/skeletons/per_opentype.c	2026-08-07 16:21:17.539636092 +0530
++++ asn1c-patched-mirror2/skeletons/per_opentype.c	2026-08-07 20:25:01.598384208 +0530
+@@ -35,7 +35,12 @@
+ 
+     ASN_DEBUG("Open type put %s ...", td->name);
+ 
+-    size = uper_encode_to_new_buffer(td, constraints, sptr, &buf);
++    /* ALIGNED PER (see ADR-0031): the open type's content is itself a nested "complete
++     * encoding" per X.691 #10.9, encoded with the same alignment mode as the enclosing PDU --
++     * this was hardcoded to the Unaligned encoder regardless of the outer call, the encode-side
++     * mirror of the decode-side spd.aligned bug fixed just above in this same file. */
++    size = po->aligned ? aper_encode_to_new_buffer(td, constraints, sptr, &buf)
++                       : uper_encode_to_new_buffer(td, constraints, sptr, &buf);
+     if(size <= 0) return -1;
+ 
+     ASN_DEBUG("Open type put %s of length %" ASN_PRI_SSIZE " + overhead (1byte?)", td->name,
+@@ -109,6 +114,14 @@
+ 		(long)bufLen);
+ 
+ 	memset(&spd, 0, sizeof(spd));
++	/* ALIGNED PER (see ADR-0031): the open type's content is itself a nested "complete
++	 * encoding" per X.691 #10.9, decoded with the same alignment mode as the enclosing PDU --
++	 * memset() above zeroes this out, which silently forced Unaligned-PER decoding for
++	 * everything inside every open type regardless of the outer call. Confirmed empirically
++	 * against a real gNB: this project's own NGSetupRequest/etc. concrete-container IEs are
++	 * wrapped exactly like this (see specs/NGAP/ngap-17.9.asn's ConcreteProtocolIE-Field), so
++	 * this bug affected every message this project handles, not just NGAP's own open types. */
++	spd.aligned = pd->aligned;
+ 	spd.buffer = buf;
+ 	spd.nbits = bufLen << 3;
+ 
+diff -ru asn1c-orig-mirror/skeletons/per_support.c asn1c-patched-mirror2/skeletons/per_support.c
+--- asn1c-orig-mirror/skeletons/per_support.c	2026-08-07 16:21:17.527037130 +0530
++++ asn1c-patched-mirror2/skeletons/per_support.c	2026-08-07 20:25:01.587820534 +0530
+@@ -19,11 +19,20 @@
+ 
+     /* #11.9.4.1 Encoding if constrained (according to effective bits) */
+     if(ebits >= 0 && ebits <= 16) {
++        /* ALIGNED PER (see ADR-0031): this is a LENGTH determinant, not a plain value field --
++         * per_support.h's aper_align_length_get_nbits (not the value-field variant): no
++         * alignment when ebits<=8, octet-align and widen to 16 bits when ebits is 9..16. */
++        ebits = aper_align_length_get_nbits(pd, ebits);
++        if(ebits < 0) return -1;
+         value = per_get_few_bits(pd, ebits);
+         if(value >= 0) value += lower_bound;
+         return value;
+     }
+ 
++    /* ALIGNED PER: the general (unconstrained/large) length determinant always starts
++     * octet-aligned, per #10.9.3.4. */
++    if(pd->aligned && per_get_align(pd) < 0) return -1;
++
+ 	value = per_get_few_bits(pd, 8);
+     if((value & 0x80) == 0) { /* #11.9.3.6 */
+         return (value & 0x7F);
+@@ -120,8 +129,13 @@
+ }
+ 
+ 
+-/* X.691-2008/11, #11.5.6 -> #11.3 */
+-int uper_get_constrained_whole_number(asn_per_data_t *pd, unsigned long *out_value, int nbits) {
++/* X.691-2008/11, #11.5.6 -> #11.3
++ * Raw (no alignment) constrained-whole-number reader. per_get_few_bits itself only supports up to
++ * 31 bits per call (see asn_get_few_bits's own doc comment), so anything wider than that is split
++ * into a 31-bit chunk plus a recursive remainder -- purely a mechanical consequence of that
++ * per-call limit, unrelated to X.691 alignment. */
++static int
++uper_get_constrained_whole_number_raw(asn_per_data_t *pd, unsigned long *out_value, int nbits) {
+ 	unsigned long lhalf;    /* Lower half of the number*/
+ 	long half;
+ 
+@@ -138,28 +152,110 @@
+ 	half = per_get_few_bits(pd, 31);
+ 	if(half < 0) return -1;
+ 
+-	if(uper_get_constrained_whole_number(pd, &lhalf, nbits - 31))
++	if(uper_get_constrained_whole_number_raw(pd, &lhalf, nbits - 31))
+ 		return -1;
+ 
+ 	*out_value = ((unsigned long)half << (nbits - 31)) | lhalf;
+ 	return 0;
+ }
+ 
++int uper_get_constrained_whole_number(asn_per_data_t *pd, unsigned long *out_value, int nbits) {
++	if(!pd->aligned || nbits <= 16) {
++		/* ALIGNED PER (see ADR-0031): align + widen to a whole octet count exactly ONCE,
++		 * based on the caller's true nbits, before uper_get_constrained_whole_number_raw's own
++		 * <=31-bit-per-call splitting. This project's first attempt applied per_support.h's
++		 * aper_align_value_get_nbits *inside* the nbits<=31 recursive base case instead, which
++		 * wrongly re-aligned mid-value for any range needing recursion at all (nbits>31). */
++		nbits = aper_align_value_get_nbits(pd, nbits);
++		if(nbits < 0) return -1;
++		return uper_get_constrained_whole_number_raw(pd, out_value, nbits);
++	}
+ 
+-/* X.691-2008/11, #11.5.6 -> #11.3 */
+-int
+-uper_put_constrained_whole_number_u(asn_per_outp_t *po, unsigned long v,
+-                                    int nbits) {
++	/* ALIGNED PER, range needing MORE than 2 octets (nbits>16): X.691 #11.5.7.4's "large" case
++	 * is NOT a fixed-width encoding at all -- confirmed the hard way (a first attempt that
++	 * fixed-width-encoded this in ceil(nbits/8) octets failed against a real gNB): the real
++	 * encoding is a small, UNALIGNED selector (ceil(log2(max_octets)) bits, no padding before
++	 * it) choosing how many octets (1..max_octets) represent THIS SPECIFIC value, THEN
++	 * octet-alignment, THEN the value in exactly that many octets (big-endian, minimum
++	 * representation -- i.e. the same "how many octets does this value actually need" logic an
++	 * unconstrained/general integer uses, just with a bounded selector width instead of a full
++	 * length determinant, since the range bounds how large the selector can ever need to be).
++	 * Confirmed byte-for-byte against a real gNB's own reference asn1c encoder (compiled from
++	 * simulators/ransim/vendor/UERANSIM's vendored sources as an oracle): RAN-UE-NGAP-ID
++	 * (INTEGER(0..4294967295), nbits=32, max_octets=4) encoding value 1 produces a 2-bit
++	 * selector (value 0, "1 octet used"), then 6 bits of alignment padding, then one octet
++	 * (0x01) -- exactly "00 01" over the wire, not the 4-octet fixed-width encoding this
++	 * project's prior two attempts both (wrongly) assumed. */
++	{
++		const int max_octets = (nbits + 7) / 8;
++		int selector_bits = 0;
++		long sel;
++		int actual_octets;
++		unsigned long v = 0;
++		int i;
++		while((1 << selector_bits) < max_octets) selector_bits++;
++		sel = per_get_few_bits(pd, selector_bits);
++		if(sel < 0) return -1;
++		actual_octets = (int)sel + 1;
++		if(actual_octets > max_octets) return -1;
++		if(per_get_align(pd) < 0) return -1;
++		for(i = 0; i < actual_octets; i++) {
++			const long byte = per_get_few_bits(pd, 8);
++			if(byte < 0) return -1;
++			v = (v << 8) | (unsigned long)byte;
++		}
++		*out_value = v;
++		return 0;
++	}
++}
++
++
++/* X.691-2008/11, #11.5.6 -> #11.3. Raw (no alignment) counterpart of
++ * uper_get_constrained_whole_number_raw above -- see its comment for why the >31-bit split exists. */
++static int
++uper_put_constrained_whole_number_u_raw(asn_per_outp_t *po, unsigned long v, int nbits) {
+     if(nbits <= 31) {
+         return per_put_few_bits(po, v, nbits);
+     } else {
+         /* Put higher portion first, followed by lower 31-bit */
+-        if(uper_put_constrained_whole_number_u(po, v >> 31, nbits - 31))
++        if(uper_put_constrained_whole_number_u_raw(po, v >> 31, nbits - 31))
+             return -1;
+         return per_put_few_bits(po, v, 31);
+     }
+ }
+ 
++int
++uper_put_constrained_whole_number_u(asn_per_outp_t *po, unsigned long v,
++                                    int nbits) {
++    if(!po->aligned || nbits <= 16) {
++        /* ALIGNED PER (see ADR-0031): symmetric with uper_get_constrained_whole_number's
++         * align-once-before-splitting fix above. */
++        nbits = aper_align_value_put_nbits(po, nbits);
++        if(nbits < 0) return -1;
++        return uper_put_constrained_whole_number_u_raw(po, v, nbits);
++    }
++
++    /* ALIGNED PER, range needing MORE than 2 octets: symmetric with
++     * uper_get_constrained_whole_number's "selector + align + minimum octets" fix above -- see
++     * its comment for the empirical evidence (X.691 #11.5.7.4). */
++    {
++        const int max_octets = (nbits + 7) / 8;
++        int selector_bits = 0;
++        int actual_octets = 1;
++        unsigned long t = v >> 8;
++        int i;
++        while((1 << selector_bits) < max_octets) selector_bits++;
++        while(t) { actual_octets++; t >>= 8; }
++        if(actual_octets > max_octets) return -1;
++        if(per_put_few_bits(po, actual_octets - 1, selector_bits)) return -1;
++        if(per_put_align(po)) return -1;
++        for(i = actual_octets - 1; i >= 0; i--) {
++            if(per_put_few_bits(po, (int)((v >> (8 * i)) & 0xFF), 8)) return -1;
++        }
++        return 0;
++    }
++}
++
+ /*
+  * X.691 (08/2015) #11.9 "General rules for encoding a length determinant"
+  * Put the length "n" (or part of it) into the stream.
+@@ -169,6 +265,12 @@
+     int dummy = 0;
+     if(!need_eom) need_eom = &dummy;
+ 
++    /* ALIGNED PER (see ADR-0031): the general (unconstrained/large) length determinant always
++     * starts octet-aligned, per #10.9.3.4 -- this function is only ever used for that case
++     * (small, SIZE-constrained lengths go through the ebits<=16 fast path callers use directly,
++     * e.g. OCTET_STRING.c/constr_SEQUENCE_OF.c, patched separately). */
++    if(po->aligned && per_put_align(po)) return -1;
++
+     if(length <= 127) {	/* #11.9.3.6 */
+         *need_eom = 0;
+         return per_put_few_bits(po, length, 8)
+diff -ru asn1c-orig-mirror/skeletons/per_support.h asn1c-patched-mirror2/skeletons/per_support.h
+--- asn1c-orig-mirror/skeletons/per_support.h	2026-08-07 16:21:17.525180072 +0530
++++ asn1c-patched-mirror2/skeletons/per_support.h	2026-08-07 20:25:01.586467527 +0530
+@@ -40,6 +40,7 @@
+ #define per_get_undo(data, bits)   asn_get_undo(data, bits)
+ #define per_get_many_bits(data, dst, align, bits) \
+     asn_get_many_bits(data, dst, align, bits)
++#define per_get_align(data)   asn_get_align(data)
+ 
+ /*
+  * X.691 (08/2015) #11.9 "General rules for encoding a length determinant"
+@@ -67,6 +68,96 @@
+ #define per_put_few_bits(out, bits, obits) asn_put_few_bits(out, bits, obits)
+ #define per_put_many_bits(out, src, nbits) asn_put_many_bits(out, src, nbits)
+ #define per_put_aligned_flush(out) asn_put_aligned_flush(out)
++#define per_put_align(out)   asn_put_align(out)
++
++/*
++ * X.691, ALIGNED PER variant of encoding a constrained whole number -- see ADR-0031. Two distinct
++ * rules exist, confirmed by real-gNB (UERANSIM nr-gnb) interop testing to differ specifically at
++ * nbits<=8 (both agree for 8<nbits<=16: octet-align, then exactly 16 bits):
++ *
++ * 1. VALUE fields (#11.5.7 for an ordinary INTEGER-typed field, e.g. NGAP's ProcedureCode or
++ *    ProtocolIE-ID): ALWAYS octet-align first, even for nbits<=8 -- confirmed empirically:
++ *    InitiatingMessage's procedureCode (INTEGER(0..255), range_bits=8) landed on a clean octet
++ *    boundary in a real captured NGSetupRequest, not packed directly after the preceding CHOICE
++ *    index bits as this project first (wrongly) assumed. Use aper_align_value_get/put_nbits.
++ * 2. LENGTH/COUNT determinants (#10.9.3.3's small-range shortcut, used for a SIZE-constrained
++ *    string/SEQUENCE-OF/SET-OF/BIT-STRING/OCTET-STRING's element count or character count): do
++ *    NOT align when nbits<=8 -- confirmed empirically against the SAME real gNB's own reference
++ *    asn1c-based decoder (compiled from simulators/ransim/vendor/UERANSIM's own vendored asn1c
++ *    sources as an oracle, itself independently confirming X.691's behavior): AMFName's implicit
++ *    length (PrintableString SIZE(1..150,...), effective_bits=8) is read as a plain 8-bit value
++ *    immediately following the 1-bit size-extension flag, no padding in between. This project's
++ *    first attempt wrongly applied the VALUE-field alignment rule here too, corrupting every
++ *    SIZE-constrained string/list this project encodes or decodes. Use aper_align_length_get/
++ *    put_nbits. (ConcreteProtocolIE-Container's own count, effective_bits=16, already falls in
++ *    the 9-16 bracket where both rules agree, so it doesn't disambiguate the <=8 case by itself --
++ *    the AMFName evidence above is what pins it down.)
++ *
++ * nbits > 16 is not exercised by this project's current NGAP message set for either rule;
++ * best-effort octet-alignment + round-up is applied rather than silently left unaligned, but this
++ * path is unverified against a real peer -- flagged, not guessed, per this project's disclosure
++ * rule.
++ *
++ * Do NOT use either of these for CHOICE presence index, ENUMERATED root-value index, or
++ * SEQUENCE-OF/SET-OF small-range element count's *own* encoding call site in
++ * constr_CHOICE.c/NativeEnumerated.c -- wait, SEQUENCE-OF/SET-OF's count IS a length/count
++ * determinant (rule 2 above, used in constr_SEQUENCE_OF.c/constr_SET_OF.c); only CHOICE index and
++ * ENUMERATED root-value index are exempt from BOTH rules entirely (X.691 gives them their own
++ * dedicated, non-11.5/non-10.9.3.3 procedures) -- ALWAYS bit-packed with no alignment regardless
++ * of range, matching Unaligned PER exactly. Confirmed by the same real-gNB test: the 1-bit
++ * extension flag and 2-bit CHOICE index that precede procedureCode in the captured bytes are
++ * packed with zero padding between them.
++ *
++ * Returns the bit width to actually use for the surrounding per_get_few_bits/per_put_few_bits
++ * call, or -1 if alignment I/O failed. Unaligned callers (pd->aligned/po->aligned == 0) get nbits
++ * back unchanged.
++ */
++static inline int
++aper_align_value_get_nbits(asn_per_data_t *pd, int nbits) {
++    if(!pd->aligned || nbits <= 0) return nbits;
++    if(per_get_align(pd) < 0) return -1;
++    return nbits <= 8 ? 8 : nbits <= 16 ? 16 : (((nbits + 7) >> 3) << 3);
++}
++static inline int
++aper_align_value_put_nbits(asn_per_outp_t *po, int nbits) {
++    if(!po->aligned || nbits <= 0) return nbits;
++    if(per_put_align(po)) return -1;
++    return nbits <= 8 ? 8 : nbits <= 16 ? 16 : (((nbits + 7) >> 3) << 3);
++}
++static inline int
++aper_align_length_get_nbits(asn_per_data_t *pd, int nbits) {
++    if(!pd->aligned || nbits <= 8) return nbits;
++    if(per_get_align(pd) < 0) return -1;
++    return nbits <= 16 ? 16 : (((nbits + 7) >> 3) << 3);
++}
++static inline int
++aper_align_length_put_nbits(asn_per_outp_t *po, int nbits) {
++    if(!po->aligned || nbits <= 8) return nbits;
++    if(per_put_align(po)) return -1;
++    return nbits <= 16 ? 16 : (((nbits + 7) >> 3) << 3);
++}
++
++/*
++ * X.691 clause 27 (character string types), ALIGNED PER variant -- see ADR-0031. A PER-visible
++ * character/alphabet constraint's exact minimal bit width (e.g. 7 bits for a 91-symbol
++ * PrintableString alphabet spanning 32..122) is only used as-is by Unaligned PER. The Aligned
++ * variant instead rounds the per-character unit up to the smallest "canonical" width in
++ * {1, 2, 4, 8, 16, 32} bits -- confirmed empirically against a real gNB's own reference asn1c
++ * decoder (compiled from simulators/ransim/vendor/UERANSIM's vendored sources as an oracle):
++ * AMFName (PrintableString, alphabet range_bits=7) is packed 8 bits/character in Aligned PER, not
++ * 7 -- this project's first attempt used the raw range_bits unconditionally, corrupting every
++ * PER-visible-alphabet-constrained string this project encodes or decodes.
++ */
++static inline unsigned int
++aper_char_unit_bits(int aligned, unsigned int range_bits) {
++    if(!aligned) return range_bits;
++    if(range_bits <= 1) return 1;
++    if(range_bits <= 2) return 2;
++    if(range_bits <= 4) return 4;
++    if(range_bits <= 8) return 8;
++    if(range_bits <= 16) return 16;
++    return 32;
++}
+ 
+ 
+ /*

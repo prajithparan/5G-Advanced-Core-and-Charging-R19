@@ -7,8 +7,10 @@ endif()
 project(5gc-r19
     VERSION 0.1.0
     DESCRIPTION "5G Advanced Core and Charging R-19"
-    LANGUAGES CXX
+    LANGUAGES CXX C
 )
+# C is needed only for libs/ngap-generated's asn1c output (ADR-0030) -- every NF/lib's own code
+# remains C++23; this doesn't relax that.
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,6 +49,8 @@ include(CTest)
 add_subdirectory(libs/sbi-core)
 add_subdirectory(libs/sbi-generated)
 add_subdirectory(libs/aka-crypto)
+add_subdirectory(libs/ngap-generated)
+add_subdirectory(libs/ngap-core)
 add_subdirectory(nfs/nrf)
 add_subdirectory(nfs/amf)
 add_subdirectory(nfs/smf)

@@ -116,4 +116,24 @@ Kseaf derive_kseaf(const Kausf& kausf, const std::string& serving_network_name) 
     return generic_kdf(to_bytes(kausf), 0x6C, {to_bytes(serving_network_name)});
 }
 
+Kamf derive_kamf(const Kseaf& kseaf, const std::string& supi, const Abba& abba) {
+    return generic_kdf(to_bytes(kseaf), 0x6D, {to_bytes(supi), to_bytes(abba)});
+}
+
+NasEncKey derive_knas_enc(const Kamf& kamf, uint8_t algorithm_identity) {
+    const auto out = generic_kdf(to_bytes(kamf), 0x69,
+                                  {{kNasEncAlgorithmDistinguisher}, {algorithm_identity}});
+    NasEncKey key{};
+    std::copy(out.begin() + 16, out.end(), key.begin());  // rightmost 128 bits
+    return key;
+}
+
+NasIntKey derive_knas_int(const Kamf& kamf, uint8_t algorithm_identity) {
+    const auto out = generic_kdf(to_bytes(kamf), 0x69,
+                                  {{kNasIntAlgorithmDistinguisher}, {algorithm_identity}});
+    NasIntKey key{};
+    std::copy(out.begin() + 16, out.end(), key.begin());  // rightmost 128 bits
+    return key;
+}
+
 }  // namespace aka_crypto
