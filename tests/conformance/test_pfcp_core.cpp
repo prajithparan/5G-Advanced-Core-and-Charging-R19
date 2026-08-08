@@ -5,6 +5,7 @@
 #include "pfcp_core/common_ies.hpp"
 #include "pfcp_core/header.hpp"
 #include "pfcp_core/ie.hpp"
+#include "pfcp_core/session_ies.hpp"
 
 #include <gtest/gtest.h>
 
@@ -142,4 +143,105 @@ TEST(PfcpCommonIes, NodeIdIpv4RejectsWrongType) {
 TEST(PfcpCommonIes, FunctionFeaturesNoneAreCorrectLength) {
     EXPECT_EQ(pfcp_core::encode_up_function_features_none().size(), 2u);
     EXPECT_EQ(pfcp_core::encode_cp_function_features_none().size(), 1u);
+}
+
+TEST(PfcpSessionIes, SourceAndDestinationInterfaceRoundTrip) {
+    const auto src = pfcp_core::encode_source_interface(pfcp_core::InterfaceValue::Access);
+    EXPECT_EQ(src, (std::vector<std::uint8_t>{0x00}));
+    const auto dst = pfcp_core::encode_destination_interface(pfcp_core::InterfaceValue::Core);
+    EXPECT_EQ(dst, (std::vector<std::uint8_t>{0x01}));
+    EXPECT_EQ(pfcp_core::decode_interface_value(src), pfcp_core::InterfaceValue::Access);
+    EXPECT_EQ(pfcp_core::decode_interface_value(dst), pfcp_core::InterfaceValue::Core);
+}
+
+TEST(PfcpSessionIes, PdrIdRoundTrips) {
+    const auto bytes = pfcp_core::encode_pdr_id(1);
+    EXPECT_EQ(bytes, (std::vector<std::uint8_t>{0x00, 0x01}));
+    EXPECT_EQ(pfcp_core::decode_pdr_id(bytes), 1u);
+}
+
+TEST(PfcpSessionIes, PrecedenceRoundTrips) {
+    const auto bytes = pfcp_core::encode_precedence(100);
+    const auto decoded = pfcp_core::decode_precedence(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, 100u);
+}
+
+TEST(PfcpSessionIes, FarIdRoundTrips) {
+    const auto bytes = pfcp_core::encode_far_id(1);
+    const auto decoded = pfcp_core::decode_far_id(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, 1u);
+}
+
+TEST(PfcpSessionIes, ApplyActionForwardIsDetected) {
+    const auto bytes = pfcp_core::encode_apply_action_forward();
+    EXPECT_TRUE(pfcp_core::decode_apply_action_has_forward(bytes));
+    EXPECT_FALSE(pfcp_core::decode_apply_action_has_forward({0x00})); // DROP only
+}
+
+TEST(PfcpSessionIes, FTeidChooseRequestRoundTrips) {
+    const auto bytes = pfcp_core::encode_f_teid_choose_ipv4();
+    EXPECT_EQ(bytes, (std::vector<std::uint8_t>{0x05})); // V4|CH
+    EXPECT_TRUE(pfcp_core::decode_f_teid_is_choose_request(bytes));
+}
+
+TEST(PfcpSessionIes, FTeidAllocatedRoundTrips) {
+    const std::array<std::uint8_t, 4> ip{10, 0, 0, 5};
+    const auto bytes = pfcp_core::encode_f_teid_allocated_ipv4(0x12345678, ip);
+    ASSERT_EQ(bytes.size(), 9u);
+    EXPECT_FALSE(pfcp_core::decode_f_teid_is_choose_request(bytes));
+    const auto decoded = pfcp_core::decode_f_teid_allocated_ipv4(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->teid, 0x12345678u);
+    EXPECT_EQ(decoded->ipv4, ip);
+}
+
+TEST(PfcpSessionIes, FTeidAllocatedRejectsChooseFlagSet) {
+    const auto choose_bytes = pfcp_core::encode_f_teid_choose_ipv4();
+    EXPECT_FALSE(pfcp_core::decode_f_teid_allocated_ipv4(choose_bytes).has_value());
+}
+
+TEST(PfcpSessionIes, FSeidRoundTrips) {
+    pfcp_core::FSeid seid;
+    seid.seid = 0x0123456789ABCDEFULL;
+    seid.ipv4 = {127, 0, 0, 1};
+    const auto bytes = pfcp_core::encode_f_seid_ipv4(seid);
+    ASSERT_EQ(bytes.size(), 13u);
+    const auto decoded = pfcp_core::decode_f_seid_ipv4(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->seid, seid.seid);
+    EXPECT_EQ(decoded->ipv4, seid.ipv4);
+}
+
+TEST(PfcpSessionIes, GroupedIeRoundTripsViaExistingIeCodec) {
+    // Create PDR (grouped): PDR ID + Precedence + PDI(grouped: Source Interface) + FAR ID --
+    // confirms encode_ie/decode_ies (built for flat IEs) work unmodified for grouped IEs too, per
+    // TS 29.244 §7.2.3.3's own statement that a grouped IE's value is just concatenated child IEs.
+    std::vector<std::uint8_t> pdi;
+    pfcp_core::encode_ie(pdi, static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface),
+                         pfcp_core::encode_source_interface(pfcp_core::InterfaceValue::Access));
+
+    std::vector<std::uint8_t> pdr;
+    pfcp_core::encode_ie(pdr, static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
+                         pfcp_core::encode_pdr_id(1));
+    pfcp_core::encode_ie(pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Precedence),
+                         pfcp_core::encode_precedence(100));
+    pfcp_core::encode_ie(pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi), pdi);
+    pfcp_core::encode_ie(pdr, static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
+                         pfcp_core::encode_far_id(1));
+
+    const auto pdr_ies = pfcp_core::decode_ies(pdr);
+    ASSERT_TRUE(pdr_ies.has_value());
+    ASSERT_EQ(pdr_ies->size(), 4u);
+
+    const auto* pdi_ie = pfcp_core::find_ie(*pdr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi));
+    ASSERT_NE(pdi_ie, nullptr);
+    const auto pdi_ies = pfcp_core::decode_ies(pdi_ie->value);
+    ASSERT_TRUE(pdi_ies.has_value());
+    ASSERT_EQ(pdi_ies->size(), 1u);
+    const auto* src_if_ie = pfcp_core::find_ie(
+        *pdi_ies, static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface));
+    ASSERT_NE(src_if_ie, nullptr);
+    EXPECT_EQ(pfcp_core::decode_interface_value(src_if_ie->value), pfcp_core::InterfaceValue::Access);
 }

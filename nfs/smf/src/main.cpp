@@ -52,6 +52,7 @@
 #include "pfcp_core/common_ies.hpp"
 #include "pfcp_core/header.hpp"
 #include "pfcp_core/ie.hpp"
+#include "pfcp_core/session_ies.hpp"
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -72,8 +73,11 @@
 #include <sys/socket.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <ctime>
+#include <functional>
+#include <mutex>
 #include <optional>
 #include <thread>
 
@@ -252,7 +256,93 @@ std::string discover_upf_ipv4(sbi_core::http2::Client& http_client, sbi_core::OA
 // blocking-transport thread in this project (ADR-0006/ADR-0030). Retries the whole procedure
 // (T1 timer + N1 retries per TS 29.244 SS6.4, both this build's own reasonable fixed choices --
 // the spec leaves the exact values implementation-specific) until UPF replies with Cause=accepted.
-void run_pfcp_lifecycle(const std::string& smf_instance_id) {
+// This lab's loopback-only scope, reused by both PFCP client call sites below.
+constexpr std::array<std::uint8_t, 4> kSmfNodeIpv4{127, 0, 0, 1};
+
+// SO_RCVTIMEO on the underlying descriptor: Boost.Asio's synchronous socket API has no built-in
+// receive timeout, and this project's established pattern for blocking-transport code is direct
+// POSIX socket calls where Asio doesn't cover something (see libs/ngap-core's own SCTP wrapper) --
+// consistent with that, not a new precedent.
+void configure_pfcp_receive_timeout(boost::asio::ip::udp::socket& socket) {
+    constexpr timeval kReceiveTimeout{.tv_sec = 2, .tv_usec = 0};
+    setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &kReceiveTimeout,
+              sizeof(kReceiveTimeout));
+}
+
+// Sends a PFCP request and waits for a response matching both the expected message type and
+// sequence number, retrying (T1=2s timeout via configure_pfcp_receive_timeout, N1=3 attempts per
+// TS 29.244 §6.4 -- this build's own reasonable fixed choices, the spec leaves them
+// implementation-specific) before giving up. Returns the response's IE-region bytes on success.
+// Shared by run_pfcp_lifecycle's Association Setup (Stage 2) and
+// perform_n4_session_establishment's Session Establishment (Stage 3, ADR-0042) -- both need
+// identical send/wait/retry mechanics, just different request bytes and expected response type.
+std::optional<std::vector<std::uint8_t>> send_pfcp_request_and_await_response(
+    boost::asio::ip::udp::socket& socket, const boost::asio::ip::udp::endpoint& target,
+    const std::vector<std::uint8_t>& request_pdu, pfcp_core::MessageType expected_response_type,
+    std::uint32_t expected_sequence_number, const std::string& procedure_name) {
+    constexpr int kN1Retries = 3;
+    for (int attempt = 0; attempt < kN1Retries; ++attempt) {
+        boost::system::error_code send_ec;
+        socket.send_to(boost::asio::buffer(request_pdu), target, 0, send_ec);
+        if (send_ec) {
+            spdlog::warn("smf: PFCP {} send failed: {}", procedure_name, send_ec.message());
+            continue;
+        }
+
+        std::vector<std::uint8_t> recv_buf(2048);
+        boost::asio::ip::udp::endpoint sender;
+        boost::system::error_code recv_ec;
+        const std::size_t n = socket.receive_from(boost::asio::buffer(recv_buf), sender, 0, recv_ec);
+        if (recv_ec) {
+            spdlog::warn("smf: PFCP {} attempt {} timed out, retrying", procedure_name, attempt + 1);
+            continue;
+        }
+
+        const std::vector<std::uint8_t> resp(recv_buf.begin(),
+                                              recv_buf.begin() + static_cast<std::ptrdiff_t>(n));
+        std::size_t offset = 0;
+        std::uint16_t ies_length = 0;
+        const auto resp_header = pfcp_core::decode_header(resp, offset, ies_length);
+        if (!resp_header.has_value() || resp_header->message_type != expected_response_type ||
+            resp_header->sequence_number != expected_sequence_number) {
+            spdlog::warn("smf: PFCP response wasn't a matching {} response, ignoring and retrying",
+                        procedure_name);
+            continue;
+        }
+        if (offset + ies_length > resp.size()) {
+            spdlog::warn("smf: PFCP {} response length field overruns the datagram, retrying",
+                        procedure_name);
+            continue;
+        }
+        return std::vector<std::uint8_t>(resp.begin() + static_cast<std::ptrdiff_t>(offset),
+                                         resp.begin() + static_cast<std::ptrdiff_t>(offset + ies_length));
+    }
+    spdlog::warn("smf: PFCP {} exhausted {} retries", procedure_name, kN1Retries);
+    return std::nullopt;
+}
+
+// Thread-safe holder for the UPF endpoint learned via run_pfcp_lifecycle's real Nnrf_NFDiscovery +
+// Association Setup (Stage 2) -- read by CreateSMContext's route handler (the ioc thread) to
+// perform Stage 3's real N4 Session Establishment. Deferred from Stage 2 on purpose (ADR-0041:
+// "nothing reads it yet") until this stage actually needed it -- exactly the kind of storage
+// CLAUDE.md's engineering rules say not to add before there's a real reader.
+class UpfEndpointStore {
+public:
+    void set(std::string ipv4) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ipv4_ = std::move(ipv4);
+    }
+    std::optional<std::string> get() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return ipv4_;
+    }
+
+private:
+    std::mutex mutex_;
+    std::optional<std::string> ipv4_;
+};
+
+void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& upf_endpoint_store) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/smf/cert.pem",
         .key_path = CERTS_DIR "/smf/key.pem",
@@ -269,17 +359,7 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id) {
     boost::asio::ip::udp::socket socket(ioc, boost::asio::ip::udp::v4());
     const boost::asio::ip::udp::endpoint upf_endpoint(
         boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
-
-    // SO_RCVTIMEO on the underlying descriptor: Boost.Asio's synchronous socket API has no
-    // built-in receive timeout, and this project's established pattern for blocking-transport
-    // code is direct POSIX socket calls where Asio doesn't cover something (see libs/ngap-core's
-    // own SCTP wrapper) -- consistent with that, not a new precedent.
-    constexpr timeval kReceiveTimeout{.tv_sec = 2, .tv_usec = 0};
-    setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &kReceiveTimeout,
-              sizeof(kReceiveTimeout));
-
-    constexpr std::array<std::uint8_t, 4> kSmfNodeIpv4{127, 0, 0, 1}; // this lab's loopback-only scope
-    constexpr int kN1Retries = 3;
+    configure_pfcp_receive_timeout(socket);
 
     while (true) {
         pfcp_core::Header req_header;
@@ -298,65 +378,145 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id) {
         auto pdu = pfcp_core::encode_header(req_header, static_cast<std::uint16_t>(ies.size()));
         pdu.insert(pdu.end(), ies.begin(), ies.end());
 
-        bool accepted = false;
-        for (int attempt = 0; attempt < kN1Retries && !accepted; ++attempt) {
-            boost::system::error_code send_ec;
-            socket.send_to(boost::asio::buffer(pdu), upf_endpoint, 0, send_ec);
-            if (send_ec) {
-                spdlog::warn("smf: PFCP Association Setup send failed: {}", send_ec.message());
-                continue;
-            }
+        const auto resp_ie_bytes = send_pfcp_request_and_await_response(
+            socket, upf_endpoint, pdu, pfcp_core::MessageType::AssociationSetupResponse,
+            req_header.sequence_number, "Association Setup");
+        const auto resp_ies =
+            resp_ie_bytes.has_value() ? pfcp_core::decode_ies(*resp_ie_bytes) : std::nullopt;
+        const auto* cause_ie =
+            resp_ies.has_value()
+                ? pfcp_core::find_ie(*resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
+                : nullptr;
+        const auto cause =
+            cause_ie != nullptr ? pfcp_core::decode_cause(cause_ie->value) : std::nullopt;
 
-            std::vector<std::uint8_t> recv_buf(2048);
-            boost::asio::ip::udp::endpoint sender;
-            boost::system::error_code recv_ec;
-            const std::size_t n =
-                socket.receive_from(boost::asio::buffer(recv_buf), sender, 0, recv_ec);
-            if (recv_ec) {
-                spdlog::warn("smf: PFCP Association Setup attempt {} timed out, retrying",
-                            attempt + 1);
-                continue;
-            }
-
-            const std::vector<std::uint8_t> resp(recv_buf.begin(),
-                                                  recv_buf.begin() + static_cast<std::ptrdiff_t>(n));
-            std::size_t offset = 0;
-            std::uint16_t ies_length = 0;
-            const auto resp_header = pfcp_core::decode_header(resp, offset, ies_length);
-            if (!resp_header.has_value() ||
-                resp_header->message_type != pfcp_core::MessageType::AssociationSetupResponse ||
-                resp_header->sequence_number != req_header.sequence_number) {
-                spdlog::warn("smf: PFCP response wasn't a matching Association Setup Response, "
-                            "ignoring and retrying");
-                continue;
-            }
-            const std::vector<std::uint8_t> resp_ie_bytes(
-                resp.begin() + static_cast<std::ptrdiff_t>(offset),
-                resp.begin() + static_cast<std::ptrdiff_t>(offset + ies_length));
-            const auto resp_ies = pfcp_core::decode_ies(resp_ie_bytes);
-            const auto* cause_ie =
-                resp_ies.has_value()
-                    ? pfcp_core::find_ie(*resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
-                    : nullptr;
-            const auto cause = cause_ie != nullptr ? pfcp_core::decode_cause(cause_ie->value)
-                                                   : std::nullopt;
-            if (cause.has_value() && *cause == pfcp_core::Cause::RequestAccepted) {
-                accepted = true;
-                spdlog::info("smf: PFCP Sx Association established with UPF at {}", upf_ip);
-            } else {
-                spdlog::warn("smf: UPF rejected PFCP Association Setup (cause={}), retrying",
-                            cause.has_value() ? static_cast<int>(*cause) : -1);
-            }
-        }
-
-        if (accepted) {
+        if (cause.has_value() && *cause == pfcp_core::Cause::RequestAccepted) {
+            spdlog::info("smf: PFCP Sx Association established with UPF at {}", upf_ip);
+            upf_endpoint_store.set(upf_ip);
             return;
         }
-        spdlog::warn("smf: PFCP Association Setup exhausted {} retries, backing off and "
+        spdlog::warn("smf: PFCP Association Setup did not succeed (cause={}), backing off and "
                     "restarting the procedure",
-                    kN1Retries);
+                    cause.has_value() ? static_cast<int>(*cause) : -1);
         std::this_thread::sleep_for(std::chrono::seconds(5));
     }
+}
+
+// Real N4 Session Establishment (TS 29.244 §7.5.2/§7.5.3, ADR-0042), SMF's side. Builds one
+// uplink PDR (PDR ID=1, Source Interface=Access, F-TEID CH-requested so UPF allocates its own
+// local GTP-U endpoint) associated with one FAR (FAR ID=1, Apply Action=FORW, Destination
+// Interface=Core) -- the minimal real slice TS 23.502's PDU Session Establishment needs. No
+// downlink PDR/FAR: that needs the gNB's N3 GTP-U endpoint (NGAP PDU Session Resource Setup,
+// still not implemented -- see nfs/upf/src/main.cpp's own disclosure). Best-effort: failure is
+// logged, not fatal to CreateSMContext's own 201 response, same discipline ADR-0038 already
+// established for the N1N2MessageTransfer call below this one in the handler.
+bool perform_n4_session_establishment(const std::string& upf_ip, std::uint8_t pdu_session_id) {
+    boost::asio::io_context ioc;
+    boost::asio::ip::udp::socket socket(ioc, boost::asio::ip::udp::v4());
+    const boost::asio::ip::udp::endpoint upf_endpoint(
+        boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
+    configure_pfcp_receive_timeout(socket);
+
+    static std::atomic<std::uint64_t> next_cp_seid{1};
+    const std::uint64_t cp_seid = next_cp_seid++;
+
+    std::vector<std::uint8_t> pdi;
+    pfcp_core::encode_ie(pdi, static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface),
+                         pfcp_core::encode_source_interface(pfcp_core::InterfaceValue::Access));
+    pfcp_core::encode_ie(pdi, static_cast<std::uint16_t>(pfcp_core::IeType::FTeid),
+                         pfcp_core::encode_f_teid_choose_ipv4());
+
+    std::vector<std::uint8_t> create_pdr;
+    pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
+                         pfcp_core::encode_pdr_id(1));
+    pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Precedence),
+                         pfcp_core::encode_precedence(100));
+    pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi), pdi);
+    pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
+                         pfcp_core::encode_far_id(1));
+
+    std::vector<std::uint8_t> forwarding_parameters;
+    pfcp_core::encode_ie(forwarding_parameters,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::DestinationInterface),
+                         pfcp_core::encode_destination_interface(pfcp_core::InterfaceValue::Core));
+
+    std::vector<std::uint8_t> create_far;
+    pfcp_core::encode_ie(create_far, static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
+                         pfcp_core::encode_far_id(1));
+    pfcp_core::encode_ie(create_far, static_cast<std::uint16_t>(pfcp_core::IeType::ApplyAction),
+                         pfcp_core::encode_apply_action_forward());
+    pfcp_core::encode_ie(create_far, static_cast<std::uint16_t>(pfcp_core::IeType::ForwardingParameters),
+                         forwarding_parameters);
+
+    pfcp_core::FSeid cp_f_seid;
+    cp_f_seid.seid = cp_seid;
+    cp_f_seid.ipv4 = kSmfNodeIpv4;
+
+    std::vector<std::uint8_t> ies;
+    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+                         pfcp_core::encode_node_id_ipv4(kSmfNodeIpv4));
+    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::FSeid),
+                         pfcp_core::encode_f_seid_ipv4(cp_f_seid));
+    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatePdr), create_pdr);
+    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreateFar), create_far);
+
+    pfcp_core::Header req_header;
+    // Sx Session Establishment Request always has S=1 with SEID=0 -- UP's own SEID for this
+    // session doesn't exist yet (TS 29.244 §7.2.2.4.2's explicit list of when SEID=0 is used).
+    req_header.has_seid = true;
+    req_header.seid = 0;
+    req_header.message_type = pfcp_core::MessageType::SessionEstablishmentRequest;
+    req_header.sequence_number = 1;
+
+    auto pdu = pfcp_core::encode_header(req_header, static_cast<std::uint16_t>(ies.size()));
+    pdu.insert(pdu.end(), ies.begin(), ies.end());
+
+    const auto resp_ie_bytes = send_pfcp_request_and_await_response(
+        socket, upf_endpoint, pdu, pfcp_core::MessageType::SessionEstablishmentResponse,
+        req_header.sequence_number, "Session Establishment");
+    if (!resp_ie_bytes.has_value()) {
+        return false;
+    }
+    const auto resp_ies = pfcp_core::decode_ies(*resp_ie_bytes);
+    const auto* cause_ie =
+        resp_ies.has_value()
+            ? pfcp_core::find_ie(*resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
+            : nullptr;
+    const auto cause = cause_ie != nullptr ? pfcp_core::decode_cause(cause_ie->value) : std::nullopt;
+    if (!cause.has_value() || *cause != pfcp_core::Cause::RequestAccepted) {
+        spdlog::warn("smf: UPF rejected N4 Session Establishment for pduSessionId {} (cause={})",
+                    pdu_session_id, cause.has_value() ? static_cast<int>(*cause) : -1);
+        return false;
+    }
+
+    std::optional<pfcp_core::FSeid> up_f_seid;
+    if (const auto* up_f_seid_ie =
+            pfcp_core::find_ie(*resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::FSeid));
+        up_f_seid_ie != nullptr) {
+        up_f_seid = pfcp_core::decode_f_seid_ipv4(up_f_seid_ie->value);
+    }
+    std::optional<std::uint32_t> allocated_teid;
+    if (const auto* created_pdr_ie =
+            pfcp_core::find_ie(*resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatedPdr));
+        created_pdr_ie != nullptr) {
+        if (const auto created_pdr_ies = pfcp_core::decode_ies(created_pdr_ie->value);
+            created_pdr_ies.has_value()) {
+            if (const auto* f_teid_ie = pfcp_core::find_ie(
+                    *created_pdr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::FTeid));
+                f_teid_ie != nullptr) {
+                if (const auto allocated = pfcp_core::decode_f_teid_allocated_ipv4(f_teid_ie->value);
+                    allocated.has_value()) {
+                    allocated_teid = allocated->teid;
+                }
+            }
+        }
+    }
+
+    spdlog::info("smf: N4 Session Establishment succeeded for pduSessionId {}, UPF F-SEID={:#x}, "
+                "allocated uplink F-TEID={:#x}",
+                pdu_session_id, up_f_seid.has_value() ? up_f_seid->seid : 0,
+                allocated_teid.value_or(0));
+    return true;
 }
 
 } // namespace
@@ -410,6 +570,7 @@ int main() {
                                      "AMF");
 
     smf::SmContextStore sm_contexts;
+    UpfEndpointStore upf_endpoint_store;
 
     auto meter = sbi_core::get_meter("smf");
     auto create_counter =
@@ -436,7 +597,7 @@ int main() {
         "POST",
         std::string(kApiRoot) + "/sm-contexts",
         [&verifier, &sm_contexts, &create_counter, &pcf_client, &pcf_oauth,
-         &pcf_sm_policy_create_counter, &amf_client, &amf_oauth,
+         &pcf_sm_policy_create_counter, &amf_client, &amf_oauth, &upf_endpoint_store,
          &n1n2_transfer_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -531,6 +692,20 @@ int main() {
                 sm_context_ref,
                 json{{"smPolicyId", sm_policy_id}, {"policy", json(decision)}});
             pcf_sm_policy_create_counter->Add(1);
+
+            // ADR-0042: real N4 Session Establishment with UPF, using the Sx Association Stage 2
+            // already proved (run_pfcp_lifecycle populates upf_endpoint_store once, at startup).
+            // Best-effort, matching the N1N2MessageTransfer call below: no real datapath exists
+            // yet (Stage 4), so a failure here is disclosed via a log line, not fatal to this
+            // response -- the real gap it would block on (no UPF discovered yet) shouldn't also
+            // block CreateSMContext's own already-real PCF/AMF work.
+            if (const auto upf_ip = upf_endpoint_store.get(); upf_ip.has_value()) {
+                perform_n4_session_establishment(*upf_ip, static_cast<std::uint8_t>(*body->pduSessionId));
+            } else {
+                spdlog::warn("smf: no UPF Sx Association established yet, skipping N4 Session "
+                            "Establishment for pduSessionId {}",
+                            *body->pduSessionId);
+            }
 
             // ADR-0038: the real TS 23.502 §4.3.2.2.1 step 11 -- SMF decodes the UE's actual PDU
             // Session Establishment Request (forwarded by AMF as n1SmMsg, ADR-0038, not the
@@ -781,7 +956,7 @@ int main() {
         });
 
     std::thread(run_nrf_lifecycle, smf_instance_id).detach();
-    std::thread(run_pfcp_lifecycle, smf_instance_id).detach();
+    std::thread(run_pfcp_lifecycle, smf_instance_id, std::ref(upf_endpoint_store)).detach();
 
     server.start();
     spdlog::info("smf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);

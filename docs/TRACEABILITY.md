@@ -628,25 +628,29 @@ in this table. `ue.yaml`'s `op` field and three missing UAC fields were fixed as
 found along the way (ADR-0030/ADR-0032) -- this config file had never actually been run against
 real `nr-ue` before this staged effort.
 
-## UPF PFCP/N4 (staged plan, Phase 3 Stage 0-2, ADR-0039/ADR-0040/ADR-0041)
+## UPF PFCP/N4 (staged plan, Phase 3 Stage 0-3, ADR-0039/ADR-0040/ADR-0041/ADR-0042)
 
 PFCP (TS 29.244) has no OpenAPI YAML -- see ADR-0039 for the real spec source used instead (the
 official 3GPP TS 29.244 V14.3.0 PDF, vendored at `specs/PFCP/29244-e30.pdf`).
 
-**As of ADR-0041, Sx Association Setup is verified by two independently-built processes (real
-`smf` + real `upf`) genuinely interoperating over real PFCP wire bytes** -- not just a hand-crafted
-test script anymore (superseding the "Not reachable live" style caveat this table would otherwise
-carry, matching how the AMF/NGAP table above was superseded once real `nr-ue` interop landed).
+**As of ADR-0042, a real PDU Session Establishment (real `nr-ue` -> real `amf` -> real `smf`)
+creates a real N4 session on real `upf`, end to end, first attempt, zero regressions** -- the same
+"two independently-built processes genuinely interoperating over real wire bytes" bar the AMF/NGAP
+table above met once real `nr-ue` interop landed, now met for the N4 side too.
 
 | Procedure | TS clause / message | Test |
 |---|---|---|
 | PFCP message header encode/decode (node-related and session-related forms) | TS 29.244 §7.2.2 | 5 unit tests (`tests/conformance/test_pfcp_core.cpp`, `PfcpHeader.*`) -- byte-exact layout checks against the real spec figures, round-trips, malformed-input rejection |
-| PFCP Information Element TLV encode/decode | TS 29.244 §8.1.1 | 2 unit tests (`PfcpIe.*`) plus 5 more for the specific IEs used (Cause, Recovery Time Stamp, Node ID IPv4, UP/CP Function Features -- `PfcpCommonIes.*`) |
+| PFCP Information Element TLV encode/decode, including grouped IEs | TS 29.244 §8.1.1/§7.2.3.3 | 2 unit tests (`PfcpIe.*`) plus 5 for common IEs (`PfcpCommonIes.*`) plus 10 for session IEs including a dedicated grouped-IE round-trip test (`PfcpSessionIes.*`) -- see ADR-0042 |
 | UPF -> NRF `PUT /nnrf-nfm/v1/nf-instances/{id}` (`NFType=UPF`, real `upfInfo`) | TS 29.510 `Nnrf_NFManagement` | Real interop: real NRF, real HTTP 201, confirmed in `nrf`'s own log (`registered new NF instance ... type=UPF`) |
 | SMF -> NRF `GET /nnrf-disc/v1/nf-instances?target-nf-type=UPF` (`SearchNFInstances`) | TS 29.510 `Nnrf_NFDiscovery` | Real interop: real HTTP 200 from real NRF, real UPF `ipv4Addresses` extracted -- confirmed in `smf`'s own log (`discovered UPF at 127.0.0.1 via Nnrf_NFDiscovery`). First real use of this NRF capability anywhere in this project; every other NF-to-NF call still uses a hardcoded base URL -- see ADR-0041 |
 | Sx Heartbeat Request/Response | TS 29.244 §7.4.2 | Real interop, verified two ways: (1) a hand-crafted PFCP datagram (ADR-0040) and (2) implicitly exercised by the same codec paths Association Setup below proves against a real independent peer |
 | Sx Association Setup Request/Response | TS 29.244 §7.4.4.1/§7.4.4.2 | Real interop between two independently-built processes: real `smf` (client) and real `upf` (server), neither aware of the other's internals. `smf`'s log: `PFCP Sx Association established with UPF at 127.0.0.1`; `upf`'s own independently-generated log: `Sx Association Setup accepted from 127.0.0.1`. Node ID/Cause/Recovery Time Stamp/CP-and-UP Function Features all decoded correctly on both sides. See ADR-0041 |
+| Sx Session Establishment Request/Response (one uplink PDR/FAR: Source Interface=Access, F-TEID CH-allocation, FAR Apply Action=FORW/Destination Interface=Core) | TS 29.244 §7.5.2/§7.5.3 | Real interop, triggered by a real `nr-ue` PDU Session Establishment via real `amf`->`smf`->`upf`. `smf`'s log: `N4 Session Establishment succeeded for pduSessionId 1, UPF F-SEID=0x1, allocated uplink F-TEID=0x1`, correctly ordered before the PDU Session Establishment Accept delivery (matching TS 23.502's real step order). `upf`'s own independently-generated log: `allocated F-TEID 0x1 for PDR ID 1` / `Sx Session established from 127.0.0.1`. See ADR-0042 |
 
-**Disclosed, deliberate scope limit (not yet a gap to close)**: the established Sx Association's
-UPF endpoint is not yet persisted anywhere `CreateSMContext` can read it -- nothing needs it until
-Stage 3 (real N4 Session Establishment) actually wires a session through it. See ADR-0041.
+**Disclosed gap, not yet closed**: only an uplink PDR/FAR is created -- the downlink direction
+needs the gNB's real N3 GTP-U endpoint (TEID+IP), which requires NGAP PDU Session Resource Setup
+(still not implemented). No packet forwarding datapath exists yet either (Stage 4, eBPF/XDP --
+ADR-0039's own evaluated choice): UPF allocates a real F-TEID and echoes it back, but no packet
+ever actually flows through it. Both disclosed plainly in `nfs/upf/src/main.cpp`'s own header
+comment, not left for a reader to discover. See ADR-0042.

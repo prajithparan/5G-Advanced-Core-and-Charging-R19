@@ -8,6 +8,7 @@ add_library(pfcp_core STATIC
     src/header.cpp
     src/ie.cpp
     src/common_ies.cpp
+    src/session_ies.cpp
 )
 
 target_include_directories(pfcp_core PUBLIC

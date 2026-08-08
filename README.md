@@ -29,7 +29,7 @@ spec text. Full conventions are in [`CLAUDE.md`](CLAUDE.md).
 | 1 | Codegen spine: `tools/sbi-codegen`, generated DTOs/serializers from the R19 YAML | Done |
 | — | TLS 1.3 + mTLS across `libs/sbi-core` (closes ADR-0005, required before Phase 2 per ADR-0009) | Done |
 | 2 | Control-plane core: NRF, AMF, SMF, UDM, UDR, AUSF, PCF; UE registration + PDU session establishment end-to-end | Done |
-| 3 | User plane: N4/PFCP, UPF datapath | In progress (Stage 0-2 done: PFCP codec, UPF registers with NRF and answers Heartbeat/Association Setup, SMF discovers UPF via real Nnrf_NFDiscovery and establishes a real Sx Association) |
+| 3 | User plane: N4/PFCP, UPF datapath | In progress (Stage 0-3 done: PFCP codec, UPF registers with NRF and answers Heartbeat/Association Setup/Session Establishment, SMF discovers UPF via real Nnrf_NFDiscovery, establishes a real Sx Association, and creates a real N4 session as part of every PDU Session Establishment. Stage 4, the eBPF/XDP datapath itself, remains) |
 | 4 | Charging + TM Forum SID/BSS layer | Not started |
 | 5 | NWDAF + AI/ML pipelines | Not started |
 | 6 | R19 feature NFs (AIOTF, 5MBS, SEPP, ...) | Not started |
