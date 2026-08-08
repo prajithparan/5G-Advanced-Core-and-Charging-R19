@@ -5,6 +5,7 @@ add_library(aka_crypto STATIC
     src/kdf.cpp
     src/eap_aka_prime.cpp
     src/hex.cpp
+    src/nas_security.cpp
 )
 
 target_include_directories(aka_crypto PUBLIC

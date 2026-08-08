@@ -1730,3 +1730,692 @@ wiring remains open; per this ADR, the real blocker is a NAS/N1 Registration tri
 substantially larger effort (NGAP stack, ADR-0016) than a wiring turn -- worth surfacing as its own
 decision point (build NGAP now vs. keep deferring AMF-side policy) rather than assuming the next
 turn is automatically "wire AMF too."
+
+---
+
+## ADR-0030: NGAP/N2 transport infrastructure (SCTP, ASN.1 PER codegen) for AMF's Registration path
+
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Context:** ADR-0029 left AMF->PCF wiring open specifically because there is no real NAS/N1
+Registration trigger in this build. The user chose to build that trigger for real: NGAP (N2,
+gNB<->AMF, TS 38.413, ASN.1 PER over SCTP) and NAS-5GS (N1, UE<->AMF, TS 24.501), ending in a real
+`CreateIndividualAMPolicyAssociation` call to PCF. This ADR covers the transport/codegen
+infrastructure stage (Stage 0 of a staged plan); the NGAP/NAS procedure implementation itself is
+covered by later ADRs as each stage lands. Planned and approved via Claude Code's plan-mode
+workflow after three parallel research passes (AMF/sbi-core conventions, UERANSIM's real NG-Setup
+through Registration message sequence with file:line evidence, and the asn1c/SCTP toolchain
+state) -- see the plan file's own findings for the full trail; this ADR records the decisions that
+came out of it.
+
+**SCTP: system `libsctp-dev` (kernel one-to-one sockets), not vcpkg.** vcpkg has no
+kernel-SCTP-socket port -- its only SCTP-adjacent port, `usrsctp`, is Google's userspace-over-UDP
+stack (built for WebRTC data channels), not a binding to the Linux kernel SCTP the way NGAP/N2
+actually runs. `libsctp-dev`/`libsctp1` were already installed on this system
+(`/usr/include/netinet/sctp.h` present). New `libs/ngap-core` wraps a raw
+`socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP)` one-to-one socket (`accept()` returns a fully
+connected per-association socket directly, the same model as a TCP listening socket -- no
+`SCTP_ASSOC_CHANGE` notification handling needed, unlike a one-to-many `SOCK_SEQPACKET` socket
+multiplexing several associations over one fd). `sctp_sendmsg`/`sctp_recvmsg` call shapes (PPID
+placement, flag handling, `RECEIVE_BUFFER_SIZE`) were copied from
+`simulators/ransim/vendor/UERANSIM/src/lib/sctp/internal.cpp` -- a working reference
+implementation already building and (per ADR-0016) attempting to connect against this exact lab --
+not written from the `sctp_sendmsg` man page alone. NGAP's PPID is 60, confirmed against
+UERANSIM's own `src/lib/sctp/types.hpp`, not from memory. Boost.Asio (already this project's
+event-loop library for SBI/HTTP2) has no native SCTP support, so `SctpSocket` is meant to be
+driven from a dedicated blocking-I/O thread, the same discipline ADR-0006 already established for
+`run_nrf_lifecycle`. Disclosed simplification: every message in this build uses SCTP stream 0
+only; real deployments reserve stream 0 for non-UE-associated signaling and assign dynamic
+per-UE streams otherwise, not needed yet at this build's single-UE scope.
+
+**ASN.1 PER codec: `asn1c` (BSD-licensed, `vlm/asn1c`), generating our own copy from a vendored
+ASN.1 module, not from UERANSIM's own generated `.c`/`.h` files.** `tools/sbi-codegen` is entirely
+OpenAPI/JSON-shaped and not reusable for ASN.1 -- new `libs/ngap-generated` mirrors only
+`libs/sbi-generated`'s *CMake* pattern (configure-time `execute_process`, `add_custom_command` to
+regenerate on source change, `file(GLOB)` into a `STATIC` lib), not its Python codegen internals.
+The exact `asn1c` invocation flags
+(`-pdu=all -fcompound-names -findirect-choice -fno-include-deps -no-gen-OER -gen-PER
+-no-gen-example`) were copied from UERANSIM's own generated-file header comments (which cite the
+precise command line used to produce them) -- proven correct against this exact `.asn` file, not
+guessed.
+
+**Real bug found and fixed during Stage 0's own verification, not assumed away:** `-no-gen-OER`
+only suppresses per-type OER function *bodies*; the shared `constr_TYPE.h` skeleton still
+unconditionally `#include`s `<oer_decoder.h>`/`<oer_encoder.h>` unless the caller also defines
+`ASN_DISABLE_OER_SUPPORT` at *compile* time (a separate, undocumented-in-the-codegen-flags
+requirement, discovered only because the generated code was actually compiled against real
+`asn1c` output rather than assumed to work from the flag list alone). Confirmed via
+`simulators/ransim/vendor/UERANSIM/src/asn/asn1c/CMakeLists.txt`, which sets this exact define for
+its own identically-flagged NGAP codec build -- not guessed from the compiler error alone, cross-
+checked against a working reference. `libs/ngap-generated/CMakeLists.txt` now sets this
+`PUBLIC` on the `ngap_generated` target.
+
+**`asn1c` itself is not installed system-wide, and this dev environment has no passwordless
+sudo.** Built from `asn1c`'s own official GitHub release tarball (`v0.9.29`, matching the version
+UERANSIM's own vendored codec was generated with, confirmed via that codec's generated-file
+header) into `build-tools/asn1c/` -- a release tarball, not a git checkout, ships a
+pre-generated `configure` script needing no `autoconf`/`automake`/`bison`/`flex` (none of which
+were available either), only a C compiler and `make`. `build-tools/` is gitignored (already
+covered by the existing `build-*/` glob pattern) -- this is a local build tool, not committed,
+same category as vcpkg's own downloaded packages. `find_program` in
+`libs/ngap-generated/CMakeLists.txt` checks system `PATH` first, falling back to this local
+install location, so a CI runner with real `apt-get install asn1c` (the expected real-world path)
+needs no special-casing.
+
+**The ASN.1 module itself is now vendored into `specs/NGAP/ngap-17.9.asn`, committed, not read
+from the gitignored `simulators/ransim/vendor/` tree at build time.** Reasoning: every NF/lib in
+this project must be buildable standalone per CLAUDE.md, and `simulators/ransim/vendor/` only
+exists after a separate, large, AGPL-3.0-licensed third-party fetch (`fetch-and-build.sh`) that a
+normal `cmake --build .` should not hard-depend on. The ASN.1 module text itself is 3GPP-published
+interface specification content, not UERANSIM's own copyrightable work -- the same category as the
+OpenAPI YAML already committed under `specs/5G_APIs-REL-19/`, copied here for the identical reason.
+**Disclosed version mismatch, not silently treated as equivalent:** this is TS 38.413 v17.9.0
+(Release 17), not REL-19 -- no REL-19 NGAP ASN.1 module was available locally (NGAP has no OpenAPI
+representation to source from `specs/5G_APIs-REL-19/` the way every other NF's API surface in this
+project is sourced). The procedures this build actually uses (NG Setup, Initial UE Message,
+Downlink/Uplink NAS Transport) are stable across R17-R19, but this remains a real, disclosed gap
+against the project's stated REL-19 target, flagged in the vendored file's own header comment as
+well as here. A stray finding while writing that header comment: ASN.1 `--` comments terminate at
+the next `--` token even mid-line, not just at a newline -- this project's usual C++ comment style
+(using `--` freely as an em dash) is unsafe inside actual `.asn` file comments and had to be
+avoided when writing the provenance header.
+
+**Real bug found and fixed in `simulators/ransim/config/ue.yaml`, verified against source, not
+assumed correct:** two of its subscriber credential fields did not match `nfs/udm/src/main.cpp`'s
+already-seeded `imsi-999700000000001` test subscriber (TS 35.207 Test Set 1). `op` was UERANSIM's
+own unrelated published example default, not the TS 35.207 value UDM actually seeds -- would have
+failed authentication regardless of NGAP/NAS correctness. `amf` (the Authentication Management
+Field) was also wrong, and matters for a reason worth stating explicitly: UERANSIM's own MAC
+validation (`simulators/ransim/vendor/UERANSIM/src/ue/nas/mm/auth.cpp`'s `calculateMilenage`,
+lines ~472-521) recomputes the expected MAC-A using **this config file's configured `amf` value**,
+not the AMF field actually received inside AUTN -- confirmed by reading that function directly,
+not assumed from general AKA protocol knowledge (a spec-compliant USIM extracts AMF from the
+received AUTN; this particular simulator's implementation does not, for whatever reason of its
+own). Both fields now match UDM's seed (`op=CDC202D5123E20F62B6D676AC72CB318`, `amf=B9B9`); `key`
+already matched. `protectionScheme: 0` (null-scheme SUCI, plaintext MSIN, no real ECIES needed)
+was already correctly configured and did not need changing.
+
+**Verification:** `ngap_generated` (1109 compiled objects) and `ngap_core` build clean under the
+project's full `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` flag set with no
+suppressions beyond the standard generated-code `-w` already used for `sbi_generated`. Full project
+rebuild from a clean configure succeeds; all 58 pre-existing tests still pass, unchanged -- this
+stage adds build infrastructure only, no behavior change to any existing NF.
+
+**Rejected alternative:** skip vendoring the ASN.1 module and require
+`simulators/ransim/fetch-and-build.sh` to have run before `libs/ngap-generated` can configure.
+Rejected because it would make a core library's buildability depend on a separate, large,
+AGPL-licensed third-party fetch that CLAUDE.md's "every NF/lib buildable standalone" rule doesn't
+otherwise require of anything else in this project.
+
+**Consequence:** Stages 1 onward (NG Setup, Initial UE Message, Authentication, Security Mode,
+Registration Accept/Complete, the real PCF call) build on this transport/codegen foundation. Each
+stage gets its own verification against real `nr-gnb`/`nr-ue` processes and, where deterministic,
+real `gtest` unit tests -- tracked in the approved plan, reported here as later ADRs as each stage
+completes.
+
+## ADR-0031: ConcreteProtocolIE-Container ASN.1 patch, and a self-authored Aligned PER (X.691) patch for asn1c 0.9.29
+
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Context:** ADR-0030 got `libs/ngap-generated` compiling, but Stage 1's actual goal --
+AMF successfully completing NG Setup against the real `nr-gnb` binary -- required solving two
+further, real problems discovered only by attempting the real build and the real interop test, not
+foreseen at ADR-0030's time.
+
+**Problem 1: asn1c 0.9.29 cannot resolve NGAP's parameterized `ProtocolIE-Container {{IEsSetParam}}`
+Information Object Class syntax into a usable type.** Compiling `specs/NGAP/ngap-17.9.asn` unpatched
+produced a `NGSetupRequest_t.protocolIEs` field typed as an empty `ATF_OPEN_TYPE` CHOICE with no
+concrete member bound to it -- verified by inspecting the generated `.c` (`asn_MBR_ProtocolIE_Field_*`
+showing `ATF_OPEN_TYPE | ATF_NOFLAGS`, `asn_OP_OPEN_TYPE`, no concrete type binding), not assumed
+from a compiler warning. Confirmed via UERANSIM's own GitHub Discussions that other users hit the
+same asn1c limitation on this exact file. **Fix:** `specs/NGAP/ngap-17.9.asn` is patched (see its own
+header comment) to add a concrete, non-parameterized `ConcreteProtocolIE-Field`/
+`ConcreteProtocolIE-Container` pair, and the `protocolIEs` field of the 6 messages this build
+currently handles (`NGSetupRequest`, `NGSetupResponse`, `NGSetupFailure`, `InitialUEMessage`,
+`DownlinkNASTransport`, `UplinkNASTransport`) is repointed to it instead of the real spec's
+parameterized `ProtocolIE-Container {{XxxIEs}}`. This is justified, not just expedient: X.691 clause
+10.9 defines an ASN.1 open type as PER-encoded identically to an octet-string-wrapped blob --
+`ConcreteProtocolIE-Field`'s `value OCTET STRING` field is exactly that wrapper, manually filled in
+by `nfs/amf/src/ngap_codec.cpp`'s `make_ie`/`decode_ie_value` (which PER-encode/decode the IE's real
+typed value against its own type descriptor, e.g. `&asn_DEF_AMFName`, and store/load the result as
+the wrapper's raw bytes) -- functionally equivalent to what the real parameterized IE-set machinery
+would produce, without asn1c needing to resolve the full Information Object Class table. Each
+repointed field cites this ADR and the real IE-list name inline. Other NGAP messages beyond these 6
+are unaffected (still use the real, unresolvable parameterized form, but are not yet compiled by
+`-pdu=all`'s auto-discovery mattering here since they're simply not referenced/used); extending
+this pattern to further messages in later stages is expected to be mechanical.
+
+**Problem 2: neither vanilla asn1c 0.9.29 nor an available fork provides usable Aligned PER.**
+TS 38.413 mandates X.691 *Aligned* PER; vanilla asn1c 0.9.29 only ever implemented *Unaligned*
+PER (`uper_encode`/`uper_decode` family) -- confirmed via `grep` finding zero `aper_*`/
+`ATS_ALIGNED_CANONICAL_PER` symbols anywhere in its built output, and empirically: a real
+`nr-gnb`-sent `NGSetupRequest` connected over real SCTP but AMF logged "failed to decode NGAP PDU"
+using the Unaligned decoder. Two escape routes were evaluated and rejected before landing on a
+third:
+- *Copy UERANSIM's own vendored, already-Aligned-PER-capable asn1c runtime* (they ship one at
+  `simulators/ransim/vendor/UERANSIM/src/asn/asn1c/`). Rejected: UERANSIM is AGPL-3.0-licensed;
+  copying its code into this project's own compiled artifacts (this build's own `amf` binary) would
+  contaminate Apache-2.0-licensed code with AGPL obligations. ADR-0016 already established an
+  arms-length relationship with UERANSIM for exactly this reason (external test peer only, never a
+  source dependency of this project's own binaries) -- reusing their code here would break that
+  boundary. UERANSIM's binaries and source were, however, legitimately used throughout this stage
+  as a **test oracle** (running the real `nr-gnb` binary as an unmodified external process, and
+  separately compiling small standalone decode-test harnesses directly against their vendored
+  sources to get detailed X.691-conformant debug traces) -- reading/running vendored code to check
+  this project's own independently-authored code against a reference implementation is materially
+  different from copying that code into a shipped binary, and was essential to finding every rule
+  documented below.
+- *`osmocom/asn1c`'s `aper-prefix` branch* (a real, published fork with genuine Aligned PER support).
+  Attempted, then abandoned after two real, independent failures: (1) its **compiler** cannot parse
+  the actual NGAP-17.9 ASN.1 module -- fails with a hard grammar error on the very first
+  `NGAP-PROTOCOL-IES ::= { ... }` Information Object Set definition it encounters (line ~1411 of
+  the vendored module), a construct that appears hundreds of times throughout the file and that
+  vanilla 0.9.29's newer parser handles without issue; this fork's grammar predates whatever parser
+  fix let 0.9.29 handle it. (2) Even setting compilation aside, its **runtime skeleton** turned out
+  to be ABI-incompatible with vanilla 0.9.29's own generated code: 0.9.29 uses a newer, shared
+  `asn_bit_data_t`/`asn_bit_outp_t` architecture (`asn_bit_data.h`) with macros like
+  `ASN__DECODE_FAILED`, while the osmocom fork's lineage predates that refactor and uses older
+  `asn_per_data_t`-direct types and `_ASN_DECODE_FAILED`-style macros -- confirmed by a real link/
+  compile failure (`error: conflicting types for 'ENUMERATED_decode_uper'`, `'_ASN_DECODE_FAILED'
+  undeclared`) when vanilla-generated per-type code was compiled against this fork's skeleton files.
+  Mixing "vanilla compiler output + fork skeleton" was the first thing tried (since the fork's
+  compiler couldn't even parse the file) and failed for exactly this reason.
+- **Chosen approach: patch vanilla asn1c 0.9.29's own skeleton sources in place**, adding Aligned
+  PER support self-authored from the X.691 standard's rules (not copied from either rejected
+  source above), keeping the same struct layouts and macros vanilla 0.9.29 already uses everywhere
+  else in this build. This means asn1c's *compiler* binary needed zero changes -- the per-type C
+  descriptor tables it already generates correctly (including for Problem 1's concrete-container
+  patch) work unmodified; only the shared, ASN.1-module-independent runtime primitives needed new
+  code.
+
+**What the patch adds, and the X.691 rules behind each piece** (full unified diff at
+`scripts/patches/asn1c-aligned-per.patch`, applied by `scripts/setup-asn1c.sh` after extracting
+the official `asn1c-0.9.29` release tarball -- `build-tools/` itself stays gitignored, matching
+every other local build tool in this project, but the *patch* is committed since it is this
+project's own original work product, not a rebuildable-on-demand artifact):
+
+1. `asn_bit_data.{h,c}`: adds an `int aligned` field to both `asn_bit_data_t` (decode) and
+   `asn_bit_outp_t` (encode), plus `asn_get_align`/`asn_put_align` primitives that consume/emit
+   padding bits up to the next octet boundary (a no-op when already aligned).
+2. `per_encoder.{h,c}` / `per_decoder.{h,c}`: adds `aper_encode`/`aper_encode_to_buffer`/
+   `aper_encode_to_new_buffer` and `aper_decode`/`aper_decode_complete` as new top-level entry
+   points, each setting the new `aligned` field before dispatching through the *same*
+   `td->op->uper_encoder`/`uper_decoder` function pointer `uper_encode`/`uper_decode` already use.
+   This is the crux of why a skeleton patch (not a compiler patch) suffices: asn1c generates only
+   one PER codec function per type regardless of alignment -- alignment is a runtime property of
+   *how the bits are packed*, decided by the low-level primitives below via this flag, not by which
+   generated function is called. (The function-pointer struct field is still named
+   `uper_decoder`/`uper_encoder`, a naming artifact predating this project's own aligned-PER
+   addition -- misleading but left as-is throughout to minimize the diff against upstream.)
+3. `per_support.h` adds four `static inline` helpers, and `per_support.c`/`OCTET_STRING.c`/
+   `BIT_STRING.c`/`constr_SEQUENCE_OF.c`/`constr_SET_OF.c` call them at each point X.691 requires
+   alignment. **Three distinct, real X.691 rules were needed here, each found the hard way** --
+   this project's first attempt applied one rule everywhere and broke every message it touched;
+   each correction below was pinned down by decoding real bytes (a real `nr-gnb`-sent
+   `NGSetupRequest`, and this build's own `NGSetupResponse`) against **both** this project's own
+   decoder **and** a standalone harness compiled directly against UERANSIM's own vendored asn1c
+   sources as an independent reference oracle (see the licensing note above for why that's a
+   legitimate, arms-length use):
+   - **VALUE fields** (`aper_align_value_get_nbits`/`put_nbits`, used only by
+     `uper_get_constrained_whole_number`/`uper_put_constrained_whole_number_u`, i.e. plain
+     INTEGER-typed fields like NGAP's `ProcedureCode`): ALIGNED PER octet-aligns **even when the
+     range fits in 8 bits or fewer** -- there is no small-range exception. Found because
+     `InitiatingMessage.procedureCode` (`INTEGER(0..255)`, exactly 8 bits) decoded as `0` instead
+     of the real `21` (id-NGSetup) until alignment was added here; the real value landed exactly on
+     a clean octet boundary in the captured bytes.
+   - **LENGTH/COUNT determinants** (`aper_align_length_get_nbits`/`put_nbits`, used by
+     `uper_get_length`'s small-range fast path and by `OCTET_STRING.c`/`BIT_STRING.c`/
+     `constr_SEQUENCE_OF.c`/`constr_SET_OF.c` for a SIZE-constrained string's character count or a
+     SEQUENCE-OF/SET-OF's element count): the *opposite* rule -- **no** alignment when the range
+     fits in 8 bits or fewer; alignment (and widening to exactly 16 bits) only kicks in for 9-16
+     bits. Found because `AMFName`'s implicit length (`PrintableString (SIZE(1..150,...))`,
+     `effective_bits=8`) decoded as length `1` instead of the real `11` when the VALUE-field rule
+     was (wrongly) applied here too -- cross-checked byte-for-byte against UERANSIM's own reference
+     decoder's debug trace, which reads the same 8-bit length with zero padding immediately after
+     the preceding 1-bit size-extension flag.
+   - **CHOICE presence index and ENUMERATED root-value index** (`constr_CHOICE.c`,
+     `NativeEnumerated.c`): neither rule applies -- these two have their own dedicated X.691
+     procedures and are **never** octet-aligned, identical to Unaligned PER, regardless of range.
+     No helper call at all; deliberately reverted back to plain `per_get_few_bits`/`per_put_few_bits`
+     after an earlier attempt wrongly aligned these too. Confirmed via the same real capture: the
+     1-bit extension-presence flag and 2-bit `NGAP-PDU` CHOICE index that precede `procedureCode`
+     are packed with zero padding between them.
+   - `per_opentype.c`'s open-type wrapper (used for NGAP's real, non-patched open types, and
+     internally structurally identical to what this project's own `ConcreteProtocolIE-Field.value`
+     OCTET STRING does by hand) needed two separate fixes: its decode-side `memset(&spd, 0, ...)`
+     was silently zeroing the new `aligned` field for the nested sub-decode (forcing every open
+     type's *contents* into Unaligned PER regardless of the outer call -- since this project's own
+     concrete-container IEs are wrapped exactly this way, this single bug affected every NGAP
+     message field this project handles, not just real open types), fixed by propagating
+     `spd.aligned = pd->aligned`. Its encode-side `uper_open_type_put` was hardcoded to call
+     `uper_encode_to_new_buffer` unconditionally; fixed to call `aper_encode_to_new_buffer` when
+     `po->aligned`.
+   - `nbits > 16` is not exercised by this project's current NGAP message set for the VALUE or
+     LENGTH rule; both helpers apply a best-effort octet-round-up rather than silently leaving it
+     unaligned, but that path is explicitly unverified against a real peer -- flagged in the code
+     comment, not silently assumed correct, per this project's disclosure rule.
+4. `OCTET_STRING.c`/`BIT_STRING.c` also needed two further, narrower fixes specific to character
+   string / fixed-size string encoding (X.691 clause 16 and 27):
+   - **Per-character bit width rounds up to a canonical size** (`aper_char_unit_bits`, new helper):
+     Aligned PER packs PER-visible-alphabet-constrained characters using the smallest of
+     `{1, 2, 4, 8, 16, 32}` bits that fits the alphabet, not the exact `ceil(log2(alphabet size))`
+     bits Unaligned PER uses. Found because `AMFName`'s 91-symbol `PrintableString` alphabet
+     (range 32..122) needs only 7 bits exactly, but the real encoding uses 8 -- cross-checked again
+     against UERANSIM's own reference decoder's debug trace (`"(32..122):8"`, and its own
+     generated constraint table literally records `range_bits=7` for the *unaligned* interpretation
+     while the runtime still packs 8 in aligned mode).
+   - **Character content itself starts octet-aligned**, separately from its own length
+     determinant's alignment: a length with `effective_bits<=8` (the common case, per the LENGTH
+     rule above) is read with *no* preceding padding, so the bit position immediately after it is
+     not itself byte-aligned -- an explicit align call was added right before the actual character
+     data read/write in both the general (unconstrained-length) path and `OCTET_STRING_encode_uper`'s
+     separate small-`effective_bits` fast-path branch (decode already funnels both cases through one
+     shared loop, so only encode needed the second call site). Fixed fixed-size (`SIZE` non-
+     extensible, `effective_bits==0`) octet/bit strings wider than 2 octets (16 bits) similarly, per
+     X.691 #16.6 (`<=2` octets, no alignment) vs #16.7 (`>2` octets, aligned) -- this specific
+     sub-case remains unverified against a real peer since no field in this build's current message
+     set exercises a fixed-size character string, only fixed-size plain octet strings (e.g.
+     `PLMNIdentity`, 3 octets) and small bit strings (`AMFRegionID`/`AMFSetID`/`AMFPointer`, all
+     <=10 bits, under the 16-bit BIT STRING threshold where this rule doesn't change behavior
+     anyway) -- flagged, not assumed.
+
+**Distribution mechanics:** `scripts/patches/asn1c-aligned-per.patch` is a plain unified diff
+(`diff -ru`, `skeletons/<file>` paths, applies cleanly with `patch -p1` from an extracted
+`asn1c-0.9.29` tarball root -- verified against a fresh extraction, not just the already-patched
+tree) and is committed (unlike everything under `build-tools/`, which is gitignored by the existing
+`build-*/` glob -- the patch lives under `scripts/` specifically so it isn't swept up in that
+pattern). Everything under `build-tools/` itself (the vanilla tarball, the patched build, the
+earlier abandoned `osmocom/asn1c` and GNU-autotools-toolchain build attempts from investigating
+Problem 2) is reproduced by `scripts/setup-asn1c.sh`, matching `scripts/gen-lab-pki.sh`'s existing
+precedent for a setup script that produces gitignored local state. `libs/ngap-generated/
+CMakeLists.txt`'s `find_program` failure message points here.
+
+**Verification:** the full staged Stage 1 goal -- AMF (freshly rebuilt from a *clean*
+`scripts/setup-asn1c.sh` run, not the already-patched tree left over from debugging) completing NG
+Setup against the real, unmodified `nr-gnb` binary -- succeeds end-to-end: `nr-gnb` logs "NG Setup
+Response received" / "NG Setup procedure is successful", AMF logs receiving and correctly
+dispatching the real `NGSetupRequest` and sending a real `NGSetupResponse`. All 58 pre-existing
+tests still pass unchanged. No `gtest`/`ctest`-integrated regression test exists yet for the ASN.1
+PER codec itself (the verification above is the real-binary interop test the project's own
+methodology treats as authoritative for this kind of protocol work, per ADR-0030's precedent) --
+a dedicated automated round-trip test is deferred to Stage 6's documentation/verification pass
+alongside `docs/TRACEABILITY.md`.
+
+**Rejected alternative:** hand-roll a partial PER parser scoped to only this build's exact IE set,
+skipping asn1c entirely. Rejected for the same reason the original plan gave: this project
+explicitly committed to "a real ASN.1 PER codec generated from the actual 3GPP NGAP module, not
+hand-rolled partial parsing" -- a scoped hand-rolled codec would silently stop being spec-traceable
+the moment a new IE or message is added in a later stage, exactly the failure mode CLAUDE.md's
+anti-fabrication rules exist to prevent.
+
+**Consequence:** Stage 1 (NG Setup) is now complete and empirically verified. Stages 2-5 (Initial
+UE Message/NAS Registration Request, Authentication, Security Mode, Registration Accept/Complete
+ending in the real PCF call) can now build on a genuinely working Aligned PER codec rather than
+inheriting this stage's Unaligned-only limitation -- though each stage may still surface further,
+not-yet-exercised gaps in the patch (per the explicit `nbits > 16` and fixed-size-character-string
+disclosures above), to be found and fixed the same way: real bytes, real peer, real oracle, not
+assumed. **This is exactly what happened in Stage 2 -- see ADR-0032.**
+
+## ADR-0032: Stage 2 (InitialUEMessage -> NAS RegistrationRequest -> real AUSF call -> AuthenticationRequest), three more real Aligned PER bugs, and a hand-rolled minimal NAS-5GS codec
+
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Context:** Stage 2 of the staged NGAP/NAS plan: AMF decodes a real `InitialUEMessage` (containing
+a NAS-PDU with a `RegistrationRequest`), extracts the SUPI from the null-protection-scheme SUCI in
+the 5GS Mobile Identity IE, calls real AUSF's `POST /nausf-auth/v1/ue-authentications` with it,
+gets back a 5G-AKA vector, encodes a NAS `AuthenticationRequest` (RAND/AUTN), wraps it in
+`DownlinkNASTransport`, and sends it to the gNB. Grounding for the real NGAP IE names/codes, the
+real NAS-5GS wire format, and AUSF's real SBI schema was gathered via a research pass (real
+`specs/NGAP/ngap-17.9.asn` IE definitions; `simulators/ransim/vendor/UERANSIM/src/lib/nas` read
+as a reference oracle per ADR-0016/ADR-0031's arms-length policy; `nfs/ausf/src/main.cpp`'s
+already-implemented `/ue-authentications` endpoint) before any code was written.
+
+**New library: `nfs/amf/src/nas_codec.{hpp,cpp}`, a minimal hand-rolled NAS-5GS (TS 24.501)
+codec.** Unlike NGAP, NAS-5GS is TLV-encoded, not ASN.1 -- there is no `asn1c`-equivalent codegen
+tool to generate this from, so hand-writing it is not the "hand-rolled partial parsing" ADR-0031
+explicitly rejected for NGAP (that concern was about skipping a *generatable* codec; no such thing
+exists for NAS-5GS in any real 5GC implementation either). Scope is deliberately narrow --
+`decode_registration_request` extracts only the SUPI from a null-protection-scheme SUCI (returns
+`std::nullopt`, not a guess, for anything else: ciphered NAS, GUTI-based registration, a real
+protection scheme, a padded 1-octet routing indicator); `encode_authentication_request` builds
+exactly the fields needed (ngKSI, ABBA, RAND, AUTN). Every byte layout (header format, IE ordering,
+the SUCI's exact field layout for the null scheme, RAND/AUTN's IE encodings) is cited against real
+files, not memory -- see the file's own comments.
+
+**AUSF client wiring**: `run_ngap_lifecycle` (in `nfs/amf/src/ngap_task.cpp`) now takes
+`amf_instance_id`/`nrf_base` and constructs a dedicated `http2::Client`/`OAuth2Client` pair for
+AUSF (scope `"nausf-auth"`, matching AUSF's own `kApiRoot`), living on the NGAP thread itself --
+not shared with `run_nrf_lifecycle`'s pair or any ioc-thread client, since `http2::Client` is
+synchronous/not thread-shared (same discipline ADR-0006/ADR-0027 already established, extended
+here to a *third* dedicated-thread client after `run_nrf_lifecycle`'s own). SUPI is passed straight
+through as `AuthenticationInfo.supiOrSuci` -- AUSF/UDM have no separate SUCI-deconcealment logic
+yet (confirmed by reading `nfs/ausf/src/main.cpp`: `supiOrSuci` is forwarded verbatim into UDM's
+URL path), so this is a faithful, disclosed simplification consistent with what's already built,
+not a new gap introduced here.
+
+**Real config gap found and fixed, unrelated to any of this project's own code**:
+`simulators/ransim/config/ue.yaml` was missing three fields (`integrityMaxRate`, `uacAic`,
+`uacAcc`) that UERANSIM's `nr-ue` refuses to start without -- this file had never actually been run
+against real `nr-ue` before Stage 2 (Stage 0/1 only ran `nr-gnb`). Added with UERANSIM's own
+reference `config/custom-ue.yaml` values, not invented.
+
+**Three more real Aligned PER bugs found via the same "real gNB, real UE, real reference-decoder
+oracle" methodology ADR-0031 used** -- Stage 2's real message content (a non-zero `S-NSSAI.sST`
+inside `NGSetupResponse`'s `PLMNSupportList`, and a real `RAN-UE-NGAP-ID` value from a real gNB)
+exercised code paths Stage 1's own testing never touched (Stage 1's BIT STRINGs were all-zero, and
+no field in Stage 1's fixed test message needed a >16-bit value-field encoding):
+
+1. **A short (<=2 octet) fixed-size OCTET/BIT STRING got wrongly octet-aligned on encode.** Found
+   because `S-NSSAI.sST` (a 1-octet `OCTET STRING`, set to `1`) silently became `0` on the wire --
+   `PLMNSupportList` correctly *decoded* structurally (Stage 1's own verification), but the
+   gNB rejected AMF's `NGSetupResponse` for real ("Could not find a suitable AMF" -- `nr-gnb`'s own
+   slice-selection logic reads `sST` and found no match), a failure mode Stage 1's decode-only
+   testing couldn't have caught. Root cause: `OCTET_STRING_encode_uper`'s
+   `csiz->effective_bits >= 0 && !inext` branch had a single, unconditional content-alignment call
+   added after its if/else (originally written only for the `effective_bits > 0`,
+   AMFName-style variable-length case) that also fired for the `effective_bits == 0` fixed-size
+   case -- wrongly aligning (and thus byte-shifting) any short fixed-size field, while the
+   already-correct `effective_bits > 0` case needed exactly that call. Fixed by moving the call
+   inside the `else` branch only. The *decode* side never had this bug (its fixed-size branch
+   returns early, structurally unable to reach the shared align call) -- confirmed via a standalone
+   `S-NSSAI` encode/decode round-trip test before touching the real pipeline again.
+2. **A >31-bit constrained-whole-number VALUE field got re-aligned mid-value by ADR-0031's own
+   alignment fix.** Found because `RAN-UE-NGAP-ID` (`INTEGER(0..4294967295)`, exactly 32 bits, so
+   *always* hits `uper_get/put_constrained_whole_number`'s pre-existing >31-bit recursive split --
+   `per_get_few_bits` itself caps at 31 bits per call) failed to decode from a real gNB's
+   `InitialUEMessage`. ADR-0031's `aper_align_value_get/put_nbits` call was applied *inside* the
+   `nbits<=31` recursive base case, which is *also* the code path the >31-bit recursion's leftover
+   fragment hits -- wrongly re-aligning partway through an already-in-progress value. Fixed by
+   splitting each function into a `_raw` variant (pure recursive bit-splitting, no alignment) and a
+   public wrapper that aligns exactly once, up front, using the caller's true (pre-split) `nbits`.
+3. **The real X.691 rule for value fields needing MORE than 2 octets (`nbits>16`) is not a
+   fixed-width encoding at all -- it's a small unaligned octet-count selector, then alignment,
+   then the value in the minimum octets it actually needs.** This directly contradicted ADR-0031's
+   own (wrong) assumption that all value fields round up to a fixed whole-octet width based on the
+   *range*. Found the same way as everything else in this saga: a real gNB's `RAN-UE-NGAP-ID=1`
+   arrived as 2 bytes (`00 01`), not the 4 bytes ADR-0031's rule predicted. Confirmed byte-for-byte,
+   not guessed, by compiling a standalone encoder against
+   `simulators/ransim/vendor/UERANSIM/src/asn/asn1c`'s vendored reference codec (same read-only
+   oracle pattern as ADR-0031) with `ASN_EMIT_DEBUG` tracing: encoding `RAN-UE-NGAP-ID=1` (range
+   32 bits, so `max_octets=ceil(32/8)=4`) produces a 2-bit selector (`ceil(log2(4))=2` bits, value
+   `0` meaning "1 octet used", *not* octet-aligned itself), then 6 bits of alignment padding, then
+   exactly 1 octet (`0x01`) -- `"00 01"` over the wire. Implemented in
+   `uper_get/put_constrained_whole_number` as a genuinely new code path for `nbits>16`, replacing
+   the wrong fixed-width assumption; the `nbits<=16` path (procedureCode, ProtocolIE-ID, both
+   already verified in Stage 1) is untouched.
+4. **A NAS-5GS IE encoding mistake, not an ASN.1/PER bug**: `AuthenticationParameterRand` (NAS
+   `AuthenticationRequest`'s RAND field) was given a length octet like `AuthenticationParameterAutn`
+   (TS 24.501's genuinely length-prefixed AUTN field). RAND is actually a **Type-3** IE (fixed
+   16-octet value, no length octet at all -- confirmed against
+   `simulators/ransim/vendor/UERANSIM/src/lib/nas/ie3.hpp`'s `IEAuthenticationParameterRand` base
+   class, `InformationElement3`, vs. AUTN's `ie4.hpp`/`InformationElement4`). This one byte of
+   drift shifted every subsequent field, and real `nr-ue` didn't just reject the message -- it threw
+   an *uncaught* C++ exception (`"Bad constructed NAS message"`) and **crashed the process**,
+   confirmed by compiling and running UERANSIM's own `DecodeNasMessage` directly against the exact
+   bytes AMF sent as a standalone oracle test (same arms-length read-only pattern). Fixed by
+   dropping the length octet for RAND only.
+
+**Verification:** the full Stage 2 goal -- AMF (freshly rebuilt from a *clean*
+`scripts/setup-asn1c.sh` run) receiving a real `InitialUEMessage` from real `nr-gnb`/`nr-ue`,
+correctly extracting SUPI `imsi-999700000000001` from the null-scheme SUCI, making a real,
+successful `POST /nausf-auth/v1/ue-authentications` call to real AUSF (which itself made a real
+call to real UDM), and sending back a real NAS `AuthenticationRequest` -- succeeds end-to-end,
+reproducibly. Real `nr-ue` logs confirm it **decoded** AMF's `AuthenticationRequest` correctly
+(`"Authentication Request received"`) and extracted the real RAND/AUTN/SQN from it; it then sent a
+NAS `AuthenticationFailure` with cause "SQN out of range" -- this is `nfs/udm/src/main.cpp`'s own
+seeded TS 35.207 test SQN (`ff9bb4d0b607`, a large fixed value chosen as test data, not derived
+from any counter) legitimately exceeding a fresh UE's initial `SQN-MS=0` by design, exactly the
+real TS 33.102 synchronization-failure procedure a real UE is supposed to trigger in this
+situation -- not a bug, and not this stage's concern (SQN resync, and handling whatever
+`AuthenticationResponse`/`AuthenticationFailure` the UE actually sends, is Stage 3's territory).
+All 58 pre-existing tests still pass unchanged. `scripts/patches/asn1c-aligned-per.patch` was
+regenerated to capture bugs 1-3 above (applies cleanly against a fresh `asn1c-0.9.29` extraction,
+verified).
+
+**Rejected alternative:** treat the SQN-out-of-range `AuthenticationFailure` as a Stage 2 blocker
+and implement the resync procedure now. Rejected: Stage 2's own scope (per the approved staged
+plan) ends at "AMF sends `AuthenticationRequest`, UE receives it" -- the plan's Stage 3 is
+specifically "Authentication Response -> AUSF confirmation -> KAMF derivation", and handling
+whichever real NAS message the UE sends back (a success `AuthenticationResponse` *or* a
+spec-correct `AuthenticationFailure`) is exactly that stage's job, not something to pull forward.
+
+**Consequence:** Stage 2 is complete and empirically verified, including the crash-on-decode NAS
+bug that a purely self-consistent round-trip test (encode+decode with only this project's own
+codec) could never have caught -- every one of this stage's four bugs was found only because the
+*other* side of the wire was a real, independent implementation. Stage 3 (Authentication Response
+decode -- including a real `AuthenticationFailure` path now that one's been observed for real --
+AUSF confirmation, KAMF derivation) can proceed knowing the transport and RAND/AUTN encoding are
+now genuinely interoperable, not just self-consistent.
+
+## ADR-0033: Stage 3 (AuthenticationResponse/Failure decode -> real AUSF confirmation -> KAMF derivation)
+
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Context:** Stage 3 of the staged NGAP/NAS plan: decode the NAS-PDU carried in the UE's
+`UplinkNASTransport` reply to Stage 2's `AuthenticationRequest`. TS 24.501 defines exactly two real
+outcomes here (EAP out of scope): a success `AuthenticationResponse` (carries RES*), confirmed with
+real AUSF's `PUT .../5g-aka-confirmation`, from which KAMF (TS 33.501 Annex A.7) is derived; or an
+`AuthenticationFailure` (cause + optional AUTS), which this stage decodes and logs but does not
+act on -- SQN resynchronization is a disclosed, explicitly out-of-scope gap (needs new AUSF/UDM
+logic to reissue a vector from the UE's AUTS, not just an AMF-side change).
+
+**New code:** `amf::nas::decode_authentication_outcome` (`nfs/amf/src/nas_codec.{hpp,cpp}`) decodes
+both outcomes via generic Type-4 TLV walks, byte layouts cross-checked against
+`simulators/ransim/vendor/UERANSIM/src/lib/nas` as before. `aka_crypto::derive_kamf`
+(`libs/aka-crypto/src/kdf.cpp`, FC=0x6D) -- same reconstruction-not-citation disclosure as
+ADR-0026's KAUSF-for-EAP-AKA', cross-checked against UERANSIM's own `DeriveKeysSeafAmf`.
+`nfs/amf/src/ngap_task.cpp`'s `handle_uplink_nas_transport` reuses the exact
+`ConfirmationData{resStar}` -> `ConfirmationDataResponse{authResult,kseaf}` shape AUSF's endpoint
+already defines (ADR-0027).
+
+**Real interop confirms the failure path, not the success path -- an unavoidable, structural
+limitation, not a gap in this stage's testing.** UDM's seeded subscriber uses TS 35.207 Test Set
+1's fixed SQN (`ff9bb4d0b607`) -- legitimately larger than any fresh UE's `SQN-MS=0`, so a real
+`nr-ue` *always* sends `AuthenticationFailure` (SYNCH_FAILURE, with AUTS) on first contact, never
+`AuthenticationResponse`. Confirmed via a real run: AMF correctly decoded the failure
+(`mmCause=0x15`, AUTS present), logged the disclosed-gap message, and did not crash or misbehave --
+this exactly matches `nr-ue`'s own reported behavior. The success path (RES* decode -> AUSF
+confirmation -> KAMF) cannot be reached this way without implementing SQN resync, which is out of
+scope by design (see ADR-0032's own rejected-alternative entry).
+
+**Verification strategy for the unreachable success path:** hand-constructed, spec-correct NAS-PDU
+byte vectors (`tests/conformance/test_nas_codec.cpp`) cover
+`decode_authentication_outcome`'s success path directly, plus `decode_registration_request`
+(previously only indirectly covered via Stage 2's real interop) and `derive_kamf`'s determinism/
+input-dependence. The AUSF-confirmation+KAMF chain itself is *not* re-verified with a new
+standalone harness -- `handle_uplink_nas_transport`'s AUSF call uses the identical request/response
+shape `AusfIntegration.FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf`
+(`tests/integration/test_ausf_ue_authentication.cpp`) already exercises end-to-end against a real
+running AUSF with real Milenage-computed RES* -- a second harness would only re-prove the same
+thing.
+
+**Consequence:** Stage 3 complete, 59 tests total (was 51 before this stage; +8 new). The SQN
+blocker discovered here recurs identically in every downstream stage (4, 5) -- documented once
+here, referenced rather than re-litigated in ADR-0034/ADR-0035.
+
+## ADR-0034: Stage 4 (SecurityModeCommand/Complete -- NAS security activation) and new 128-NEA2/128-NIA2 primitives
+
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Context:** Stage 4 activates real NAS security: AMF derives KNASenc/KNASint from KAMF (TS 33.501
+Annex A.8), sends a `SecurityModeCommand` (integrity-protected only, per TS 24.501 -- never
+ciphered, since the UE cannot yet be assumed to trust a brand-new KNASenc), and verifies the UE's
+`SecurityModeComplete` (integrity-protected **and** ciphered, proving both directions work). This
+project's only implemented algorithm pair is 128-NEA2 (AES-128-CTR) / 128-NIA2 (AES-128-CMAC) --
+128-EEA0/"null" and the SNOW-3G/ZUC-based NEA1/NIA1/NEA3/NIA3 families are out of scope, a
+disclosed simplification matching UERANSIM's own default algorithm selection, not an attempt at
+full algorithm-agility.
+
+**New code:** `aka_crypto::derive_knas_enc`/`derive_knas_int` (`libs/aka-crypto/src/kdf.cpp`,
+FC=0x69) -- same reconstruction-not-citation disclosure pattern as every other Annex A derivation
+in this file, cross-checked against UERANSIM's `DeriveNasKeys`. New
+`aka_crypto::nea2_apply`/`nia2_mac` (`libs/aka-crypto/src/nas_security.cpp`, new file) implement
+128-NEA2/128-NIA2 directly against OpenSSL's `EVP_aes_128_ctr`/`EVP_MAC` (CMAC) APIs, input formats
+(the shared COUNT/BEARER/DIRECTION prefix, padded differently for each algorithm) reconstructed
+from `simulators/ransim/vendor/UERANSIM/src/lib/crypt/eea2.cpp`/`eia2.cpp`.
+`amf::nas::encode_security_mode_command`/`decode_security_mode_complete`
+(`nfs/amf/src/nas_codec.{hpp,cpp}`) build/verify the secured NAS envelope, including a new
+`extract_uplink_nas_pdu`/`send_downlink_nas_transport` factoring in `ngap_task.cpp` (previously
+duplicated inline across Stage 2/3's own handlers).
+
+**Real interop was blocked by ADR-0033's SQN gap before ever reaching this stage** -- a real run
+confirmed the exact same `AuthenticationFailure` outcome, never advancing to `SecurityModeCommand`.
+Given this stage's crypto (128-NEA2/128-NIA2) is entirely new, hand-rolled code with no other proof
+point, self-consistency-only unit tests were judged insufficient (per this project's own prior
+lesson -- a real UB bug in `derive_keys()` shipped past three self-consistency tests before an
+independent-re-derivation test caught it, see ADR-0027). **Verification: a standalone scratch
+harness** (not committed -- would require linking UERANSIM's vendored `crypt/` sources into the
+permanent build, out of proportion to what it's for) compiled UERANSIM's real `eea2.cpp`/`eia2.cpp`
+directly and cross-checked `nea2_apply`/`nia2_mac` against them: 20 random trials each of
+key/count/bearer/direction/message, **40/40 byte-exact matches, 0 failures**. 17 new/updated unit
+tests (`tests/conformance/test_nas_security.cpp`, `test_nas_codec.cpp`) cover determinism,
+round-trip, and the SMC/Complete envelope's own MAC-verify/tamper/reject paths.
+
+**Consequence:** Stage 4 complete, 75 tests total. `encode_security_mode_command`/
+`decode_security_mode_complete` were refactored onto two new shared low-level helpers
+(`encode_secured_downlink`/`decode_secured_uplink`) once Stage 5 needed the identical
+envelope-building logic a third time (see ADR-0035) -- confirmed zero behavior change by rerunning
+this stage's own unit tests unmodified after the refactor.
+
+## ADR-0035: Stage 5 (RegistrationAccept/Complete -> real PCF AM Policy Association call) -- the goal this whole effort was for
+
+**Date:** 2026-08-07
+**Status:** Accepted
+
+**Context:** Stage 5 closes the loop ADR-0025 -> ADR-0029 left open: AMF sends `RegistrationAccept`
+(integrity-protected **and** ciphered -- the normal secured-message case, not
+`SecurityModeCommand`'s "new security context" variant, since the NAS security context is now
+established), receives `RegistrationComplete`, and makes the real call this entire staged
+NGAP/NAS effort existed to produce: `Npcf_AMPolicyControl`'s `CreateIndividualAMPolicyAssociation`
+(TS 29.507) to real PCF.
+
+**New code:** `amf::nas::encode_registration_accept`/`decode_registration_complete`
+(`nfs/amf/src/nas_codec.{hpp,cpp}`), built on ADR-0034's `encode_secured_downlink`/
+`decode_secured_uplink` refactor. Only the one mandatory IE (`registrationResult`, fixed to
+THREEGPP_ACCESS) is sent -- GUTI reassignment and other optional IEs are a disclosed
+simplification, moot given this project's single-registration-per-association scope (ADR-0031).
+`handle_uplink_nas_transport_registration_complete` (`ngap_task.cpp`) calls PCF using the same
+client-call template SMF->PCF already established (ADR-0029), storing the resulting
+`PolicyAssociation` in `nfs/amf/src/ue_context_store.hpp` keyed by SUPI -- the first thing that
+ever populates that store for real (see its own long-standing disclosed-gap comment).
+
+**Real interop blocked at the same SQN point as Stages 3/4 (expected, not re-investigated) --
+verified the PCF call directly instead, and it caught a real bug.** Obtained a genuine OAuth2
+token from NRF via `curl` using AMF's own mTLS client cert, then POSTed the *exact* JSON body
+`handle_uplink_nas_transport_registration_complete` builds directly to real PCF's
+`/npcf-am-policy-control/v1/policies`. First attempt: **real HTTP 400**,
+`"key 'suppFeat' not found"` -- `PolicyAssociationRequest.suppFeat` (TS 29.571 `SupportedFeatures`,
+a hex-encoded optional-feature bitmask) is mandatory in the generated schema and had been omitted.
+Fixed (`preq.suppFeat = ""`, meaning "none of PCF's optional features requested," the correct value
+given none are implemented), re-sent the identical request: **real HTTP 201**, a genuine
+`PolicyAssociation` body back. This is a bug the generated-schema type system didn't catch at
+compile time (`suppFeat` is a plain, default-constructed `std::string`, not `std::optional`, so it
+serializes as `""` either way -- the omission was leaving the field *unset in the request builder's
+intent*, not a type error) and unit tests alone would not have caught either, since nothing in this
+codebase independently re-validates PCF's actual mandatory-field schema -- only a real request
+against a real server does.
+
+**Also found during this stage's verification, unrelated to any of the code above:** leftover
+`nrf`/`udm`/`ausf`/`pcf`/`amf` processes manually started earlier in this session (for live
+`nr-gnb`/`nr-ue` interop testing) were still running and squatting the same fixed ports
+`tests/integration/*.cpp`'s own `spawn_all()`-style helpers bind to, causing 2-3 tests
+(`AusfIntegration.*`, `SmfIntegration.CreateSMContextFailsClosedWhenPcfUnreachable`) to fail
+intermittently across Stages 3-5's own regression runs -- previously misdiagnosed as "flaky
+parallel port contention." Killing every manually-started process before the next `ctest` run
+produced a clean 80/80 pass in 15s (down from ~60s with retries/timeouts). Documented as a
+recorded lesson (not a code change) so future manual-verification sessions clean up before the
+final regression pass.
+
+**Consequence:** Stage 5 complete, 80 tests total. The full staged NGAP/NAS Registration procedure
+(NG Setup -> InitialUEMessage/RegistrationRequest -> AuthenticationRequest/Response ->
+SecurityModeCommand/Complete -> RegistrationAccept/Complete -> real PCF AM Policy Association) is
+now implemented end-to-end in code, verified stage-by-stage via whichever proof (real `nr-gnb`/
+`nr-ue` interop, an independent cross-check harness, or a direct real-service HTTP call) was
+actually reachable at each point -- never assumed correct from code review alone. The one
+structural gap every stage from 3 onward shares -- SQN resynchronization -- remains explicitly
+out of scope and is the reason a single, fully-automated real `nr-ue` end-to-end registration
+cannot be demonstrated in one run; `docs/TRACEABILITY.md` records this plainly rather than
+implying full automated coverage exists.
+
+## ADR-0036: PDU Session Establishment (TS 23.502 §4.3.2.2.1) -- AMF's UlNasTransport decode -> real SMF CreateSMContext call
+
+**Date:** 2026-08-08
+**Status:** Accepted
+
+**Context:** CLAUDE.md's Phase 2 definition of done requires UE registration *and* PDU session
+establishment end-to-end, "no narrowed slice." ADR-0032 through ADR-0035 closed the registration
+half. Investigating whether the second half was actually done (prompted by a direct "is Phase 2
+complete" question) found it was not: AMF's NAS codec had no 5GSM message types at all, and
+`ngap_task.cpp`'s post-registration dispatch explicitly logged and dropped every further
+`UplinkNASTransport` ("no post-registration NAS procedures implemented yet"). SMF's own
+`CreateSMContext` (stood up in an earlier turn, TS 29.502) was real and PCF-wired but had never had
+a live trigger -- only ever exercised by a test client POSTing directly over HTTP, bypassing
+AMF/NGAP entirely (confirmed by reading `tests/integration/test_smf_pdu_session.cpp`). This ADR
+closes that gap: AMF now decodes the UE's PDU Session Establishment Request (wrapped in a NAS
+`UlNasTransport` message) and makes the real `CreateSMContext` call.
+
+**Key design decision, made explicit before writing any code: AMF does not decode the 5GSM PDU
+Session Establishment Request payload itself.** TS 24.501's payload-container mechanism exists
+precisely so AMF can route SM messages without understanding their contents -- only SMF decodes
+real 5GSM content, and even SMF's own current turn doesn't (`nfs/smf/src/main.cpp`'s own disclosed
+"PduSessionType is negotiated inside the NAS SM message... not available from SmContextCreateData
+at all" scope, predating this session). So `amf::nas::decode_ul_nas_transport`
+(`nfs/amf/src/nas_codec.{hpp,cpp}`) only extracts the transport-level optional IEs that determine
+*where* to route the request -- PDU session ID, S-NSSAI, DNN -- treating the payload container
+itself (the actual PDU Session Establishment Request bytes) as an opaque length-prefixed blob,
+skipped over, never parsed. Byte layouts (UlNasTransport's mandatory/optional IE order, the DNN
+IE's TS 23.003 §9.1 label-length-prefix encoding, requestType's Type-1 half-octet packing that a
+naive Type-4-only IE walker would desync on) were confirmed against
+`simulators/ransim/vendor/UERANSIM/src/lib/nas/msg.cpp`'s `UlNasTransport::onBuild` and
+`src/ue/nas/sm/transport.cpp`/`src/lib/nas/utils.cpp`'s `DnnFromApn`, the same read-only reference
+oracle methodology as every prior stage.
+
+**Symmetric decision on the way back: AMF does not send anything to the UE after the SMF call
+succeeds.** SMF's real `CreateSMContext` response (`SmContextCreatedData`) carries no `n1SmMsg` --
+`nfs/smf/src/main.cpp`'s handler only ever sets `pduSessionId`/`sNssai` on it, a disclosed gap from
+SMF's own earlier turn, not introduced here. There is therefore no real PDU Session Establishment
+Accept content for AMF to forward to the UE. Synthesizing one would mean AMF fabricating SM-layer
+decisions (PDU session type, QoS rules, session-AMBR) that are properly SMF's job to decide --
+worse than disclosing the gap plainly, which is what `handle_uplink_nas_transport_pdu_session_
+establishment`'s own comment does. This is consistent with (not a new instance of) the
+already-established rule: never invent content a real peer would need to have actually decided.
+
+**Refactored `nfs/amf/src/ngap_task.cpp`'s `UeAuthState::Phase` enum** (previously a 4-state linear
+progression ending at `Done`) to add `AwaitingPduSessionEstablishmentRequest` between
+`AwaitingRegistrationComplete` and `Done` -- this project's single-registration-per-association
+scope (ADR-0031) extends naturally to "single PDU session per association," so a simple additional
+enum value is correct; a real AMF serving concurrent PDU sessions would need a proper per-session
+state machine. New dedicated `http2::Client`/`OAuth2Client` pair for SMF (scope
+`"nsmf-pdusession"`), same one-client-per-NF-per-thread discipline as AUSF's/PCF's.
+
+**Real interop blocked at the same SQN point as every prior stage (expected, not re-investigated)
+-- verified the SMF call directly instead, same methodology as ADR-0035's PCF verification, and
+this time it worked on the first try.** Obtained a genuine OAuth2 token from NRF via `curl`
+(AMF's own mTLS client cert, scope `nsmf-pdusession`), hand-built a `multipart/related` body with
+the *exact* JSON `SmContextCreateData` fields `handle_uplink_nas_transport_pdu_session_
+establishment` constructs (`servingNfId`, `servingNetwork`, `anType`, `smContextStatusUri`,
+`supi`, `pduSessionId`, `dnn`, `sNssai` with a hex-encoded `sd`), and POSTed it directly to real
+SMF's `/nsmf-pdusession/v1/sm-contexts`. Got a real HTTP 201 with a genuine `SmContextCreatedData`
+body back on the first attempt (unlike ADR-0035's PCF call, which needed a real fix first) --
+confirming SMF's own internal PCF call also succeeded as part of the same request (no 500 from a
+failed downstream PCF call). 4 new unit tests (`tests/conformance/test_nas_codec.cpp`,
+`NasCodec.DecodeUlNasTransport*`) cover the transport-level IE extraction (pduSessionId/sNssai/dnn,
+including the DNN label-decode) and the MAC-verify/tamper/reject/wrong-payload-container-type
+paths, following this file's own established pattern.
+
+**Consequence:** Phase 2's stated definition of done -- "UE registration... and PDU session
+establishment... end-to-end, no narrowed slice" -- is now met in the sense that both procedures
+are fully implemented in code and each real SBI call along the way (AUSF, PCF, SMF, and SMF's own
+call to PCF) has been verified against a real running peer. Neither procedure can currently be
+demonstrated end-to-end in a single automated `nr-ue` run, because of the shared SQN
+resynchronization gap (ADR-0032/ADR-0033) that blocks a fresh UE from ever completing
+authentication against this build's current UDM seed data -- this is a real, disclosed limitation
+of the *demonstration*, not of the implementation itself, and is recorded plainly in
+`docs/TRACEABILITY.md` rather than left for a reader to discover. SQN resynchronization and a real
+SMF-side PDU Session Establishment Accept (closing the UE-visible half of this procedure) remain
+the two largest disclosed gaps going into whatever comes after Phase 2.

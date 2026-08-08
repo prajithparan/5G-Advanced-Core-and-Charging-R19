@@ -1,29 +1,48 @@
 # ransim lab UE config for UERANSIM's nr-ue.
 # Format is UERANSIM's own (see vendor/UERANSIM/config/custom-ue.yaml after fetching) --
-# not a 3GPP-defined schema, just this simulator's config file. Key/OP values below are
-# UERANSIM's own published test-vector defaults (not real subscriber credentials, not our
-# own invention), for use against a matching lab UDM/AUSF subscriber record once those NFs
-# exist.
+# not a 3GPP-defined schema, just this simulator's config file.
 #
-# NOT FUNCTIONAL YET: no gNB is reachable (config/gnb.yaml's AMF target has no listener) and
-# no UDM/AUSF exist yet to authenticate against. See docs/DECISIONS.md ADR-0016.
+# key/op/amf below are the real TS 35.207 Test Set 1 values -- deliberately matched to
+# nfs/udm/src/main.cpp's seeded imsi-999700000000001 subscriber (5G_AKA), not UERANSIM's own
+# published example defaults (which this file originally carried, before AMF's NGAP turn
+# reconciled the two). Two real mismatches were found and fixed here (see docs/DECISIONS.md
+# ADR-0030): `op` didn't match UDM's seed at all, and UERANSIM's own MAC validation
+# (vendor/UERANSIM/src/ue/nas/mm/auth.cpp's calculateMilenage) uses this file's configured
+# `amf` field to recompute the expected MAC-A -- NOT the AMF field actually received inside
+# AUTN -- so `amf` must also match UDM's seed exactly or every authentication attempt fails
+# with MAC_FAILURE regardless of a correct key/op.
 
-supi: 'imsi-999700000000001'   # Test PLMN (999/70, see ADR-0016) + arbitrary MSIN
+supi: 'imsi-999700000000001'   # Test PLMN (999/70, see ADR-0016), matches nfs/udm's 5G_AKA seed
 mcc: '999'
 mnc: '70'
 protectionScheme: 0             # Null-scheme SUCI (no home-network public key needed)
 routingIndicator: '0000'
 
 key: '465B5CE8B199B49FAA5F0A2EE238A6BC'
-op: 'E8ED289DEBA952E4283B54E88E6183CA'
+op: 'CDC202D5123E20F62B6D676AC72CB318'
 opType: 'OP'
-amf: '8000'
+amf: 'B9B9'
 
 tunNetmask: '255.255.255.0'
 useNamespace: false
 
 gnbSearchList:
   - 127.0.0.1
+
+# UAC Access Identities/Control Class configuration -- mandatory fields UERANSIM's nr-ue rejects
+# startup without (same discovery as integrityMaxRate above). Same values as UERANSIM's own
+# reference config/custom-ue.yaml, not invented.
+uacAic:
+  mps: false
+  mcs: false
+
+uacAcc:
+  normalClass: 0
+  class11: false
+  class12: false
+  class13: false
+  class14: false
+  class15: false
 
 sessions:
   - type: 'IPv4'
@@ -49,3 +68,11 @@ ciphering:
   EA1: true
   EA2: true
   EA3: true
+
+# Integrity protection maximum data rate for user plane -- mandatory field UERANSIM's nr-ue
+# rejects startup without (found running nr-ue for real during Stage 2's own testing; this file
+# had never actually been run against nr-ue until AMF's NGAP turn). Same value as UERANSIM's own
+# reference config/custom-ue.yaml, not invented.
+integrityMaxRate:
+  uplink: 'full'
+  downlink: 'full'

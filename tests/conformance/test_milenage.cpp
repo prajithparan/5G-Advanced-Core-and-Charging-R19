@@ -79,6 +79,26 @@ TEST(AkaKdf, KseafDerivationIsDeterministicAndKeyDependent) {
     EXPECT_NE(kseaf1a, kseaf2);
 }
 
+TEST(AkaKdf, KamfDerivationIsDeterministicAndInputDependent) {
+    aka_crypto::Kseaf kseaf1{};
+    kseaf1.fill(0x33);
+    aka_crypto::Kseaf kseaf2{};
+    kseaf2.fill(0x44);
+    const aka_crypto::Abba abba{0x00, 0x00};
+    const aka_crypto::Abba abba2{0x00, 0x01};
+
+    const auto kamf1a = aka_crypto::derive_kamf(kseaf1, "imsi-999700000000001", abba);
+    const auto kamf1b = aka_crypto::derive_kamf(kseaf1, "imsi-999700000000001", abba);
+    const auto kamf2 = aka_crypto::derive_kamf(kseaf2, "imsi-999700000000001", abba);
+    const auto kamf_diff_supi = aka_crypto::derive_kamf(kseaf1, "imsi-999700000000002", abba);
+    const auto kamf_diff_abba = aka_crypto::derive_kamf(kseaf1, "imsi-999700000000001", abba2);
+
+    EXPECT_EQ(kamf1a, kamf1b);
+    EXPECT_NE(kamf1a, kamf2);
+    EXPECT_NE(kamf1a, kamf_diff_supi);
+    EXPECT_NE(kamf1a, kamf_diff_abba);
+}
+
 TEST(AkaKdf, ResStarAndHxresStarRoundTrip) {
     const auto ck = hex<16>("b40ba9a3c58b2a05bbf0d987b21bf8cb");
     const auto ik = hex<16>("f769bcd751044604127672711c6d3441");

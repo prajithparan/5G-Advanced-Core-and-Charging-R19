@@ -45,6 +45,7 @@
 #include <thread>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "ngap_task.hpp"
 #include "subscriptions.hpp"
 #include "ue_context_store.hpp"
 
@@ -676,6 +677,12 @@ int main() {
         });
 
     std::thread(run_nrf_lifecycle, amf_instance_id).detach();
+    // NGAP/N2 (SCTP), its own dedicated thread -- see docs/DECISIONS.md ADR-0030/ADR-0031.
+    // 127.0.0.5:38412 matches simulators/ransim/config/gnb.yaml's pre-agreed AMF target exactly
+    // (ADR-0016), not an arbitrary choice.
+    std::thread(amf::ngap::run_ngap_lifecycle, "127.0.0.5", 38412, amf_instance_id,
+               std::string(kNrfBase), std::ref(ue_contexts))
+        .detach();
 
     server.start();
     spdlog::info("amf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
