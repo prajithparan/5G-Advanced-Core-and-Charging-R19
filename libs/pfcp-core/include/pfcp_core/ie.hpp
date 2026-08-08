@@ -15,11 +15,24 @@ namespace pfcp_core {
 
 // TS 29.244 Table 8.1.2-1 -- only the values this project's implemented messages actually use.
 enum class IeType : std::uint16_t {
+    CreatePdr = 1,
+    Pdi = 2,
+    CreateFar = 3,
+    ForwardingParameters = 4,
+    CreatedPdr = 8,
     Cause = 19,
+    SourceInterface = 20,
+    FTeid = 21,
+    Precedence = 29,
+    ApplyAction = 44,
     UpFunctionFeatures = 43,
+    DestinationInterface = 42,
+    FSeid = 57,
     NodeId = 60,
     CpFunctionFeatures = 89,
     RecoveryTimeStamp = 96,
+    FarId = 108,
+    PdrId = 56,
 };
 
 struct Ie {

@@ -1,24 +1,34 @@
-// nfs/upf: UPF (User Plane Function) -- Phase 3 Stage 1 (docs/DECISIONS.md ADR-0039).
+// nfs/upf: UPF (User Plane Function) -- Phase 3 Stages 1+3 (docs/DECISIONS.md ADR-0039/ADR-0042).
 // PFCP/N4 server (TS 29.244), UPF's only real protocol interface -- unlike every other NF in this
 // project, UPF exposes no SBI service of its own (no Nupf_* API exists in the OpenAPI corpus: real
 // 3GPP architecture has SMF talk to UPF exclusively over N4/PFCP, never SBI). UPF's only SBI role
 // is as a REGISTRATION CLIENT to NRF (real: NFType=UPF and NFProfile.upfInfo are genuine fields in
 // TS29122_CommonData_grp.hpp's generated types, confirmed before writing this, not assumed) so
-// SMF can discover it -- Stage 2 wires that discovery up for real; Stage 1's scope here is just
-// UPF existing, registering, and answering the two PFCP node-related procedures TS 23.502's PDU
-// Session Establishment flow needs before any session can be created: Heartbeat (TS 29.244
-// §7.4.2) and Association Setup (§7.4.4.1/§7.4.4.2).
+// SMF can discover it -- Stage 2 wires that discovery up for real.
 //
-// Deliberately deferred, not dropped: Session Establishment/Modification/Deletion (Stage 3),
-// Association Update/Release, Node Report, PFD Management -- everything this build doesn't need
-// yet. No packet forwarding datapath exists yet either (Stage 4, eBPF/XDP -- ADR-0039).
+// Implements: Heartbeat (§7.4.2), Association Setup (§7.4.4.1/§7.4.4.2), and Session
+// Establishment (§7.5.2/§7.5.3, ADR-0042) -- specifically one uplink PDR/FAR pair per session
+// (Source Interface=Access with a UP-allocated F-TEID, forwarding to Core), the minimal real
+// slice TS 23.502's PDU Session Establishment needs. No downlink PDR/FAR: that needs the gNB's
+// N3 GTP-U endpoint, which requires NGAP PDU Session Resource Setup (still not implemented, a
+// disclosed gap predating this turn -- ADR-0038's own N2 SM info note).
+//
+// Deliberately deferred, not dropped: Session Modification/Deletion, Association Update/Release,
+// Node Report, PFD Management, QER/URR (QoS enforcement/usage reporting) -- everything this build
+// doesn't need yet. No packet forwarding datapath exists yet either (Stage 4, eBPF/XDP --
+// ADR-0039); Session Establishment here allocates a real F-TEID and echoes it back, but no packet
+// ever actually flows through it -- disclosed, not silently implied to work end-to-end.
 //
 // Disclosed simplification: this build never terminates -- no SIGINT/SIGTERM handling, matching
-// every other NF in this project (none of them have graceful shutdown either).
+// every other NF in this project (none of them have graceful shutdown either). Session state is
+// NOT persisted anywhere after the response is sent (no session map) -- nothing reads it back yet
+// (no Modification/Deletion/Report handler exists), so storing it now would be exactly the kind
+// of "design for a hypothetical future requirement" CLAUDE.md's engineering rules warn against.
 
 #include "pfcp_core/common_ies.hpp"
 #include "pfcp_core/header.hpp"
 #include "pfcp_core/ie.hpp"
+#include "pfcp_core/session_ies.hpp"
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/logging.hpp"
@@ -169,6 +179,15 @@ std::vector<std::uint8_t> build_heartbeat_response_ies(std::time_t start_time) {
     return ies;
 }
 
+// TS 29.244 Table 8.2.25-1, feature octet 5 bit 5 (FTUP): "F-TEID allocation / release in the UP
+// function is supported by the UP function" -- true now that Stage 3 (ADR-0042) actually allocates
+// F-TEIDs on CH request, so this must say so honestly rather than staying the all-zero
+// "no optional features" bitmask Stage 1 originally sent.
+std::vector<std::uint8_t> encode_up_function_features_ftup_only() {
+    constexpr std::uint8_t kFtupBit = 0x10; // octet 5, bit 5
+    return {kFtupBit, 0x00};
+}
+
 std::vector<std::uint8_t> build_association_setup_response_ies(std::time_t start_time,
                                                                 std::array<std::uint8_t, 4> node_ipv4) {
     std::vector<std::uint8_t> ies;
@@ -179,8 +198,91 @@ std::vector<std::uint8_t> build_association_setup_response_ies(std::time_t start
     pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::RecoveryTimeStamp),
                          pfcp_core::encode_recovery_time_stamp(start_time));
     pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::UpFunctionFeatures),
-                         pfcp_core::encode_up_function_features_none());
+                         encode_up_function_features_ftup_only());
     return ies;
+}
+
+struct SessionEstablishmentResult {
+    std::vector<std::uint8_t> ies;
+    // The header SEID for this response: TS 29.244's addressing rule ("the sending entity uses
+    // the SEID value provided by the corresponding receiving entity") means UPF's response header
+    // must carry the value the CP F-SEID IE in the request said to use -- not UPF's own new SEID.
+    std::uint64_t response_header_seid = 0;
+};
+
+// Session Establishment (TS 29.244 §7.5.2/§7.5.3, ADR-0042). Decodes the CP F-SEID and the first
+// Create PDR/Create FAR pair, allocates a real local F-TEID (if the PDI's F-TEID requested CH)
+// and a real UP F-SEID, and builds the response. `next_seid`/`next_teid` are simple counters --
+// safe as plain (non-atomic) locals since this function only ever runs on run_pfcp_lifecycle's
+// single thread.
+std::optional<SessionEstablishmentResult> build_session_establishment_response_ies(
+    const std::vector<std::uint8_t>& request_ies, std::array<std::uint8_t, 4> node_ipv4,
+    std::uint64_t& next_seid, std::uint32_t& next_teid) {
+    const auto ies = pfcp_core::decode_ies(request_ies);
+    if (!ies.has_value()) {
+        return std::nullopt;
+    }
+    const auto* cp_f_seid_ie =
+        pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::FSeid));
+    const auto* create_pdr_ie =
+        pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatePdr));
+    if (cp_f_seid_ie == nullptr || create_pdr_ie == nullptr) {
+        spdlog::warn("upf: Session Establishment Request missing mandatory CP F-SEID or Create PDR");
+        return std::nullopt;
+    }
+    const auto cp_f_seid = pfcp_core::decode_f_seid_ipv4(cp_f_seid_ie->value);
+    if (!cp_f_seid.has_value()) {
+        spdlog::warn("upf: Session Establishment Request has a malformed CP F-SEID");
+        return std::nullopt;
+    }
+
+    const auto pdr_ies = pfcp_core::decode_ies(create_pdr_ie->value);
+    const auto* pdr_id_ie =
+        pdr_ies.has_value()
+            ? pfcp_core::find_ie(*pdr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::PdrId))
+            : nullptr;
+    const auto* pdi_ie =
+        pdr_ies.has_value()
+            ? pfcp_core::find_ie(*pdr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi))
+            : nullptr;
+    const auto pdr_id = pdr_id_ie != nullptr ? pfcp_core::decode_pdr_id(pdr_id_ie->value) : std::nullopt;
+
+    std::vector<std::uint8_t> ies_out;
+    pfcp_core::encode_ie(ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+                         pfcp_core::encode_node_id_ipv4(node_ipv4));
+    pfcp_core::encode_ie(ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                         pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+
+    pfcp_core::FSeid up_f_seid;
+    up_f_seid.seid = next_seid++;
+    up_f_seid.ipv4 = node_ipv4;
+    pfcp_core::encode_ie(ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::FSeid),
+                         pfcp_core::encode_f_seid_ipv4(up_f_seid));
+
+    if (pdr_id.has_value() && pdi_ie != nullptr) {
+        const auto pdi_ies = pfcp_core::decode_ies(pdi_ie->value);
+        const auto* f_teid_ie =
+            pdi_ies.has_value()
+                ? pfcp_core::find_ie(*pdi_ies, static_cast<std::uint16_t>(pfcp_core::IeType::FTeid))
+                : nullptr;
+        if (f_teid_ie != nullptr && pfcp_core::decode_f_teid_is_choose_request(f_teid_ie->value)) {
+            const std::uint32_t allocated_teid = next_teid++;
+            std::vector<std::uint8_t> created_pdr;
+            pfcp_core::encode_ie(created_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
+                                 pfcp_core::encode_pdr_id(*pdr_id));
+            pfcp_core::encode_ie(
+                created_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::FTeid),
+                pfcp_core::encode_f_teid_allocated_ipv4(allocated_teid, node_ipv4));
+            pfcp_core::encode_ie(ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::CreatedPdr),
+                                 created_pdr);
+            spdlog::info("upf: allocated F-TEID {:#x} for PDR ID {}", allocated_teid, *pdr_id);
+        }
+    }
+
+    SessionEstablishmentResult result;
+    result.ies = std::move(ies_out);
+    result.response_header_seid = cp_f_seid->seid;
+    return result;
 }
 
 // Runs on the main thread (blocking UDP I/O, same "blocking transport gets its own thread"
@@ -193,6 +295,8 @@ void run_pfcp_lifecycle(std::time_t start_time) {
     spdlog::info("upf: listening for PFCP/N4 (UDP) on 0.0.0.0:{}", pfcp_core::kPfcpPort);
 
     constexpr std::array<std::uint8_t, 4> kNodeIpv4{127, 0, 0, 1}; // this lab's loopback-only scope
+    std::uint64_t next_seid = 1;
+    std::uint32_t next_teid = 1;
 
     std::vector<std::uint8_t> recv_buf(2048);
     while (true) {
@@ -235,6 +339,19 @@ void run_pfcp_lifecycle(std::time_t start_time) {
             resp_header.message_type = pfcp_core::MessageType::AssociationSetupResponse;
             resp_ies = build_association_setup_response_ies(start_time, kNodeIpv4);
             spdlog::info("upf: Sx Association Setup accepted from {}", sender.address().to_string());
+        } else if (header->message_type == pfcp_core::MessageType::SessionEstablishmentRequest) {
+            const auto result = build_session_establishment_response_ies(ie_bytes, kNodeIpv4,
+                                                                          next_seid, next_teid);
+            if (!result.has_value()) {
+                spdlog::warn("upf: malformed Session Establishment Request from {}, ignoring",
+                            sender.address().to_string());
+                continue;
+            }
+            resp_header.message_type = pfcp_core::MessageType::SessionEstablishmentResponse;
+            resp_header.has_seid = true;
+            resp_header.seid = result->response_header_seid;
+            resp_ies = result->ies;
+            spdlog::info("upf: Sx Session established from {}", sender.address().to_string());
         } else {
             spdlog::warn("upf: received PFCP message type {} with no handler yet, ignoring",
                         static_cast<int>(header->message_type));
