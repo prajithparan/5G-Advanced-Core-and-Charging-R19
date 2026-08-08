@@ -29,7 +29,7 @@ spec text. Full conventions are in [`CLAUDE.md`](CLAUDE.md).
 | 1 | Codegen spine: `tools/sbi-codegen`, generated DTOs/serializers from the R19 YAML | Done |
 | — | TLS 1.3 + mTLS across `libs/sbi-core` (closes ADR-0005, required before Phase 2 per ADR-0009) | Done |
 | 2 | Control-plane core: NRF, AMF, SMF, UDM, UDR, AUSF, PCF; UE registration + PDU session establishment end-to-end | Done |
-| 3 | User plane: N4/PFCP, UPF datapath | Not started |
+| 3 | User plane: N4/PFCP, UPF datapath | In progress (Stage 0-1 done: PFCP codec, UPF registers with NRF and answers Heartbeat/Association Setup) |
 | 4 | Charging + TM Forum SID/BSS layer | Not started |
 | 5 | NWDAF + AI/ML pipelines | Not started |
 | 6 | R19 feature NFs (AIOTF, 5MBS, SEPP, ...) | Not started |
@@ -61,7 +61,8 @@ nfs/<nf>/         One independent binary + library per Network Function. nfs/stu
                   nfs/hello-nf are Phase 0 throwaways proving the transport works end-to-end,
                   not real NFs.
 tools/            Build-time tooling, including the OpenAPI-to-C++ codegen spine.
-specs/            Vendored 3GPP R19 OpenAPI YAML (source of truth for all API shapes).
+specs/            Vendored 3GPP source material: R19 OpenAPI YAML (SBI API shapes), NGAP ASN.1
+                  (specs/NGAP), and the PFCP spec text (specs/PFCP) for protocols with no YAML.
 tests/            Integration and conformance tests.
 docs/             DECISIONS.md (ADR log) and TRACEABILITY.md (procedure -> TS clause -> file -> test).
 ```
