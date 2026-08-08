@@ -22,6 +22,7 @@ constexpr std::uint8_t kMessageTypeSecurityModeComplete = 0x5E;
 constexpr std::uint8_t kMessageTypeRegistrationAccept = 0x42;
 constexpr std::uint8_t kMessageTypeRegistrationComplete = 0x43;
 constexpr std::uint8_t kMessageTypeUlNasTransport = 0x67;
+constexpr std::uint8_t kMessageTypeDlNasTransport = 0x68;
 
 // TS 24.501 §9.1.1 security header type values (the byte carried in the outer secured envelope,
 // distinct from the inner plaintext message's own header, which always carries
@@ -485,8 +486,12 @@ std::optional<UlNasTransportInfo> decode_ul_nas_transport(
         out.mac_valid = false;
         return out;
     }
-    off += container_len; // the payload container itself is opaque -- see this function's own
-                          // declaration comment for why it's intentionally not decoded further
+    // The payload container itself is opaque -- see this function's own declaration comment for
+    // why it's intentionally not decoded further -- but is captured verbatim (ADR-0038) so the
+    // caller can forward it to SMF unmodified.
+    out.payload_container.assign(inner.begin() + static_cast<std::ptrdiff_t>(off),
+                                 inner.begin() + static_cast<std::ptrdiff_t>(off + container_len));
+    off += container_len;
 
     // Walk the optional IEs that follow for pduSessionId/sNssai/dnn, skipping the others (Type-3
     // TV for oldPduSessionId, Type-1 half-octet for requestType, Type-4 TLV for
@@ -547,6 +552,31 @@ std::optional<UlNasTransportInfo> decode_ul_nas_transport(
     }
 
     return out;
+}
+
+std::vector<std::uint8_t> encode_dl_nas_transport(const aka_crypto::NasIntKey& knas_int,
+                                                  const aka_crypto::NasEncKey& knas_enc,
+                                                  std::uint32_t downlink_count,
+                                                  std::uint8_t pdu_session_id,
+                                                  const std::vector<std::uint8_t>& n1_sm_container) {
+    // Inner plaintext message (TS 24.501 §8.2.9): own header, then mandatory
+    // payloadContainerType (Type-1, low nibble of its own byte) + payloadContainer (Type-6 LV-E),
+    // then optional pduSessionId (Type-3 TV, IEI 0x12 -- confirmed against DlNasTransport::onBuild's
+    // `b.optionalIE(0x12, &pduSessionId)`, same IEI value UlNasTransport uses).
+    std::vector<std::uint8_t> inner;
+    inner.push_back(kEpdMobilityManagement);
+    inner.push_back(kSecurityHeaderNotProtected);
+    inner.push_back(kMessageTypeDlNasTransport);
+    inner.push_back(kPayloadContainerTypeN1SmInformation);
+    const auto container_len = static_cast<std::uint16_t>(n1_sm_container.size());
+    inner.push_back(static_cast<std::uint8_t>(container_len >> 8));
+    inner.push_back(static_cast<std::uint8_t>(container_len & 0xFF));
+    inner.insert(inner.end(), n1_sm_container.begin(), n1_sm_container.end());
+    inner.push_back(kIeiUlNasPduSessionId);
+    inner.push_back(pdu_session_id);
+
+    return encode_secured_downlink(knas_int, knas_enc, kShtIntegrityProtectedAndCiphered,
+                                   /*ciphered=*/true, downlink_count, inner);
 }
 
 } // namespace amf::nas

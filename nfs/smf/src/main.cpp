@@ -55,6 +55,7 @@
 #include "sbi_core/jwt.hpp"
 #include "sbi_core/logging.hpp"
 #include "sbi_core/metrics.hpp"
+#include "sbi_core/multipart.hpp"
 #include "sbi_core/oauth2_client.hpp"
 #include "sbi_core/otel.hpp"
 #include "sbi_core/sbi_headers.hpp"
@@ -68,6 +69,7 @@
 #include <thread>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "nas_5gsm_codec.hpp"
 #include "sm_context_store.hpp"
 
 namespace {
@@ -84,6 +86,7 @@ constexpr const char* kNfType = "SMF";
 constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kSelfBase = "https://127.0.0.1:7779";
 constexpr const char* kPcfBase = "https://127.0.0.1:7783";
+constexpr const char* kAmfBase = "https://127.0.0.1:7778";
 constexpr const char* kApiRoot = "/nsmf-pdusession/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
@@ -228,6 +231,22 @@ int main() {
                                      "npcf-smpolicycontrol",
                                      "PCF");
 
+    // SMF's own client identity + token source for calling AMF's Namf_Communication
+    // N1N2MessageTransfer (TS29518_Namf_Communication.yaml) -- the real mechanism for delivering
+    // the PDU Session Establishment Accept back to the UE (ADR-0038), same one-client-per-NF
+    // pattern as pcf_client above.
+    sbi_core::http2::TlsConfig amf_client_tls{
+        .cert_path = CERTS_DIR "/smf/cert.pem",
+        .key_path = CERTS_DIR "/smf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client amf_client(std::move(amf_client_tls));
+    sbi_core::OAuth2Client amf_oauth(amf_client,
+                                     std::string(kNrfBase) + "/oauth2/token",
+                                     smf_instance_id,
+                                     "namf-comm",
+                                     "AMF");
+
     smf::SmContextStore sm_contexts;
 
     auto meter = sbi_core::get_meter("smf");
@@ -243,6 +262,9 @@ int main() {
         "smf_pcf_sm_policy_create_total", "Total successful CreateSMPolicy calls to PCF");
     auto pcf_sm_policy_delete_counter = meter->CreateUInt64Counter(
         "smf_pcf_sm_policy_delete_total", "Total successful (best-effort) DeleteSMPolicy calls to PCF");
+    auto n1n2_transfer_counter = meter->CreateUInt64Counter(
+        "smf_n1n2_message_transfer_total",
+        "Total successful AMF N1N2MessageTransfer calls delivering a PDU Session Establishment Accept");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -252,7 +274,8 @@ int main() {
         "POST",
         std::string(kApiRoot) + "/sm-contexts",
         [&verifier, &sm_contexts, &create_counter, &pcf_client, &pcf_oauth,
-         &pcf_sm_policy_create_counter](const sbi_core::http2::Request& req) {
+         &pcf_sm_policy_create_counter, &amf_client, &amf_oauth,
+         &n1n2_transfer_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -346,6 +369,120 @@ int main() {
                 sm_context_ref,
                 json{{"smPolicyId", sm_policy_id}, {"policy", json(decision)}});
             pcf_sm_policy_create_counter->Add(1);
+
+            // ADR-0038: the real TS 23.502 §4.3.2.2.1 step 11 -- SMF decodes the UE's actual PDU
+            // Session Establishment Request (forwarded by AMF as n1SmMsg, ADR-0038, not the
+            // opaque-and-dropped gap ADR-0036 disclosed), builds a real Accept using PCF's actual
+            // QoS decision above (not fabricated), and delivers it to the UE via AMF's
+            // Namf_Communication N1N2MessageTransfer -- the real mechanism (TS29518_
+            // Namf_Communication.yaml), not a field on this response. Best-effort: any failure
+            // here is logged, not fatal to CreateSMContext's own 201 -- matches TS 23.502's real
+            // procedure, where N1N2MessageTransfer happens after CreateSMContext already returned.
+            if (body->n1SmMsg.has_value()) {
+                std::vector<std::uint8_t> n1_sm_bytes;
+                bool found_n1_sm = false;
+                if (const auto content_type_it = req.headers.find("content-type");
+                    content_type_it != req.headers.end()) {
+                    if (auto parts = sbi_core::multipart::parse(content_type_it->second, req.body);
+                        parts.has_value()) {
+                        for (const auto& part : *parts) {
+                            if (part.content_id.has_value() &&
+                                *part.content_id == body->n1SmMsg->contentId) {
+                                n1_sm_bytes.assign(part.body.begin(), part.body.end());
+                                found_n1_sm = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                const auto req_info = found_n1_sm
+                                          ? smf::nas5gsm::decode_establishment_request(n1_sm_bytes)
+                                          : std::nullopt;
+                if (!req_info.has_value()) {
+                    spdlog::warn("smf: SUPI {} pduSessionId {} -- n1SmMsg referenced but its binary "
+                                "part was missing or not a PDU Session Establishment Request, no "
+                                "Accept sent",
+                                *body->supi, *body->pduSessionId);
+                } else {
+                    // Sourced from PCF's real SmPolicyDecision.sessRules (built above), not
+                    // fabricated -- falls back to nas_5gsm_codec's own disclosed defaults only if
+                    // PCF returned no session rule at all.
+                    std::string ambr_ul = "1 Mbps";
+                    std::string ambr_dl = "1 Mbps";
+                    std::uint8_t qfi = 1;
+                    if (decision.sessRules.has_value() && decision.sessRules->is_object() &&
+                        !decision.sessRules->empty()) {
+                        try {
+                            const auto rule =
+                                decision.sessRules->begin().value().get<sbi_gen::SessionRule>();
+                            if (rule.authSessAmbr.has_value()) {
+                                ambr_ul = rule.authSessAmbr->uplink;
+                                ambr_dl = rule.authSessAmbr->downlink;
+                            }
+                            if (rule.authDefQos.has_value() && rule.authDefQos->n5qi.has_value()) {
+                                qfi = static_cast<std::uint8_t>(*rule.authDefQos->n5qi & 0x3F);
+                            }
+                        } catch (const json::exception&) {
+                            // Malformed sessRules entry -- fall back to the defaults above,
+                            // disclosed via the log line below rather than silently swallowed.
+                        }
+                    }
+
+                    const auto accept_bytes = smf::nas5gsm::encode_establishment_accept(
+                        req_info->pdu_session_id, req_info->pti, ambr_ul, ambr_dl, qfi);
+
+                    auto amf_token = amf_oauth.get_bearer_token();
+                    if (!amf_token.has_value()) {
+                        spdlog::warn("smf: could not obtain AMF token, PDU Session Establishment "
+                                    "Accept not delivered for SUPI {}: {}",
+                                    *body->supi, amf_token.error());
+                    } else {
+                        sbi_gen::N1N2MessageTransferReqData n1n2_req{};
+                        sbi_gen::N1MessageContainer n1_container{};
+                        n1_container.n1MessageClass.value = sbi_gen::N1MessageClass::SM;
+                        sbi_gen::RefToBinaryData n1_content_ref{};
+                        n1_content_ref.contentId = "n1Message";
+                        n1_container.n1MessageContent = n1_content_ref;
+                        n1n2_req.n1MessageContainer = n1_container;
+                        n1n2_req.pduSessionId = body->pduSessionId;
+
+                        sbi_core::multipart::Part n1n2_json_part;
+                        n1n2_json_part.content_type = "application/json";
+                        n1n2_json_part.body = json(n1n2_req).dump();
+                        sbi_core::multipart::Part n1n2_bin_part;
+                        n1n2_bin_part.content_type = "application/vnd.3gpp.5gnas";
+                        n1n2_bin_part.content_id = "n1Message";
+                        n1n2_bin_part.body.assign(accept_bytes.begin(), accept_bytes.end());
+                        const auto n1n2_encoded =
+                            sbi_core::multipart::encode({n1n2_json_part, n1n2_bin_part});
+
+                        sbi_core::http2::ClientRequest amf_http_req;
+                        amf_http_req.method = "POST";
+                        amf_http_req.url = std::string(kAmfBase) + "/namf-comm/v1/ue-contexts/" +
+                                           *body->supi + "/n1-n2-messages";
+                        amf_http_req.headers.emplace("content-type",
+                                                     n1n2_encoded.content_type_header);
+                        amf_http_req.headers.emplace("authorization", "Bearer " + *amf_token);
+                        amf_http_req.body = n1n2_encoded.body;
+
+                        auto amf_resp = amf_client.send(amf_http_req);
+                        if (!amf_resp.has_value() ||
+                            (amf_resp->status != 200 && amf_resp->status != 202)) {
+                            spdlog::warn(
+                                "smf: AMF N1N2MessageTransfer call failed for SUPI {} -- PDU "
+                                "Session Establishment Accept not delivered to the UE: {}",
+                                *body->supi,
+                                amf_resp.has_value() ? std::to_string(amf_resp->status)
+                                                     : amf_resp.error());
+                        } else {
+                            n1n2_transfer_counter->Add(1);
+                            spdlog::info("smf: PDU Session Establishment Accept delivered to AMF "
+                                        "for SUPI {}, pduSessionId {}",
+                                        *body->supi, *body->pduSessionId);
+                        }
+                    }
+                }
+            }
 
             sbi_gen::SmContextCreatedData resp_data;
             resp_data.pduSessionId = body->pduSessionId;

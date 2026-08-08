@@ -193,27 +193,51 @@ struct UlNasTransportInfo {
     // a different length just leaves these std::nullopt.
     std::optional<std::uint8_t> snssai_sst;
     std::optional<std::array<std::uint8_t, 3>> snssai_sd;
+    // The opaque 5GSM payload container bytes (the PDU Session Establishment Request itself), NOT
+    // decoded here (see this function's own comment for why) but captured verbatim so the caller
+    // can forward them to SMF as SmContextCreateData.n1SmMsg, TS 29.502's real mechanism for
+    // getting the actual 5GSM content to the NF that's allowed to understand it. Added by
+    // docs/DECISIONS.md ADR-0038 -- previously this project discarded these bytes entirely.
+    std::vector<std::uint8_t> payload_container;
 };
 
 // Verifies MAC and deciphers a NAS-PDU carried in UplinkNASTransport, expected to be a
 // UlNasTransport (TS 24.501 §8.2.10) wrapping N1 SM information (payloadContainerType=1) -- this
 // project's only implemented post-registration NAS procedure, PDU Session Establishment
 // (TS 23.502 §4.3.2.2.1). The actual 5GSM payload container bytes (the PDU Session Establishment
-// Request itself) are deliberately NOT decoded here -- TS 24.501's whole point of the
-// payload-container mechanism is that AMF routes SM messages without understanding their
-// contents; only SMF decodes real 5GSM content (and even SMF's own current turn doesn't --
-// nfs/smf/src/main.cpp's own disclosed "PduSessionType... not available from SmContextCreateData
-// at all" scope). Only the transport-level optional IEs that determine WHERE to route the request
-// (PDU session ID, S-NSSAI, DNN) are extracted; requestType/oldPduSessionId/additionalInformation
-// are walked past (skipped) to reach them but not surfaced -- unused by SMF's current
-// CreateSMContext handler either.
+// Request itself) are NOT decoded here -- TS 24.501's whole point of the payload-container
+// mechanism is that AMF routes SM messages without understanding their contents; only SMF decodes
+// real 5GSM content. The container bytes are still captured verbatim (UlNasTransportInfo::
+// payload_container, ADR-0038) so the caller can forward them to SMF unmodified, matching the real
+// mechanism: AMF stays opaque to the content, SMF is the only NF that parses it. The
+// transport-level optional IEs that determine WHERE to route the request (PDU session ID, S-NSSAI,
+// DNN) are additionally extracted; requestType/oldPduSessionId/additionalInformation are walked
+// past (skipped) to reach them but not surfaced -- unused by SMF's current CreateSMContext handler.
 //
-// uplink_count: this association's third secured uplink message (SecurityModeComplete=0,
-// RegistrationComplete=1) -- callers pass 2 in this project's current single-PDU-session scope.
+// uplink_count: this association's second secured uplink message (SecurityModeComplete=0; no
+// RegistrationComplete is ever sent, see UeAuthState::Phase's own comment in ngap_task.cpp) --
+// callers pass 1 in this project's current single-PDU-session scope.
 std::optional<UlNasTransportInfo> decode_ul_nas_transport(
     const aka_crypto::NasIntKey& knas_int,
     const aka_crypto::NasEncKey& knas_enc,
     std::uint32_t uplink_count,
     const std::vector<std::uint8_t>& nas_pdu);
+
+// Encodes a secured DlNasTransport (TS 24.501 §8.2.9) wrapping opaque N1 SM information
+// (payloadContainerType=1) -- AMF's delivery vehicle for the PDU Session Establishment Accept SMF
+// builds and sends via Namf_Communication's N1N2MessageTransfer (ADR-0038). AMF does not decode
+// n1_sm_container -- same opaque-payload-container discipline as decode_ul_nas_transport's own
+// comment, just in the downlink direction. Byte layout confirmed against UERANSIM's real
+// DlNasTransport::onBuild (simulators/ransim/vendor/UERANSIM/src/lib/nas/msg.cpp): mandatory
+// payloadContainerType (Type-1) + payloadContainer (Type-6 LV-E) + optional pduSessionId
+// (Type-3 TV, IEI 0x12 -- same IEI value UlNasTransport uses for the same IE).
+//
+// downlink_count: this association's second secured downlink message (SecurityModeCommand=0,
+// RegistrationAccept=1) -- callers pass 2 in this project's current single-PDU-session scope.
+std::vector<std::uint8_t> encode_dl_nas_transport(const aka_crypto::NasIntKey& knas_int,
+                                                  const aka_crypto::NasEncKey& knas_enc,
+                                                  std::uint32_t downlink_count,
+                                                  std::uint8_t pdu_session_id,
+                                                  const std::vector<std::uint8_t>& n1_sm_container);
 
 } // namespace amf::nas

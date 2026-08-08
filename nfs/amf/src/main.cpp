@@ -260,6 +260,7 @@ int main() {
     sbi_core::jwt::Verifier verifier(CERTS_DIR "/nrf-jwt/public.pem", kNrfInstanceId);
 
     amf::UeContextStore ue_contexts;
+    amf::ngap::NgapUeRegistry ue_ngap_registry;
     amf::UeN1N2SubscriptionStore ue_n1n2_subs("n1n2sub-");
     amf::NonUeN2SubscriptionStore non_ue_n2_subs("nonuen2sub-");
     amf::AmfStatusSubscriptionStore amf_status_subs("amfstatussub-");
@@ -476,24 +477,65 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/ue-contexts/{ueContextId}/n1-n2-messages",
-        [&verifier, &ue_contexts, &n1n2_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &ue_contexts, &ue_ngap_registry,
+         &n1n2_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return problem_response(401, "Unauthorized", auth->error);
-            }
-            sbi_core::http2::Response err;
-            auto body = parse_json_body<sbi_gen::N1N2MessageTransferReqData>(req, err);
-            if (!body.has_value()) {
-                return err;
             }
             const auto ue_context_id = req.path_params.at("ueContextId");
             if (!ue_contexts.get(ue_context_id).has_value()) {
                 return problem_response(404, "Not Found", "No UE context with id " + ue_context_id);
             }
+
+            // Real delivery (ADR-0038) requires a binary N1 message, i.e. multipart/related --
+            // the plain application/json alternative the schema also allows (e.g. an N2-only
+            // transfer, or a notification with no NAS content) isn't handled by this build, which
+            // has no N2 SM info source without a real UPF/N4 (Phase 3) anyway. Disclosed scope
+            // narrowing, not silently dropped: rejected with 400, not misinterpreted as JSON.
+            sbi_core::http2::Response err;
+            auto body = parse_multipart_json_body<sbi_gen::N1N2MessageTransferReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+
+            std::optional<std::vector<std::uint8_t>> n1_bytes;
+            if (body->n1MessageContainer.has_value()) {
+                const auto content_type_it = req.headers.find("content-type");
+                if (content_type_it != req.headers.end()) {
+                    if (auto parts =
+                            sbi_core::multipart::parse(content_type_it->second, req.body);
+                        parts.has_value()) {
+                        for (const auto& part : *parts) {
+                            if (part.content_id.has_value() &&
+                                *part.content_id ==
+                                    body->n1MessageContainer->n1MessageContent.contentId) {
+                                n1_bytes.emplace(part.body.begin(), part.body.end());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!n1_bytes.has_value()) {
+                return problem_response(400, "Missing binary part",
+                                        "n1MessageContainer referenced but its binary part was "
+                                        "not found in the multipart body");
+            }
+            if (!body->pduSessionId.has_value()) {
+                return problem_response(
+                    400, "Missing mandatory IE",
+                    "This build requires pduSessionId to route the N1 message to a PDU session");
+            }
+
+            const auto delivered = ue_ngap_registry.send_dl_nas_transport(
+                ue_context_id, static_cast<std::uint8_t>(*body->pduSessionId), *n1_bytes);
+            if (!delivered) {
+                return problem_response(
+                    404, "Not Found",
+                    "No live NGAP association registered for UE context " + ue_context_id);
+            }
+
             n1n2_counter->Add(1);
-            // No real N1/N2 delivery pipeline exists yet (no NGAP/N2, no NAS) -- this is a
-            // bookkeeping acknowledgment only, always reporting immediate synchronous "initiated"
-            // rather than the async 202+callback flow, since there is nothing downstream to
-            // actually deliver a NAS/N2 payload through yet.
             sbi_gen::N1N2MessageTransferRspData resp_data;
             resp_data.cause.value = sbi_gen::N1N2MessageTransferCause::N1_N2_TRANSFER_INITIATED;
             json j = resp_data;
@@ -681,7 +723,7 @@ int main() {
     // 127.0.0.5:38412 matches simulators/ransim/config/gnb.yaml's pre-agreed AMF target exactly
     // (ADR-0016), not an arbitrary choice.
     std::thread(amf::ngap::run_ngap_lifecycle, "127.0.0.5", 38412, amf_instance_id,
-               std::string(kNrfBase), std::ref(ue_contexts))
+               std::string(kNrfBase), std::ref(ue_contexts), std::ref(ue_ngap_registry))
         .detach();
 
     server.start();
