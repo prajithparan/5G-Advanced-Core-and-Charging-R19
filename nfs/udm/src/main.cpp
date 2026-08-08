@@ -590,6 +590,39 @@ int main() {
                 return err;
             }
             const auto supi_or_suci = req.path_params.at("supiOrSuci");
+
+            // SQN resynchronisation (TS 33.102 §6.3.3, ADR-0037): if AUSF forwarded resync info
+            // (a UE's earlier AuthenticationFailure carried AUTS), verify+apply it BEFORE the
+            // normal get_and_advance_sqn() read below -- otherwise the vector this call is about
+            // to generate would still use the stale, already-desynced SQN.
+            if (body->resynchronizationInfo.has_value()) {
+                const auto resync_rand =
+                    aka_crypto::from_hex<16>(body->resynchronizationInfo->rand);
+                const auto resync_auts =
+                    aka_crypto::from_hex<14>(body->resynchronizationInfo->auts);
+                if (!resync_rand.has_value() || !resync_auts.has_value()) {
+                    return sbi_core::http2::problem_response(
+                        400, "Bad Request",
+                        "resynchronizationInfo.rand/auts are not valid hex");
+                }
+                const auto resync_result =
+                    auth_subscriptions.resync_sqn(supi_or_suci, *resync_rand, *resync_auts);
+                if (!resync_result.has_value()) {
+                    return sbi_core::http2::problem_response(
+                        404, "Not Found",
+                        "No authentication subscription for " + supi_or_suci +
+                            " (real SUCI de-concealment is not implemented in this build -- pass "
+                            "a SUPI-formatted id; see file header)");
+                }
+                if (!*resync_result) {
+                    return sbi_core::http2::problem_response(
+                        400, "Bad Request",
+                        "resynchronizationInfo.auts failed to verify for " + supi_or_suci +
+                            " -- wrong subscriber key material, tampered, or the RAND doesn't "
+                            "match the AuthenticationRequest the UE is responding to");
+                }
+            }
+
             auto sub = auth_subscriptions.get_and_advance_sqn(supi_or_suci);
             if (!sub.has_value()) {
                 return sbi_core::http2::problem_response(

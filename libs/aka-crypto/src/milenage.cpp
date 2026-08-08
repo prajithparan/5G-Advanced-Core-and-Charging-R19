@@ -119,4 +119,43 @@ Key128 generate_rand() {
     return rand;
 }
 
+Mac64 f1_star(const Key128& opc, const Key128& k, const Key128& rand, const Sqn& sqn_ms) {
+    static constexpr Amf kResyncAmf{0x00, 0x00};  // TS 33.102 §6.3.3, fixed -- see this function's
+                                                  // own declaration comment
+    const Block temp = aes128_ecb_encrypt_block(k, xor_blocks(rand, opc));
+    const Block in1 = make_in1(sqn_ms, kResyncAmf);
+    const Block rotated = rotate_left_bytes(xor_blocks(in1, opc), 8);  // r1 = 64 bits (same as f1)
+    const Block pre = xor_blocks(xor_blocks(temp, rotated), make_c(0x00));  // c1 = 0 (same as f1)
+    const Block out1 = xor_blocks(aes128_ecb_encrypt_block(k, pre), opc);
+    Mac64 mac{};
+    std::copy(out1.begin() + 8, out1.end(), mac.begin());  // MAC-S = OUT1[64..127]
+    return mac;
+}
+
+Ak48 f5_star(const Key128& opc, const Key128& k, const Key128& rand) {
+    const Block temp = aes128_ecb_encrypt_block(k, xor_blocks(rand, opc));
+    const Block temp_xor_opc = xor_blocks(temp, opc);
+    const Block pre = xor_blocks(rotate_left_bytes(temp_xor_opc, 12), make_c(0x08));  // r5=96 bits, c5=8
+    const Block out5 = xor_blocks(aes128_ecb_encrypt_block(k, pre), opc);
+    Ak48 ak_star{};
+    std::copy(out5.begin(), out5.begin() + 6, ak_star.begin());
+    return ak_star;
+}
+
+std::optional<Sqn> verify_and_decode_auts(const Key128& opc, const Key128& k, const Key128& rand,
+                                          const Auts& auts) {
+    const Ak48 ak_star = f5_star(opc, k, rand);
+    Sqn sqn_ms{};
+    for (size_t i = 0; i < sqn_ms.size(); ++i) {
+        sqn_ms[i] = static_cast<uint8_t>(auts[i] ^ ak_star[i]);
+    }
+    const Mac64 expected_mac_s = f1_star(opc, k, rand, sqn_ms);
+    Mac64 received_mac_s{};
+    std::copy(auts.begin() + 6, auts.end(), received_mac_s.begin());
+    if (expected_mac_s != received_mac_s) {
+        return std::nullopt;
+    }
+    return sqn_ms;
+}
+
 }  // namespace aka_crypto

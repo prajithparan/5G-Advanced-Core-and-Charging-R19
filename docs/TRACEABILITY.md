@@ -576,7 +576,17 @@ as NRF/AMF/SMF/UDM/UDR/AUSF's charts. `docker compose up` and `helm install`/`he
 NOT run this session -- same disclosed-not-silently-assumed gap ADR-0014 already recorded for NRF
 alone. See `docs/DECISIONS.md` ADR-0028.
 
-## AMF NGAP/N2 + NAS-5GS Registration and PDU Session Establishment (staged plan, Stages 0-5, plus ADR-0036)
+## AMF NGAP/N2 + NAS-5GS Registration and PDU Session Establishment (staged plan, Stages 0-5, plus ADR-0036/ADR-0037)
+
+**As of ADR-0037, the full table below is verified by a single real, unmodified `nr-ue` run,
+first attempt, zero retries or failures anywhere in Registration or SM-context creation** -- not
+just each row independently. Real `nrf`/`udr`/`udm`/`ausf`/`pcf`/`smf`/`amf` plus real
+`nr-gnb`/`nr-ue`: NG Setup → Initial Registration → AuthenticationFailure (SQN out of range) →
+SQN-resync AuthenticationRequest accepted → SecurityModeCommand/Complete verified →
+RegistrationAccept sent → AM Policy Association established with PCF → PDU Session Establishment
+Request verified → SM context established with SMF. `nr-ue` logged `Initial Registration is
+successful` immediately followed by `Sending PDU Session Establishment Request`. This supersedes
+every "Not reachable live (SQN gap)" note this table previously carried.
 
 | Procedure | TS clause / message | Test |
 |---|---|---|
@@ -584,36 +594,27 @@ alone. See `docs/DECISIONS.md` ADR-0028.
 | InitialUEMessage -> NAS RegistrationRequest decode | TS 38.413 `InitialUEMessage`; TS 24.501 §8.2.6 `RegistrationRequest`, §9.11.3.4 5GS Mobile Identity (null-scheme SUCI) | Real `nr-ue` interop (real SUPI `imsi-999700000000001` extracted from a real UE) + unit test `NasCodec.DecodesRegistrationRequestNullSchemeSuci` (hand-constructed vector) + 2 negative unit tests |
 | AMF -> AUSF `POST /ue-authentications` | TS 29.509 `Nausf_UEAuthentication` (`AuthenticationInfo`/`UEAuthenticationCtx`) | Real call succeeds against real AUSF during the same `nr-ue` interop run (real 5G-AKA vector returned) |
 | NAS AuthenticationRequest encode -> DownlinkNASTransport | TS 24.501 §8.2.1, §9.11.3.16/§9.11.3.15 (RAND Type-3, AUTN Type-4) | Real `nr-ue` interop (UE decodes it correctly, computes a real response) + unit test `NasCodec.EncodesAuthenticationRequestWithCorrectIeLayout` |
-| NAS AuthenticationResponse/Failure decode | TS 24.501 §8.2.8/§8.2.7 | Real `nr-ue` interop, failure path only (real `AuthenticationFailure`, mmCause=SYNCH_FAILURE, real AUTS -- see SQN gap below) + 4 unit tests covering both outcomes (success path unreachable live, covered by hand-constructed vectors) |
-| AMF -> AUSF `PUT .../5g-aka-confirmation` | TS 29.509 `ConfirmationData`/`ConfirmationDataResponse` | Not reachable live (SQN gap) -- same request/response shape already proven end-to-end by `AusfIntegration.FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf` |
-| KAMF derivation | TS 33.501 Annex A.7 (FC=0x6D) | Unit test `AkaKdf.KamfDerivationIsDeterministicAndInputDependent` (determinism/input-dependence; no local Annex A text to check a known-answer value against, see ADR-0026/ADR-0033) |
-| KNASenc/KNASint derivation | TS 33.501 Annex A.8 (FC=0x69) | Covered indirectly via the SMC/Complete round-trip unit tests below (any derivation bug would fail the MAC verify) |
-| 128-NEA2/128-NIA2 (AES-128-CTR / AES-128-CMAC) | TS 33.401 Annex B.1.3/B.2.3 (reused by TS 33.501 for the 5G algorithm set) | Standalone cross-check harness against UERANSIM's real, independent `eea2.cpp`/`eia2.cpp` (40/40 byte-exact matches, 20 random trials each) -- see ADR-0034. Not reachable live (SQN gap). 4 unit tests (round-trip, determinism, parameter sensitivity) |
-| NAS SecurityModeCommand encode / SecurityModeComplete decode | TS 24.501 §8.2.25/§8.2.26 | Not reachable live (SQN gap) -- 6 unit tests (wire layout, MAC verify/tamper/reject, wrong-SHT/too-short rejection) |
-| NAS RegistrationAccept encode / RegistrationComplete decode | TS 24.501 §8.2.7/§8.2.6 | Not reachable live (SQN gap) -- 4 unit tests (wire layout + decrypt-to-expected-inner, MAC verify/tamper/reject) |
-| AMF -> PCF `POST /npcf-am-policy-control/v1/policies` (`CreateIndividualAMPolicyAssociation`) | TS 29.507 `Npcf_AMPolicyControl` | Not reachable live (SQN gap) -- verified directly instead: a real `curl` POST (genuine NRF-issued OAuth2 token via AMF's mTLS cert) with the exact JSON body this code builds got a real HTTP 201 + a genuine `PolicyAssociation` back from real PCF. This is also how a real, missing-mandatory-field bug (`suppFeat`) was caught and fixed -- see ADR-0035 |
-| NAS UlNasTransport decode (PDU Session Establishment Request routing) | TS 24.501 §8.2.10, §9.11.3.5 (payload container type), §9.11.3.41 (PDU session ID), §9.11.2.8 (S-NSSAI), §9.11.2.1a (DNN, TS 23.003 §9.1 label encoding) | Not reachable live (SQN gap) -- 4 unit tests (`NasCodec.DecodeUlNasTransport*`: pduSessionId/sNssai/dnn extraction including the DNN label-decode, MAC verify/tamper/reject, wrong-payload-container-type rejection). The 5GSM payload container itself (the PDU Session Establishment Request's own content) is deliberately never decoded -- see ADR-0036 |
-| AMF -> SMF `POST /nsmf-pdusession/v1/sm-contexts` (`CreateSMContext`) | TS 29.502 `Nsmf_PDUSession`, `multipart/related` | Not reachable live (SQN gap) -- verified directly instead, same methodology as the PCF row above: a real `curl` POST (genuine token, hand-built multipart body with the exact `SmContextCreateData` fields this code constructs) got a real HTTP 201 + a genuine `SmContextCreatedData` back from real SMF on the first attempt -- also confirming SMF's own internal call to PCF succeeded as part of the same request. See ADR-0036 |
+| NAS AuthenticationResponse/Failure decode | TS 24.501 §8.2.8/§8.2.7 | Real `nr-ue` interop, both outcomes: real `AuthenticationFailure` (mmCause=SYNCH_FAILURE, real AUTS) on first contact, then real `AuthenticationResponse` (RES\*) accepted on the SQN-resync retry -- see ADR-0037. 4 unit tests |
+| SQN resynchronization (`resynchronizationInfo` plumbed AMF->AUSF->UDM; UDM `resync_sqn`; Milenage f1\*/f5\*) | TS 33.102 §6.3.3/Annex C.3; TS 29.503/29.509 `ResynchronizationInfo_Nudm_UEAU` | Real `nr-ue` interop: real AUTS verified, real UDM SQN reset, real resynced vector accepted by a real UE on retry, first attempt. Milenage f1\*/f5\* also cross-checked via standalone harness against UERANSIM's real compiled `milenage.c` (80/80 matches). 3 unit tests. See ADR-0037 |
+| AMF -> AUSF `PUT .../5g-aka-confirmation` | TS 29.509 `ConfirmationData`/`ConfirmationDataResponse` | Real call succeeds against real AUSF during the same `nr-ue` interop run |
+| KAMF derivation | TS 33.501 Annex A.7 (FC=0x6D) | Real `nr-ue` interop (correct KAMF is a precondition of every subsequent verified message) + unit test `AkaKdf.KamfDerivationIsDeterministicAndInputDependent`. A real SUPI-format bug (full `"imsi-"`-prefixed string fed to the KDF instead of bare digits) was caught and fixed here -- see ADR-0037 |
+| KNASenc/KNASint derivation | TS 33.501 Annex A.8 (FC=0x69) | Real `nr-ue` interop (a derivation bug would fail every MAC verify below, none did) |
+| 128-NEA2/128-NIA2 (AES-128-CTR / AES-128-CMAC) | TS 33.401 Annex B.1.3/B.2.3 (reused by TS 33.501 for the 5G algorithm set) | Real `nr-ue` interop, plus standalone cross-check harness against UERANSIM's real, independent `eea2.cpp`/`eia2.cpp` (40/40 byte-exact matches, 20 random trials each) -- see ADR-0034. 4 unit tests |
+| NAS SecurityModeCommand encode / SecurityModeComplete decode | TS 24.501 §8.2.25/§8.2.26 | Real `nr-ue` interop, verified OK first attempt. A real bug (missing NAS sequence-number-byte MAC prefix, TS 24.501's actual `nas_enc::ComputeMac` construction) was found and fixed here -- the root cause of every prior stage's SecurityModeCommand failure -- see ADR-0037. 6 unit tests |
+| NAS RegistrationAccept encode / RegistrationComplete decode | TS 24.501 §8.2.7/§8.2.6 | RegistrationAccept: real `nr-ue` interop, accepted first attempt. RegistrationComplete decode: **confirmed via real interop that a real UE never sends this message** for this build's minimal RegistrationAccept content (no GUTI/NSSAI change) -- TS 24.501's conditional-send rule, confirmed against UERANSIM's own `receiveInitialRegistrationAccept`. `decode_registration_complete` is kept (4 unit tests, spec-correct) but is not called by any production handler -- see ADR-0037 |
+| AMF -> PCF `POST /npcf-am-policy-control/v1/policies` (`CreateIndividualAMPolicyAssociation`) | TS 29.507 `Npcf_AMPolicyControl` | Real `nr-ue` interop: real HTTP 201 + genuine `PolicyAssociation` from real PCF, first attempt, immediately after RegistrationAccept is sent (ADR-0037's phase-machine fix). Also previously verified directly via `curl` with a genuine NRF-issued token -- see ADR-0035 |
+| NAS UlNasTransport decode (PDU Session Establishment Request routing) | TS 24.501 §8.2.10, §9.11.3.5 (payload container type), §9.11.3.41 (PDU session ID), §9.11.2.8 (S-NSSAI), §9.11.2.1a (DNN, TS 23.003 §9.1 label encoding) | Real `nr-ue` interop: pduSessionId=1, dnn=internet correctly extracted, MAC verified OK first attempt. 4 unit tests (`NasCodec.DecodeUlNasTransport*`). The 5GSM payload container itself (the PDU Session Establishment Request's own content) is deliberately never decoded -- see ADR-0036 |
+| AMF -> SMF `POST /nsmf-pdusession/v1/sm-contexts` (`CreateSMContext`) | TS 29.502 `Nsmf_PDUSession`, `multipart/related` | Real `nr-ue` interop: real HTTP 201 + genuine `SmContextCreatedData` from real SMF, first attempt -- also confirming SMF's own internal call to PCF succeeded as part of the same request. Also previously verified directly via `curl` -- see ADR-0036 |
 
 **Disclosed gap specific to PDU Session Establishment, not shared with the registration rows
 above**: AMF sends nothing back to the UE after the SMF call succeeds. SMF's real
 `CreateSMContext` response carries no `n1SmMsg` (`nfs/smf/src/main.cpp`'s own disclosed scope,
 predating this turn) -- there is no real PDU Session Establishment Accept content for AMF to
 forward, and synthesizing one would mean AMF fabricating SM-layer decisions that are properly
-SMF's job. See ADR-0036.
-
-**Disclosed, structural limitation shared by every row above from "AuthenticationResponse/Failure
-decode" onward**: `nfs/udm/src/main.cpp`'s seeded test subscriber uses TS 35.207 Test Set 1's fixed
-SQN, which legitimately exceeds any fresh UE's `SQN-MS=0` -- so a real `nr-ue` run against this
-build's current UDM *always* hits `AuthenticationFailure` (SYNCH_FAILURE) on first contact and
-never proceeds further. SQN resynchronization (TS 33.501, reissuing a vector from the UE's AUTS)
-is out of scope, needing new AUSF/UDM logic, not just an AMF-side change -- see `docs/DECISIONS.md`
-ADR-0032/ADR-0033. This is why no single automated `ctest` run demonstrates the full Registration
-*or* PDU Session Establishment procedure end-to-end against a real UE (a fresh UE never gets past
-`AuthenticationFailure`, so it never reaches PDU Session Establishment either); each row above
-states exactly which alternative proof (an unreachable-in-full real interop run, an independent
-cross-check harness, or a direct real-service HTTP call) was actually used instead, rather than
-leaving the gap implicit.
+SMF's job. See ADR-0036. Consequence, confirmed via real interop (ADR-0037): the real `nr-ue`
+retransmits its PDU Session Establishment Request on `T3580` expiry after not receiving an Accept;
+AMF handles the retransmit gracefully via its pre-existing `Done`-phase fallback (logs and ignores,
+no crash, no bad state) rather than mishandling it as a new procedure.
 
 Not a procedure row: `simulators/ransim/` wraps UERANSIM v3.3.0 (commit
 `6bf5a1a96aaef6ae8778b9d8b477ac6e2bbf8156`, AGPL-3.0, arms-length external process -- see

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 
 // MILENAGE algorithm set (3GPP TS 35.205/35.206), the example authentication and key generation
 // functions f1, f2, f3, f4, f5 built on AES-128 (Rijndael), as used by UDM/ARPF (nfs/udm) and
@@ -14,9 +15,16 @@
 // `milenage` Rust crate's docs and the `mitshell/CryptoMobile` Python test suite, which agree
 // digit-for-digit), not merely self-consistent output. See docs/DECISIONS.md ADR-0026.
 //
-// Deliberately NOT implemented: f1* (resynchronisation MAC-S) and f5* (resynchronisation AK*),
-// i.e. no AUTS/SQN-resynchronisation support -- disclosed gap, see ADR-0026. SQN is treated as a
-// simple per-subscriber monotonically-increasing counter in nfs/udm's store, with no windowing.
+// f1* (resynchronisation MAC-S) and f5* (resynchronisation AK*), i.e. AUTS/SQN-resynchronisation
+// support, were added later (ADR-0037) once SQN resync was actually needed. Byte layout (rotation
+// amounts, constants) cross-checked directly against
+// simulators/ransim/vendor/UERANSIM/src/ext/crypt-ext/milenage.c's real `milenage_f1`/
+// `milenage_f2345`/`milenage_auts` (read-only reference oracle, arms-length per ADR-0016/
+// ADR-0031) -- not re-derived from TS 35.206 text alone, and independently cross-checked by a
+// standalone harness calling UERANSIM's own compiled `milenage_auts` directly (see
+// docs/DECISIONS.md ADR-0037 for the result). SQN itself is still a simple per-subscriber
+// monotonically-increasing counter in nfs/udm's store (no windowing/array-based freshness scheme,
+// TS 33.102 Annex C.2/C.3) -- that disclosed simplification is unchanged by this addition.
 
 namespace aka_crypto {
 
@@ -50,5 +58,31 @@ F2345Output f2345(const Key128& opc, const Key128& k, const Key128& rand);
 
 // Cryptographically random RAND for a new authentication vector (OpenSSL RAND_bytes).
 Key128 generate_rand();
+
+// f1*: resynchronisation MAC-S, from (OPc, K, RAND, SQN_MS) -- the UE's own claimed SQN, not the
+// network's. AMF is fixed to 0x0000 for this computation (TS 33.102 §6.3.3, confirmed against
+// UERANSIM's own milenage_auts hardcoding `amf[2] = {0x00, 0x00}`) -- not a caller-supplied value,
+// since any other AMF here would silently produce a MAC-S the network could never verify. Same
+// r1/c1 (rotate 64 bits, constant all-zero) as f1 -- MAC-S is literally the other half of the same
+// OUT1 block f1's MAC-A comes from, just computed with SQN_MS/AMF=0 instead of the network's own
+// SQN/AMF.
+Mac64 f1_star(const Key128& opc, const Key128& k, const Key128& rand, const Sqn& sqn_ms);
+
+// f5*: resynchronisation anonymity key AK*, from (OPc, K, RAND) only -- unlike f5, it does not
+// depend on SQN (AK* is what conceals SQN_MS itself inside AUTS, so it can't depend on the value
+// it's concealing). r5 = 96 bits (12-byte rotation), c5 = 0x08 -- distinct from f5's r2=0/c2=0x01.
+Ak48 f5_star(const Key128& opc, const Key128& k, const Key128& rand);
+
+using Auts = std::array<uint8_t, 14>;  // (SQN_MS xor AK*) || MAC-S, TS 24.501 §9.11.3.1
+
+// Verifies AUTS against the subscriber's real (OPc, K) and the RAND from the original
+// AuthenticationRequest the UE is responding to (AUTS decode only works with the exact RAND the
+// UE used -- a different RAND recomputes a different AK* and desyncs the whole decode), returning
+// the UE's real SQN_MS iff MAC-S verifies. std::nullopt means AUTS is not genuine (wrong
+// subscriber, tampered, or a RAND mismatch) -- caller must reject the resync attempt outright, not
+// fall back to guessing SQN_MS. Mirrors UERANSIM's own `milenage_auts` (the only other real,
+// independent implementation of this exact check available to cross-check against in this repo).
+std::optional<Sqn> verify_and_decode_auts(const Key128& opc, const Key128& k, const Key128& rand,
+                                          const Auts& auts);
 
 }  // namespace aka_crypto

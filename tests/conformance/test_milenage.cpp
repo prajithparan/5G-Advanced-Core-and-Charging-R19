@@ -87,11 +87,11 @@ TEST(AkaKdf, KamfDerivationIsDeterministicAndInputDependent) {
     const aka_crypto::Abba abba{0x00, 0x00};
     const aka_crypto::Abba abba2{0x00, 0x01};
 
-    const auto kamf1a = aka_crypto::derive_kamf(kseaf1, "imsi-999700000000001", abba);
-    const auto kamf1b = aka_crypto::derive_kamf(kseaf1, "imsi-999700000000001", abba);
-    const auto kamf2 = aka_crypto::derive_kamf(kseaf2, "imsi-999700000000001", abba);
-    const auto kamf_diff_supi = aka_crypto::derive_kamf(kseaf1, "imsi-999700000000002", abba);
-    const auto kamf_diff_abba = aka_crypto::derive_kamf(kseaf1, "imsi-999700000000001", abba2);
+    const auto kamf1a = aka_crypto::derive_kamf(kseaf1, "999700000000001", abba);
+    const auto kamf1b = aka_crypto::derive_kamf(kseaf1, "999700000000001", abba);
+    const auto kamf2 = aka_crypto::derive_kamf(kseaf2, "999700000000001", abba);
+    const auto kamf_diff_supi = aka_crypto::derive_kamf(kseaf1, "999700000000002", abba);
+    const auto kamf_diff_abba = aka_crypto::derive_kamf(kseaf1, "999700000000001", abba2);
 
     EXPECT_EQ(kamf1a, kamf1b);
     EXPECT_NE(kamf1a, kamf2);
@@ -114,4 +114,77 @@ TEST(AkaKdf, ResStarAndHxresStarRoundTrip) {
     // detect a wrong RES* without needing the full XRES* comparison.
     const auto hxres_star_recomputed = aka_crypto::derive_hxres_star(rand, xres_star);
     EXPECT_EQ(hxres_star, hxres_star_recomputed);
+}
+
+// f1*/f5*/verify_and_decode_auts (SQN resynchronisation, ADR-0037) have no published TS 35.207-style
+// known-answer vector to check against (TS 35.207 Test Set 1 only covers f1/f2/f3/f4/f5, not the
+// star variants) -- the real correctness proof is a standalone harness that cross-checked these
+// against UERANSIM's real, independent milenage_f1/milenage_f2345/milenage_auts directly (80/80
+// byte-exact matches across 20 random trials x 4 checks each: f5*, f1*, full AUTS round-trip,
+// tamper-rejection -- see docs/DECISIONS.md ADR-0037). These tests use the same TS 35.207 Test Set
+// 1 K/OPc/RAND as every other test in this file (real values, not fabricated) to check the
+// properties that harness already proved: determinism, input-sensitivity, and round-trip.
+
+TEST(Milenage, F1StarIsDeterministicAndInputDependent) {
+    const auto k = hex<16>("465b5ce8b199b49faa5f0a2ee238a6bc");
+    const auto opc = hex<16>("cd63cb71954a9f4e48a5994e37a02baf");
+    const auto rand = hex<16>("23553cbe9637a89d218ae64dae47bf35");
+    const auto sqn_ms1 = hex<6>("000000000000");
+    const auto sqn_ms2 = hex<6>("000000000001");
+
+    const auto mac_s1a = aka_crypto::f1_star(opc, k, rand, sqn_ms1);
+    const auto mac_s1b = aka_crypto::f1_star(opc, k, rand, sqn_ms1);
+    const auto mac_s2 = aka_crypto::f1_star(opc, k, rand, sqn_ms2);
+
+    EXPECT_EQ(mac_s1a, mac_s1b);
+    EXPECT_NE(mac_s1a, mac_s2);
+    // MAC-S must differ from MAC-A for the same (opc,k,rand,sqn,amf=0) -- they're deliberately the
+    // two different halves of the same OUT1 block, not the same value.
+    const aka_crypto::Amf zero_amf{0x00, 0x00};
+    const auto mac_a = aka_crypto::f1(opc, k, rand, sqn_ms1, zero_amf);
+    EXPECT_NE(mac_s1a, mac_a);
+}
+
+TEST(Milenage, F5StarIsDeterministicAndKeyDependent) {
+    const auto k1 = hex<16>("465b5ce8b199b49faa5f0a2ee238a6bc");
+    const auto k2 = hex<16>("000000000000000000000000000000ff");
+    const auto opc = hex<16>("cd63cb71954a9f4e48a5994e37a02baf");
+    const auto rand = hex<16>("23553cbe9637a89d218ae64dae47bf35");
+
+    const auto ak_star_1a = aka_crypto::f5_star(opc, k1, rand);
+    const auto ak_star_1b = aka_crypto::f5_star(opc, k1, rand);
+    const auto ak_star_2 = aka_crypto::f5_star(opc, k2, rand);
+
+    EXPECT_EQ(ak_star_1a, ak_star_1b);
+    EXPECT_NE(ak_star_1a, ak_star_2);
+    // AK* must differ from AK (f5) for the same (opc,k,rand) -- distinct rotate/constant.
+    const auto f2345_out = aka_crypto::f2345(opc, k1, rand);
+    EXPECT_NE(ak_star_1a, f2345_out.ak);
+}
+
+TEST(Milenage, VerifyAndDecodeAutsRoundTripsAndRejectsTampering) {
+    const auto k = hex<16>("465b5ce8b199b49faa5f0a2ee238a6bc");
+    const auto opc = hex<16>("cd63cb71954a9f4e48a5994e37a02baf");
+    const auto rand = hex<16>("23553cbe9637a89d218ae64dae47bf35");
+    const aka_crypto::Sqn sqn_ms = hex<6>("aabbccddeeff");
+
+    const auto ak_star = aka_crypto::f5_star(opc, k, rand);
+    const auto mac_s = aka_crypto::f1_star(opc, k, rand, sqn_ms);
+    aka_crypto::Auts auts{};
+    for (size_t i = 0; i < 6; ++i) auts[i] = static_cast<uint8_t>(sqn_ms[i] ^ ak_star[i]);
+    std::copy(mac_s.begin(), mac_s.end(), auts.begin() + 6);
+
+    const auto decoded = aka_crypto::verify_and_decode_auts(opc, k, rand, auts);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, sqn_ms);
+
+    // Tampering with any byte of AUTS must make MAC-S fail to verify.
+    auto tampered = auts;
+    tampered[13] ^= 0xff;
+    EXPECT_FALSE(aka_crypto::verify_and_decode_auts(opc, k, rand, tampered).has_value());
+
+    // The wrong RAND (a real AUTS decode only works with the exact RAND the UE actually used)
+    // must also fail -- confirms this isn't accidentally RAND-independent.
+    const auto wrong_rand = hex<16>("00000000000000000000000000000000");
+    EXPECT_FALSE(aka_crypto::verify_and_decode_auts(opc, k, wrong_rand, auts).has_value());
 }

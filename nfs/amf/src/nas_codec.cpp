@@ -81,8 +81,23 @@ std::vector<std::uint8_t> encode_secured_downlink(const aka_crypto::NasIntKey& k
         ciphered ? aka_crypto::nea2_apply(knas_enc, downlink_count, kNasBearerId, kDirectionDownlink,
                                           inner_plain)
                  : inner_plain;
+
+    // TS 24.501's NAS MAC construction prepends the 1-octet NAS sequence number (COUNT's
+    // low-order byte, the same byte transmitted as the envelope's own SeqNo field below) to the
+    // transmitted bytes before computing the MAC -- confirmed directly against a real nr-ue build
+    // (UERANSIM's nas_enc::ComputeMac: `OctetString::Concat(OctetString::FromOctet(count.sqn),
+    // plainMessage)`, applied to the POST-CIPHER bytes). This is NOT something the raw
+    // 128-NIA2/EIA2 algorithm itself needs (COUNT is already a separate parameter to EIA2), but a
+    // TS 24.501 NAS-security-layer detail -- missed initially (self-consistency tests and a
+    // cross-check against the raw EIA2 primitive alone couldn't catch it), found only by
+    // instrumenting a real nr-ue build and diffing its internal MAC input against this project's
+    // own for the exact same live exchange. See docs/DECISIONS.md ADR-0037.
+    std::vector<std::uint8_t> mac_input;
+    mac_input.reserve(wire_inner.size() + 1);
+    mac_input.push_back(static_cast<std::uint8_t>(downlink_count & 0xff));
+    mac_input.insert(mac_input.end(), wire_inner.begin(), wire_inner.end());
     const auto mac =
-        aka_crypto::nia2_mac(knas_int, downlink_count, kNasBearerId, kDirectionDownlink, wire_inner);
+        aka_crypto::nia2_mac(knas_int, downlink_count, kNasBearerId, kDirectionDownlink, mac_input);
 
     std::vector<std::uint8_t> out;
     out.push_back(kEpdMobilityManagement);
@@ -118,8 +133,14 @@ std::optional<SecuredUplinkResult> decode_secured_uplink(const aka_crypto::NasIn
     const std::uint32_t received_mac =
         (static_cast<std::uint32_t>(p[2]) << 24) | (static_cast<std::uint32_t>(p[3]) << 16) |
         (static_cast<std::uint32_t>(p[4]) << 8) | static_cast<std::uint32_t>(p[5]);
+    // Same 1-octet NAS sequence number prefix as encode_secured_downlink's own MAC input -- see
+    // that function's comment.
+    std::vector<std::uint8_t> mac_input;
+    mac_input.reserve(wire_inner.size() + 1);
+    mac_input.push_back(static_cast<std::uint8_t>(uplink_count & 0xff));
+    mac_input.insert(mac_input.end(), wire_inner.begin(), wire_inner.end());
     const auto expected_mac =
-        aka_crypto::nia2_mac(knas_int, uplink_count, kNasBearerId, kDirectionUplink, wire_inner);
+        aka_crypto::nia2_mac(knas_int, uplink_count, kNasBearerId, kDirectionUplink, mac_input);
 
     SecuredUplinkResult result;
     result.mac_valid = (expected_mac == received_mac);

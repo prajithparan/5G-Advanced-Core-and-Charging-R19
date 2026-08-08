@@ -11,6 +11,22 @@
 
 #include <gtest/gtest.h>
 
+namespace {
+// TS 24.501's NAS MAC construction prepends the 1-octet NAS sequence number (COUNT's low-order
+// byte) to the transmitted bytes before computing the MAC -- confirmed against a real nr-ue build
+// (UERANSIM's nas_enc::ComputeMac), see nfs/amf/src/nas_codec.cpp's encode_secured_downlink for
+// the full citation. Test helper mirrors that exact construction so these hand-built "genuine
+// message" vectors match what amf::nas's own encode/decode functions actually produce/expect.
+uint32_t nia2_mac_with_seqno_prefix(const aka_crypto::NasIntKey& key, uint32_t count, uint8_t bearer,
+                                    uint8_t direction, const std::vector<uint8_t>& wire_bytes) {
+    std::vector<uint8_t> mac_input;
+    mac_input.reserve(wire_bytes.size() + 1);
+    mac_input.push_back(static_cast<uint8_t>(count & 0xff));
+    mac_input.insert(mac_input.end(), wire_bytes.begin(), wire_bytes.end());
+    return aka_crypto::nia2_mac(key, count, bearer, direction, mac_input);
+}
+}  // namespace
+
 TEST(NasCodec, DecodesRegistrationRequestNullSchemeSuci) {
     // imsi-999700000000001 (mcc=999, mnc=70, msin=0000000001), null protection scheme,
     // routing indicator "0000" -- same subscriber this project's own UDM/AUSF seed data and
@@ -153,7 +169,7 @@ TEST(NasCodec, DecodeSecurityModeCompleteAcceptsGenuineMessage) {
     const std::vector<std::uint8_t> plain_inner = {0x7e, 0x00, 0x5e};
     const auto ciphered =
         aka_crypto::nea2_apply(knas_enc, /*count=*/0, /*bearer=*/1, /*direction=*/0, plain_inner);
-    const auto mac = aka_crypto::nia2_mac(knas_int, /*count=*/0, /*bearer=*/1, /*direction=*/0, ciphered);
+    const auto mac = nia2_mac_with_seqno_prefix(knas_int, /*count=*/0, /*bearer=*/1, /*direction=*/0, ciphered);
 
     std::vector<std::uint8_t> nas_pdu = {0x7e, 0x04,
                                          static_cast<std::uint8_t>((mac >> 24) & 0xff),
@@ -233,7 +249,7 @@ TEST(NasCodec, DecodeRegistrationCompleteAcceptsGenuineMessage) {
 
     const std::vector<std::uint8_t> plain_inner = {0x7e, 0x00, 0x43}; // REGISTRATION_COMPLETE, no IEs
     const auto ciphered = aka_crypto::nea2_apply(knas_enc, /*count=*/1, 1, 0, plain_inner);
-    const auto mac = aka_crypto::nia2_mac(knas_int, /*count=*/1, 1, 0, ciphered);
+    const auto mac = nia2_mac_with_seqno_prefix(knas_int, /*count=*/1, 1, 0, ciphered);
 
     std::vector<std::uint8_t> nas_pdu = {0x7e, 0x02,
                                          static_cast<std::uint8_t>((mac >> 24) & 0xff),
@@ -295,7 +311,7 @@ std::vector<std::uint8_t> build_ul_nas_transport(const aka_crypto::NasIntKey& kn
     };
 
     const auto ciphered = aka_crypto::nea2_apply(knas_enc, uplink_count, 1, 0, plain_inner);
-    const auto mac = aka_crypto::nia2_mac(knas_int, uplink_count, 1, 0, ciphered);
+    const auto mac = nia2_mac_with_seqno_prefix(knas_int, uplink_count, 1, 0, ciphered);
 
     std::vector<std::uint8_t> nas_pdu = {0x7e, 0x02,
                                          static_cast<std::uint8_t>((mac >> 24) & 0xff),
@@ -353,7 +369,7 @@ TEST(NasCodec, DecodeUlNasTransportRejectsNonN1SmPayloadContainerType) {
     std::vector<std::uint8_t> plain_inner = {0x7e, 0x00, 0x67, 0x02 /* SMS, not N1_SM_INFORMATION */,
                                              0x00, 0x00};
     const auto ciphered = aka_crypto::nea2_apply(knas_enc, 2, 1, 0, plain_inner);
-    const auto mac = aka_crypto::nia2_mac(knas_int, 2, 1, 0, ciphered);
+    const auto mac = nia2_mac_with_seqno_prefix(knas_int, 2, 1, 0, ciphered);
     std::vector<std::uint8_t> nas_pdu = {0x7e, 0x02,
                                          static_cast<std::uint8_t>((mac >> 24) & 0xff),
                                          static_cast<std::uint8_t>((mac >> 16) & 0xff),

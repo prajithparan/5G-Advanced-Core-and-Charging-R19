@@ -125,18 +125,54 @@ struct UeAuthState {
     // aka_crypto/kdf.hpp's derive_knas_int/derive_knas_enc.
     std::optional<aka_crypto::NasIntKey> knas_int;
     std::optional<aka_crypto::NasEncKey> knas_enc;
+    // The RAND from the most recently sent AuthenticationRequest -- needed if THIS attempt itself
+    // gets an AuthenticationFailure+AUTS back (SQN resync, ADR-0037): decoding AUTS only works
+    // with the exact RAND the UE used, which the AuthenticationFailure message itself doesn't
+    // repeat.
+    std::optional<aka_crypto::Key128> last_auth_rand;
+    // At most one resync retry per association -- this lab's scope (ADR-0031); a real AMF would
+    // still cap retries (TS 33.102 doesn't allow unbounded resync loops either), just possibly
+    // higher than 1.
+    bool sqn_resync_attempted = false;
     // Which UplinkNASTransport this association is next expecting -- this lab's
     // single-registration-per-association scope (ADR-0031) makes a simple linear phase enum a
     // correct dispatch key; a real AMF would need a full per-UE 5GMM state machine.
     enum class Phase {
         AwaitingAuthenticationResponse,
         AwaitingSecurityModeComplete,
-        AwaitingRegistrationComplete,
+        // No AwaitingRegistrationComplete phase: TS 24.501's real UE behavior (confirmed via
+        // source, simulators/ransim/vendor/UERANSIM/src/ue/nas/mm/register.cpp:346-426) only
+        // sends RegistrationComplete if RegistrationAccept carried a 5G-GUTI, an NSSCI=CHANGED
+        // indication, or a configuredNSSAI -- this build's encode_registration_accept sends none
+        // of those (disclosed simplification, see its own comment), so a real UE never sends
+        // RegistrationComplete in response. Confirmed via real interop: AMF proceeds straight to
+        // AwaitingPduSessionEstablishmentRequest once RegistrationAccept is sent.
         AwaitingPduSessionEstablishmentRequest,
         Done,
     };
     Phase phase = Phase::AwaitingAuthenticationResponse;
 };
+
+// TS 33.501 Annex A.7's SUPI input for KAMF derivation is the bare identity digits, NOT the
+// "imsi-"-prefixed SBI string representation this project otherwise uses for auth_state.supi
+// everywhere else (AUSF/PCF/SMF calls all correctly use the full "imsi-..." string -- confirmed
+// working, since those calls succeed). Confirmed via real interop, not assumed: a first attempt
+// using the full "imsi-..." string produced a KAMF the UE could never converge on
+// (SecurityModeCommand MAC verification failed against a real nr-ue), tracked down to
+// simulators/ransim/vendor/UERANSIM/src/utils/common_types.cpp's own Supi::Parse stripping the
+// "imsi-" prefix before its own KDF calls (e.g. keys.cpp:33's
+// `EncodeKdfString(ueConfig.supi->value)` -- `value` is deliberately prefix-free). Only this
+// project's own "imsi-" prefix convention needs stripping -- a real SUCI-derived, non-IMSI-format
+// SUPI is out of scope (matches decode_registration_request's own existing IMSI-only scope). See
+// docs/DECISIONS.md ADR-0037.
+std::string strip_imsi_prefix(const std::string& supi) {
+    static constexpr char kPrefix[] = "imsi-";
+    static constexpr std::size_t kPrefixLen = sizeof(kPrefix) - 1;
+    if (supi.compare(0, kPrefixLen, kPrefix) == 0) {
+        return supi.substr(kPrefixLen);
+    }
+    return supi;
+}
 
 // Shared by every Stage 2+/4 handler that needs to pull the NAS-PDU out of an UplinkNASTransport
 // (previously duplicated inline in handle_uplink_nas_transport; factored out once a second caller
@@ -332,6 +368,98 @@ void send_downlink_nas_transport(ngap_core::SctpSocket& assoc, unsigned long amf
     assoc.send(bytes);
 }
 
+// Calls real AUSF's Nausf_UEAuthentication (POST .../ue-authentications), optionally carrying
+// `resync_info` (TS 33.102 §6.3.3 SQN resynchronisation, ADR-0037 -- set when this call is a
+// resync retry after an AuthenticationFailure, nullopt for a first attempt) and, on success,
+// sends the resulting NAS AuthenticationRequest to the UE via DownlinkNASTransport. Shared by
+// handle_initial_ue_message (the first attempt) and handle_uplink_nas_transport (the resync
+// retry) -- the two call sites differ only in resync_info, everything else about initiating
+// 5G-AKA is identical. Requires auth_state.supi/amf_ue_id/ran_ue_id already set. Returns false
+// (having already logged why) on any failure; auth_state.confirmation_path/last_auth_rand are
+// only updated on success.
+bool initiate_5g_aka_authentication(
+    ngap_core::SctpSocket& assoc, sbi_core::http2::Client& ausf_client,
+    sbi_core::OAuth2Client& ausf_oauth, UeAuthState& auth_state,
+    const std::optional<sbi_gen::ResynchronizationInfo_Nudm_UEAU>& resync_info) {
+    auto token = ausf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::error("amf-ngap: could not obtain AUSF bearer token: {}", token.error());
+        return false;
+    }
+
+    sbi_gen::AuthenticationInfo req{};
+    req.supiOrSuci = auth_state.supi;
+    req.servingNetworkName = kServingNetworkName;
+    req.resynchronizationInfo = resync_info;
+
+    sbi_core::http2::ClientRequest http_req;
+    http_req.method = "POST";
+    http_req.url = std::string(kAusfBase) + "/nausf-auth/v1/ue-authentications";
+    http_req.headers.emplace("content-type", "application/json");
+    http_req.headers.emplace("authorization", "Bearer " + *token);
+    http_req.body = nlohmann::json(req).dump();
+
+    auto resp = ausf_client.send(http_req);
+    if (!resp.has_value()) {
+        spdlog::error("amf-ngap: AUSF call failed: {}", resp.error());
+        return false;
+    }
+    if (resp->status != 201) {
+        spdlog::error("amf-ngap: AUSF returned unexpected status {} for SUPI {}", resp->status,
+                      auth_state.supi);
+        return false;
+    }
+
+    sbi_gen::UEAuthenticationCtx ctx;
+    try {
+        ctx = nlohmann::json::parse(resp->body).get<sbi_gen::UEAuthenticationCtx>();
+    } catch (const nlohmann::json::exception& e) {
+        spdlog::error("amf-ngap: AUSF returned a malformed UEAuthenticationCtx: {}", e.what());
+        return false;
+    }
+    if (ctx.authType.value != sbi_gen::AuthType_Nausf_UEAuthentication::V5G_AKA) {
+        spdlog::warn("amf-ngap: AUSF returned auth method '{}', only 5G_AKA is supported yet, "
+                    "ignoring",
+                    ctx.authType.value);
+        return false;
+    }
+
+    // Stage 3 needs this to confirm the eventual AuthenticationResponse/Failure -- AUSF's own
+    // response shape (_links["5g-aka"]["href"], nfs/ausf/src/main.cpp) is the source of truth for
+    // the confirmation URL, not reconstructed from the auth context id ourselves.
+    try {
+        auth_state.confirmation_path = ctx._links.at("5g-aka").at("href").get<std::string>();
+    } catch (const nlohmann::json::exception& e) {
+        spdlog::error("amf-ngap: AUSF's _links is missing the 5g-aka confirmation href: {}",
+                      e.what());
+        return false;
+    }
+
+    sbi_gen::Av5gAka av;
+    try {
+        av = ctx.n5gAuthData.get<sbi_gen::Av5gAka>();
+    } catch (const nlohmann::json::exception& e) {
+        spdlog::error("amf-ngap: AUSF's n5gAuthData is not a valid Av5gAka: {}", e.what());
+        return false;
+    }
+    const auto rand = aka_crypto::from_hex<16>(av.rand);
+    const auto autn = aka_crypto::from_hex<16>(av.autn);
+    if (!rand.has_value() || !autn.has_value()) {
+        spdlog::error("amf-ngap: AUSF returned malformed hex RAND/AUTN");
+        return false;
+    }
+    auth_state.last_auth_rand = *rand;  // needed if THIS AuthenticationRequest itself later resyncs
+
+    const std::vector<std::uint8_t> auth_req_nas =
+        amf::nas::encode_authentication_request(*rand, *autn, /*ngksi=*/0);
+    send_downlink_nas_transport(assoc, auth_state.amf_ue_id, auth_state.ran_ue_id, auth_req_nas);
+    spdlog::info("amf-ngap: sent DownlinkNASTransport with AuthenticationRequest ({} bytes), "
+                "AMF-UE-NGAP-ID={}{}",
+                auth_req_nas.size(), auth_state.amf_ue_id,
+                resync_info.has_value() ? " (SQN resync retry)" : "");
+    return true;
+}
+
 // Stage 2 (see docs/DECISIONS.md's staged NGAP/NAS plan): decodes the NAS RegistrationRequest
 // carried in InitialUEMessage's NAS-PDU, calls real AUSF's Nausf_UEAuthentication
 // (POST .../ue-authentications) with the extracted SUPI, and sends back a real NAS
@@ -380,87 +508,14 @@ void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
     spdlog::info("amf-ngap: InitialUEMessage from RAN-UE-NGAP-ID={}, SUPI={}", ran_ue_id,
                 reg_info->supi);
 
-    auto token = ausf_oauth.get_bearer_token();
-    if (!token.has_value()) {
-        spdlog::error("amf-ngap: could not obtain AUSF bearer token: {}", token.error());
-        return;
-    }
-
-    sbi_gen::AuthenticationInfo req{};
-    req.supiOrSuci = reg_info->supi;
-    req.servingNetworkName = kServingNetworkName;
-
-    sbi_core::http2::ClientRequest http_req;
-    http_req.method = "POST";
-    http_req.url = std::string(kAusfBase) + "/nausf-auth/v1/ue-authentications";
-    http_req.headers.emplace("content-type", "application/json");
-    http_req.headers.emplace("authorization", "Bearer " + *token);
-    http_req.body = nlohmann::json(req).dump();
-
-    auto resp = ausf_client.send(http_req);
-    if (!resp.has_value()) {
-        spdlog::error("amf-ngap: AUSF call failed: {}", resp.error());
-        return;
-    }
-    if (resp->status != 201) {
-        spdlog::error("amf-ngap: AUSF returned unexpected status {} for SUPI {}", resp->status,
-                      reg_info->supi);
-        return;
-    }
-
-    sbi_gen::UEAuthenticationCtx ctx;
-    try {
-        ctx = nlohmann::json::parse(resp->body).get<sbi_gen::UEAuthenticationCtx>();
-    } catch (const nlohmann::json::exception& e) {
-        spdlog::error("amf-ngap: AUSF returned a malformed UEAuthenticationCtx: {}", e.what());
-        return;
-    }
-    if (ctx.authType.value != sbi_gen::AuthType_Nausf_UEAuthentication::V5G_AKA) {
-        spdlog::warn("amf-ngap: AUSF returned auth method '{}', only 5G_AKA is supported yet, "
-                    "ignoring",
-                    ctx.authType.value);
-        return;
-    }
-
-    // Stage 3 needs this to confirm the eventual AuthenticationResponse/Failure -- AUSF's own
-    // response shape (_links["5g-aka"]["href"], nfs/ausf/src/main.cpp) is the source of truth for
-    // the confirmation URL, not reconstructed from the auth context id ourselves.
-    try {
-        auth_state.confirmation_path = ctx._links.at("5g-aka").at("href").get<std::string>();
-        auth_state.supi = reg_info->supi;
-    } catch (const nlohmann::json::exception& e) {
-        spdlog::error("amf-ngap: AUSF's _links is missing the 5g-aka confirmation href: {}",
-                      e.what());
-        return;
-    }
-
-    sbi_gen::Av5gAka av;
-    try {
-        av = ctx.n5gAuthData.get<sbi_gen::Av5gAka>();
-    } catch (const nlohmann::json::exception& e) {
-        spdlog::error("amf-ngap: AUSF's n5gAuthData is not a valid Av5gAka: {}", e.what());
-        return;
-    }
-    const auto rand = aka_crypto::from_hex<16>(av.rand);
-    const auto autn = aka_crypto::from_hex<16>(av.autn);
-    if (!rand.has_value() || !autn.has_value()) {
-        spdlog::error("amf-ngap: AUSF returned malformed hex RAND/AUTN");
-        return;
-    }
-
-    const std::vector<std::uint8_t> auth_req_nas =
-        amf::nas::encode_authentication_request(*rand, *autn, /*ngksi=*/0);
-
     // Stage 4 reuses both IDs to send SecurityModeCommand on this same association once
     // authentication succeeds -- see UeAuthState's own comment.
     auth_state.amf_ue_id = g_next_amf_ue_ngap_id.fetch_add(1);
     auth_state.ran_ue_id = ran_ue_id;
     auth_state.ue_security_capability = reg_info->ue_security_capability;
+    auth_state.supi = reg_info->supi;
 
-    send_downlink_nas_transport(assoc, auth_state.amf_ue_id, auth_state.ran_ue_id, auth_req_nas);
-    spdlog::info("amf-ngap: sent DownlinkNASTransport with AuthenticationRequest ({} bytes), "
-                "AMF-UE-NGAP-ID={}",
-                auth_req_nas.size(), auth_state.amf_ue_id);
+    initiate_5g_aka_authentication(assoc, ausf_client, ausf_oauth, auth_state, std::nullopt);
 }
 
 // Stage 3: decodes the NAS-PDU carried in UplinkNASTransport (the UE's response to Stage 2's
@@ -468,9 +523,11 @@ void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
 // (PUT .../5g-aka-confirmation) and derives KAMF from the returned KSEAF. A real
 // AuthenticationFailure (the outcome this project's currently-seeded test subscriber's fixed TS
 // 35.207 SQN actually produces against a fresh UE -- see docs/DECISIONS.md ADR-0032) is decoded
-// and logged, not silently dropped or crashed on, but SQN resynchronization itself is a disclosed
-// gap: implementing it needs new AUSF/UDM logic (reissue a vector using the UE's AUTS), not just
-// an AMF-side change, and is out of this stage's scope.
+// and, for a real SYNCH_FAILURE with AUTS, drives one real SQN resynchronisation retry (TS 33.102
+// §6.3.3, ADR-0037): AUTS is forwarded to AUSF/UDM via resynchronizationInfo, and on success a
+// fresh AuthenticationRequest is sent using the corrected vector, staying in
+// AwaitingAuthenticationResponse to receive its response. Capped at one retry per association --
+// see UeAuthState::sqn_resync_attempted's own comment.
 void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::Client& ausf_client,
                                  sbi_core::OAuth2Client& ausf_oauth,
                                  UeAuthState& auth_state,
@@ -489,12 +546,32 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::
     }
 
     if (!outcome->success) {
-        spdlog::warn("amf-ngap: UE sent AuthenticationFailure (mmCause=0x{:02x}{}) for SUPI {} -- "
-                    "SQN resynchronization is not implemented (disclosed gap, ADR-0032); "
-                    "registration cannot proceed for this UE",
-                    outcome->mm_cause, outcome->auts.has_value() ? ", with AUTS" : "",
-                    auth_state.supi);
-        return;
+        if (auth_state.sqn_resync_attempted || !outcome->auts.has_value() ||
+            !auth_state.last_auth_rand.has_value()) {
+            spdlog::warn("amf-ngap: UE sent AuthenticationFailure (mmCause=0x{:02x}{}) for SUPI "
+                        "{} -- giving up ({})",
+                        outcome->mm_cause, outcome->auts.has_value() ? ", with AUTS" : "",
+                        auth_state.supi,
+                        auth_state.sqn_resync_attempted
+                            ? "resync already attempted once this association"
+                        : !outcome->auts.has_value() ? "no AUTS to resync with"
+                                                      : "no stored RAND to resync against");
+            return;
+        }
+
+        spdlog::info("amf-ngap: UE sent AuthenticationFailure (mmCause=0x{:02x}, with AUTS) for "
+                    "SUPI {} -- attempting SQN resynchronisation",
+                    outcome->mm_cause, auth_state.supi);
+        auth_state.sqn_resync_attempted = true;
+
+        sbi_gen::ResynchronizationInfo_Nudm_UEAU resync_info{};
+        resync_info.rand = aka_crypto::to_hex(*auth_state.last_auth_rand);
+        resync_info.auts = aka_crypto::to_hex(*outcome->auts);
+
+        initiate_5g_aka_authentication(assoc, ausf_client, ausf_oauth, auth_state, resync_info);
+        return;  // stay in AwaitingAuthenticationResponse either way -- success just sent a fresh
+                 // AuthenticationRequest; failure was already logged by
+                 // initiate_5g_aka_authentication itself
     }
 
     if (auth_state.confirmation_path.empty()) {
@@ -557,7 +634,7 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::
     // Same fixed ABBA=0x0000 this AMF sent in Stage 2's AuthenticationRequest -- KAMF only
     // converges with the UE's own derivation if both sides used the same ABBA value.
     const aka_crypto::Abba abba{0x00, 0x00};
-    const auto kamf = aka_crypto::derive_kamf(*kseaf, auth_state.supi, abba);
+    const auto kamf = aka_crypto::derive_kamf(*kseaf, strip_imsi_prefix(auth_state.supi), abba);
     spdlog::info("amf-ngap: authentication SUCCESSFUL for SUPI {}, KAMF derived", auth_state.supi);
 
     // Stage 4: activate NAS security. KNASenc/KNASint (TS 33.501 Annex A.8) for this project's
@@ -579,8 +656,16 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::
 // a sent SecurityModeCommand, expected to be a SecurityModeComplete (TS 24.501 §8.2.26). This is
 // this project's first NAS message secured end-to-end (128-NIA2 MAC verified, 128-NEA2
 // deciphered). On success, immediately continues into Stage 5: sends RegistrationAccept (the
-// first message secured with the now-confirmed normal context, downlink_count=1).
-void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc, UeAuthState& auth_state,
+// first message secured with the now-confirmed normal context, downlink_count=1), then -- since a
+// real UE never acknowledges with RegistrationComplete for this build's minimal RegistrationAccept
+// content (see UeAuthState::Phase's own comment) -- makes the real call this whole staged NGAP/NAS
+// effort was for: Npcf_AMPolicyControl's CreateIndividualAMPolicyAssociation (TS 29.507), closing
+// the loop ADR-0025->ADR-0029 left open. The resulting PolicyAssociation is stored in
+// `ue_contexts` under this UE's SUPI.
+void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
+                                              sbi_core::http2::Client& pcf_client,
+                                              sbi_core::OAuth2Client& pcf_oauth,
+                                              UeContextStore& ue_contexts, UeAuthState& auth_state,
                                               const InitiatingMessage_t& msg) {
     const auto nas_pdu_bytes_opt = extract_uplink_nas_pdu(msg);
     if (!nas_pdu_bytes_opt.has_value()) {
@@ -616,52 +701,15 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc, UeAu
         amf::nas::encode_registration_accept(*auth_state.knas_int, *auth_state.knas_enc,
                                              /*downlink_count=*/1);
     send_downlink_nas_transport(assoc, auth_state.amf_ue_id, auth_state.ran_ue_id, reg_accept_nas);
-    auth_state.phase = UeAuthState::Phase::AwaitingRegistrationComplete;
     spdlog::info("amf-ngap: sent DownlinkNASTransport with RegistrationAccept ({} bytes), "
                 "AMF-UE-NGAP-ID={}",
                 reg_accept_nas.size(), auth_state.amf_ue_id);
-}
 
-// Stage 5: decodes+verifies the NAS-PDU carried in the UplinkNASTransport that follows a sent
-// RegistrationAccept, expected to be a RegistrationComplete (TS 24.501 §8.2.6) -- the final
-// message of the registration procedure. On success, makes the real call this whole staged
-// NGAP/NAS effort was for: Npcf_AMPolicyControl's CreateIndividualAMPolicyAssociation
-// (TS 29.507), closing the loop ADR-0025->ADR-0029 left open. The resulting PolicyAssociation is
-// stored in `ue_contexts` under this UE's SUPI.
-void handle_uplink_nas_transport_registration_complete(sbi_core::http2::Client& pcf_client,
-                                                        sbi_core::OAuth2Client& pcf_oauth,
-                                                        UeContextStore& ue_contexts,
-                                                        UeAuthState& auth_state,
-                                                        const InitiatingMessage_t& msg) {
-    const auto nas_pdu_bytes_opt = extract_uplink_nas_pdu(msg);
-    if (!nas_pdu_bytes_opt.has_value()) {
-        return;
-    }
-
-    if (!auth_state.knas_int.has_value() || !auth_state.knas_enc.has_value()) {
-        spdlog::warn("amf-ngap: received a post-RegistrationAccept UplinkNASTransport with no NAS "
-                    "security context (out-of-order message or lost association state), ignoring");
-        return;
-    }
-
-    const auto outcome = amf::nas::decode_registration_complete(
-        *auth_state.knas_int, *auth_state.knas_enc, /*uplink_count=*/1, *nas_pdu_bytes_opt);
-    if (!outcome.has_value()) {
-        spdlog::warn("amf-ngap: UplinkNASTransport's NAS-PDU is not shaped like a "
-                    "RegistrationComplete, ignoring");
-        return;
-    }
-    if (!outcome->mac_valid) {
-        spdlog::warn("amf-ngap: RegistrationComplete MAC verification FAILED for SUPI {} -- wrong "
-                    "keys, a tampered/replayed message, or a NAS COUNT desync",
-                    auth_state.supi);
-        return;
-    }
-
-    spdlog::info("amf-ngap: RegistrationComplete verified OK for SUPI {} -- registration procedure "
-                "complete, requesting AM Policy Association from PCF",
-                auth_state.supi);
     auth_state.phase = UeAuthState::Phase::AwaitingPduSessionEstablishmentRequest;
+    spdlog::info("amf-ngap: registration procedure complete for SUPI {} (no RegistrationComplete "
+                "expected -- this build's RegistrationAccept carries no GUTI/NSSAI change, see "
+                "UeAuthState::Phase's comment), requesting AM Policy Association from PCF",
+                auth_state.supi);
 
     auto token = pcf_oauth.get_bearer_token();
     if (!token.has_value()) {
@@ -747,8 +795,12 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
         return;
     }
 
+    // uplink_count=1: SecurityModeComplete was uplink_count=0, and (per UeAuthState::Phase's
+    // comment) a real UE never sends RegistrationComplete for this build's minimal
+    // RegistrationAccept, so this UlNasTransport is genuinely the second secured uplink message,
+    // not the third -- confirmed via real interop.
     const auto outcome = amf::nas::decode_ul_nas_transport(*auth_state.knas_int, *auth_state.knas_enc,
-                                                            /*uplink_count=*/2, *nas_pdu_bytes_opt);
+                                                            /*uplink_count=*/1, *nas_pdu_bytes_opt);
     if (!outcome.has_value()) {
         spdlog::warn("amf-ngap: UplinkNASTransport's NAS-PDU is not shaped like a UlNasTransport "
                     "carrying N1 SM information, ignoring");
@@ -872,12 +924,8 @@ void handle_association(ngap_core::SctpSocket assoc, sbi_core::http2::Client& au
                                             *pdu->choice.initiatingMessage);
                 break;
             case UeAuthState::Phase::AwaitingSecurityModeComplete:
-                handle_uplink_nas_transport_smc_complete(assoc, auth_state,
-                                                         *pdu->choice.initiatingMessage);
-                break;
-            case UeAuthState::Phase::AwaitingRegistrationComplete:
-                handle_uplink_nas_transport_registration_complete(
-                    pcf_client, pcf_oauth, ue_contexts, auth_state, *pdu->choice.initiatingMessage);
+                handle_uplink_nas_transport_smc_complete(assoc, pcf_client, pcf_oauth, ue_contexts,
+                                                         auth_state, *pdu->choice.initiatingMessage);
                 break;
             case UeAuthState::Phase::AwaitingPduSessionEstablishmentRequest:
                 handle_uplink_nas_transport_pdu_session_establishment(
