@@ -49,6 +49,10 @@
 //   application/problem+json) rather than each operation's bespoke *Error schema
 //   (SmContextCreateError, SmContextUpdateError) -- same simplification NRF/AMF already use.
 
+#include "pfcp_core/common_ies.hpp"
+#include "pfcp_core/header.hpp"
+#include "pfcp_core/ie.hpp"
+
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
 #include "sbi_core/json_body.hpp"
@@ -62,9 +66,14 @@
 #include "sbi_core/uuid.hpp"
 
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/udp.hpp>
 #include <nlohmann/json.hpp>
 
+#include <sys/socket.h>
+
+#include <array>
 #include <chrono>
+#include <ctime>
 #include <optional>
 #include <thread>
 
@@ -194,6 +203,159 @@ void run_nrf_lifecycle(const std::string& smf_instance_id) {
         if (!patch_resp.has_value() || patch_resp->status != 200) {
             spdlog::warn("smf: heartbeat failed");
         }
+    }
+}
+
+// Discovers UPF via a real Nnrf_NFDiscovery call (TS 29.510 SearchNFInstances,
+// GET /nnrf-disc/v1/nf-instances) -- the first real use of NRF's discovery service anywhere in
+// this project; every other NF-to-NF call so far has used a hardcoded base URL constant (see
+// kPcfBase/kAmfBase above) rather than dynamic discovery. Not a hardcoded address here because
+// ADR-0040 (UPF's own turn) explicitly promised this stage would close that gap for real.
+// Retries forever (same "keep trying, NRF/UPF may not be up yet" discipline run_nrf_lifecycle
+// itself already uses) until at least one UPF instance with a real ipv4Addresses entry is found.
+std::string discover_upf_ipv4(sbi_core::http2::Client& http_client, sbi_core::OAuth2Client& oauth) {
+    while (true) {
+        auto token = oauth.get_bearer_token();
+        if (!token.has_value()) {
+            spdlog::error("smf: OAuth2 token fetch failed for UPF discovery: {}", token.error());
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+        sbi_core::http2::ClientRequest req;
+        req.method = "GET";
+        req.url = std::string(kNrfBase) + "/nnrf-disc/v1/nf-instances?target-nf-type=UPF&requester-nf-type=SMF";
+        req.headers.emplace("authorization", "Bearer " + *token);
+        auto resp = http_client.send(req);
+        if (!resp.has_value() || resp->status != 200) {
+            spdlog::warn("smf: Nnrf_NFDiscovery for UPF failed, retrying in 2s");
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+        try {
+            const auto body = json::parse(resp->body);
+            for (const auto& instance : body.at("nfInstances")) {
+                if (instance.contains("ipv4Addresses") && !instance.at("ipv4Addresses").empty()) {
+                    return instance.at("ipv4Addresses")[0].get<std::string>();
+                }
+            }
+        } catch (const json::exception& e) {
+            spdlog::warn("smf: malformed Nnrf_NFDiscovery response: {}", e.what());
+        }
+        spdlog::info("smf: no UPF registered with NRF yet, retrying discovery in 2s");
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+}
+
+// Real PFCP/N4 Association Setup with UPF (TS 29.244 SS6.2.6.2/SS7.4.4.1-2) -- Stage 2 of
+// docs/DECISIONS.md's Phase 3 staged plan (ADR-0041). Runs on its own dedicated thread doing
+// blocking UDP I/O, same discipline as nfs/upf/src/main.cpp's own PFCP loop and every other
+// blocking-transport thread in this project (ADR-0006/ADR-0030). Retries the whole procedure
+// (T1 timer + N1 retries per TS 29.244 SS6.4, both this build's own reasonable fixed choices --
+// the spec leaves the exact values implementation-specific) until UPF replies with Cause=accepted.
+void run_pfcp_lifecycle(const std::string& smf_instance_id) {
+    sbi_core::http2::TlsConfig client_tls{
+        .cert_path = CERTS_DIR "/smf/cert.pem",
+        .key_path = CERTS_DIR "/smf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client http_client(std::move(client_tls));
+    sbi_core::OAuth2Client oauth(
+        http_client, std::string(kNrfBase) + "/oauth2/token", smf_instance_id, "nnrf-disc", "NRF");
+
+    const std::string upf_ip = discover_upf_ipv4(http_client, oauth);
+    spdlog::info("smf: discovered UPF at {} via Nnrf_NFDiscovery", upf_ip);
+
+    boost::asio::io_context ioc;
+    boost::asio::ip::udp::socket socket(ioc, boost::asio::ip::udp::v4());
+    const boost::asio::ip::udp::endpoint upf_endpoint(
+        boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
+
+    // SO_RCVTIMEO on the underlying descriptor: Boost.Asio's synchronous socket API has no
+    // built-in receive timeout, and this project's established pattern for blocking-transport
+    // code is direct POSIX socket calls where Asio doesn't cover something (see libs/ngap-core's
+    // own SCTP wrapper) -- consistent with that, not a new precedent.
+    constexpr timeval kReceiveTimeout{.tv_sec = 2, .tv_usec = 0};
+    setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &kReceiveTimeout,
+              sizeof(kReceiveTimeout));
+
+    constexpr std::array<std::uint8_t, 4> kSmfNodeIpv4{127, 0, 0, 1}; // this lab's loopback-only scope
+    constexpr int kN1Retries = 3;
+
+    while (true) {
+        pfcp_core::Header req_header;
+        req_header.has_seid = false;
+        req_header.message_type = pfcp_core::MessageType::AssociationSetupRequest;
+        req_header.sequence_number = 1;
+
+        std::vector<std::uint8_t> ies;
+        pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+                             pfcp_core::encode_node_id_ipv4(kSmfNodeIpv4));
+        pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::RecoveryTimeStamp),
+                             pfcp_core::encode_recovery_time_stamp(std::time(nullptr)));
+        pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::CpFunctionFeatures),
+                             pfcp_core::encode_cp_function_features_none());
+
+        auto pdu = pfcp_core::encode_header(req_header, static_cast<std::uint16_t>(ies.size()));
+        pdu.insert(pdu.end(), ies.begin(), ies.end());
+
+        bool accepted = false;
+        for (int attempt = 0; attempt < kN1Retries && !accepted; ++attempt) {
+            boost::system::error_code send_ec;
+            socket.send_to(boost::asio::buffer(pdu), upf_endpoint, 0, send_ec);
+            if (send_ec) {
+                spdlog::warn("smf: PFCP Association Setup send failed: {}", send_ec.message());
+                continue;
+            }
+
+            std::vector<std::uint8_t> recv_buf(2048);
+            boost::asio::ip::udp::endpoint sender;
+            boost::system::error_code recv_ec;
+            const std::size_t n =
+                socket.receive_from(boost::asio::buffer(recv_buf), sender, 0, recv_ec);
+            if (recv_ec) {
+                spdlog::warn("smf: PFCP Association Setup attempt {} timed out, retrying",
+                            attempt + 1);
+                continue;
+            }
+
+            const std::vector<std::uint8_t> resp(recv_buf.begin(),
+                                                  recv_buf.begin() + static_cast<std::ptrdiff_t>(n));
+            std::size_t offset = 0;
+            std::uint16_t ies_length = 0;
+            const auto resp_header = pfcp_core::decode_header(resp, offset, ies_length);
+            if (!resp_header.has_value() ||
+                resp_header->message_type != pfcp_core::MessageType::AssociationSetupResponse ||
+                resp_header->sequence_number != req_header.sequence_number) {
+                spdlog::warn("smf: PFCP response wasn't a matching Association Setup Response, "
+                            "ignoring and retrying");
+                continue;
+            }
+            const std::vector<std::uint8_t> resp_ie_bytes(
+                resp.begin() + static_cast<std::ptrdiff_t>(offset),
+                resp.begin() + static_cast<std::ptrdiff_t>(offset + ies_length));
+            const auto resp_ies = pfcp_core::decode_ies(resp_ie_bytes);
+            const auto* cause_ie =
+                resp_ies.has_value()
+                    ? pfcp_core::find_ie(*resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
+                    : nullptr;
+            const auto cause = cause_ie != nullptr ? pfcp_core::decode_cause(cause_ie->value)
+                                                   : std::nullopt;
+            if (cause.has_value() && *cause == pfcp_core::Cause::RequestAccepted) {
+                accepted = true;
+                spdlog::info("smf: PFCP Sx Association established with UPF at {}", upf_ip);
+            } else {
+                spdlog::warn("smf: UPF rejected PFCP Association Setup (cause={}), retrying",
+                            cause.has_value() ? static_cast<int>(*cause) : -1);
+            }
+        }
+
+        if (accepted) {
+            return;
+        }
+        spdlog::warn("smf: PFCP Association Setup exhausted {} retries, backing off and "
+                    "restarting the procedure",
+                    kN1Retries);
+        std::this_thread::sleep_for(std::chrono::seconds(5));
     }
 }
 
@@ -619,6 +781,7 @@ int main() {
         });
 
     std::thread(run_nrf_lifecycle, smf_instance_id).detach();
+    std::thread(run_pfcp_lifecycle, smf_instance_id).detach();
 
     server.start();
     spdlog::info("smf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
