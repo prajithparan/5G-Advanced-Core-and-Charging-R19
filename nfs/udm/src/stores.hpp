@@ -22,8 +22,10 @@ namespace udm {
 // in a real deployment this is UDR-provisioned data (Nudr_DataRepository's authentication-data
 // group), which nfs/udr deliberately does not implement yet (see docs/DECISIONS.md ADR-0025's
 // deferred list). Seeded at startup with a small, fixed set of test subscribers -- see
-// nfs/udm/src/main.cpp -- not provisionable via any API. See ADR-0026 for what SQN handling is
-// and is not implemented (no resynchronisation/AUTS, no windowing -- a bare monotonic counter).
+// nfs/udm/src/main.cpp -- not provisionable via any API. See ADR-0026 for the original bare-
+// monotonic-counter SQN model, and ADR-0037 for AUTS/SQN-resynchronisation support added on top of
+// it (still no full TS 33.102 Annex C.2/C.3 windowing/array scheme -- SQN_MS+1 on a verified
+// resync, nothing more sophisticated).
 struct AuthenticationSubscription {
     aka_crypto::Key128 k;
     aka_crypto::Key128 opc;
@@ -39,6 +41,16 @@ public:
     // by 1 (mod 2^48) so the next GenerateAuthData call for this SUPI gets a fresh vector.
     // nullopt if supi is unknown.
     std::optional<AuthenticationSubscription> get_and_advance_sqn(const std::string& supi);
+
+    // Verifies AUTS (TS 24.501 §9.11.3.1) against this subscriber's own K/OPc and the RAND from
+    // the AuthenticationRequest the UE is resynchronising against, and, iff genuine, resets the
+    // stored SQN to the UE's real SQN_MS + 1 (mod 2^48) -- the simplest re-sync scheme (TS 33.102
+    // Annex C.2), matching this store's existing bare-monotonic-counter model rather than
+    // introducing full Annex C windowing. Returns std::nullopt if supi is unknown; true if AUTS
+    // verified and SQN was reset; false if AUTS failed to verify (SQN is left untouched in that
+    // case -- a failed verification must not silently move the subscriber's SQN state).
+    std::optional<bool> resync_sqn(const std::string& supi, const aka_crypto::Key128& rand,
+                                   const aka_crypto::Auts& auts);
 
 private:
     std::mutex mutex_;

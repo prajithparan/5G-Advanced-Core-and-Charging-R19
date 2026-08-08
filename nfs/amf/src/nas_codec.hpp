@@ -158,6 +158,14 @@ struct RegistrationCompleteOutcome {
 // the final message of the registration procedure this project's staged NGAP/NAS plan targets.
 // uplink_count: this association's second secured uplink message (the first was
 // SecurityModeComplete's uplink_count=0) -- callers always pass 1 in this project's current scope.
+//
+// NOT CURRENTLY CALLED by any production handler (nfs/amf/src/ngap_task.cpp): confirmed via real
+// interop and by reading UERANSIM's own receiveInitialRegistrationAccept
+// (simulators/ransim/vendor/UERANSIM/src/ue/nas/mm/register.cpp:346-426) that a real UE only
+// sends RegistrationComplete if RegistrationAccept carried a 5G-GUTI, an NSSCI=CHANGED
+// indication, or a configuredNSSAI -- encode_registration_accept sends none of those (disclosed
+// simplification, see its own comment), so this decoder is currently unreachable in practice.
+// Kept (unit-tested, spec-correct) for when a future turn adds GUTI reassignment.
 std::optional<RegistrationCompleteOutcome> decode_registration_complete(
     const aka_crypto::NasIntKey& knas_int,
     const aka_crypto::NasEncKey& knas_enc,

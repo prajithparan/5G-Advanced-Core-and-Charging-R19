@@ -86,6 +86,11 @@ HxresStar derive_hxres_star(const Key128& rand, const ResStar& res_star);
 
 Kseaf derive_kseaf(const Kausf& kausf, const std::string& serving_network_name);
 
+// supi: the BARE identity digits (e.g. "999700000000001"), NOT this project's usual SBI-JSON
+// "imsi-999700000000001" string representation -- confirmed via real interop after the two
+// diverged and produced a KAMF a real UE could never converge on (see
+// nfs/amf/src/ngap_task.cpp's strip_imsi_prefix and its own comment, ADR-0037). Callers holding
+// the "imsi-"-prefixed form must strip it before calling this.
 // abba: the same ABBA value sent to the UE in the NAS AuthenticationRequest (this project fixes
 // it at 0x0000, see nfs/amf/src/nas_codec.hpp) -- the UE derives KAMF from the ABBA it actually
 // received, so this must match exactly for the two sides' KAMF to converge.

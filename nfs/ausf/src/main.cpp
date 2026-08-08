@@ -256,6 +256,11 @@ int main() {
             sbi_gen::AuthenticationInfoRequest udm_req{};
             udm_req.servingNetworkName = body->servingNetworkName;
             udm_req.ausfInstanceId = ausf_instance_id;
+            // SQN resynchronisation (TS 33.102 §6.3.3, ADR-0037): both AuthenticationInfo (this
+            // handler's own request) and AuthenticationInfoRequest (UDM's) declare the identical
+            // ResynchronizationInfo_Nudm_UEAU{rand,auts} type for this field -- AUSF is a pure
+            // passthrough here, UDM is the one that actually verifies AUTS and resets SQN.
+            udm_req.resynchronizationInfo = body->resynchronizationInfo;
 
             sbi_core::http2::ClientRequest udm_http_req;
             udm_http_req.method = "POST";

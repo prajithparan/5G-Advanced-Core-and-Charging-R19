@@ -28,7 +28,7 @@ spec text. Full conventions are in [`CLAUDE.md`](CLAUDE.md).
 | 0 | Foundations: CMake+vcpkg skeleton, `libs/sbi-core` (HTTP/2, OAuth2, ProblemDetails, headers, logging, tracing), hello-nf/stub-nrf proof of concept | Done |
 | 1 | Codegen spine: `tools/sbi-codegen`, generated DTOs/serializers from the R19 YAML | Done |
 | — | TLS 1.3 + mTLS across `libs/sbi-core` (closes ADR-0005, required before Phase 2 per ADR-0009) | Done |
-| 2 | Control-plane core: NRF, AMF, SMF, UDM, UDR, AUSF, PCF; UE registration + PDU session establishment end-to-end | Done* |
+| 2 | Control-plane core: NRF, AMF, SMF, UDM, UDR, AUSF, PCF; UE registration + PDU session establishment end-to-end | Done |
 | 3 | User plane: N4/PFCP, UPF datapath | Not started |
 | 4 | Charging + TM Forum SID/BSS layer | Not started |
 | 5 | NWDAF + AI/ML pipelines | Not started |
@@ -36,14 +36,16 @@ spec text. Full conventions are in [`CLAUDE.md`](CLAUDE.md).
 | 7 | GUI / operations console | Not started |
 | 8 | Lab packaging (`make lab-up`) | Not started |
 
-\* All 7 Phase 2 NFs are implemented, and both target procedures (TS 23.502 §4.2.2.2.2 UE
-Registration, §4.3.2.2.1 PDU Session Establishment) are wired end-to-end in code — real NGAP/N2
-(SCTP + ASN.1 PER) and NAS-5GS, through AUSF/PCF/SMF, no narrowed slice. One disclosed gap blocks a
-*single automated live run* from demonstrating it: UDM's seeded test subscriber's fixed TS 35.207
-SQN always fails a fresh UE's first authentication attempt (SQN resynchronization isn't
-implemented yet), so every stage past that point was instead verified via real interop up to the
-failure, independent cross-check harnesses, or direct calls against the real running peer — see
-`docs/DECISIONS.md` ADR-0032–ADR-0036 and `docs/TRACEABILITY.md` for exactly what was proven how.
+All 7 Phase 2 NFs are implemented, and both target procedures (TS 23.502 §4.2.2.2.2 UE
+Registration, §4.3.2.2.1 PDU Session Establishment) are wired end-to-end — real NGAP/N2 (SCTP +
+ASN.1 PER) and NAS-5GS, through AUSF/PCF/SMF, no narrowed slice — and verified in a single real
+`nr-gnb`/`nr-ue` interop run, first attempt, with zero retries or failures anywhere in Registration
+or SM-context creation: NG Setup → Initial Registration (including a real SQN resynchronization,
+TS 33.102 §6.3.3) → SecurityModeCommand/Complete → RegistrationAccept → a real AM Policy
+Association with PCF → a real PDU Session Establishment Request → a real SM context with SMF. One
+disclosed gap remains downstream of that: SMF's `CreateSMContext` response carries no `n1SmMsg`, so
+AMF has no real PDU Session Establishment Accept content to send back to the UE yet — see
+`docs/DECISIONS.md` ADR-0032–ADR-0037 and `docs/TRACEABILITY.md` for exactly what was proven how.
 
 Full phase plan: [`PROMPT.md`](PROMPT.md). Per-procedure spec traceability:
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md).
