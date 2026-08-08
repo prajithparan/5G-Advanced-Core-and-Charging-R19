@@ -1,0 +1,145 @@
+// Unit tests for libs/pfcp-core -- byte layouts confirmed against the real 3GPP TS 29.244 V14.3.0
+// spec PDF (see pfcp_core/header.hpp's own comment for the version-gap disclosure and
+// docs/DECISIONS.md ADR-0039).
+
+#include "pfcp_core/common_ies.hpp"
+#include "pfcp_core/header.hpp"
+#include "pfcp_core/ie.hpp"
+
+#include <gtest/gtest.h>
+
+TEST(PfcpHeader, EncodesNodeRelatedHeaderWithCorrectByteLayout) {
+    pfcp_core::Header h;
+    h.has_seid = false;
+    h.message_type = pfcp_core::MessageType::HeartbeatRequest;
+    h.sequence_number = 0x010203;
+
+    const auto bytes = pfcp_core::encode_header(h, /*ies_length=*/5);
+    // version=1(001) in bits 8-6, spare=000, MP=0, S=0 -> octet1 = 0b00100000 = 0x20
+    ASSERT_EQ(bytes.size(), 8u);
+    EXPECT_EQ(bytes[0], 0x20);
+    EXPECT_EQ(bytes[1], static_cast<std::uint8_t>(pfcp_core::MessageType::HeartbeatRequest));
+    // message_length = overhead(4) + ies_length(5) = 9
+    EXPECT_EQ(bytes[2], 0x00);
+    EXPECT_EQ(bytes[3], 0x09);
+    EXPECT_EQ(bytes[4], 0x01);
+    EXPECT_EQ(bytes[5], 0x02);
+    EXPECT_EQ(bytes[6], 0x03);
+    EXPECT_EQ(bytes[7], 0x00); // spare
+}
+
+TEST(PfcpHeader, NodeRelatedHeaderRoundTrips) {
+    pfcp_core::Header h;
+    h.has_seid = false;
+    h.message_type = pfcp_core::MessageType::AssociationSetupResponse;
+    h.sequence_number = 0xABCDEF;
+
+    auto bytes = pfcp_core::encode_header(h, /*ies_length=*/20);
+    bytes.resize(bytes.size() + 20); // simulate trailing IE bytes
+
+    std::size_t offset = 0;
+    std::uint16_t ies_length = 0;
+    const auto decoded = pfcp_core::decode_header(bytes, offset, ies_length);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_FALSE(decoded->has_seid);
+    EXPECT_EQ(decoded->message_type, pfcp_core::MessageType::AssociationSetupResponse);
+    EXPECT_EQ(decoded->sequence_number, 0xABCDEFu);
+    EXPECT_EQ(offset, 8u);
+    EXPECT_EQ(ies_length, 20u);
+}
+
+TEST(PfcpHeader, SessionRelatedHeaderRoundTrips) {
+    pfcp_core::Header h;
+    h.has_seid = true;
+    h.seid = 0x0123456789ABCDEFULL;
+    h.message_type = pfcp_core::MessageType::SessionEstablishmentRequest;
+    h.sequence_number = 42;
+
+    auto bytes = pfcp_core::encode_header(h, /*ies_length=*/7);
+    ASSERT_EQ(bytes.size(), 16u);
+    bytes.resize(bytes.size() + 7);
+
+    std::size_t offset = 0;
+    std::uint16_t ies_length = 0;
+    const auto decoded = pfcp_core::decode_header(bytes, offset, ies_length);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_TRUE(decoded->has_seid);
+    EXPECT_EQ(decoded->seid, 0x0123456789ABCDEFULL);
+    EXPECT_EQ(decoded->sequence_number, 42u);
+    EXPECT_EQ(offset, 16u);
+    EXPECT_EQ(ies_length, 7u);
+}
+
+TEST(PfcpHeader, RejectsTooShortBuffer) {
+    std::vector<std::uint8_t> bytes = {0x20, 0x01, 0x00};
+    std::size_t offset = 0;
+    std::uint16_t ies_length = 0;
+    EXPECT_FALSE(pfcp_core::decode_header(bytes, offset, ies_length).has_value());
+}
+
+TEST(PfcpHeader, RejectsUnrecognizedVersion) {
+    std::vector<std::uint8_t> bytes = {0x40, 0x01, 0x00, 0x04, 0, 0, 0, 0}; // version=2
+    std::size_t offset = 0;
+    std::uint16_t ies_length = 0;
+    EXPECT_FALSE(pfcp_core::decode_header(bytes, offset, ies_length).has_value());
+}
+
+TEST(PfcpIe, EncodeDecodeRoundTrips) {
+    std::vector<std::uint8_t> out;
+    pfcp_core::encode_ie(out, static_cast<std::uint16_t>(pfcp_core::IeType::Cause), {0x01});
+    pfcp_core::encode_ie(out, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+                         {0x00, 10, 0, 0, 1});
+
+    const auto ies = pfcp_core::decode_ies(out);
+    ASSERT_TRUE(ies.has_value());
+    ASSERT_EQ(ies->size(), 2u);
+    EXPECT_EQ((*ies)[0].type, static_cast<std::uint16_t>(pfcp_core::IeType::Cause));
+    EXPECT_EQ((*ies)[0].value, (std::vector<std::uint8_t>{0x01}));
+    EXPECT_EQ((*ies)[1].type, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId));
+
+    const auto* cause_ie = pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause));
+    ASSERT_NE(cause_ie, nullptr);
+    EXPECT_EQ(cause_ie->value, (std::vector<std::uint8_t>{0x01}));
+    EXPECT_EQ(pfcp_core::find_ie(*ies, 9999), nullptr);
+}
+
+TEST(PfcpIe, DecodeRejectsTruncatedIe) {
+    const std::vector<std::uint8_t> bytes = {0x00, 19, 0x00, 0x05, 0x01}; // declares length 5, has 1
+    EXPECT_FALSE(pfcp_core::decode_ies(bytes).has_value());
+}
+
+TEST(PfcpCommonIes, CauseRoundTrips) {
+    const auto bytes = pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted);
+    EXPECT_EQ(bytes, (std::vector<std::uint8_t>{0x01}));
+    const auto decoded = pfcp_core::decode_cause(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, pfcp_core::Cause::RequestAccepted);
+}
+
+TEST(PfcpCommonIes, RecoveryTimeStampRoundTrips) {
+    const std::time_t now = 1754660000; // arbitrary fixed Unix time
+    const auto bytes = pfcp_core::encode_recovery_time_stamp(now);
+    ASSERT_EQ(bytes.size(), 4u);
+    const auto decoded = pfcp_core::decode_recovery_time_stamp(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, now);
+}
+
+TEST(PfcpCommonIes, NodeIdIpv4RoundTrips) {
+    const std::array<std::uint8_t, 4> ip{127, 0, 0, 5};
+    const auto bytes = pfcp_core::encode_node_id_ipv4(ip);
+    EXPECT_EQ(bytes, (std::vector<std::uint8_t>{0x00, 127, 0, 0, 5}));
+    const auto decoded = pfcp_core::decode_node_id_ipv4(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, ip);
+}
+
+TEST(PfcpCommonIes, NodeIdIpv4RejectsWrongType) {
+    const std::vector<std::uint8_t> bytes = {0x02, 127, 0, 0, 5}; // type=2 (FQDN), not IPv4
+    EXPECT_FALSE(pfcp_core::decode_node_id_ipv4(bytes).has_value());
+}
+
+TEST(PfcpCommonIes, FunctionFeaturesNoneAreCorrectLength) {
+    EXPECT_EQ(pfcp_core::encode_up_function_features_none().size(), 2u);
+    EXPECT_EQ(pfcp_core::encode_cp_function_features_none().size(), 1u);
+}
