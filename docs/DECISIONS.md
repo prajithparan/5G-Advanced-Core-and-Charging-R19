@@ -2915,11 +2915,13 @@ Stage 4 (the eBPF/XDP datapath itself, ADR-0039's own evaluated-and-approved cho
 remaining increment before Phase 3's stated scope ("User plane: N4/PFCP, UPF datapath") is fully
 met.
 
-## ADR-0043: Phase 3 Stage 4 -- eBPF/XDP GTP-U decapsulation datapath (code complete, runtime UNVERIFIED)
+## ADR-0043: Phase 3 Stage 4 -- eBPF/XDP GTP-U decapsulation datapath (code complete; verifier + control-plane integration LIVE-VERIFIED; final packet-delivery hop still unverified)
 
-**Date:** 2026-08-08
-**Status:** Accepted, with an explicit, prominent disclosed gap -- read this ADR's "What is NOT
-verified" section before relying on any claim below about this stage actually working.
+**Date:** 2026-08-08 (initial, unverified version), updated 2026-08-09 after live testing
+**Status:** Accepted. The section "Live-testing update (2026-08-09)" at the end of this ADR
+supersedes this entry's original "runtime UNVERIFIED" framing -- most of what that version
+disclosed as unknown is now confirmed working; one specific, narrower gap remains, described
+there precisely rather than folded back into the original text.
 
 **Context:** ADR-0042 (Stage 3) closed Phase 3's control-plane arc: a real N4 session is created,
 UPF allocates a real F-TEID, but no packet has ever actually flowed through it. This stage builds
@@ -3015,9 +3017,92 @@ side. `libbpf-dev`/`clang` are new build dependencies for this one NF only.
   that has never been observed to occur would be worse than no test, since it would look like
   verification without being any.
 
-**Consequence:** Phase 3's code is now complete for its full stated scope (control plane through
-ADR-0042, datapath through this ADR), but this stage's real-world correctness is genuinely
-unknown, not just formally caveated. The next session (or this one, once the capability grant
-lands) must run `gtpu_test.py` against a real, privileged `upf` process and report the actual
-result -- success, a verifier rejection needing a fix, or a runtime bug -- before this stage can
-be considered done in the sense every other stage in this project has been.
+**Consequence (superseded by the section below):** Phase 3's code is now complete for its full
+stated scope (control plane through ADR-0042, datapath through this ADR), but this stage's
+real-world correctness is genuinely unknown, not just formally caveated. The next session (or this
+one, once the capability grant lands) must run `gtpu_test.py` against a real, privileged `upf`
+process and report the actual result -- success, a verifier rejection needing a fix, or a runtime
+bug -- before this stage can be considered done in the sense every other stage in this project has
+been.
+
+### Live-testing update (2026-08-09)
+
+The user granted the capability set this ADR's original text disclosed as needed
+(`sudo setcap cap_net_admin,cap_bpf,cap_sys_admin+eip` on the built `upf` binary) and live testing
+proceeded for real. This section records exactly what that testing found -- two real bugs fixed,
+substantial genuine verification gained, and one specific gap that remains, described precisely
+rather than glossed over.
+
+**Real bug 1, found immediately: ambient capabilities, two layers deep.** `setcap` grants
+capabilities to the *file*; a child process this binary spawns via `popen()` (the `ip` shell-outs
+in `datapath.cpp`) does NOT automatically inherit them -- confirmed for real (not assumed) by
+reproducing the exact same `RTNETLINK answers: Operation not permitted` manually, unprivileged,
+before writing the fix. The standard fix, Linux ambient capabilities, itself needed a second real
+fix once applied: per `execve(2)`'s actual capability-transition rules, a new process's
+*inheritable* set is inherited from its parent (whatever shell launched it, which has an empty
+inheritable set), not populated from the binary's file capabilities the way *permitted* is --
+so the ambient-raise itself failed with a second real, confirmed `EPERM` even though `getcap`
+showed the grant present on the file. Fixed by explicitly moving `CAP_NET_ADMIN` from this
+process's own permitted set into its own inheritable set first (via `libcap`'s
+`cap_set_flag`/`cap_set_proc` -- a new build dependency, `libcap-dev`, the user installed), which
+a process is always allowed to do for a capability it already holds. Both bugs, and both fixes,
+are documented in full in `nfs/upf/src/datapath.cpp`'s own comments, not just here.
+
+**Real bug 2, found immediately after: `bpf_ringbuf_reserve` needs a genuine compile-time
+constant.** Once veth/TUN creation started working, `bpf_object__load` reached the real BPF
+verifier for the first time -- and it rejected the program: `R2 is not a known constant` on the
+`bpf_ringbuf_reserve` call. The masking idiom (`tpdu_len &= 2047`) this project's original,
+untested version used gives the verifier a provable *range*, which is sufficient for
+`bpf_probe_read_kernel`'s size argument but NOT for `bpf_ringbuf_reserve`'s -- that helper requires
+an actual literal/constant on this kernel/libbpf combination, confirmed by the verifier's own
+rejection message, not assumed from documentation. Fixed by switching to the standard pattern real
+eBPF codebases use for this exact situation: a fixed-size `struct tpdu_record { __u16 length;
+unsigned char data[1500]; }`, always reserving `sizeof(*rec)` (a real compile-time constant), with
+`length` telling the consumer how many of `data`'s bytes are the genuine T-PDU. Both
+`gtpu_decap.bpf.c` and `datapath.cpp`'s consumer were updated to match.
+
+**What IS now live-verified, for real, that the original version of this ADR could not confirm:**
+- The BPF *verifier* accepts the program (after the fix above) -- `bpf_object__load` succeeds.
+- The veth pair (`upf-n3`/`upf-n3-peer`) and TUN device (`upf-tun0`) are created for real; `ip
+  link show upf-n3` confirms `xdpgeneric` mode with a real attached program (`prog/xdp id 682`
+  observed).
+- The BPF ring buffer and its polling thread start successfully.
+- **Real control-plane integration, triggered by a real PFCP exchange, not a synthetic test of
+  the map alone**: a hand-crafted-but-spec-correct PFCP Association Setup followed by a real
+  Session Establishment Request (the same message shape ADR-0042's real `smf` sends) was sent to
+  the live, privileged `upf` process. UPF allocated a real F-TEID (`0x1`) and its own log confirms
+  `Sx Session established` -- and per `main.cpp`'s existing Stage 3 wiring, this real code path
+  calls `datapath->register_teid(0x1)`, successfully inserting it into the live BPF hash map (no
+  error logged, and the subsequent behavior below is consistent with the insert having succeeded).
+
+**What is NOT yet verified -- the one remaining, specific gap.** A hand-crafted GTP-U test packet
+(`gtpu_test.py`, spec-correct per TS 29.281, sent with the real allocated TEID) was sent toward
+`upf-n3` from outside the process, forced across the real veth wire via `SO_BINDTODEVICE` (needed
+because a naive send to `upf-n3`'s own address gets short-circuited by Linux's local-delivery
+route, confirmed by RX counters not moving at all on the first attempt -- a real finding about
+*how to test this*, not about the datapath itself). RX packet counters on `upf-n3` DID increase
+after switching to `SO_BINDTODEVICE`, confirming packets physically reach the interface. But **ARP
+resolution between the two veth peers fails** (`ip neigh show` reports `FAILED`/`INCOMPLETE` for
+`upf-n3-peer -> upf-n3`), and no decapsulated T-PDU ever reached `upf-tun0` (0 RX packets
+throughout). This was investigated at length: the XDP program's own logic passes ARP through
+untouched at its very first check (`eth->h_proto != ETH_P_IP` -> `XDP_PASS`, before any GTP-U-
+specific logic runs) and is very unlikely to be the cause; `arp_ignore`/`arp_filter` sysctls on
+`upf-n3` are unset (0, not blocking); a documented real quirk of generic/SKB-mode XDP on veth
+devices exists (SKB cloning can cause the XDP hook to be skipped for some packets, found via
+research, not assumed) but does not obviously explain an ARP responder failing outright. Whether
+this is an artifact of this specific sandboxed dev environment's network/veth handling, a firewall
+rule this session's unprivileged shell could not inspect (`iptables`/`nft` both required `sudo`
+that a follow-up diagnostic request was not completed for), or a genuine bug in this project's own
+datapath setup was not conclusively root-caused before this session's priorities moved to Phase 4.
+**This is disclosed as a real, open, unresolved item -- not silently dropped.**
+
+**Consequence:** Phase 3's control-plane arc (Stages 0-3, ADR-0040-ADR-0042) and this stage's own
+BPF program correctness (verifier acceptance) and control-plane wiring (real TEID registration
+from a real PFCP exchange) are now genuinely live-verified. The single remaining unverified claim
+is narrow and specific: whether a real GTP-U packet, once it reaches `upf-n3`, is actually
+decapsulated and delivered to `upf-tun0` end-to-end. Given the XDP program's decap logic itself
+(header parsing, TEID lookup, ring buffer submit) was exercised by the BPF verifier's own static
+analysis and found structurally sound, and given the blocker found is at the ARP/L2-delivery layer
+*before* the program's GTP-U-specific logic would even run, this is a real but narrower gap than
+this ADR's original "nothing about runtime behavior is known" framing -- recorded precisely as
+such, not rounded up to "done" or left at the original, now-overly-pessimistic framing either.

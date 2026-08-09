@@ -45,6 +45,18 @@ struct gtpu_hdr {
     __u32 teid;
 } __attribute__((packed));
 
+// Fixed-size ring buffer record. Real constraint found via live testing (not assumed): unlike
+// bpf_probe_read_kernel's size argument, which accepts a runtime value the verifier can only
+// prove a *range* for (the masking idiom below), bpf_ringbuf_reserve's size argument must be a
+// genuine compile-time constant on this kernel/libbpf combination -- a range-bounded runtime
+// value is rejected ("R2 is not a known constant"). So every record reserves this fixed
+// sizeof(), and `length` tells the consumer (nfs/upf/src/datapath.cpp) how many of `data`'s bytes
+// are the real T-PDU.
+struct tpdu_record {
+    __u16 length;
+    unsigned char data[1500];
+} __attribute__((packed));
+
 // Populated by UPF's control plane (nfs/upf/src/main.cpp) whenever Stage 3's Session
 // Establishment allocates an uplink F-TEID for a PDR -- key = TEID (host byte order), value is
 // unused (presence is the only thing that matters; this project has no per-PDR datapath
@@ -125,21 +137,22 @@ int gtpu_decap_prog(struct xdp_md *ctx) {
     if (tpdu_len == 0 || tpdu_len > 1500) {
         return XDP_DROP; // implausible for this lab's traffic, avoid an oversized ringbuf reserve
     }
-    // The verifier needs a statically-provable upper bound on a dynamic reserve/copy size; masking
-    // with a power-of-two-minus-one is the standard idiom for this (numerically a no-op here since
-    // tpdu_len is already known <= 1500 < 2048, but it gives the verifier's range tracker a bound
-    // it can prove at compile time, which the raw runtime-computed value alone does not).
+    // Masking with a power-of-two-minus-one is still the right idiom for bpf_probe_read_kernel's
+    // size argument below (a range-bounded value the verifier's range tracker can reason about --
+    // this call was never the problem; bpf_ringbuf_reserve's constant-size requirement was, see
+    // struct tpdu_record's own comment).
     tpdu_len &= 2047;
 
-    void *slot = bpf_ringbuf_reserve(&tpdu_ringbuf, tpdu_len, 0);
-    if (!slot) {
+    struct tpdu_record *rec = bpf_ringbuf_reserve(&tpdu_ringbuf, sizeof(*rec), 0);
+    if (!rec) {
         return XDP_DROP; // ring buffer full -- drop rather than block, same as a real datapath would
     }
-    if (bpf_probe_read_kernel(slot, (__u32)tpdu_len, tpdu_start)) {
-        bpf_ringbuf_discard(slot, 0);
+    rec->length = (__u16)tpdu_len;
+    if (bpf_probe_read_kernel(rec->data, (__u32)tpdu_len, tpdu_start)) {
+        bpf_ringbuf_discard(rec, 0);
         return XDP_DROP;
     }
-    bpf_ringbuf_submit(slot, 0);
+    bpf_ringbuf_submit(rec, 0);
     return XDP_DROP; // consumed -- do not let the (still-encapsulated) frame reach the normal stack
 }
 

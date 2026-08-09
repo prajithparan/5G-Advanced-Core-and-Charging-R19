@@ -1,5 +1,10 @@
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(libbpf REQUIRED IMPORTED_TARGET libbpf)
+# libcap: needed to move CAP_NET_ADMIN into this process's own inheritable set before it can be
+# raised into the ambient set for child processes (the `ip` shell-outs in datapath.cpp) to
+# inherit it -- see datapath.cpp's own "Bug 2" comment for why this is genuinely necessary, found
+# via live testing, not a precautionary addition.
+pkg_check_modules(libcap REQUIRED IMPORTED_TARGET libcap)
 
 # Compiles the XDP program to BPF bytecode (an ELF object with a "xdp" section, per convention --
 # not a normal x86 object) via clang's -target bpf backend. This is NOT the same clang invocation
@@ -22,7 +27,7 @@ add_custom_target(gtpu_bpf_obj ALL DEPENDS ${GTPU_BPF_OBJ})
 
 add_executable(upf src/main.cpp src/datapath.cpp)
 add_dependencies(upf gtpu_bpf_obj)
-target_link_libraries(upf PRIVATE sbi_core sbi_generated pfcp_core PkgConfig::libbpf)
+target_link_libraries(upf PRIVATE sbi_core sbi_generated pfcp_core PkgConfig::libbpf PkgConfig::libcap)
 # See nfs/hello-nf/CMakeLists.txt for why this is a compile-time absolute path.
 target_compile_definitions(upf PRIVATE
     CERTS_DIR="${CMAKE_SOURCE_DIR}/certs"

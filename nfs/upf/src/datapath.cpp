@@ -7,7 +7,9 @@
 #include <linux/if.h>       // struct ifreq, IFNAMSIZ
 #include <linux/if_link.h>  // XDP_FLAGS_SKB_MODE
 #include <linux/if_tun.h>   // IFF_TUN/IFF_NO_PI, TUNSETIFF
+#include <sys/capability.h> // libcap -- CAP_NET_ADMIN and cap_set_flag/cap_set_proc
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
 // Deliberately NOT including <net/if.h>: glibc's <net/if.h> and the kernel's <linux/if.h> (which
@@ -59,24 +61,108 @@ int create_tun_device(const char* name) {
 // hand-written netlink code -- a disclosed, deliberate simplification (netlink socket/message
 // construction is a substantial separate scope this stage doesn't need to justify a real
 // datapath's correctness). Returns false on any non-zero exit status.
+//
+// Real bugs found and fixed via live testing (ADR-0043's own disclosed "not yet live-verified"
+// gap, closed once privileges were actually granted and live testing became possible):
+//
+// Bug 1: `setcap ...+eip` on this binary puts CAP_NET_ADMIN in this process's own effective/
+// permitted sets after exec, but a child process spawned via popen()/fork()+exec() does NOT
+// automatically inherit capabilities beyond what's already on ITS OWN executable file --
+// `/bin/ip` has no file capabilities of its own, so a plain popen("ip ...") call runs
+// unprivileged. Confirmed for real: running the exact same `ip link add` command manually,
+// unprivileged, produced the exact "RTNETLINK answers: Operation not permitted" this code then
+// hit. The standard fix is Linux ambient capabilities (`man 7 capabilities`): a capability raised
+// into the ambient set is inherited by child processes across exec().
+//
+// Bug 2 (found immediately after fixing bug 1): raising a capability into the ambient set
+// requires it to already be in BOTH the process's permitted AND inheritable sets -- but per
+// execve(2)'s real capability-transition rules, a new process's inheritable set is inherited from
+// its PARENT's inheritable set, not populated from the file's inheritable bits the way permitted
+// is. This process's parent (whatever shell launched it) has an empty inheritable set, so despite
+// `getcap` showing `cap_net_admin,...=eip` on the binary FILE, this process's own inheritable set
+// starts empty, and the ambient-raise failed with a second real, confirmed EPERM. The fix:
+// explicitly move CAP_NET_ADMIN from this process's permitted set into its own inheritable set
+// first (a process is always allowed to do this for a capability it already holds), via libcap's
+// cap_set_flag/cap_set_proc, before attempting the ambient raise.
+bool ensure_net_admin_ambient() {
+    static bool done = false;
+    if (done) {
+        return true;
+    }
+    cap_t caps = cap_get_proc();
+    if (caps == nullptr) {
+        spdlog::error("upf-datapath: cap_get_proc failed: {}", std::strerror(errno));
+        return false;
+    }
+    cap_value_t cap_list[] = {CAP_NET_ADMIN};
+    const bool set_ok = cap_set_flag(caps, CAP_INHERITABLE, 1, cap_list, CAP_SET) == 0 &&
+                        cap_set_proc(caps) == 0;
+    cap_free(caps);
+    if (!set_ok) {
+        spdlog::error("upf-datapath: failed to add CAP_NET_ADMIN to the inheritable set: {}",
+                    std::strerror(errno));
+        return false;
+    }
+    if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN, 0, 0) != 0) {
+        spdlog::error("upf-datapath: prctl(PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN) failed: {}",
+                    std::strerror(errno));
+        return false;
+    }
+    done = true;
+    return true;
+}
+
 bool run_ip_command(const std::string& args) {
-    const std::string cmd = "ip " + args + " >/dev/null 2>&1";
-    const int rc = std::system(cmd.c_str());
+    if (!ensure_net_admin_ambient()) {
+        spdlog::warn("upf-datapath: 'ip {}' will likely fail without CAP_NET_ADMIN ambient", args);
+    }
+    const std::string cmd = "ip " + args + " 2>&1";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (pipe == nullptr) {
+        spdlog::error("upf-datapath: popen('ip {}') failed: {}", args, std::strerror(errno));
+        return false;
+    }
+    std::string output;
+    char buf[256];
+    while (fgets(buf, sizeof(buf), pipe) != nullptr) {
+        output += buf;
+    }
+    const int rc = pclose(pipe);
     if (rc != 0) {
-        spdlog::error("upf-datapath: 'ip {}' failed (exit {})", args, rc);
+        spdlog::error("upf-datapath: 'ip {}' failed (exit {}): {}", args, rc, output);
         return false;
     }
     return true;
 }
 
+// Mirrors nfs/upf/bpf/gtpu_decap.bpf.c's struct tpdu_record exactly -- the fixed-size ring
+// buffer record format the BPF verifier's constant-size requirement on bpf_ringbuf_reserve forced
+// (see that struct's own comment). `length` is the real T-PDU size; `data`'s bytes beyond that
+// are stale/unused ring buffer memory, never written to the TUN device.
+struct TpduRecord {
+    std::uint16_t length;
+    unsigned char data[1500];
+} __attribute__((packed));
+
 int handle_tpdu_sample(void* ctx, void* data, std::size_t data_sz) {
     const int tun_fd = *static_cast<int*>(ctx);
-    const ssize_t written = write(tun_fd, data, data_sz);
-    if (written < 0 || static_cast<std::size_t>(written) != data_sz) {
+    if (data_sz < sizeof(TpduRecord)) {
+        spdlog::warn("upf-datapath: ring buffer sample too small ({} bytes), ignoring", data_sz);
+        return 0;
+    }
+    const auto* rec = static_cast<const TpduRecord*>(data);
+    const std::size_t tpdu_len = rec->length;
+    if (tpdu_len > sizeof(rec->data)) {
+        spdlog::warn("upf-datapath: ring buffer record claims implausible length {}, ignoring",
+                    tpdu_len);
+        return 0;
+    }
+    const ssize_t written = write(tun_fd, rec->data, tpdu_len);
+    if (written < 0 || static_cast<std::size_t>(written) != tpdu_len) {
         spdlog::warn("upf-datapath: short/failed write of decapsulated T-PDU ({} bytes) to {}: {}",
-                    data_sz, kTunIface, std::strerror(errno));
+                    tpdu_len, kTunIface, std::strerror(errno));
     } else {
-        spdlog::info("upf-datapath: delivered decapsulated T-PDU ({} bytes) to {}", data_sz,
+        spdlog::info("upf-datapath: delivered decapsulated T-PDU ({} bytes) to {}", tpdu_len,
                     kTunIface);
     }
     return 0;
