@@ -16,6 +16,7 @@ add_library(sbi_core STATIC
     src/problem_details.cpp
     src/sbi_headers.cpp
     src/uuid.cpp
+    src/datetime.cpp
     src/logging.cpp
     src/otel.cpp
     src/metrics.cpp

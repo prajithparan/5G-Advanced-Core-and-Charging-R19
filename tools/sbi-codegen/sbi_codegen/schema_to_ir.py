@@ -166,6 +166,14 @@ class Converter:
             if isinstance(t, ObjectType):
                 for f in t.fields:
                     rewrite_ref(f.type_ref)
+            elif isinstance(t, AliasType) and t.element_ref is not None:
+                # cpp_underlying was flattened to a string at construction time
+                # (before disambiguation could know the element type's final
+                # name) -- rewrite the structured ref, then regenerate the
+                # string from it so a renamed element type is reflected in
+                # BOTH places. See ADR-0044.
+                rewrite_ref(t.element_ref)
+                t.cpp_underlying = f"std::vector<{_type_ref_to_cpp(t.element_ref)}>"
             renamed[t.name] = t
         return renamed
 
@@ -302,11 +310,16 @@ class Converter:
             items = schema.get("items", {})
             inner = self._property_type_ref(items, source_file, name)
             inner_cpp = _type_ref_to_cpp(inner)
+            # element_ref is kept (not just the flattened string) so a later
+            # collision rename of the element type can be reflected here too
+            # -- see AliasType's docstring and ADR-0044. Kept for "primitive"
+            # kind too (harmless -- rewrite_ref only acts on "ref"/"array").
             return AliasType(
                 name=name,
                 source_file=source_file,
                 cpp_underlying=f"std::vector<{inner_cpp}>",
                 description=description,
+                element_ref=inner,
             )
 
         ptype = schema.get("type")

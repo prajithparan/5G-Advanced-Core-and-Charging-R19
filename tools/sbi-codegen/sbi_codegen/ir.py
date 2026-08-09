@@ -63,13 +63,20 @@ class OpenEnumType:
 class AliasType:
     """A scalar (string/integer/number/boolean) type alias, optionally with
     regex pattern constraint(s) collected from `pattern` and/or `allOf`-combined
-    patterns."""
+    patterns. Also covers `type: array` aliases (`using X = std::vector<Y>`)."""
 
     name: str
     source_file: str
     cpp_underlying: str
     patterns: list[str] = field(default_factory=list)
     description: str = ""
+    # Set only for the array-of-named-type case (`std::vector<Y>`): the
+    # structured TypeRef for Y, kept alongside the flattened cpp_underlying
+    # string so Converter._disambiguate can rewrite it (and regenerate
+    # cpp_underlying) if Y's name collides and gets renamed -- see
+    # docs/DECISIONS.md ADR-0044. None for every other AliasType (scalar
+    # aliases never reference another named type).
+    element_ref: "TypeRef | None" = None
 
 
 @dataclass

@@ -73,13 +73,13 @@ def _referenced_names(t) -> list[str]:
     """Named types directly referenced by t (for dependency graphs, both
     file-level and type-level).
 
-    AliasType has no structured TypeRef for its element (cpp_underlying is
-    already a rendered string like "std::vector<Foo>") -- extracted here via
-    identifier tokenization rather than adding one, since the only thing that
-    matters for dependency tracking is which *names* appear, and callers
-    already filter the result against a known-names set (stray tokens like
-    "std"/"vector" that aren't real type names are harmless noise, not
-    false dependencies). See docs/DECISIONS.md ADR-0022 for why this exists:
+    AliasType's element_ref (set only for the array-of-named-type case, see
+    ir.py/ADR-0044) is a real structured TypeRef, walked the same way as an
+    ObjectType field -- this is what makes it visible to
+    Converter._disambiguate's rename pass in the first place, so it must also
+    be what dependency tracking here uses; a plain string is never
+    correct after a collision rename. See docs/DECISIONS.md ADR-0022 for why
+    file-level dependency tracking on alias underlying types matters at all:
     without it, an alias whose underlying type names a struct/enum defined
     later in the same merged group compiles with "not declared in this
     scope", since header.hpp.j2 always emits the alias block before the
@@ -97,7 +97,10 @@ def _referenced_names(t) -> list[str]:
         for f in t.fields:
             walk(f.type_ref)
     elif isinstance(t, AliasType):
-        names.extend(_IDENTIFIER_RE.findall(t.cpp_underlying))
+        if t.element_ref is not None:
+            walk(t.element_ref)
+        else:
+            names.extend(_IDENTIFIER_RE.findall(t.cpp_underlying))
     return names
 
 

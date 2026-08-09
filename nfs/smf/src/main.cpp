@@ -48,12 +48,22 @@
 // - Error responses use the generic ProblemDetails shape (sbi_core::http2::problem_response,
 //   application/problem+json) rather than each operation's bespoke *Error schema
 //   (SmContextCreateError, SmContextUpdateError) -- same simplification NRF/AMF already use.
+//
+// Phase 4 addition (see nfs/chf/src/main.cpp's own file header for CHF's approved scope): SMF
+// calls CHF's real Nchf_ConvergedCharging_Create at N40, right after the N4 Session Establishment
+// call, using a hardcoded base URL (kChfBase) -- matching this file's own existing pattern for
+// PCF/AMF (kPcfBase/kAmfBase), not the Nnrf_NFDiscovery path Stage 2's UPF discovery used (that
+// was explicitly the "first real use of this NRF capability", see ADR-0041; every other NF-to-NF
+// call in this file, before and after, uses a hardcoded base URL). Best-effort/non-fatal, same
+// discipline as the N4 Session Establishment call right above it in CreateSMContext's handler --
+// no real billing/quota dependency exists yet for a charging-data failure to correctly block on.
 
 #include "pfcp_core/common_ies.hpp"
 #include "pfcp_core/header.hpp"
 #include "pfcp_core/ie.hpp"
 #include "pfcp_core/session_ies.hpp"
 
+#include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
 #include "sbi_core/json_body.hpp"
@@ -100,6 +110,7 @@ constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kSelfBase = "https://127.0.0.1:7779";
 constexpr const char* kPcfBase = "https://127.0.0.1:7783";
 constexpr const char* kAmfBase = "https://127.0.0.1:7778";
+constexpr const char* kChfBase = "https://127.0.0.1:7784";
 constexpr const char* kApiRoot = "/nsmf-pdusession/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
@@ -519,6 +530,61 @@ bool perform_n4_session_establishment(const std::string& upf_ip, std::uint8_t pd
     return true;
 }
 
+// Real Nchf_ConvergedCharging_Create (TS 32.291, N40, ADR-0044), SMF's side -- see this file's own
+// header for the approved Phase 4 scope. Sends only the 3 mandatory ChargingDataRequest fields
+// plus subscriberIdentifier; pDUSessionChargingInformation is deliberately left unset, matching
+// nfs/chf/src/main.cpp's own disclosed "no real rating engine yet" scope -- nothing on the CHF
+// side would use richer charging information yet, so sending it would be padding, not real
+// content. invocationSequenceNumber is always 1: this is the first (and, this stage, only)
+// charging data invocation SMF ever sends for a given PDU session -- see chf's own file header for
+// why the response doesn't get independently sequenced either. Best-effort: see file header.
+bool perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
+                                      sbi_core::OAuth2Client& chf_oauth,
+                                      const std::string& smf_instance_id, const std::string& supi,
+                                      std::uint8_t pdu_session_id) {
+    auto token = chf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::warn("smf: could not obtain a token for CHF, skipping Nchf_ConvergedCharging_"
+                    "Create for pduSessionId {}: {}",
+                    pdu_session_id, token.error());
+        return false;
+    }
+
+    sbi_gen::NFIdentification nf_id{};
+    nf_id.nFName = smf_instance_id;
+    nf_id.nFIPv4Address = "127.0.0.1";
+    nf_id.nodeFunctionality.value = sbi_gen::NodeFunctionality::SMF;
+
+    sbi_gen::ChargingDataRequest chf_req{};
+    chf_req.nfConsumerIdentification = nf_id;
+    chf_req.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
+    chf_req.invocationSequenceNumber = 1;
+    chf_req.subscriberIdentifier = supi;
+
+    sbi_core::http2::ClientRequest chf_http_req;
+    chf_http_req.method = "POST";
+    chf_http_req.url = std::string(kChfBase) + "/nchf-convergedcharging/v3/chargingdata";
+    chf_http_req.headers.emplace("content-type", "application/json");
+    chf_http_req.headers.emplace("authorization", "Bearer " + *token);
+    chf_http_req.body = json(chf_req).dump();
+
+    auto chf_resp = chf_client.send(chf_http_req);
+    if (!chf_resp.has_value()) {
+        spdlog::warn("smf: could not reach CHF for Nchf_ConvergedCharging_Create, pduSessionId "
+                    "{}: {}",
+                    pdu_session_id, chf_resp.error());
+        return false;
+    }
+    if (chf_resp->status != 201) {
+        spdlog::warn("smf: CHF Nchf_ConvergedCharging_Create returned unexpected status {} for "
+                    "pduSessionId {}",
+                    chf_resp->status, pdu_session_id);
+        return false;
+    }
+    spdlog::info("smf: Nchf_ConvergedCharging_Create succeeded for pduSessionId {}", pdu_session_id);
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -569,6 +635,20 @@ int main() {
                                      "namf-comm",
                                      "AMF");
 
+    // SMF's own client identity + token source for calling CHF's Nchf_ConvergedCharging (N40,
+    // ADR-0044) -- same one-client-per-NF pattern as pcf_client/amf_client above.
+    sbi_core::http2::TlsConfig chf_client_tls{
+        .cert_path = CERTS_DIR "/smf/cert.pem",
+        .key_path = CERTS_DIR "/smf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client chf_client(std::move(chf_client_tls));
+    sbi_core::OAuth2Client chf_oauth(chf_client,
+                                     std::string(kNrfBase) + "/oauth2/token",
+                                     smf_instance_id,
+                                     "nchf-convergedcharging",
+                                     "CHF");
+
     smf::SmContextStore sm_contexts;
     UpfEndpointStore upf_endpoint_store;
 
@@ -588,6 +668,9 @@ int main() {
     auto n1n2_transfer_counter = meter->CreateUInt64Counter(
         "smf_n1n2_message_transfer_total",
         "Total successful AMF N1N2MessageTransfer calls delivering a PDU Session Establishment Accept");
+    auto chf_charging_data_create_counter = meter->CreateUInt64Counter(
+        "smf_chf_charging_data_create_total",
+        "Total successful (best-effort) Nchf_ConvergedCharging_Create calls to CHF");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -598,7 +681,8 @@ int main() {
         std::string(kApiRoot) + "/sm-contexts",
         [&verifier, &sm_contexts, &create_counter, &pcf_client, &pcf_oauth,
          &pcf_sm_policy_create_counter, &amf_client, &amf_oauth, &upf_endpoint_store,
-         &n1n2_transfer_counter](const sbi_core::http2::Request& req) {
+         &n1n2_transfer_counter, &chf_client, &chf_oauth, &chf_charging_data_create_counter,
+         &smf_instance_id](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -705,6 +789,13 @@ int main() {
                 spdlog::warn("smf: no UPF Sx Association established yet, skipping N4 Session "
                             "Establishment for pduSessionId {}",
                             *body->pduSessionId);
+            }
+
+            // N40, ADR-0044: real Nchf_ConvergedCharging_Create, same best-effort discipline as
+            // the N4 call directly above (see perform_n40_charging_data_create's own comment).
+            if (perform_n40_charging_data_create(chf_client, chf_oauth, smf_instance_id, *body->supi,
+                                                 static_cast<std::uint8_t>(*body->pduSessionId))) {
+                chf_charging_data_create_counter->Add(1);
             }
 
             // ADR-0038: the real TS 23.502 §4.3.2.2.1 step 11 -- SMF decodes the UE's actual PDU

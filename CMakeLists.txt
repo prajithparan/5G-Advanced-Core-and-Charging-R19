@@ -60,6 +60,7 @@ add_subdirectory(nfs/udr)
 add_subdirectory(nfs/ausf)
 add_subdirectory(nfs/pcf)
 add_subdirectory(nfs/upf)
+add_subdirectory(nfs/chf)
 add_subdirectory(nfs/hello-nf)
 
 if(5GC_BUILD_TESTS AND BUILD_TESTING)

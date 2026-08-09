@@ -673,3 +673,24 @@ live-verified against real, independently-generated evidence (two separate NFs' 
 `ip neigh`/`tcpdump` output). No real N3 traffic from an actual gNB reaches this path yet (the PDU
 Session Resource Setup gap above) -- that remains the honest boundary of what's proven, not the
 datapath's own correctness.
+
+## CHF Nchf_ConvergedCharging / N40 (Phase 4 Stage 0/1, ADR-0044)
+
+Approved scope for this turn: `Nchf_ConvergedCharging_Create` only (`POST /chargingdata`), wired to
+SMF at N40 as a real client call from `CreateSMContext`'s handler. Update/Release, the
+`chargingNotification` callback, `Nchf_OfflineOnlyCharging`, `Nchf_SpendingLimitControl`, and the
+TM Forum SID/BSS mapping layer (needs `docs/CHARGING_MAPPING.md` first per CLAUDE.md) are
+deliberately deferred to separate future turns. `Nchf_ConvergedCharging.yaml`'s real paths, and the
+fact none of the three CHF-related R19 YAML files use `operationId` at all, were both confirmed
+directly from the vendored spec (not assumed) -- see ADR-0044.
+
+| Procedure | TS clause / message | Test |
+|---|---|---|
+| CHF -> NRF `PUT /nnrf-nfm/v1/nf-instances/{id}` (`NFType=CHF`) | TS 29.510 `Nnrf_NFManagement` | Real interop: real NRF, real HTTP 201, confirmed in `chf`'s own log (`registered with NRF (HTTP 201)`) |
+| `Nchf_ConvergedCharging_Create` (`POST /chargingdata`) | TS 32.291 (`TS32291_Nchf_ConvergedCharging.yaml`) | Real interop between two independently-built processes (`smf` client, `chf` server), triggered by a real `nr-gnb`/`nr-ue` PDU Session Establishment, right after the real N4 Session Establishment call. `smf`'s log: `Nchf_ConvergedCharging_Create succeeded for pduSessionId 1`. Verified independently on CHF's own side, not just SMF's claim, via each NF's own Prometheus counter: `chf_charging_data_create_total{otel_scope_name="chf"} 1` and `smf_chf_charging_data_create_total{otel_scope_name="smf"} 1`. See ADR-0044 |
+
+**Disclosed gaps**: no real rating/quota engine (`multipleUnitInformation` is never populated --
+schema-valid, not a real charging decision); `invocationSequenceNumber` in CHF's response echoes
+the request's value (no field-level spec text available to confirm the alternative); no
+persistence across restarts; `pDUSessionChargingInformation` is not sent by SMF (CHF has nothing
+to do with it yet). All disclosed in `nfs/chf/src/main.cpp`'s and ADR-0044's own text.
