@@ -35,6 +35,19 @@ namespace upf {
 namespace {
 constexpr const char* kN3Iface = "upf-n3";
 constexpr const char* kN3PeerIface = "upf-n3-peer";
+// kN3PeerIface only exists because no real gNB/N3 traffic reaches this UPF yet (see this
+// project's disclosed NGAP PDU Session Resource Setup gap) -- it's a same-host stand-in so
+// Stage 4 has *something* to inject real GTP-U test packets from/to. It is moved into its own
+// network namespace below rather than left in the same namespace as kN3Iface: with both veth
+// ends in one namespace, the kernel ends up with two `proto kernel scope link` routes for the
+// exact same /30 (one per interface), which real live testing showed silently breaks ARP replies
+// for the address on kN3Iface (request observed arriving on the wire via tcpdump, no reply ever
+// generated -- not an XDP-program-logic issue, ruled out by reproducing the same failure with the
+// XDP program fully detached). Moving kN3PeerIface into its own namespace is the standard fix for
+// exactly this class of problem (the same reason container/veth setups always put at least one
+// end in a separate namespace) and structurally removes the ambiguity rather than working around
+// a symptom. See docs/DECISIONS.md ADR-0043's live-testing update.
+constexpr const char* kN3PeerNetns = "upf-n3-peer-test-ns";
 constexpr const char* kTunIface = "upf-tun0";
 
 // Creates a real TUN device via the standard /dev/net/tun + TUNSETIFF ioctl -- not a shell-out,
@@ -84,7 +97,14 @@ int create_tun_device(const char* name) {
 // explicitly move CAP_NET_ADMIN from this process's permitted set into its own inheritable set
 // first (a process is always allowed to do this for a capability it already holds), via libcap's
 // cap_set_flag/cap_set_proc, before attempting the ambient raise.
-bool ensure_net_admin_ambient() {
+// Also raises CAP_SYS_ADMIN and CAP_DAC_OVERRIDE (not just CAP_NET_ADMIN): `ip netns add` --
+// needed to isolate kN3PeerIface into its own namespace, see kN3PeerNetns's comment above --
+// performs unshare(CLONE_NEWNET) under the hood (needs CAP_SYS_ADMIN, confirmed via a real EPERM
+// hit when this only raised CAP_NET_ADMIN) AND creates a bind-mount target file under
+// /run/netns/, which real live testing showed is root:root mode 0755 -- a plain DAC check
+// unrelated to CAP_SYS_ADMIN, confirmed via a real EACCES ("Permission denied") once CAP_SYS_ADMIN
+// alone was already in place.
+bool ensure_datapath_caps_ambient() {
     static bool done = false;
     if (done) {
         return true;
@@ -94,27 +114,30 @@ bool ensure_net_admin_ambient() {
         spdlog::error("upf-datapath: cap_get_proc failed: {}", std::strerror(errno));
         return false;
     }
-    cap_value_t cap_list[] = {CAP_NET_ADMIN};
-    const bool set_ok = cap_set_flag(caps, CAP_INHERITABLE, 1, cap_list, CAP_SET) == 0 &&
-                        cap_set_proc(caps) == 0;
+    cap_value_t cap_list[] = {CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_DAC_OVERRIDE};
+    const bool set_ok =
+        cap_set_flag(caps, CAP_INHERITABLE, 3, cap_list, CAP_SET) == 0 && cap_set_proc(caps) == 0;
     cap_free(caps);
     if (!set_ok) {
-        spdlog::error("upf-datapath: failed to add CAP_NET_ADMIN to the inheritable set: {}",
+        spdlog::error("upf-datapath: failed to add CAP_NET_ADMIN/CAP_SYS_ADMIN/CAP_DAC_OVERRIDE "
+                    "to the inheritable set: {}",
                     std::strerror(errno));
         return false;
     }
-    if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN, 0, 0) != 0) {
-        spdlog::error("upf-datapath: prctl(PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN) failed: {}",
-                    std::strerror(errno));
-        return false;
+    for (const cap_value_t cap : cap_list) {
+        if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, cap, 0, 0) != 0) {
+            spdlog::error("upf-datapath: prctl(PR_CAP_AMBIENT_RAISE, {}) failed: {}",
+                        static_cast<int>(cap), std::strerror(errno));
+            return false;
+        }
     }
     done = true;
     return true;
 }
 
 bool run_ip_command(const std::string& args) {
-    if (!ensure_net_admin_ambient()) {
-        spdlog::warn("upf-datapath: 'ip {}' will likely fail without CAP_NET_ADMIN ambient", args);
+    if (!ensure_datapath_caps_ambient()) {
+        spdlog::warn("upf-datapath: 'ip {}' will likely fail without ambient capabilities", args);
     }
     const std::string cmd = "ip " + args + " 2>&1";
     FILE* pipe = popen(cmd.c_str(), "r");
@@ -200,6 +223,7 @@ struct Datapath::Impl {
             close(tun_fd);
         }
         run_ip_command(std::string("link del ") + kN3Iface); // removes both veth peers at once
+        run_ip_command(std::string("netns del ") + kN3PeerNetns);
     }
 };
 
@@ -215,14 +239,25 @@ std::optional<Datapath> Datapath::create() {
                         kN3PeerIface)) {
         return std::nullopt;
     }
+    // kN3PeerIface moves into its own namespace before anything else touches it -- see
+    // kN3PeerNetns's comment for why (avoids two same-namespace /30 routes breaking ARP).
+    // `ip netns add` is idempotent-adjacent here in that a leftover namespace from an
+    // ungracefully-killed prior run (this NF has no signal handling, see main.cpp's own disclosed
+    // simplification) fails with "File exists" -- non-fatal, the subsequent `link set netns`
+    // still works against the pre-existing namespace either way.
+    run_ip_command(std::string("netns add ") + kN3PeerNetns);
+    if (!run_ip_command(std::string("link set ") + kN3PeerIface + " netns " + kN3PeerNetns)) {
+        return std::nullopt;
+    }
     if (!run_ip_command(std::string("link set ") + kN3Iface + " up") ||
-        !run_ip_command(std::string("link set ") + kN3PeerIface + " up")) {
+        !run_ip_command(std::string("-n ") + kN3PeerNetns + " link set " + kN3PeerIface + " up")) {
         return std::nullopt;
     }
     // Addresses only matter for a human/tcpdump inspecting the veth pair directly -- the XDP
     // program itself matches on GTP-U/TEID content, not on these addresses.
     run_ip_command(std::string("addr add 10.99.0.1/30 dev ") + kN3Iface);
-    run_ip_command(std::string("addr add 10.99.0.2/30 dev ") + kN3PeerIface);
+    run_ip_command(std::string("-n ") + kN3PeerNetns + " addr add 10.99.0.2/30 dev " +
+                    kN3PeerIface);
 
     dp.impl_->tun_fd = create_tun_device(kTunIface);
     if (dp.impl_->tun_fd < 0) {

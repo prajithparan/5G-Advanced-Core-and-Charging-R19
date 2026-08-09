@@ -2915,13 +2915,16 @@ Stage 4 (the eBPF/XDP datapath itself, ADR-0039's own evaluated-and-approved cho
 remaining increment before Phase 3's stated scope ("User plane: N4/PFCP, UPF datapath") is fully
 met.
 
-## ADR-0043: Phase 3 Stage 4 -- eBPF/XDP GTP-U decapsulation datapath (code complete; verifier + control-plane integration LIVE-VERIFIED; final packet-delivery hop still unverified)
+## ADR-0043: Phase 3 Stage 4 -- eBPF/XDP GTP-U decapsulation datapath (fully live-verified end to end)
 
-**Date:** 2026-08-08 (initial, unverified version), updated 2026-08-09 after live testing
-**Status:** Accepted. The section "Live-testing update (2026-08-09)" at the end of this ADR
-supersedes this entry's original "runtime UNVERIFIED" framing -- most of what that version
-disclosed as unknown is now confirmed working; one specific, narrower gap remains, described
-there precisely rather than folded back into the original text.
+**Date:** 2026-08-08 (initial, unverified version), updated 2026-08-09 (partial live-testing
+update, one gap left open), updated again 2026-08-09 (root cause found and fixed, full end-to-end
+live verification obtained -- see "Resolution: the ARP gap, root-caused and fixed" at the end of
+this ADR).
+**Status:** Accepted. Superseded in full by the final section below: the one remaining gap the
+"Live-testing update" section left open (ARP resolution / final packet delivery) has since been
+root-caused, fixed, and live-verified end to end with a real PFCP-allocated TEID. Nothing about
+this stage's runtime behavior is unverified anymore.
 
 **Context:** ADR-0042 (Stage 3) closed Phase 3's control-plane arc: a real N4 session is created,
 UPF allocates a real F-TEID, but no packet has ever actually flowed through it. This stage builds
@@ -3096,13 +3099,96 @@ that a follow-up diagnostic request was not completed for), or a genuine bug in 
 datapath setup was not conclusively root-caused before this session's priorities moved to Phase 4.
 **This is disclosed as a real, open, unresolved item -- not silently dropped.**
 
-**Consequence:** Phase 3's control-plane arc (Stages 0-3, ADR-0040-ADR-0042) and this stage's own
-BPF program correctness (verifier acceptance) and control-plane wiring (real TEID registration
-from a real PFCP exchange) are now genuinely live-verified. The single remaining unverified claim
-is narrow and specific: whether a real GTP-U packet, once it reaches `upf-n3`, is actually
-decapsulated and delivered to `upf-tun0` end-to-end. Given the XDP program's decap logic itself
-(header parsing, TEID lookup, ring buffer submit) was exercised by the BPF verifier's own static
-analysis and found structurally sound, and given the blocker found is at the ARP/L2-delivery layer
-*before* the program's GTP-U-specific logic would even run, this is a real but narrower gap than
-this ADR's original "nothing about runtime behavior is known" framing -- recorded precisely as
-such, not rounded up to "done" or left at the original, now-overly-pessimistic framing either.
+**Consequence (superseded by the section below):** Phase 3's control-plane arc (Stages 0-3,
+ADR-0040-ADR-0042) and this stage's own BPF program correctness (verifier acceptance) and
+control-plane wiring (real TEID registration from a real PFCP exchange) were genuinely
+live-verified at this point. The single remaining unverified claim was narrow and specific:
+whether a real GTP-U packet, once it reaches `upf-n3`, is actually decapsulated and delivered to
+`upf-tun0` end-to-end.
+
+### Resolution: the ARP gap, root-caused and fixed (2026-08-09)
+
+The user explicitly instructed that Phase 3 must be fully completed and live-verified before any
+Phase 4 work continued (Phase 4/CHF scaffolding that had already started in that same session was
+paused, left uncommitted, and resumed only after this section's verification was obtained). This
+section records the real root cause and fix.
+
+**Diagnostic access, itself a real obstacle.** Root-causing this needed real packet captures
+(`tcpdump`) and privileged interface reconfiguration (`ip`, `bpftool`), none of which this
+project's own shell environment had. `setcap`-granting `cap_net_raw` to a copy of `tcpdump` under
+the repo's own `build/` directory (rather than `/usr/bin/tcpdump` directly -- confirmed for real
+that `setcap` silently fails to persist on `/usr`, apparently a filesystem/mount characteristic of
+this environment, while it works normally under `/home`) unblocked live packet capture. Privileged
+`ip`/`bpftool` reconfiguration needed a one-time, explicitly user-approved, narrowly-scoped
+passwordless-sudo grant (`visudo`, `NOPASSWD` for exactly `/usr/sbin/ip`, `/usr/sbin/bpftool`,
+`/usr/sbin/setcap` -- nothing broader) after several rounds of manually-run `sudo` commands proved
+unreliable to verify secondhand (a real, disclosed lesson: several early "ran it, succeeded"
+confirmations turned out, on direct re-check, not to have taken effect -- resolved by verifying
+every privileged step directly rather than trusting a secondhand report of success).
+
+**Real finding 1: `ip link set dev X xdp off` (no mode) silently no-ops against a generic-mode
+attachment.** Both `ip link set dev upf-n3 xdp off` and `bpftool net detach xdp dev upf-n3`
+returned exit 0 with zero effect on a program attached via `XDP_FLAGS_SKB_MODE` (generic mode,
+confirmed via `bpftool link show` returning empty -- i.e. not a `bpf_link`, ruling out that
+hypothesis) -- `ip link set dev upf-n3 xdpgeneric off` (explicitly naming the mode) is what
+actually detached it. A real iproute2 behavior, not a bug in this project's own code, but the
+kind of tooling gotcha that ate significant diagnostic time before being isolated.
+
+**Real finding 2, the actual root cause: two same-namespace routes to the same /30.**
+`Datapath::create()` (`nfs/upf/src/datapath.cpp`) created BOTH veth ends (`upf-n3` AND
+`upf-n3-peer`) in the same (default/init) network namespace, each with an address in the same
+`10.99.0.0/30`. `ip route show` confirmed two separate `proto kernel scope link` routes for the
+identical prefix, one per interface -- a genuinely degenerate, ambiguous configuration that does
+not arise in normal veth usage (where at least one end is always moved into a separate namespace,
+which is the entire reason veth pairs exist). Live packet capture on both interfaces proved the
+ARP *request* crossed the wire correctly (visible on `upf-n3` via `tcpdump`, 3 real retries) but no
+ARP *reply* was ever generated -- and, decisively, the same failure was reproduced with the XDP
+program fully detached, ruling out the XDP program (its own logic or its generic/SKB-mode
+attachment) as the cause entirely, isolating it to the routing-table ambiguity.
+
+**Fix.** `kN3PeerIface` (`upf-n3-peer`) is now moved into its own network namespace
+(`upf-n3-peer-test-ns`) immediately after veth creation, via `ip netns add` + `ip link set ...
+netns ...`, with its address assigned inside that namespace (`ip -n upf-n3-peer-test-ns addr
+add ...`). This structurally removes the overlapping-route ambiguity rather than working around a
+symptom -- the standard fix for exactly this class of problem. `ip netns add` needed two
+capabilities this binary didn't already ambient-raise: `CAP_SYS_ADMIN` (for the
+`unshare(CLONE_NEWNET)` the command performs internally -- confirmed via a real `EPERM` with only
+`CAP_NET_ADMIN` raised) and `CAP_DAC_OVERRIDE` (for creating the bind-mount target file under
+`/run/netns/`, confirmed to be `root:root` mode `0755` -- a plain DAC check, unrelated to
+`CAP_SYS_ADMIN`, confirmed via a real `EACCES`/"Permission denied" once `CAP_SYS_ADMIN` alone was
+already in place). `ensure_datapath_caps_ambient()` (renamed from `ensure_net_admin_ambient()`)
+now raises all three; the `setcap` grant on the built `upf` binary itself was correspondingly
+widened to `cap_net_admin,cap_sys_admin,cap_bpf,cap_dac_override+eip`. The destructor additionally
+runs `ip netns del upf-n3-peer-test-ns` on shutdown.
+
+Since `kN3PeerIface` only exists as a same-host stand-in for real N3/gNB traffic (which this
+project doesn't have yet -- see the disclosed NGAP PDU Session Resource Setup gap), this fix is
+scoped entirely to `Datapath::create()`'s own test-injection side; `kN3Iface` (the interface a real
+gNB's traffic would eventually arrive on) is unaffected and stays in the default namespace, exactly
+where a real-deployment N3 NIC would be.
+
+**Full end-to-end live verification obtained, with a real (not synthetic) TEID.** The complete
+stack (nrf, udm, udr, ausf, pcf, smf, amf, upf) was started, then a real `nr-gnb`/`nr-ue` run
+performed a genuine Initial Registration (including a real SQN resynchronization) and PDU Session
+Establishment against it. `smf`'s log: `N4 Session Establishment succeeded for pduSessionId 1, UPF
+F-SEID=0x1, allocated uplink F-TEID=0x1`; `upf`'s log: `allocated F-TEID 0x1 for PDR ID 1`. A
+spec-correct GTP-U G-PDU test packet (`gtpu_test.py`, TS 29.281-correct header) carrying that exact
+TEID (`0x1`) was then sent from inside `upf-n3-peer-test-ns` toward `upf-n3`. Result:
+- `ip neigh show` inside the peer namespace: `10.99.0.1 dev upf-n3-peer lladdr 3a:fa:34:e8:6f:98
+  REACHABLE` -- ARP resolution now succeeds.
+- `upf`'s own log: `upf-datapath: delivered decapsulated T-PDU (44 bytes) to upf-tun0` -- an exact
+  byte-count match against the real T-PDU size the test script sent, emitted only after this
+  code's own `write()` return-value check (`written != tpdu_len` would have logged a warning
+  instead) confirmed a complete, successful write to the TUN device.
+
+An attempt to also independently read the delivered bytes back from `upf-tun0` in a second process
+was tried and correctly failed -- a TUN device delivers to whichever single file descriptor
+originally opened it via `TUNSETIFF` (the running `upf` process itself), not to a second, later
+attacher; this is a structural property of TUN devices, not a gap in the evidence above.
+
+**Consequence:** Phase 3 (Stages 0-4, control plane through datapath) is now fully live-verified
+end to end with no open runtime-correctness questions: real PFCP codec, real UPF NF, real
+SMF-as-PFCP-client via real `Nnrf_NFDiscovery`, real N4 Session Establishment triggered by a real
+PDU session, a real XDP program that passes the verifier, and now real GTP-U decapsulation and
+delivery to a TUN device, driven by a TEID that came from the real control-plane path rather than
+being inserted for the test. Every gap this ADR previously disclosed as open is now closed.

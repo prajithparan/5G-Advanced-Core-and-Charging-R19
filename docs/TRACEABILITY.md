@@ -630,16 +630,17 @@ real `nr-ue` before this staged effort.
 
 ## UPF PFCP/N4 (staged plan, Phase 3 Stage 0-4, ADR-0039/ADR-0040/ADR-0041/ADR-0042/ADR-0043)
 
-**Stage 4 (eBPF/XDP datapath) update, 2026-08-09**: live testing (see ADR-0043's "Live-testing
-update" section in full) confirmed the BPF verifier accepts the program and real control-plane
-integration works end to end (a real PFCP Session Establishment genuinely registers a TEID in the
-live BPF map) -- fixing two real bugs found only by testing for real (ambient-capability
-propagation to child processes; `bpf_ringbuf_reserve` needing a compile-time constant size, not
-just a range-bounded one). One narrower gap remains open: a real GTP-U test packet reaches the
-attached interface, but ARP resolution between the two veth peers fails before the packet's own
-GTP-U content is ever evaluated, so actual decapsulation-and-delivery-to-TUN has still not been
-observed. This is the only row below not yet meeting the "real interop, actually observed" bar
-every other row in this document does -- marked precisely, not rounded up or down.
+**Stage 4 (eBPF/XDP datapath), fully resolved 2026-08-09** (see ADR-0043 in full, including its
+final "Resolution: the ARP gap, root-caused and fixed" section): live testing confirmed the BPF
+verifier accepts the program, real control-plane integration works end to end (a real PFCP Session
+Establishment genuinely registers a TEID in the live BPF map), and -- after root-causing a real
+same-namespace overlapping-route bug (`Datapath::create()` put both veth ends in the same network
+namespace, giving the kernel two `proto kernel scope link` routes for the same `/30`, which broke
+ARP replies; fixed by moving the peer end into its own namespace) -- a real GTP-U test packet
+carrying a TEID allocated by a genuine PFCP N4 Session Establishment (triggered by a real
+`nr-gnb`/`nr-ue` PDU session) was actually decapsulated and delivered to the TUN device. Every row
+below now meets the "real interop, actually observed" bar this document holds every other stage
+to.
 
 PFCP (TS 29.244) has no OpenAPI YAML -- see ADR-0039 for the real spec source used instead (the
 official 3GPP TS 29.244 V14.3.0 PDF, vendored at `specs/PFCP/29244-e30.pdf`).
@@ -661,14 +662,14 @@ table above met once real `nr-ue` interop landed, now met for the N4 side too.
 | BPF program load + verifier acceptance (`gtpu_decap.bpf.c`) | -- (kernel/BPF infrastructure, not a 3GPP procedure) | **Live-verified 2026-08-09**: `bpf_object__load` succeeds against a real, privileged `upf` process after fixing a real verifier rejection (`bpf_ringbuf_reserve` needs a compile-time-constant size). See ADR-0043 |
 | veth pair + TUN device creation, XDP attach (generic/SKB mode) | -- (this build's own datapath infrastructure) | **Live-verified 2026-08-09**: `ip link show upf-n3` confirms `xdpgeneric` mode with a real attached program. See ADR-0043 |
 | Real TEID registration from a real PFCP Session Establishment into the live BPF map | TS 29.244 §7.5.2 (trigger) | **Live-verified 2026-08-09**: a real Association Setup + Session Establishment sent to the live, privileged `upf` allocated F-TEID `0x1` and (per the existing Stage 3 code path) called `datapath->register_teid(0x1)` against the real, running BPF map -- no synthetic map poke, the real control-plane path. See ADR-0043 |
-| GTP-U (TS 29.281) header parse + TEID match + decapsulation, actual packet delivery to TUN | TS 29.281 §5.1 (header), Table 6.1-1 (G-PDU=255), §4.4.2.3 (UDP port 2152) | **Still NOT observed -- see ADR-0043's "Live-testing update" in full.** A real GTP-U test packet reaches `upf-n3` (RX counters confirm), but ARP resolution between the veth peers fails before the packet's own content is evaluated, so decapsulation-and-delivery has not been confirmed. Root cause not conclusively identified (environment-specific network policy vs. a real bug not yet isolated) |
+| GTP-U (TS 29.281) header parse + TEID match + decapsulation, actual packet delivery to TUN | TS 29.281 §5.1 (header), Table 6.1-1 (G-PDU=255), §4.4.2.3 (UDP port 2152) | **Live-verified 2026-08-09**: after fixing the same-namespace overlapping-route bug (see ADR-0043's resolution section), a real GTP-U test packet carrying TEID `0x1` (allocated by the real N4 Session Establishment above, not a synthetic value) was sent from an isolated peer namespace. ARP resolved (`ip neigh show`: `10.99.0.1 ... REACHABLE`) and `upf`'s own log confirms `delivered decapsulated T-PDU (44 bytes) to upf-tun0` -- an exact byte-count match, logged only after a checked, successful `write()` to the TUN device |
 
 **Disclosed gaps**: only an uplink PDR/FAR is created -- the downlink direction needs the gNB's
 real N3 GTP-U endpoint (TEID+IP), which requires NGAP PDU Session Resource Setup (still not
-implemented), disclosed in `nfs/upf/src/main.cpp`'s own header comment (ADR-0042). Separately
-(ADR-0043): the BPF program's own correctness (verifier acceptance) and the control-plane
-integration that feeds it real TEIDs are now live-verified, but the final packet-delivery hop
-(ARP resolution between the veth peers, blocking before the program's own GTP-U logic runs) is
-not. This is the one row in this entire document, across every staged effort, that does not yet
-meet the "real interop, actually observed" bar every other row does -- narrower than before, but
-still real and still open.
+implemented), disclosed in `nfs/upf/src/main.cpp`'s own header comment (ADR-0042). The datapath
+(ADR-0043) itself has no open runtime-correctness questions left as of 2026-08-09: BPF verifier
+acceptance, control-plane TEID registration, and actual GTP-U decapsulation-and-delivery are all
+live-verified against real, independently-generated evidence (two separate NFs' own logs, real
+`ip neigh`/`tcpdump` output). No real N3 traffic from an actual gNB reaches this path yet (the PDU
+Session Resource Setup gap above) -- that remains the honest boundary of what's proven, not the
+datapath's own correctness.
