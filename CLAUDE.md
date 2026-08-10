@@ -233,3 +233,28 @@ lab-grade scope — see ADR-0009 in `docs/DECISIONS.md`).
   TLS/mTLS yet), stub-nrf's unsigned fake OAuth2 token, the synchronous
   HTTP/2 client, and ~40 outstanding `clang-tidy` style warnings. None
   of these are acceptable as a final state anymore.
+
+## Commercialization mandate (ADR-0049, user-directed, mandatory)
+
+- Intent is to commercialize this system. Two concrete requirements: (1)
+  performance and reliability must **exceed** free5GC, not just match it;
+  (2) CHF and every other component must be tested as carrier-grade
+  products against real standards/frameworks, not just this project's own
+  conformance tests against the 3GPP OpenAPI schemas.
+- Stated honestly, not softened: as of ADR-0049, **zero benchmarking of
+  any kind** has been performed against free5GC or anything else. Known
+  debt that blocks a meaningful performance claim: the synchronous HTTP/2
+  client (ADR-0009), no HA/clustering across NF instances, no
+  benchmarking/load-generation harness (Phase 8's synthetic traffic
+  generator is the intended home, not started).
+- Carrier-grade test framework candidates named but not yet selected
+  (real "evaluate before picking" decision deferred to its own turn):
+  ETSI NFV-TST (pre-deployment testing) and NFV-REL (resiliency
+  requirements) series, standard telecom "five nines" HA convention as
+  industry context only.
+- This does not retroactively make anything already built carrier-grade
+  or proven superior to free5GC — no such claim exists anywhere in this
+  codebase yet. The Reality check above (multi-engineer, multi-quarter
+  program; "carrier-grade" is a destination reached through conformance
+  and soak testing, not a label applied at commit time) still stands and
+  is not contradicted by this mandate.

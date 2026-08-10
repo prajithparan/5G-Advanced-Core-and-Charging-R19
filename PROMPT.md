@@ -395,6 +395,37 @@ unflattering where warranted.
   and ONNX inference. The UPF datapath, load testing, and any serious model
   training want the larger lab tier.
 
+### Commercialization mandate (added 2026-08-10, user-directed)
+
+The user's explicit, stated intent is to commercialize this system. Two concrete, mandatory
+requirements follow from that, recorded here per the user's direct instruction:
+
+1. **Performance and reliability must exceed free5GC** (the real, existing open-source 5GC this
+   project has used as a scale comparator since Section 2 above) — not merely match it. This is a
+   target to design and measure toward, not a claim to assert. As of 2026-08-10, **no benchmarking
+   of any kind has been performed** against free5GC or anything else in this codebase — stating
+   otherwise before real, reproducible measurement exists would be exactly the kind of unearned
+   "carrier-grade" label this section already warns against. Known, already-disclosed architectural
+   debt that would need to be closed before a real performance claim is even meaningful: the
+   synchronous HTTP/2 client (ADR-0009's tracked debt), no load-balancing/clustering/HA across NF
+   instances, no benchmarking harness or load-generation infrastructure exists yet (Phase 8's
+   "synthetic traffic generator" is the planned home for this, not started).
+2. **CHF and every other component must be tested as carrier-grade products**, against real
+   standards and frameworks — not just this project's own conformance tests against the 3GPP
+   OpenAPI schemas (real and valuable, but not the same thing as carrier-grade telecom validation).
+   Relevant real frameworks to evaluate in a dedicated future turn (not yet selected, so not cited
+   here as already-adopted): ETSI NFV-TST (pre-deployment testing) and NFV-REL (resiliency
+   requirements) specification series, and standard telecom high-availability conventions (e.g.
+   "five nines" uptime targets) as an industry benchmark, not yet a number this project has
+   committed to. Which specific framework(s) apply, and how they map onto this project's own
+   conformance-test-per-procedure discipline (already in `docs/TRACEABILITY.md`), is real,
+   unresolved scope for a future ADR — not decided here, to avoid inventing a framework citation
+   this project hasn't actually evaluated.
+
+This does not change Section 2's honest reality check above: this remains a genuinely
+multi-engineer, multi-year undertaking to actually reach and prove carrier-grade parity or better,
+not something achievable by restating the goal. See `docs/DECISIONS.md` for the ADR tracking this.
+
 ---
 
 ## SECTION 3 — Guardrails and recovery prompts
