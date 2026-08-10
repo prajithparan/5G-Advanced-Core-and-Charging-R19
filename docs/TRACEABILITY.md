@@ -717,3 +717,25 @@ real, buildable slice: SUPI -> TM Forum `Party`/`Individual`.
 TMF632's ~25 real fields (the ones with real data behind them); no real TMF632 REST surface or
 Party-management store exists -- the mapping is built and logged, not yet exposed or persisted. All
 disclosed in `bss_sid/party.hpp`'s own header and ADR-0045.
+
+## `bss/product-catalog`: real TMF620 Product Catalog Management (ADR-0047)
+
+A new, standalone, non-3GPP service (own top-level `bss/` directory, no NRF registration) closing
+the gap PROMPT.md's charging principles named: product/tariff definitions are now real,
+configurable data (a real store behind a real API), not the empty-grant-only state CHF had since
+ADR-0044. Real basePath `/tmf-api/productCatalogManagement/v4/`, fields confirmed by directly
+downloading and parsing TM Forum's own TMF620 v4.1.0 swagger JSON.
+
+| Procedure | TMF resource / operation | Test |
+|---|---|---|
+| `ProductOfferingPrice` Create/Get/List/Delete | TMF620, `/productOfferingPrice`, `/productOfferingPrice/{id}` | 5 unit tests (`tests/conformance/test_bss_sid_product.cpp`) for the DTO shapes, plus real mTLS `curl` interop: created a real price (5GB/month, $20 USD), server-assigned real `id`/`href` confirmed in the response |
+| `ProductOffering` Create/Get/List/Delete, referencing prices by id | TMF620, `/productOffering`, `/productOffering/{id}` | Real mTLS interop: created an offering referencing the price above, listed it, retrieved it by id, deleted it (204), confirmed a second delete correctly 404s |
+| mTLS enforcement | -- (transport security, not a TMF procedure) | Live-verified: a request with no client certificate at all fails outright (connection failure), not just a 401 -- proving mTLS is genuinely required, not merely configured |
+
+**Disclosed gaps**: real TMF620 `PATCH` (update) and the `/listener/*` event-notification callbacks
+are not implemented (Create/Get/List/Delete is enough to prove product/tariff data is configurable,
+per the approved scope); no OAuth2 layer (mTLS-only, disclosed -- no NRF-issued token source exists
+for a non-3GPP component); in-memory only, no persistence across restarts; **CHF does not yet
+consult this catalog** -- `Nchf_ConvergedCharging_Create` still returns an empty grant; wiring CHF
+to actually rate against real catalog data is a real rating engine, a distinct, larger, not-yet-
+approved scope. All disclosed in `bss/product-catalog/src/main.cpp`'s own header and ADR-0047.
