@@ -694,3 +694,22 @@ schema-valid, not a real charging decision); `invocationSequenceNumber` in CHF's
 the request's value (no field-level spec text available to confirm the alternative); no
 persistence across restarts; `pDUSessionChargingInformation` is not sent by SMF (CHF has nothing
 to do with it yet). All disclosed in `nfs/chf/src/main.cpp`'s and ADR-0044's own text.
+
+## TM Forum SID mapping: `libs/bss-sid/` (ADR-0045)
+
+`docs/CHARGING_MAPPING.md` (3GPP CDR field -> SID entity -> TMF API resource, required by CLAUDE.md
+before any mapping code) reviewed and its two resolvable TODOs closed. Of the fields SMF's
+`Nchf_ConvergedCharging_Create` call actually sends, only `subscriberIdentifier` maps to a SID
+entity (network-function-provenance and protocol-bookkeeping fields don't) -- so this is the first
+real, buildable slice: SUPI -> TM Forum `Party`/`Individual`.
+
+| Procedure | TS clause / TMF resource | Test |
+|---|---|---|
+| SUPI -> TMF632 `Individual.individualIdentification` (`identificationType="SUPI"`) | TMF632 Party Management (`Individual`, `IndividualIdentification` -- confirmed real fields via TM Forum's own TMF632 v4.0.0 swagger) | 5 unit tests (`tests/conformance/test_bss_sid.cpp`, `BssSidParty.*`): mapping correctness, `id` deliberately left unset (no real Party store exists), JSON round-trip, `id` omitted (not emitted as `null`) when unset, `IndividualIdentification` round-trip |
+| CHF builds the SID record on a real charging event | -- (this build's own integration, not a 3GPP procedure) | Real interop: a real `nr-gnb`/`nr-ue` PDU Session Establishment drives a real SUPI into CHF's `Nchf_ConvergedCharging_Create` handler; `chf`'s own log confirms the correctly-shaped output built from that real SUPI, `id` correctly absent -- `mapped subscriberIdentifier to TM Forum SID Individual: {"individualIdentification":[{"identificationId":"imsi-999700000000001","identificationType":"SUPI"}]}`. See ADR-0045 |
+
+**Disclosed gaps**: every other row in `docs/CHARGING_MAPPING.md`'s table remains deferred (no real
+3GPP data populated for those fields by any NF yet); `libs/bss-sid/`'s `Individual` models only 2 of
+TMF632's ~25 real fields (the ones with real data behind them); no real TMF632 REST surface or
+Party-management store exists -- the mapping is built and logged, not yet exposed or persisted. All
+disclosed in `bss_sid/party.hpp`'s own header and ADR-0045.

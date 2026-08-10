@@ -1,9 +1,9 @@
 find_package(GTest CONFIG REQUIRED)
 
-add_executable(conformance_tests test_round_trip.cpp test_multipart.cpp test_milenage.cpp test_eap_aka_prime.cpp test_nas_codec.cpp test_nas_security.cpp test_nas_5gsm_codec.cpp test_pfcp_core.cpp
+add_executable(conformance_tests test_round_trip.cpp test_multipart.cpp test_milenage.cpp test_eap_aka_prime.cpp test_nas_codec.cpp test_nas_security.cpp test_nas_5gsm_codec.cpp test_pfcp_core.cpp test_bss_sid.cpp
     ${CMAKE_SOURCE_DIR}/nfs/amf/src/nas_codec.cpp
     ${CMAKE_SOURCE_DIR}/nfs/smf/src/nas_5gsm_codec.cpp)
-target_link_libraries(conformance_tests PRIVATE GTest::gtest GTest::gtest_main sbi_generated aka_crypto pfcp_core)
+target_link_libraries(conformance_tests PRIVATE GTest::gtest GTest::gtest_main sbi_generated aka_crypto pfcp_core bss_sid)
 target_include_directories(conformance_tests PRIVATE ${CMAKE_SOURCE_DIR}/nfs/amf/src ${CMAKE_SOURCE_DIR}/nfs/smf/src)
 target_compile_features(conformance_tests PRIVATE cxx_std_23)
 

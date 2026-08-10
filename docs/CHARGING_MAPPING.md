@@ -44,10 +44,10 @@ AppliedCustomerBillingRate, CustomerBill, BalanceTopUp) against TM Forum's own A
 | `Agreement` | TMF651 Agreement Management | Not in the stated list |
 | `BalanceTopUp` | **TMF654 Prepay Balance Management** (confirmed: `BalanceTopup` resource, `partyAccount`/`paymentMethod`/`recurringPeriod`/`nrOfPeriods` fields — [TM Forum data model](https://datamodel.tmforum.org/en/latest/Customer/BalanceTopup/), [TMF654 spec](https://tmf-open-api-table-documents.s3.eu-west-1.amazonaws.com/Historic/TMF654_PrepayBalance/3.0.0/user_guides/TMF654_Prepay_Balance_Management_API_user_guides_17.0.1.pdf)) | Not in the stated list |
 
-**TODO, asked here rather than silently resolved**: should `docs/DECISIONS.md`/CLAUDE.md's TMF API
-list be extended to include TMF638 (or TMF633), TMF639, TMF651, and TMF654, or should
-`Service`/`Resource`/`Agreement`/`BalanceTopUp` be treated as out of scope until that's decided?
-This document does not silently pick one.
+**Resolved 2026-08-10**: asked, user chose to extend the list rather than scope these 4 entities
+out. CLAUDE.md's stated TMF API list now includes TMF633+638 (Service: both Catalog and Inventory,
+mirroring the existing Product Catalog=620/Inventory=637 split already in the list rather than
+picking just one), TMF639 (Resource Inventory), TMF651 (Agreement), and TMF654 (Prepay Balance).
 
 **Also corrected**: CLAUDE.md/an earlier ADR referred to "TMF727" as possibly
 "ProductOfferingQualification" — checked directly: **TMF727 is Service Usage Management**
@@ -61,12 +61,12 @@ treats CLAUDE.md as project-owner-authored).
 
 | 3GPP field (TS 32.291, `ChargingDataRequest`/`Response`) | SID entity | TMF Open API / resource / field | Confidence |
 |---|---|---|---|
-| `subscriberIdentifier` (SUPI) | `Party` (specifically an `Individual`, playing a `Customer` role) | **TMF632** Party Management, `Individual` resource. No single field is "the SUPI" — TM Forum's `Individual.individualIdentification` (array of `IndividualIdentification`: `identificationType` + `identificationId`) is the real extensibility point for an external subscriber identifier ([TMF632 swagger](https://github.com/tmforum-apis/TMF632_PartyManagement/blob/main/TMF632-Party-v4.0.0.swagger.json), confirmed fields: `id`, `href`, `individualIdentification`, `partyCharacteristic`, ...). **TODO**: whether SUPI is stored as an `individualIdentification` entry (`identificationType="SUPI"`) or as a `partyCharacteristic` is a real design choice, not resolved here — either is schema-legal, no 3GPP-side field forces one over the other. |
+| `subscriberIdentifier` (SUPI) | `Party` (specifically an `Individual`, playing a `Customer` role) | **TMF632** Party Management, `Individual` resource. No single field is "the SUPI" — TM Forum's `Individual.individualIdentification` (array of `IndividualIdentification`: `identificationType` + `identificationId`) is the real extensibility point for an external subscriber identifier ([TMF632 swagger](https://github.com/tmforum-apis/TMF632_PartyManagement/blob/main/TMF632-Party-v4.0.0.swagger.json), confirmed fields: `id`, `href`, `individualIdentification`, `partyCharacteristic`, ...). **Resolved 2026-08-10**: `individualIdentification` (`identificationType="SUPI"`, `identificationId=<supi>`), not `partyCharacteristic`. Reasoning: `individualIdentification` is TM Forum's purpose-built extensibility point for strongly-typed external identity documents/identifiers (the same shape passport/national-ID numbers use); SUPI is a primary, structured network identifier for the party, not a supplementary attribute -- `partyCharacteristic`'s generic name/value bag is the semantically weaker fit. |
 | `nfConsumerIdentification.nodeFunctionality` (e.g. `"SMF"`) | Not a SID business entity — this is 3GPP network-function provenance, not a customer/product/billing concept | No TMF mapping. Recorded here explicitly as **out of scope for SID mapping** (a technical audit field for CHF's own PDU-session-charging record, not billing-domain data), not omitted by oversight. |
 | `invocationTimeStamp` | Not a standalone SID entity | Realized as the `date`/`creationDate`-shaped field on whichever usage/billing-rate record eventually gets created from this charging event — see `ProductUsage.creationDate` and `AppliedCustomerBillingRate.date` below. Not an entity on its own. |
 | `invocationSequenceNumber` | Not a SID entity | CHF-internal correlation only (see ADR-0044's disclosed "echoes the request" simplification) — no TM Forum field represents "the Nth invocation of a 3GPP charging trigger", this is 3GPP-side protocol bookkeeping, not billing-domain data. Not mapped. |
 | `pDUSessionChargingInformation` (currently unset — see Scope above) | `Product` (the subscribed PDU-session-capable product instance) realizing `ProductUsage` | **TMF637** Product Inventory (`Product` resource — real TM Forum description confirmed: "a product offering procured by a customer... possible actions creating/updating/retrieving Product", [TMF637 repo](https://github.com/tmforum-apis/TMF637_ProductInventory)) for the subscribed product identity, and **TMF635** Usage Management, `ProductUsage` resource for the actual usage event once populated. Confirmed real `ProductUsage` fields: `id`, `href`, `status` (`ProductUsageStatusType`: initialized/rejected/validated/rated/corrected/superseded/notRated/failed), `usageType`, `usageCharacteristic` (array), `serviceUsage` (array of `ServiceUsageRef` — split out to **TMF727** Service Usage Management as of the v4→v5 uplift), `relatedParty`, `usageProductPrice`, `product` (`ProductRef`), `usageSpecification` ([TMF635 v5.0.0 OAS](https://github.com/tmforum-apis/TMF635_UsageManagement)). **TODO, not populated yet either side**: this field is unset in every real request this codebase currently sends (disclosed in `nfs/smf/src/main.cpp`), so there is no live 3GPP data to map its sub-fields (`chargingId`, `userLocationinfo`, `pduSessionInformation`, ...) against `ProductUsage.usageCharacteristic` yet — deferred to whichever future turn actually populates this field on the SMF side. |
-| CHF's allocated `chargingId` (`ChargingId`, `Uint...` alias — TS 32.291) | Correlates a `Product`'s `ProductUsage` records to the `AppliedCustomerBillingRate`/`CustomerBill` that eventually bills for them | No single TMF field *is* `chargingId` — it is this system's own internal correlation key, realized on the BSS side as whatever key value links a stored `ProductUsage.id` to an `AppliedCustomerBillingRate.characteristic` entry (`AppliedCustomerBillingRate`'s confirmed real fields: `appliedTax`, `bill` (`CustomerBillRef`), `date`, `description`, `isBilled`, `name`, `periodCoverage`, `taxExcludedAmount`, `taxIncludedAmount`, `appliedBillingRateType`, `billingAccount`, `product` (`ProductRef`), `characteristic` (array) — [TMF678 v5.0.0 OAS](https://github.com/tmforum-apis/TMF678_CustomerBill/blob/main/TMF678-CustomerBill-v5.0.0.oas.yaml)). **TODO**: whether `chargingId` is stored in `characteristic` (name="chargingId") or as a custom extension field is a real design choice, not resolved here. |
+| CHF's allocated `chargingId` (`ChargingId`, `Uint...` alias — TS 32.291) | Correlates a `Product`'s `ProductUsage` records to the `AppliedCustomerBillingRate`/`CustomerBill` that eventually bills for them | No single TMF field *is* `chargingId` — it is this system's own internal correlation key, realized on the BSS side as whatever key value links a stored `ProductUsage.id` to an `AppliedCustomerBillingRate.characteristic` entry (`AppliedCustomerBillingRate`'s confirmed real fields: `appliedTax`, `bill` (`CustomerBillRef`), `date`, `description`, `isBilled`, `name`, `periodCoverage`, `taxExcludedAmount`, `taxIncludedAmount`, `appliedBillingRateType`, `billingAccount`, `product` (`ProductRef`), `characteristic` (array) — [TMF678 v5.0.0 OAS](https://github.com/tmforum-apis/TMF678_CustomerBill/blob/main/TMF678-CustomerBill-v5.0.0.oas.yaml)). **Resolved 2026-08-10**: `characteristic` (name="chargingId", value=<id>), not a custom top-level field. Reasoning: TM Forum Open APIs use the `characteristic` array as the standard, spec-conformant extensibility mechanism precisely for implementation-specific correlation keys like this -- adding a non-standard top-level field would break conformance/validation against the official TMF678 schema, which a commercial-stack swap (CLAUDE.md's own stated ODA-boundary goal) depends on staying valid. No code implements this yet (no `AppliedCustomerBillingRate` is ever produced -- no rating engine exists), so this is a documented decision for the future turn that adds one, not code shipped today. |
 | `ChargingDataResponse.multipleUnitInformation[].grantedUnit`/`.allocatedUnit` (currently never populated — see ADR-0044's disclosed "no rating engine yet") | `AppliedCustomerBillingRate` (once rated) | **TMF678**, `AppliedCustomerBillingRate.taxIncludedAmount`/`.taxExcludedAmount` (both `Money`) for a monetary grant, or `characteristic` for a raw unit-count grant (volume/time/service-specific-units) if the granted quota is never actually money-rated in this system's flow. **TODO, genuinely ambiguous, not resolved here**: TS 32.291's `GrantedUnit` is pre-rating (raw units: `totalVolume`/`uplinkVolume`/`downlinkVolume`/`time`/`serviceSpecificUnits`), while `AppliedCustomerBillingRate` is TM Forum's *post-rating* billing-rate concept — mapping a pre-rating quota grant onto a post-rating billing entity is not a clean 1:1 and needs a real rating-engine design decision (which doesn't exist in this codebase yet) before it can be answered correctly rather than guessed. |
 
 ## Deferred, not mapped in this pass (disclosed, not omitted by oversight)
@@ -91,11 +91,21 @@ treats CLAUDE.md as project-owner-authored).
 
 ## Next steps (not started, awaiting direction)
 
-1. Resolve the four API-list gaps above (TMF638/633, TMF639, TMF651, TMF654) — add to CLAUDE.md's
-   stated list, or explicitly scope those SID entities out.
-2. Resolve the two TODOs marked inline above (`individualIdentification` vs `partyCharacteristic`
-   for SUPI storage; how `chargingId` is represented in `AppliedCustomerBillingRate`).
-3. Once resolved: implement the mapping as real code (a new `libs/`-level component, per CLAUDE.md's
-   "the BSS layer could be swapped for a commercial stack" ODA-boundary requirement — not baked
-   into CHF itself), covering only the fields this table actually maps (no speculative coverage of
-   the deferred rows above).
+1. ~~Resolve the four API-list gaps~~ — **Resolved 2026-08-10**, see above. CLAUDE.md updated.
+2. ~~Resolve the two inline TODOs~~ — **Resolved 2026-08-10**, see above.
+3. **In progress 2026-08-10**: `libs/bss-sid/` -- a new, CHF-independent library mapping
+   `subscriberIdentifier` (the one field that's both real and unambiguous today) to a TMF632
+   `Individual`, wired into CHF's `Nchf_ConvergedCharging_Create` handler. The `chargingId` ->
+   `AppliedCustomerBillingRate` mapping is documented (above) but not implemented -- no rating
+   engine exists yet to produce a real `AppliedCustomerBillingRate` to attach it to. Every other
+   row in the mapping table above remains deferred, for the same reason (no real 3GPP data
+   populated yet on that field).
+
+## Disclosed divergence from PROMPT.md
+
+CLAUDE.md's header states it condenses `PROMPT.md`, and that a disagreement between the two is a
+bug to flag, not silently resolve. `PROMPT.md` (line 156) still states the original, narrower TMF
+API list (620/622/632/635/637/666/676/678) that this document's research found incomplete for the
+named SID entities. CLAUDE.md has been updated (2026-08-10, this document's finding, user-approved)
+to the fuller, real list; `PROMPT.md` has **not** been touched — flagged here rather than edited
+without being asked, since `PROMPT.md` reads as the user's own original brief.

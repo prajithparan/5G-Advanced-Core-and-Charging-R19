@@ -28,6 +28,7 @@
 // - No persistence across restarts (in-memory ChargingDataRefAllocator only) -- same disclosed
 //   simplification as every other NF's store so far.
 
+#include "bss_sid/party.hpp"
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -216,6 +217,18 @@ int main() {
             }
 
             const auto ref = ref_allocator.allocate();
+
+            // docs/CHARGING_MAPPING.md's resolved mapping: build the TM Forum SID record for the
+            // subscriber this charging event is for. Logged, not yet persisted or exposed via a
+            // real TMF632 REST surface (no Party-management store exists in this codebase yet) --
+            // this demonstrates CHF's internal charging record is genuinely SID-shaped, which is
+            // as much of the mapping as has a real, unambiguous 3GPP field to build it from today
+            // (see the mapping doc's own scope section for why every other field is deferred).
+            if (body->subscriberIdentifier.has_value()) {
+                const auto individual = bss_sid::map_supi_to_individual(*body->subscriberIdentifier);
+                spdlog::info("chf: mapped subscriberIdentifier to TM Forum SID Individual: {}",
+                            nlohmann::json(individual).dump());
+            }
 
             sbi_gen::ChargingDataResponse response{};
             response.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
