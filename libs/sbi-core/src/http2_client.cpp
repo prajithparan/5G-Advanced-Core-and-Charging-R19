@@ -53,6 +53,7 @@ Client::~Client() {
 }
 
 tl::expected<ClientResponse, std::string> Client::send(const ClientRequest& request) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (curl_ == nullptr) {
         return tl::unexpected("curl handle not initialized");
     }

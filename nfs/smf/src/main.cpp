@@ -327,29 +327,66 @@ public:
     void put(std::uint64_t cp_seid, CpSeidSessionInfo info) {
         std::lock_guard<std::mutex> lock(mutex_);
         sessions_[cp_seid] = std::move(info);
-        next_invocation_seq_[cp_seid] = 2; // 1 was Create's own invocationSequenceNumber
     }
 
-    // Returns the session info plus the real invocationSequenceNumber to use for this Update call,
-    // advancing the counter for next time (TS 32.291's real "strictly increasing per invocation"
-    // requirement -- see perform_n40_charging_data_update's own comment for the one, disclosed,
-    // pre-existing interaction this doesn't cover). std::nullopt if no session was ever registered
-    // for this cp_seid.
-    std::optional<std::pair<CpSeidSessionInfo, std::int64_t>> get_and_advance_invocation_seq(
-        std::uint64_t cp_seid) {
+    // std::nullopt if no session was ever registered for this cp_seid. Pure read -- the real
+    // per-ChargingDataRef invocation-sequence counter this used to also track here has moved to
+    // ChargingDataInvocationSeqStore (see its own comment for why: a session with no granted quota
+    // never gets an entry here at all, but its ChargingDataRef can still be Released, so invocation
+    // sequencing can't be keyed by cp_seid).
+    std::optional<CpSeidSessionInfo> get(std::uint64_t cp_seid) {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = sessions_.find(cp_seid);
         if (it == sessions_.end()) {
             return std::nullopt;
         }
-        const std::int64_t seq = next_invocation_seq_[cp_seid]++;
-        return std::make_pair(it->second, seq);
+        return it->second;
     }
 
 private:
     std::mutex mutex_;
     std::unordered_map<std::uint64_t, CpSeidSessionInfo> sessions_;
-    std::unordered_map<std::uint64_t, std::int64_t> next_invocation_seq_;
+};
+
+// Pending-items cleanup turn (2026-08-10): the real, single per-ChargingDataRef invocation-
+// sequence counter TS 32.291 requires ("strictly increasing" across Create/Update/Release for one
+// charging data resource). Replaces two separate, inconsistent counters this codebase used to
+// have -- CpSeidSessionStore's own per-cp_seid counter (ADR-0050 Stage 3, used only by Update) and
+// Release's hardcoded literal `2` (ADR-0046) -- which could collide if both an Update and a
+// Release landed on the same ChargingDataRef, a real TS 32.291 violation ADR-0050's own Stage 3/6
+// text disclosed but didn't fix. Keyed by charging_data_ref (a string), not cp_seid: a session
+// with no granted quota never gets a CpSeidSessionStore entry at all (Stage 3's own registration
+// guard, since only URR'd sessions can ever produce a Usage Report), but its ChargingDataRef can
+// still be Released -- cp_seid was never the right key for this.
+class ChargingDataInvocationSeqStore {
+public:
+    // Seeds the counter for a freshly-created ChargingDataRef -- 1 was Create's own
+    // invocationSequenceNumber, so the next real call (Update or Release, whichever happens first)
+    // gets 2.
+    void put(const std::string& charging_data_ref) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        next_seq_[charging_data_ref] = 2;
+    }
+
+    // Returns the invocationSequenceNumber to use for this call, advancing the counter for next
+    // time. Falls back to 2 (logged) for a ref this store never learned about, rather than
+    // fabricating a plausible-looking value that might collide -- shouldn't happen given every
+    // real Create call site registers its ref here, but checked rather than assumed.
+    std::int64_t get_and_advance(const std::string& charging_data_ref) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = next_seq_.find(charging_data_ref);
+        if (it == next_seq_.end()) {
+            spdlog::warn("smf: no invocation-sequence counter registered for ChargingDataRef={}, "
+                        "using an untracked value",
+                        charging_data_ref);
+            return 2;
+        }
+        return it->second++;
+    }
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::int64_t> next_seq_;
 };
 
 void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& upf_endpoint_store,
@@ -701,10 +738,17 @@ std::optional<ChargingDataCreateResult> perform_n40_charging_data_create(
 // content as Create, since there's no richer charging information collected between Create and
 // Release in this build either. Best-effort: matches DeleteSMPolicy's discipline in
 // ReleaseSMContext's handler -- local session release must not get stuck on CHF being unreachable.
+//
+// `invocation_sequence_number` is real, caller-supplied (via ChargingDataInvocationSeqStore), not
+// a hardcoded literal -- see that store's own comment for the real TS 32.291 "strictly increasing
+// per invocation" violation this closes (a session that had at least one Update before Release
+// would previously send invocationSequenceNumber=2 for Release even after Update already used 2,
+// 3, ... for the same ChargingDataRef).
 bool perform_n40_charging_data_release(sbi_core::http2::Client& chf_client,
                                        sbi_core::OAuth2Client& chf_oauth,
                                        const std::string& smf_instance_id, const std::string& supi,
-                                       const std::string& charging_data_ref) {
+                                       const std::string& charging_data_ref,
+                                       std::int64_t invocation_sequence_number) {
     auto token = chf_oauth.get_bearer_token();
     if (!token.has_value()) {
         spdlog::warn("smf: could not obtain a token for CHF, skipping Nchf_ConvergedCharging_"
@@ -721,7 +765,7 @@ bool perform_n40_charging_data_release(sbi_core::http2::Client& chf_client,
     sbi_gen::ChargingDataRequest chf_req{};
     chf_req.nfConsumerIdentification = nf_id;
     chf_req.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
-    chf_req.invocationSequenceNumber = 2; // 1 was Create's, see perform_n40_charging_data_create
+    chf_req.invocationSequenceNumber = invocation_sequence_number;
     chf_req.subscriberIdentifier = supi;
 
     sbi_core::http2::ClientRequest chf_http_req;
@@ -761,12 +805,10 @@ bool perform_n40_charging_data_release(sbi_core::http2::Client& chf_client,
 // per-URR report counter -- this build has no separate CHF-facing usage-report sequence concept
 // of its own, and reusing it is a real, traceable value rather than an arbitrary counter).
 //
-// Disclosed, pre-existing interaction NOT fixed by this stage: perform_n40_charging_data_release
-// still hardcodes invocationSequenceNumber=2 rather than sharing this session's real counter -- if
-// both an Update and a Release are sent for the same ChargingDataRef, TS 32.291's real "strictly
-// increasing per invocation" requirement could be violated. Release predates this stage and
-// touching it was out of Stage 3's approved scope; flagged here for a later cleanup rather than
-// silently left unnoticed.
+// invocation_sequence_number is real, caller-supplied (via ChargingDataInvocationSeqStore, shared
+// with Create and Release) -- the interaction this comment used to flag as unfixed (Release's own
+// hardcoded literal 2 potentially colliding with an Update's real counter) is closed; see
+// ChargingDataInvocationSeqStore's own comment.
 //
 // ADR-0050 Stage 5: also returns the real re-authorized GrantedUnit.totalVolume (when CHF's real
 // Update endpoint, now built, returns one) -- the exact grant Stage 5 needs to compute the new,
@@ -1008,6 +1050,9 @@ int main() {
     // ADR-0050 Stage 3: resolves a real Session Report Request's header SEID back to the session
     // it belongs to -- populated by CreateSMContext's handler, read here.
     CpSeidSessionStore cp_seid_sessions;
+    // Pending-items cleanup turn: the real, single per-ChargingDataRef invocation-sequence
+    // counter, shared by Create/Update/Release -- see its own class comment.
+    ChargingDataInvocationSeqStore charging_data_invocation_seq;
 
     // ADR-0050 Stage 3/5: the real handler. Decodes the real Usage Report content, looks the
     // session up, calls a real Nchf_ConvergedCharging_Update, and (Stage 5) if CHF re-authorized a
@@ -1026,9 +1071,10 @@ int main() {
     // never terminates, same disclosed simplification as every other NF in this project) -- safe to
     // capture by reference into a detached thread for that reason, not despite it.
     pfcp_peer.set_session_report_handler(
-        [&pfcp_peer, &cp_seid_sessions, &chf_report_client, &chf_report_oauth, &smf_instance_id](
-            const pfcp_core::Header& header, const std::vector<std::uint8_t>& ie_bytes,
-            const boost::asio::ip::udp::endpoint& sender) {
+        [&pfcp_peer, &cp_seid_sessions, &charging_data_invocation_seq, &chf_report_client,
+         &chf_report_oauth, &smf_instance_id](const pfcp_core::Header& header,
+                                              const std::vector<std::uint8_t>& ie_bytes,
+                                              const boost::asio::ip::udp::endpoint& sender) {
             spdlog::info("smf: received real Sx Session Report Request from {} (seq={})",
                         sender.address().to_string(), header.sequence_number);
 
@@ -1093,15 +1139,16 @@ int main() {
                             sender.address().to_string());
                 return;
             }
-            const auto session = cp_seid_sessions.get_and_advance_invocation_seq(header.seid);
+            const auto session = cp_seid_sessions.get(header.seid);
             if (!session.has_value()) {
                 spdlog::warn("smf: Sx Session Report Request references unknown SEID {:#x}, no CHF "
                             "Update call",
                             header.seid);
                 return;
             }
-            const CpSeidSessionInfo info = session->first;
-            const std::int64_t invocation_seq = session->second;
+            const CpSeidSessionInfo info = *session;
+            const std::int64_t invocation_seq =
+                charging_data_invocation_seq.get_and_advance(info.charging_data_ref);
             const std::uint32_t ur_seqn_value = *ur_seqn;
             const std::uint64_t used_volume_value = *used_volume;
 
@@ -1166,7 +1213,8 @@ int main() {
         [&verifier, &sm_contexts, &create_counter, &pcf_client, &pcf_oauth,
          &pcf_sm_policy_create_counter, &amf_client, &amf_oauth, &upf_endpoint_store,
          &n1n2_transfer_counter, &chf_client, &chf_oauth, &chf_charging_data_create_counter,
-         &smf_instance_id, &pfcp_peer, &cp_seid_sessions](const sbi_core::http2::Request& req) {
+         &smf_instance_id, &pfcp_peer, &cp_seid_sessions,
+         &charging_data_invocation_seq](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -1279,6 +1327,11 @@ int main() {
                 chf_charging_data_create_counter->Add(1);
                 granted_total_volume_octets = charging_result->granted_total_volume_octets;
                 charging_data_ref = charging_result->charging_data_ref;
+                // Pending-items cleanup turn: seed the real invocation-sequence counter for this
+                // ChargingDataRef unconditionally (not just when a grant/URR exists) -- Release can
+                // still be called on a no-grant session, and needs a real, non-colliding sequence
+                // number too.
+                charging_data_invocation_seq.put(charging_data_ref);
                 if (auto stored = sm_contexts.get(sm_context_ref); stored.has_value()) {
                     (*stored)["chargingDataRef"] = charging_result->charging_data_ref;
                     sm_contexts.update(sm_context_ref, *stored);
@@ -1503,7 +1556,7 @@ int main() {
         std::string(kApiRoot) + "/sm-contexts/{smContextRef}/release",
         [&verifier, &sm_contexts, &release_counter, &pcf_client, &pcf_oauth,
          &pcf_sm_policy_delete_counter, &chf_client, &chf_oauth, &chf_charging_data_release_counter,
-         &smf_instance_id](const sbi_core::http2::Request& req) {
+         &smf_instance_id, &charging_data_invocation_seq](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -1565,8 +1618,9 @@ int main() {
                 const auto charging_data_ref = (*stored)["chargingDataRef"].get<std::string>();
                 const auto supi = (*stored)["supi"].get<std::string>();
                 if (!charging_data_ref.empty() &&
-                    perform_n40_charging_data_release(chf_client, chf_oauth, smf_instance_id, supi,
-                                                       charging_data_ref)) {
+                    perform_n40_charging_data_release(
+                        chf_client, chf_oauth, smf_instance_id, supi, charging_data_ref,
+                        charging_data_invocation_seq.get_and_advance(charging_data_ref))) {
                     chf_charging_data_release_counter->Add(1);
                 }
             }

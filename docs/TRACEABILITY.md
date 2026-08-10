@@ -908,3 +908,21 @@ complete list and reasoning.
 UPF measures, reports, SMF calls CHF, CHF re-authorizes, SMF pushes the new quota back into the live
 datapath -- demonstrated both under real timing pressure (Stage 5) and with real headroom (this
 stage). This closes the 7-stage effort (ADR-0050).
+
+## Pending-items cleanup: real per-ChargingDataRef invocation sequencing + shared HTTP client concurrency bug (ADR-0051)
+
+`ChargingDataInvocationSeqStore` (keyed by `charging_data_ref`) replaces the two inconsistent
+invocation-sequence mechanisms `Nchf_ConvergedCharging_Create`/`_Update`/`_Release` used to have.
+Also fixed, found only via live-testing this change: `sbi_core::http2::Client` had no
+synchronization around its single reused libcurl easy handle, and ADR-0050 Stage 5's detached-
+thread design was the first caller in this codebase to give one `Client` instance two genuinely
+concurrent callers -- a real `std::mutex` added to `Client::send()` fixes it for every caller.
+
+| Procedure | TS clause / message | Test |
+|---|---|---|
+| Real, non-colliding `invocationSequenceNumber` across Create → Update → Update → Release for one `ChargingDataRef` | TS 32.291 (strictly increasing per invocation) | Real `nr-gnb`/`nr-ue` session, small seeded grant, 25-packet GTP-U burst producing two Session Reports 100ms apart: both real `Nchf_ConvergedCharging_Update` calls succeed (previously one failed under the concurrency bug), both Session Modifications land; a direct `POST /sm-contexts/{ref}/release` returns a real 204 with `smf`'s log confirming `Nchf_ConvergedCharging_Release succeeded` and no fallback-counter warning |
+| `sbi_core::http2::Client` thread-safety under genuine concurrent callers | -- (foundational library fix, not a 3GPP procedure) | Same live run above: the exact concurrent-Update scenario that previously failed with a libcurl "Failed initialization"/empty-response error now succeeds for both calls |
+
+140/140 conformance tests + all 31 integration tests (run directly; not currently registered with
+`ctest` -- a separate, smaller pending item noted by the same audit, not fixed here) pass, zero
+regressions. See ADR-0051.
