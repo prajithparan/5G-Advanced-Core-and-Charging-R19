@@ -60,10 +60,19 @@ jobs:
         run: cmake --build build
 
       - name: Generate lab PKI (TLS 1.3 + mTLS certs for the integration test)
-        run: ./scripts/gen-lab-pki.sh
+        # NOT the default arg-less invocation (nrf + hello-nf only, per the script's own default) --
+        # tests/integration/* spawns real amf/smf/udm/udr/ausf/pcf processes too, each needing its
+        # own real cert or it crashes on startup (real failure this project's CI hit and had never
+        # caught before: local dev machines already had every NF's certs generated from countless
+        # prior manual sessions, masking that CI's own from-scratch checkout never got them).
+        run: ./scripts/gen-lab-pki.sh nrf hello-nf amf smf udm udr ausf pcf chf upf product-catalog
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        # --timeout 120: defense in depth. A single spawned-NF-process crash/hang (real one hit
+        # here: missing certs killed AMF on startup, which left ctest waiting its full default
+        # timeout instead of failing fast, then every later test failed too from port contention
+        # with the still-running orphaned processes) should fail in ~2 minutes, not 25.
+        run: ctest --test-dir build --output-on-failure --timeout 120
 
   sanitize:
     runs-on: ubuntu-latest
@@ -119,10 +128,19 @@ jobs:
         run: cmake --build build
 
       - name: Generate lab PKI (TLS 1.3 + mTLS certs for the integration test)
-        run: ./scripts/gen-lab-pki.sh
+        # NOT the default arg-less invocation (nrf + hello-nf only, per the script's own default) --
+        # tests/integration/* spawns real amf/smf/udm/udr/ausf/pcf processes too, each needing its
+        # own real cert or it crashes on startup (real failure this project's CI hit and had never
+        # caught before: local dev machines already had every NF's certs generated from countless
+        # prior manual sessions, masking that CI's own from-scratch checkout never got them).
+        run: ./scripts/gen-lab-pki.sh nrf hello-nf amf smf udm udr ausf pcf chf upf product-catalog
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        # --timeout 120: defense in depth. A single spawned-NF-process crash/hang (real one hit
+        # here: missing certs killed AMF on startup, which left ctest waiting its full default
+        # timeout instead of failing fast, then every later test failed too from port contention
+        # with the still-running orphaned processes) should fail in ~2 minutes, not 25.
+        run: ctest --test-dir build --output-on-failure --timeout 120
 
   lint:
     runs-on: ubuntu-latest
