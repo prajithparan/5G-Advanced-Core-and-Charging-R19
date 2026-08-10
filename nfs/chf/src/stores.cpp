@@ -14,4 +14,9 @@ bool ChargingDataStore::release(const std::string& ref) {
     return active_refs_.erase(ref) > 0;
 }
 
+bool ChargingDataStore::is_active(const std::string& ref) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return active_refs_.count(ref) > 0;
+}
+
 } // namespace chf

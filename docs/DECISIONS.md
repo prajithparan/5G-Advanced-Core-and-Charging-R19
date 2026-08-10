@@ -3864,3 +3864,44 @@ handling. 140/140 tests pass, zero regressions.
 about it" -- the request is real, spec-correct, and reaches CHF; CHF just doesn't yet have anything
 to say back. Stage 4 (CHF implements the real Update endpoint: applies the reported usage, issues a
 follow-on grant) is next.
+
+### Stage 4 (2026-08-10): CHF implements real Nchf_ConvergedCharging_Update
+
+**Real route added, same discipline as Create/Release.** `POST /chargingdata/{ChargingDataRef}/
+update` (confirmed verbatim in the vendored `TS32291_Nchf_ConvergedCharging.yaml`, shared
+`ChargingDataRequest`/`ChargingDataResponse` schemas). Validates the ref is still active first --
+same 404 convention Release already established, but via a new non-destructive
+`ChargingDataStore::is_active()` (Release's own `release()` removes the ref as a side effect of
+checking it, which Update must not do).
+
+**Real content, not just a schema-valid echo.** Logs the actual reported usage
+(`multipleUnitUsage[].usedUnitContainer[].totalVolume`/`localSequenceNumber`) SMF's Stage 3 call
+now genuinely carries -- CHF's own evidence the full loop closed, not a placeholder. Re-
+authorizes by calling the same `build_rating_grant` catalog-lookup rating engine Create already
+uses, returning a fresh `GrantedUnit` in `multipleUnitInformation`, HTTP 200 (not 201 -- the
+resource already exists, this updates it, per the YAML's own response code).
+
+**Disclosed, real simplifications, stated plainly rather than presented as a full OCS:** no
+balance/wallet deduction against what was already consumed -- this build has no such store
+(`docs/CHARGING_MAPPING.md`'s own noted TMF654 Prepay Balance gap); the fresh grant is always the
+catalog's full price-plan amount again, not a remaining-balance-aware amount. No differentiation
+between a Volume-Threshold report and a Volume-Quota-exhaustion report -- both re-authorize
+identically, and this isn't fixable on CHF's side alone: SMF's own Stage 3 code doesn't forward
+that distinction as a real `Trigger` in the request body either (a real, disclosed gap on the SMF
+side, out of this stage's scope to fix).
+
+**Live-verified end to end, the full loop closed for real.** Same small-seeded-grant (1,000
+octets) setup, same real `nr-gnb`/`nr-ue` session, same 25-packet GTP-U burst as Stages 2-3.
+`chf`'s log: `Update for ChargingDataRef=chg-1 reports ratingGroup=1 used 924 octets
+(localSequenceNumber=1)` immediately followed by a real fresh `rating engine granted 1000 octets`
+-- then the same pair for `used 1012 octets (localSequenceNumber=2)`. `smf`'s log confirms real
+success this time (not the Stage 3 404): `Nchf_ConvergedCharging_Update succeeded for
+ChargingDataRef=chg-1, reported 924 octets used` then `... reported 1012 octets used`. 140/140
+tests pass, zero regressions.
+
+**Consequence:** the entire quota-consumption-tracking loop this 7-stage effort set out to build is
+now real end to end: UPF measures real usage → reports it unsolicited to SMF → SMF decodes it and
+calls CHF → CHF applies it and re-authorizes. What remains: Stage 5 (SMF pushes the new quota back
+to UPF via a real Session Modification, so the datapath's own `urr_map` state reflects the
+re-authorized quota rather than staying latched at the original one) and Stage 6 (a dedicated
+end-to-end live-verification pass across all six stages together, plus a documentation summary).

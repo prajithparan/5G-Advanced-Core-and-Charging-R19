@@ -836,3 +836,23 @@ a real TS 32.291 "strictly increasing per invocation" violation if both an Updat
 on the same `ChargingDataRef`; pre-existing, out of this stage's scope, flagged not fixed. CHF still
 has no real Update endpoint (Stage 4, next) -- every Update call in this stage's live verification
 legitimately 404s. 140/140 tests pass, zero regressions. See ADR-0050's Stage 3 section.
+
+**Stage 4 (2026-08-10): CHF implements the real `Nchf_ConvergedCharging_Update` endpoint.**
+`POST /chargingdata/{ChargingDataRef}/update` -- validates the ref is still active (non-destructive
+`ChargingDataStore::is_active()`, new for this stage), logs the real reported usage, and
+re-authorizes via the same `build_rating_grant` catalog-lookup engine Create already uses, returning
+a fresh `GrantedUnit` with HTTP 200.
+
+| Procedure | TS clause / message | Test |
+|---|---|---|
+| Real `Nchf_ConvergedCharging_Update`: reported-usage receipt + re-authorization grant | TS 32.291 `POST /chargingdata/{ChargingDataRef}/update` | Same small-seeded-grant (1,000 octets), real `nr-gnb`/`nr-ue`, 25-packet GTP-U burst as Stages 2-3: `chf`'s log shows `Update for ChargingDataRef=chg-1 reports ratingGroup=1 used 924 octets (localSequenceNumber=1)` immediately followed by a real fresh `rating engine granted 1000 octets`, then the same pair for `used 1012 octets (localSequenceNumber=2)`; `smf`'s log independently confirms real success (not Stage 3's 404): `Nchf_ConvergedCharging_Update succeeded for ChargingDataRef=chg-1, reported 924 octets used` then `... reported 1012 octets used` |
+
+**Disclosed simplifications, not fixed by this stage**: no balance/wallet deduction against
+already-consumed usage (no such store exists, `docs/CHARGING_MAPPING.md`'s TMF654 gap); no
+differentiation between a Volume-Threshold report and a Volume-Quota-exhaustion report (SMF doesn't
+forward that distinction as a real `Trigger` either). 140/140 tests pass, zero regressions. See
+ADR-0050's Stage 4 section.
+
+**Consequence**: the full quota-consumption-tracking loop (UPF measures → reports → SMF decodes →
+CHF re-authorizes) is real end to end. Stage 5 (SMF pushes the new quota back to UPF via Session
+Modification) and Stage 6 (dedicated full-stack live-verification pass) remain.

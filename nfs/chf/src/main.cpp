@@ -16,10 +16,20 @@
 //   multipleUnitInformation. See build_rating_grant's own comment for the real conversion/
 //   simplification details.
 //
-// Deliberately deferred, not dropped (separate approved future turns): Update
-// (POST /chargingdata/{ChargingDataRef}/update), the chargingNotification callback,
-// Nchf_OfflineOnlyCharging, Nchf_SpendingLimitControl, quota consumption tracking/re-
-// authorization. See docs/DECISIONS.md ADR-0044/ADR-0046/ADR-0048.
+// - ADR-0050 Stage 4: Nchf_ConvergedCharging_Update -- POST /chargingdata/{ChargingDataRef}/
+//   update. Validates the ref is still active (404 if not, same convention as Release), logs the
+//   real reported usage (multipleUnitUsage[].usedUnitContainer[]) SMF's Stage 3 code now genuinely
+//   sends, and re-authorizes: issues a fresh GrantedUnit from the same catalog-lookup rating engine
+//   Create already uses. Disclosed, real simplifications, not silently different from a real OCS:
+//   no balance/wallet deduction against what was already consumed (no such store exists yet, see
+//   docs/CHARGING_MAPPING.md's TMF654 gap note); does not differentiate a Volume-Threshold report
+//   from a Volume-Quota-exhaustion report (SMF's own Stage 3 code doesn't yet forward that
+//   distinction as a real Trigger in the request body either -- a real, disclosed gap on the SMF
+//   side, not fixed by this stage).
+//
+// Deliberately deferred, not dropped (separate approved future turns): the chargingNotification
+// callback, Nchf_OfflineOnlyCharging, Nchf_SpendingLimitControl. See docs/DECISIONS.md
+// ADR-0044/ADR-0046/ADR-0048/ADR-0050.
 //
 // Disclosed simplifications, stated up front:
 // - No real subscriber-to-product assignment: the rating engine grants from whichever
@@ -309,6 +319,8 @@ int main() {
         "chf_charging_data_create_total", "Total Nchf_ConvergedCharging_Create calls");
     auto release_counter = meter->CreateUInt64Counter(
         "chf_charging_data_release_total", "Total Nchf_ConvergedCharging_Release calls");
+    auto update_counter = meter->CreateUInt64Counter(
+        "chf_charging_data_update_total", "Total Nchf_ConvergedCharging_Update calls");
     auto grant_counter = meter->CreateUInt64Counter(
         "chf_rating_grant_total", "Total real GrantedUnit rating decisions issued");
 
@@ -376,6 +388,76 @@ int main() {
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
             resp.headers.emplace("location", std::string(kApiRoot) + "/chargingdata/" + ref);
+            json j = response;
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kApiRoot) + "/chargingdata/{ChargingDataRef}/update",
+        [&verifier, &charging_data_store, &update_counter, &catalog_client,
+         &grant_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::ChargingDataRequest>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+
+            const auto ref = req.path_params.at("ChargingDataRef");
+            if (!charging_data_store.is_active(ref)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No active charging data resource " + ref);
+            }
+
+            // ADR-0050 Stage 4: log the real reported usage this call carries -- SMF's Stage 3
+            // Nchf_ConvergedCharging_Update, itself built from UPF's real Stage 2 Usage Report.
+            // This is CHF's real evidence that consumption tracking closed the loop, not a
+            // fabricated placeholder.
+            if (body->multipleUnitUsage.has_value()) {
+                for (const auto& usage : *body->multipleUnitUsage) {
+                    if (usage.usedUnitContainer.has_value()) {
+                        for (const auto& used : *usage.usedUnitContainer) {
+                            spdlog::info("chf: Update for ChargingDataRef={} reports ratingGroup={} "
+                                        "used {} octets (localSequenceNumber={})",
+                                        ref, usage.ratingGroup, used.totalVolume.value_or(0),
+                                        used.localSequenceNumber);
+                        }
+                    }
+                }
+            }
+
+            sbi_gen::ChargingDataResponse response{};
+            response.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
+            response.invocationSequenceNumber = body->invocationSequenceNumber;
+
+            // Real re-authorization: a fresh grant for continued usage, from the same rating
+            // engine Create already uses -- same disclosed simplification (whichever catalog
+            // offering is first, no real balance/wallet deduction against what was already
+            // consumed) and no differentiation between a Volume-Threshold report and a
+            // Volume-Quota-exhaustion one (see this file's own header comment for why).
+            if (body->multipleUnitUsage.has_value()) {
+                std::vector<sbi_gen::MultipleUnitInformation> granted;
+                for (const auto& usage : *body->multipleUnitUsage) {
+                    sbi_gen::MultipleUnitInformation info{};
+                    info.ratingGroup = usage.ratingGroup;
+                    info.grantedUnit = build_rating_grant(catalog_client);
+                    if (info.grantedUnit.has_value()) {
+                        grant_counter->Add(1);
+                    }
+                    granted.push_back(info);
+                }
+                response.multipleUnitInformation = std::move(granted);
+            }
+
+            update_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
             json j = response;
             resp.body = j.dump();
             return resp;
