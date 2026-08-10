@@ -27,6 +27,15 @@ namespace pfcp_core {
 constexpr std::uint8_t kPfcpVersion = 1;
 constexpr std::uint16_t kPfcpPort = 8805; // TS 29.244 §4.2.1, IANA-assigned
 
+// NOT an IANA/spec-assigned value -- the CP function's own PFCP listening port has no such
+// assignment in the real spec (real deployments convey it out-of-band, e.g. DNS/configuration,
+// same as this project's own hardcoded-per-NF-port convention for every SBI/HTTP port already).
+// Needed starting with ADR-0049's quota-consumption-tracking turn: UPF must be able to reach SMF
+// directly for an unsolicited Sx Session Report Request, which real per-call ephemeral sockets
+// (this project's earlier PFCP work) could never receive. Shared here (not private to one NF)
+// because both smf (binds it) and upf (sends to it) need to agree on the same value.
+constexpr std::uint16_t kSmfCpFunctionPfcpPort = 8806;
+
 enum class MessageType : std::uint8_t {
     HeartbeatRequest = 1,
     HeartbeatResponse = 2,
@@ -40,6 +49,8 @@ enum class MessageType : std::uint8_t {
     SessionModificationResponse = 53,
     SessionDeletionRequest = 54,
     SessionDeletionResponse = 55,
+    SessionReportRequest = 56,
+    SessionReportResponse = 57,
 };
 
 // TS 29.244 §7.2.2.2 (node-related, S=0, 8-byte header) / §7.2.2.3 (session-related, S=1,

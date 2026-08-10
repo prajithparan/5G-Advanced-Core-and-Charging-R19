@@ -756,3 +756,24 @@ tracking or re-authorization (grants once at session establishment, never checks
 grant); `kDefaultRatingGroup` is a single fixed value (no real service-to-rating-group mapping,
 that's TS 32.298/32.299 charging-characteristics configuration, out of scope). All disclosed in
 `nfs/chf/src/main.cpp`'s `build_rating_grant` comment and ADR-0048.
+
+## Quota consumption tracking, Stage 0: SMF's real bidirectional PFCP peer (ADR-0050)
+
+7-stage effort (approved, staged plan), closing the real architectural gap blocking quota-
+consumption tracking: SMF's old per-call ephemeral PFCP sockets could never receive an unsolicited
+message from UPF at all. New `pfcp_core` IEs (Create URR, Usage Report, and children) confirmed
+directly against the real, vendored `specs/PFCP/29244-e30.pdf` (§7.5.2.4, §7.5.8.3, Annex C.2.1.1).
+
+| Procedure | TS clause / message | Test |
+|---|---|---|
+| PFCP IE byte layouts: `SessionReportRequest`/`Response` (56/57), Create URR (6)/Usage Report (80) grouped IEs, `URR ID`/`UR-SEQN`/`Measurement Method`/`Reporting Triggers`/`Volume Threshold`/`Volume Quota`/`Volume Measurement`/`Report Type`/`Usage Report Trigger` | TS 29.244 §7.5.2.4, §7.5.8.3, §8.2.13/19/21/40/41/44/50/54/71 | 12 new unit tests (`tests/conformance/test_pfcp_core.cpp`, `PfcpSessionIes.Urr*`/`*Volume*`/`*Report*`), byte-exact against the real spec figures |
+| SMF's persistent, bidirectional PFCP peer (`nfs/smf/src/pfcp_peer.{hpp,cpp}`) -- real receive-dispatch, sequence-number-correlated responses, unsolicited-message handling | -- (this build's own architecture, not a 3GPP procedure) | Real regression check: a full real `nr-gnb`/`nr-ue` PDU Session Establishment confirmed Association Setup and N4 Session Establishment both still succeed, first attempt, on the new shared-socket code. New capability, independently verified: a hand-crafted-but-real Sx Session Report Request sent directly to SMF's new port 8806 was genuinely received and dispatched (`smf`'s log: `received real Sx Session Report Request from 127.0.0.1 (seq=12345)`) and answered with a real, correctly-typed Sx Session Report Response (message type 57) |
+
+**Disclosed gaps**: this stage's Session Report handler is architecture-proof only -- acknowledges
+unconditionally, does not parse real Usage Report content or call `Nchf_ConvergedCharging_Update`
+(Stage 3), and echoes the request's own SEID rather than looking up the session's real UP-side SEID
+(no per-session PFCP state store exists yet). `kSmfCpFunctionPfcpPort` (8806) is a lab-only
+convention, not a real IANA/spec assignment (real deployments convey this out-of-band). Stages 1-6
+(Create URR at session establishment, real UPF byte counting, real Update call, CHF's Update
+endpoint, pushing a new quota back to UPF, full end-to-end live verification) remain to be built.
+All disclosed in `nfs/smf/src/pfcp_peer.hpp`'s own header and ADR-0050.

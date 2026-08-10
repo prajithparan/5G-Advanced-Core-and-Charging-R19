@@ -3626,3 +3626,71 @@ next steps, each needing its own future turn and approval: select a real carrier
 framework, close the synchronous-HTTP-client debt item, build real benchmarking/load-generation
 infrastructure, and only then produce a real, evidence-based comparison against free5GC -- not
 before.
+
+## ADR-0050: Quota consumption tracking/re-authorization, Stage 0 -- SMF's real bidirectional PFCP peer
+
+**Date:** 2026-08-10
+**Status:** Accepted.
+
+**Context:** ADR-0048 built a real rating engine that grants a quota once, at session
+establishment, but never tracks consumption or re-authorizes -- a real, disclosed gap. Closing it
+properly requires TS 29.244's real Usage Reporting Rule (URR) mechanism: UPF counts usage and sends
+an **unsolicited** Sx Session Report Request when a threshold is crossed. This is a real, 7-stage
+effort (comparable in size to the original PFCP/UPF work), staged and approved before
+implementation, same discipline as every other multi-stage effort in this project. Researched
+directly from the real, vendored `specs/PFCP/29244-e30.pdf` before any code: TS 29.244 §7.5.2.4
+(Create URR IE, real type=6), §7.5.8.3 (Usage Report IE, real type=80), and Annex C.2.1.1's real
+worked example ("Online charging with intermediate and final quotas"), which this project's Stage
+1-6 plan follows directly rather than reconstructing the flow from first principles.
+
+**The real architectural gap this stage closes.** SMF's PFCP code (ADR-0041/ADR-0042) used a fresh
+`io_context`+socket *per call*, blocking on `receive_from()` for that one request's response only.
+This works for CP-initiated request/response (Association Setup, Session Establishment) but cannot
+receive an unsolicited message at all -- UPF has no stable address to send a Session Report Request
+to, and even if it did, nothing would be listening for it outside an active outbound call.
+
+**Real IEs added to `pfcp_core`** (`ie.hpp`/`header.hpp`/`session_ies.hpp`/`.cpp`), every byte
+layout confirmed against the real spec PDF, not assumed: `SessionReportRequest`/`Response` message
+types (56/57, confirmed via Table 7.3-1), `CreateUrr`/`UsageReport` grouped IE types (6/80), and the
+child IEs Stage 1-3 will need: `UrrId` (81), `UrSeqn` (104), `MeasurementMethod` (62, VOLUM bit),
+`ReportingTriggers` (37, VOLTH/VOLQU bits), `VolumeThreshold`/`VolumeQuota`/`VolumeMeasurement` (31/
+73/66 -- confirmed independently to share one byte layout, one shared codec function), `ReportType`
+(39, USAR bit), `UsageReportTrigger` (63, VOLTH/VOLQU bits, a different bit assignment than
+Reporting Triggers despite the similar name -- confirmed independently, not assumed identical).
+Only the fields Annex C.2.1.1's real call flow needs are modeled (volume-based Total Volume
+threshold/quota) -- not time-based/event-based measurement or the many other optional Create
+URR/Usage Report fields this project has no real use for yet. 12 new unit tests
+(`tests/conformance/test_pfcp_core.cpp`), byte-exact against the real spec figures.
+
+**New `nfs/smf/src/pfcp_peer.hpp`/`.cpp`: `PfcpPeer`.** One persistent socket, bound to a new,
+disclosed-as-lab-only port (`pfcp_core::kSmfCpFunctionPfcpPort` = 8806 -- real PFCP has no spec-
+assigned CP-function port the way UPF's 8805 is IANA-assigned; real deployments convey this
+out-of-band, same as every other hardcoded-per-NF-port convention already in this lab), replacing
+every per-call ephemeral socket. One dedicated receive thread dispatches every incoming datagram by
+message type: a `*Response` matching an outstanding request's sequence number is handed to that
+caller via a `condition_variable` (keyed by sequence number, now genuinely unique per logical
+request via `allocate_sequence_number()` -- the old code could safely hardcode `sequence_number=1`
+everywhere since each call had its own private socket; a shared socket needs real uniqueness); an
+unsolicited Session Report Request is handed to a caller-installed handler. The handler is a
+post-construction setter (`set_session_report_handler`), not a constructor parameter -- it needs to
+capture the `PfcpPeer` itself by reference (to send the ack), which would otherwise be a reference
+to a not-yet-constructed object; the setter sidesteps that cleanly. This turn's handler is
+architecture-proof only: acknowledges with a schema-valid `Cause=RequestAccepted`, doesn't yet parse
+real Usage Report content or call `Nchf_ConvergedCharging_Update` (Stage 3), and echoes the
+request's own SEID in the response header rather than looking up the session's real UP-side SEID
+(no per-session PFCP state store exists yet) -- disclosed simplifications for later stages to close,
+not oversights.
+
+**Live-verified, both the regression and the new capability.** Full stack + a real `nr-gnb`/`nr-ue`
+PDU Session Establishment confirmed zero regression: Association Setup and N4 Session Establishment
+both still succeed, first attempt, on the new shared-socket architecture (`smf`'s log unchanged in
+substance from every prior stage's own verification). Then, independently, a hand-crafted-but-real
+Sx Session Report Request (TS 29.244-correct header, Report Type IE with the USAR bit) was sent
+directly to SMF's new port 8806 -- `smf`'s own log confirms the real handler ran (`received real Sx
+Session Report Request from 127.0.0.1 (seq=12345)`), and the sending script received a real,
+correctly-typed Sx Session Report Response (message type 57) back, proving the receive-dispatch and
+fire-and-forget-response code paths both work for real, not just in theory.
+
+**Consequence:** The real architectural blocker to quota-consumption tracking is closed. Next:
+Stage 1 (SMF sends a real Create URR, derived from CHF's ADR-0048 grant, as part of N4 Session
+Establishment), then Stages 2-6 per the approved plan.

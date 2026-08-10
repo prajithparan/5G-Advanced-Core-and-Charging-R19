@@ -77,4 +77,55 @@ struct FSeid {
 std::vector<std::uint8_t> encode_f_seid_ipv4(const FSeid& f_seid);
 std::optional<FSeid> decode_f_seid_ipv4(const std::vector<std::uint8_t>& value);
 
+// The following (TS 29.244 §7.5.2.4 Create URR, §7.5.8.3 Usage Report) support Phase 4's real
+// online-charging quota-consumption/re-authorization flow (docs/DECISIONS.md ADR-0049's
+// commercialization mandate turn) -- byte layouts confirmed directly against the real spec PDF,
+// same discipline as every other IE in this file. Only what Annex C.2.1.1's real "online charging
+// with intermediate and final quotas" call flow needs is modeled: volume-based measurement with a
+// Total Volume threshold/quota, not time-based or event-based measurement, and not the many other
+// optional Create URR/Usage Report fields (Time Threshold, Quota Holding Time, Monitoring Time,
+// Linked URR ID, Application Detection Information, ...) this project has no real use for yet.
+
+// TS 29.244 §8.2.54: URR ID -- Unsigned32. Bit 8 of the first octet = 0 for dynamically-CP-
+// allocated (this project's only case, naturally 0 for the small integers used here, never set
+// explicitly -- same convention as encode_far_id).
+std::vector<std::uint8_t> encode_urr_id(std::uint32_t id);
+std::optional<std::uint32_t> decode_urr_id(const std::vector<std::uint8_t>& value);
+
+// TS 29.244 §8.2.71: UR-SEQN (Usage Report Sequence Number) -- Unsigned32.
+std::vector<std::uint8_t> encode_ur_seqn(std::uint32_t seqn);
+std::optional<std::uint32_t> decode_ur_seqn(const std::vector<std::uint8_t>& value);
+
+// TS 29.244 §8.2.40: Measurement Method -- this project only ever requests VOLUM (bit 2, volume-
+// based measurement), the only measurement basis its online-charging quota flow needs.
+std::vector<std::uint8_t> encode_measurement_method_volume();
+
+// TS 29.244 §8.2.19: Reporting Triggers -- 2-octet bitmask. This project only ever requests VOLTH
+// (bit 2 of octet 5, report on reaching the Volume Threshold) and VOLQU (bit 1 of octet 6, report
+// on Volume Quota exhaustion) -- the two triggers Annex C.2.1.1's real call flow uses.
+std::vector<std::uint8_t> encode_reporting_triggers_volume();
+
+// TS 29.244 §8.2.13/§8.2.50/§8.2.44: Volume Threshold, Volume Quota, and Volume Measurement all
+// share this exact wire structure (confirmed independently against all three real spec figures,
+// not assumed identical from the IE type numbers alone): a 1-octet TOVOL/ULVOL/DLVOL flag octet
+// followed by whichever Unsigned64 volume fields the flags select, in TOVOL/ULVOL/DLVOL order.
+// This project only ever uses the Total Volume (TOVOL) field -- one shared codec for all three IE
+// types, since the byte layout is identical.
+std::vector<std::uint8_t> encode_volume_total(std::uint64_t total_octets);
+std::optional<std::uint64_t> decode_volume_total(const std::vector<std::uint8_t>& value);
+
+// TS 29.244 §8.2.21: Report Type -- this project only ever needs to recognize USAR (bit 2, Usage
+// Report present).
+bool decode_report_type_has_usage_report(const std::vector<std::uint8_t>& value);
+
+// TS 29.244 §8.2.41: Usage Report Trigger -- 2-octet bitmask, same octet-pair convention as
+// Reporting Triggers but a different bit assignment per the real spec (confirmed independently,
+// not assumed identical). This project only distinguishes the two triggers its flow can produce.
+enum class UsageReportTriggerValue : std::uint8_t {
+    VolumeThreshold,
+    VolumeQuotaExhausted,
+    Other,
+};
+UsageReportTriggerValue decode_usage_report_trigger(const std::vector<std::uint8_t>& value);
+
 } // namespace pfcp_core

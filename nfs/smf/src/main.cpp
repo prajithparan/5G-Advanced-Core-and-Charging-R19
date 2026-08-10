@@ -63,6 +63,8 @@
 #include "pfcp_core/ie.hpp"
 #include "pfcp_core/session_ies.hpp"
 
+#include "pfcp_peer.hpp"
+
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -275,68 +277,6 @@ std::string discover_upf_ipv4(sbi_core::http2::Client& http_client, sbi_core::OA
 // This lab's loopback-only scope, reused by both PFCP client call sites below.
 constexpr std::array<std::uint8_t, 4> kSmfNodeIpv4{127, 0, 0, 1};
 
-// SO_RCVTIMEO on the underlying descriptor: Boost.Asio's synchronous socket API has no built-in
-// receive timeout, and this project's established pattern for blocking-transport code is direct
-// POSIX socket calls where Asio doesn't cover something (see libs/ngap-core's own SCTP wrapper) --
-// consistent with that, not a new precedent.
-void configure_pfcp_receive_timeout(boost::asio::ip::udp::socket& socket) {
-    constexpr timeval kReceiveTimeout{.tv_sec = 2, .tv_usec = 0};
-    setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &kReceiveTimeout,
-              sizeof(kReceiveTimeout));
-}
-
-// Sends a PFCP request and waits for a response matching both the expected message type and
-// sequence number, retrying (T1=2s timeout via configure_pfcp_receive_timeout, N1=3 attempts per
-// TS 29.244 §6.4 -- this build's own reasonable fixed choices, the spec leaves them
-// implementation-specific) before giving up. Returns the response's IE-region bytes on success.
-// Shared by run_pfcp_lifecycle's Association Setup (Stage 2) and
-// perform_n4_session_establishment's Session Establishment (Stage 3, ADR-0042) -- both need
-// identical send/wait/retry mechanics, just different request bytes and expected response type.
-std::optional<std::vector<std::uint8_t>> send_pfcp_request_and_await_response(
-    boost::asio::ip::udp::socket& socket, const boost::asio::ip::udp::endpoint& target,
-    const std::vector<std::uint8_t>& request_pdu, pfcp_core::MessageType expected_response_type,
-    std::uint32_t expected_sequence_number, const std::string& procedure_name) {
-    constexpr int kN1Retries = 3;
-    for (int attempt = 0; attempt < kN1Retries; ++attempt) {
-        boost::system::error_code send_ec;
-        socket.send_to(boost::asio::buffer(request_pdu), target, 0, send_ec);
-        if (send_ec) {
-            spdlog::warn("smf: PFCP {} send failed: {}", procedure_name, send_ec.message());
-            continue;
-        }
-
-        std::vector<std::uint8_t> recv_buf(2048);
-        boost::asio::ip::udp::endpoint sender;
-        boost::system::error_code recv_ec;
-        const std::size_t n = socket.receive_from(boost::asio::buffer(recv_buf), sender, 0, recv_ec);
-        if (recv_ec) {
-            spdlog::warn("smf: PFCP {} attempt {} timed out, retrying", procedure_name, attempt + 1);
-            continue;
-        }
-
-        const std::vector<std::uint8_t> resp(recv_buf.begin(),
-                                              recv_buf.begin() + static_cast<std::ptrdiff_t>(n));
-        std::size_t offset = 0;
-        std::uint16_t ies_length = 0;
-        const auto resp_header = pfcp_core::decode_header(resp, offset, ies_length);
-        if (!resp_header.has_value() || resp_header->message_type != expected_response_type ||
-            resp_header->sequence_number != expected_sequence_number) {
-            spdlog::warn("smf: PFCP response wasn't a matching {} response, ignoring and retrying",
-                        procedure_name);
-            continue;
-        }
-        if (offset + ies_length > resp.size()) {
-            spdlog::warn("smf: PFCP {} response length field overruns the datagram, retrying",
-                        procedure_name);
-            continue;
-        }
-        return std::vector<std::uint8_t>(resp.begin() + static_cast<std::ptrdiff_t>(offset),
-                                         resp.begin() + static_cast<std::ptrdiff_t>(offset + ies_length));
-    }
-    spdlog::warn("smf: PFCP {} exhausted {} retries", procedure_name, kN1Retries);
-    return std::nullopt;
-}
-
 // Thread-safe holder for the UPF endpoint learned via run_pfcp_lifecycle's real Nnrf_NFDiscovery +
 // Association Setup (Stage 2) -- read by CreateSMContext's route handler (the ioc thread) to
 // perform Stage 3's real N4 Session Establishment. Deferred from Stage 2 on purpose (ADR-0041:
@@ -358,7 +298,8 @@ private:
     std::optional<std::string> ipv4_;
 };
 
-void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& upf_endpoint_store) {
+void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& upf_endpoint_store,
+                        smf::PfcpPeer& pfcp_peer) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/smf/cert.pem",
         .key_path = CERTS_DIR "/smf/key.pem",
@@ -371,17 +312,14 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& up
     const std::string upf_ip = discover_upf_ipv4(http_client, oauth);
     spdlog::info("smf: discovered UPF at {} via Nnrf_NFDiscovery", upf_ip);
 
-    boost::asio::io_context ioc;
-    boost::asio::ip::udp::socket socket(ioc, boost::asio::ip::udp::v4());
     const boost::asio::ip::udp::endpoint upf_endpoint(
         boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
-    configure_pfcp_receive_timeout(socket);
 
     while (true) {
         pfcp_core::Header req_header;
         req_header.has_seid = false;
         req_header.message_type = pfcp_core::MessageType::AssociationSetupRequest;
-        req_header.sequence_number = 1;
+        req_header.sequence_number = pfcp_peer.allocate_sequence_number();
 
         std::vector<std::uint8_t> ies;
         pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
@@ -394,8 +332,8 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& up
         auto pdu = pfcp_core::encode_header(req_header, static_cast<std::uint16_t>(ies.size()));
         pdu.insert(pdu.end(), ies.begin(), ies.end());
 
-        const auto resp_ie_bytes = send_pfcp_request_and_await_response(
-            socket, upf_endpoint, pdu, pfcp_core::MessageType::AssociationSetupResponse,
+        const auto resp_ie_bytes = pfcp_peer.send_request_and_await_response(
+            upf_endpoint, pdu, pfcp_core::MessageType::AssociationSetupResponse,
             req_header.sequence_number, "Association Setup");
         const auto resp_ies =
             resp_ie_bytes.has_value() ? pfcp_core::decode_ies(*resp_ie_bytes) : std::nullopt;
@@ -426,12 +364,10 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& up
 // still not implemented -- see nfs/upf/src/main.cpp's own disclosure). Best-effort: failure is
 // logged, not fatal to CreateSMContext's own 201 response, same discipline ADR-0038 already
 // established for the N1N2MessageTransfer call below this one in the handler.
-bool perform_n4_session_establishment(const std::string& upf_ip, std::uint8_t pdu_session_id) {
-    boost::asio::io_context ioc;
-    boost::asio::ip::udp::socket socket(ioc, boost::asio::ip::udp::v4());
+bool perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer, const std::string& upf_ip,
+                                      std::uint8_t pdu_session_id) {
     const boost::asio::ip::udp::endpoint upf_endpoint(
         boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
-    configure_pfcp_receive_timeout(socket);
 
     static std::atomic<std::uint64_t> next_cp_seid{1};
     const std::uint64_t cp_seid = next_cp_seid++;
@@ -482,13 +418,13 @@ bool perform_n4_session_establishment(const std::string& upf_ip, std::uint8_t pd
     req_header.has_seid = true;
     req_header.seid = 0;
     req_header.message_type = pfcp_core::MessageType::SessionEstablishmentRequest;
-    req_header.sequence_number = 1;
+    req_header.sequence_number = pfcp_peer.allocate_sequence_number();
 
     auto pdu = pfcp_core::encode_header(req_header, static_cast<std::uint16_t>(ies.size()));
     pdu.insert(pdu.end(), ies.begin(), ies.end());
 
-    const auto resp_ie_bytes = send_pfcp_request_and_await_response(
-        socket, upf_endpoint, pdu, pfcp_core::MessageType::SessionEstablishmentResponse,
+    const auto resp_ie_bytes = pfcp_peer.send_request_and_await_response(
+        upf_endpoint, pdu, pfcp_core::MessageType::SessionEstablishmentResponse,
         req_header.sequence_number, "Session Establishment");
     if (!resp_ie_bytes.has_value()) {
         return false;
@@ -690,6 +626,34 @@ int main() {
 
     sbi_core::jwt::Verifier verifier(CERTS_DIR "/nrf-jwt/public.pem", kNrfInstanceId);
 
+    // ADR-0049 (quota-consumption-tracking turn), Stage 0: SMF's one persistent, bidirectional
+    // PFCP peer -- replaces the old per-call ephemeral sockets so UPF can reach SMF directly for
+    // an unsolicited Sx Session Report Request. This turn's handler is architecture-proof only: it
+    // acknowledges with a schema-valid Cause=RequestAccepted and does not yet parse the real Usage
+    // Report content or call Nchf_ConvergedCharging_Update (Stage 3's job). It also doesn't yet
+    // look up the session's real UP-side SEID for the response header (no per-session PFCP state
+    // store exists yet) -- echoes the request's own SEID instead, a disclosed simplification to
+    // revisit once a later stage needs real per-session state here.
+    smf::PfcpPeer pfcp_peer;
+    pfcp_peer.set_session_report_handler(
+        [&pfcp_peer](const pfcp_core::Header& header, const std::vector<std::uint8_t>&,
+                    const boost::asio::ip::udp::endpoint& sender) {
+            spdlog::info("smf: received real Sx Session Report Request from {} (seq={})",
+                        sender.address().to_string(), header.sequence_number);
+            std::vector<std::uint8_t> ack_ies;
+            pfcp_core::encode_ie(ack_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                                 pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+            pfcp_core::Header ack_header;
+            ack_header.has_seid = true;
+            ack_header.seid = header.seid;
+            ack_header.message_type = pfcp_core::MessageType::SessionReportResponse;
+            ack_header.sequence_number = header.sequence_number;
+            auto ack_pdu =
+                pfcp_core::encode_header(ack_header, static_cast<std::uint16_t>(ack_ies.size()));
+            ack_pdu.insert(ack_pdu.end(), ack_ies.begin(), ack_ies.end());
+            pfcp_peer.send_fire_and_forget(sender, ack_pdu);
+        });
+
     // SMF's own client identity + token source for calling PCF -- separate http2::Client/
     // OAuth2Client from run_nrf_lifecycle's (which runs on its own thread; this one is only ever
     // touched from route handlers, which all run on ioc's single thread -- see
@@ -772,7 +736,7 @@ int main() {
         [&verifier, &sm_contexts, &create_counter, &pcf_client, &pcf_oauth,
          &pcf_sm_policy_create_counter, &amf_client, &amf_oauth, &upf_endpoint_store,
          &n1n2_transfer_counter, &chf_client, &chf_oauth, &chf_charging_data_create_counter,
-         &smf_instance_id](const sbi_core::http2::Request& req) {
+         &smf_instance_id, &pfcp_peer](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -876,7 +840,8 @@ int main() {
             // response -- the real gap it would block on (no UPF discovered yet) shouldn't also
             // block CreateSMContext's own already-real PCF/AMF work.
             if (const auto upf_ip = upf_endpoint_store.get(); upf_ip.has_value()) {
-                perform_n4_session_establishment(*upf_ip, static_cast<std::uint8_t>(*body->pduSessionId));
+                perform_n4_session_establishment(pfcp_peer, *upf_ip,
+                                                 static_cast<std::uint8_t>(*body->pduSessionId));
             } else {
                 spdlog::warn("smf: no UPF Sx Association established yet, skipping N4 Session "
                             "Establishment for pduSessionId {}",
@@ -1166,7 +1131,8 @@ int main() {
         });
 
     std::thread(run_nrf_lifecycle, smf_instance_id).detach();
-    std::thread(run_pfcp_lifecycle, smf_instance_id, std::ref(upf_endpoint_store)).detach();
+    std::thread(run_pfcp_lifecycle, smf_instance_id, std::ref(upf_endpoint_store), std::ref(pfcp_peer))
+        .detach();
 
     server.start();
     spdlog::info("smf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);

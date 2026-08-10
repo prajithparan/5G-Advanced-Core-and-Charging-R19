@@ -134,4 +134,88 @@ std::optional<FSeid> decode_f_seid_ipv4(const std::vector<std::uint8_t>& value) 
     return out;
 }
 
+std::vector<std::uint8_t> encode_urr_id(std::uint32_t id) {
+    return {
+        static_cast<std::uint8_t>((id >> 24) & 0xFF),
+        static_cast<std::uint8_t>((id >> 16) & 0xFF),
+        static_cast<std::uint8_t>((id >> 8) & 0xFF),
+        static_cast<std::uint8_t>(id & 0xFF),
+    };
+}
+
+std::optional<std::uint32_t> decode_urr_id(const std::vector<std::uint8_t>& value) {
+    if (value.size() != 4) {
+        return std::nullopt;
+    }
+    return (static_cast<std::uint32_t>(value[0]) << 24) | (static_cast<std::uint32_t>(value[1]) << 16) |
+           (static_cast<std::uint32_t>(value[2]) << 8) | static_cast<std::uint32_t>(value[3]);
+}
+
+std::vector<std::uint8_t> encode_ur_seqn(std::uint32_t seqn) {
+    return {
+        static_cast<std::uint8_t>((seqn >> 24) & 0xFF),
+        static_cast<std::uint8_t>((seqn >> 16) & 0xFF),
+        static_cast<std::uint8_t>((seqn >> 8) & 0xFF),
+        static_cast<std::uint8_t>(seqn & 0xFF),
+    };
+}
+
+std::optional<std::uint32_t> decode_ur_seqn(const std::vector<std::uint8_t>& value) {
+    if (value.size() != 4) {
+        return std::nullopt;
+    }
+    return (static_cast<std::uint32_t>(value[0]) << 24) | (static_cast<std::uint32_t>(value[1]) << 16) |
+           (static_cast<std::uint32_t>(value[2]) << 8) | static_cast<std::uint32_t>(value[3]);
+}
+
+namespace {
+constexpr std::uint8_t kMeasurementMethodVolumBit = 0x02; // bit 2 - VOLUM
+constexpr std::uint8_t kReportingTriggersVolth = 0x02;    // octet 5, bit 2 - VOLTH
+constexpr std::uint8_t kReportingTriggersVolqu = 0x01;    // octet 6, bit 1 - VOLQU
+constexpr std::uint8_t kVolumeTovolBit = 0x01;            // octet 5, bit 1 - TOVOL (all 3 volume IEs)
+constexpr std::uint8_t kReportTypeUsar = 0x02;            // bit 2 - USAR
+constexpr std::uint8_t kUsageReportTriggerVolth = 0x02;   // octet 5, bit 2 - VOLTH
+constexpr std::uint8_t kUsageReportTriggerVolqu = 0x01;   // octet 6, bit 1 - VOLQU
+} // namespace
+
+std::vector<std::uint8_t> encode_measurement_method_volume() { return {kMeasurementMethodVolumBit}; }
+
+std::vector<std::uint8_t> encode_reporting_triggers_volume() {
+    return {kReportingTriggersVolth, kReportingTriggersVolqu};
+}
+
+std::vector<std::uint8_t> encode_volume_total(std::uint64_t total_octets) {
+    std::vector<std::uint8_t> out;
+    out.push_back(kVolumeTovolBit);
+    for (int shift = 56; shift >= 0; shift -= 8) {
+        out.push_back(static_cast<std::uint8_t>((total_octets >> shift) & 0xFF));
+    }
+    return out;
+}
+
+std::optional<std::uint64_t> decode_volume_total(const std::vector<std::uint8_t>& value) {
+    if (value.size() != 9 || (value[0] & kVolumeTovolBit) == 0) {
+        return std::nullopt;
+    }
+    std::uint64_t total = 0;
+    for (int i = 0; i < 8; ++i) {
+        total = (total << 8) | value[static_cast<std::size_t>(1 + i)];
+    }
+    return total;
+}
+
+bool decode_report_type_has_usage_report(const std::vector<std::uint8_t>& value) {
+    return !value.empty() && (value[0] & kReportTypeUsar) != 0;
+}
+
+UsageReportTriggerValue decode_usage_report_trigger(const std::vector<std::uint8_t>& value) {
+    if (value.size() >= 1 && (value[0] & kUsageReportTriggerVolth) != 0) {
+        return UsageReportTriggerValue::VolumeThreshold;
+    }
+    if (value.size() >= 2 && (value[1] & kUsageReportTriggerVolqu) != 0) {
+        return UsageReportTriggerValue::VolumeQuotaExhausted;
+    }
+    return UsageReportTriggerValue::Other;
+}
+
 } // namespace pfcp_core

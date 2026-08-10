@@ -245,3 +245,63 @@ TEST(PfcpSessionIes, GroupedIeRoundTripsViaExistingIeCodec) {
     ASSERT_NE(src_if_ie, nullptr);
     EXPECT_EQ(pfcp_core::decode_interface_value(src_if_ie->value), pfcp_core::InterfaceValue::Access);
 }
+
+TEST(PfcpSessionIes, UrrIdRoundTrips) {
+    const auto bytes = pfcp_core::encode_urr_id(1);
+    ASSERT_EQ(bytes.size(), 4u);
+    EXPECT_EQ(bytes, (std::vector<std::uint8_t>{0x00, 0x00, 0x00, 0x01}));
+    EXPECT_EQ(pfcp_core::decode_urr_id(bytes), 1u);
+}
+
+TEST(PfcpSessionIes, UrSeqnRoundTrips) {
+    const auto bytes = pfcp_core::encode_ur_seqn(42);
+    ASSERT_EQ(bytes.size(), 4u);
+    EXPECT_EQ(pfcp_core::decode_ur_seqn(bytes), 42u);
+}
+
+TEST(PfcpSessionIes, MeasurementMethodVolumeSetsVolumBit) {
+    const auto bytes = pfcp_core::encode_measurement_method_volume();
+    ASSERT_EQ(bytes.size(), 1u);
+    EXPECT_EQ(bytes[0] & 0x02, 0x02); // bit 2 - VOLUM, TS 29.244 Figure 8.2.40-1
+}
+
+TEST(PfcpSessionIes, ReportingTriggersVolumeSetsVolthAndVolqu) {
+    const auto bytes = pfcp_core::encode_reporting_triggers_volume();
+    ASSERT_EQ(bytes.size(), 2u);
+    EXPECT_EQ(bytes[0] & 0x02, 0x02); // octet 5 bit 2 - VOLTH
+    EXPECT_EQ(bytes[1] & 0x01, 0x01); // octet 6 bit 1 - VOLQU
+}
+
+TEST(PfcpSessionIes, VolumeTotalRoundTrips) {
+    // TS 29.244 Figure 8.2.13-1 (Volume Threshold) / 8.2.50-1 (Volume Quota) / 8.2.44-1 (Volume
+    // Measurement): all three share this exact TOVOL-flag + Unsigned64 layout.
+    const auto bytes = pfcp_core::encode_volume_total(10'000'000'000ULL); // 10 GB, decimal
+    ASSERT_EQ(bytes.size(), 9u);
+    EXPECT_EQ(bytes[0] & 0x01, 0x01); // TOVOL bit
+    EXPECT_EQ(pfcp_core::decode_volume_total(bytes), 10'000'000'000ULL);
+}
+
+TEST(PfcpSessionIes, VolumeTotalDecodeRejectsMissingTovolBit) {
+    std::vector<std::uint8_t> bytes(9, 0); // flag octet 0 -- no TOVOL bit set
+    EXPECT_FALSE(pfcp_core::decode_volume_total(bytes).has_value());
+}
+
+TEST(PfcpSessionIes, ReportTypeDetectsUsageReportBit) {
+    EXPECT_TRUE(pfcp_core::decode_report_type_has_usage_report({0x02})); // bit 2 - USAR
+    EXPECT_FALSE(pfcp_core::decode_report_type_has_usage_report({0x01})); // bit 1 - DLDR only
+}
+
+TEST(PfcpSessionIes, UsageReportTriggerDecodesVolumeThreshold) {
+    EXPECT_EQ(pfcp_core::decode_usage_report_trigger({0x02, 0x00}),
+              pfcp_core::UsageReportTriggerValue::VolumeThreshold);
+}
+
+TEST(PfcpSessionIes, UsageReportTriggerDecodesVolumeQuotaExhausted) {
+    EXPECT_EQ(pfcp_core::decode_usage_report_trigger({0x00, 0x01}),
+              pfcp_core::UsageReportTriggerValue::VolumeQuotaExhausted);
+}
+
+TEST(PfcpSessionIes, UsageReportTriggerDecodesOtherForUnrecognizedBits) {
+    EXPECT_EQ(pfcp_core::decode_usage_report_trigger({0x01, 0x00}), // PERIO only
+              pfcp_core::UsageReportTriggerValue::Other);
+}
