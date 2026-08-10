@@ -364,13 +364,23 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& up
 // still not implemented -- see nfs/upf/src/main.cpp's own disclosure). Best-effort: failure is
 // logged, not fatal to CreateSMContext's own 201 response, same discipline ADR-0038 already
 // established for the N1N2MessageTransfer call below this one in the handler.
+//
+// ADR-0050 Stage 1: if granted_total_volume_octets is set (a real grant from CHF's rating engine,
+// ADR-0048), also creates one URR (URR ID=1, volume-based measurement) and associates it with the
+// uplink PDR via Create PDR's own optional URR ID field (TS 29.244 §7.5.2.2's real table -- "This
+// IE shall be present if a measurement action shall be applied to packets matching this PDR"),
+// with Volume Threshold set to 90% of the granted quota and Volume Quota set to the full granted
+// amount -- the exact ratio TS 29.244 Annex C.2.1.1's real worked example uses (quota=100 Mbytes,
+// threshold=90 Mbytes), not an arbitrary choice.
 bool perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer, const std::string& upf_ip,
-                                      std::uint8_t pdu_session_id) {
+                                      std::uint8_t pdu_session_id,
+                                      std::optional<std::uint64_t> granted_total_volume_octets) {
     const boost::asio::ip::udp::endpoint upf_endpoint(
         boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
 
     static std::atomic<std::uint64_t> next_cp_seid{1};
     const std::uint64_t cp_seid = next_cp_seid++;
+    constexpr std::uint32_t kUrrId = 1;
 
     std::vector<std::uint8_t> pdi;
     pfcp_core::encode_ie(pdi, static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface),
@@ -386,6 +396,10 @@ bool perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer, const std::strin
     pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi), pdi);
     pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
                          pfcp_core::encode_far_id(1));
+    if (granted_total_volume_octets.has_value()) {
+        pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
+                             pfcp_core::encode_urr_id(kUrrId));
+    }
 
     std::vector<std::uint8_t> forwarding_parameters;
     pfcp_core::encode_ie(forwarding_parameters,
@@ -411,6 +425,31 @@ bool perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer, const std::strin
                          pfcp_core::encode_f_seid_ipv4(cp_f_seid));
     pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatePdr), create_pdr);
     pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreateFar), create_far);
+
+    if (granted_total_volume_octets.has_value()) {
+        const auto volume_threshold_octets =
+            static_cast<std::uint64_t>(static_cast<double>(*granted_total_volume_octets) * 0.9);
+
+        std::vector<std::uint8_t> create_urr;
+        pfcp_core::encode_ie(create_urr, static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
+                             pfcp_core::encode_urr_id(kUrrId));
+        pfcp_core::encode_ie(create_urr,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::MeasurementMethod),
+                             pfcp_core::encode_measurement_method_volume());
+        pfcp_core::encode_ie(create_urr,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::ReportingTriggers),
+                             pfcp_core::encode_reporting_triggers_volume());
+        pfcp_core::encode_ie(create_urr,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::VolumeThreshold),
+                             pfcp_core::encode_volume_total(volume_threshold_octets));
+        pfcp_core::encode_ie(create_urr, static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota),
+                             pfcp_core::encode_volume_total(*granted_total_volume_octets));
+        pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreateUrr), create_urr);
+
+        spdlog::info("smf: provisioning URR {} for pduSessionId {}: threshold={} octets, "
+                    "quota={} octets",
+                    kUrrId, pdu_session_id, volume_threshold_octets, *granted_total_volume_octets);
+    }
 
     pfcp_core::Header req_header;
     // Sx Session Establishment Request always has S=1 with SEID=0 -- UP's own SEID for this
@@ -480,13 +519,17 @@ bool perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer, const std::strin
 // charging data invocation SMF ever sends for a given PDU session -- see chf's own file header for
 // why the response doesn't get independently sequenced either. Best-effort: see file header.
 // Returns the allocated ChargingDataRef (parsed from CHF's `location` header, same extraction
-// pattern already used for PCF's smPolicyId above) on success, so ReleaseSMContext's handler
-// (ADR-0046) can later call Nchf_ConvergedCharging_Release against the right resource.
-std::optional<std::string> perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
-                                                             sbi_core::OAuth2Client& chf_oauth,
-                                                             const std::string& smf_instance_id,
-                                                             const std::string& supi,
-                                                             std::uint8_t pdu_session_id) {
+// pattern already used for PCF's smPolicyId above) plus, if CHF granted one, the real
+// GrantedUnit.totalVolume octet count (ADR-0050, Stage 1) -- so perform_n4_session_establishment
+// can provision a real Create URR with that exact quota rather than a fabricated one.
+struct ChargingDataCreateResult {
+    std::string charging_data_ref;
+    std::optional<std::uint64_t> granted_total_volume_octets;
+};
+
+std::optional<ChargingDataCreateResult> perform_n40_charging_data_create(
+    sbi_core::http2::Client& chf_client, sbi_core::OAuth2Client& chf_oauth,
+    const std::string& smf_instance_id, const std::string& supi, std::uint8_t pdu_session_id) {
     auto token = chf_oauth.get_bearer_token();
     if (!token.has_value()) {
         spdlog::warn("smf: could not obtain a token for CHF, skipping Nchf_ConvergedCharging_"
@@ -547,10 +590,31 @@ std::optional<std::string> perform_n40_charging_data_create(sbi_core::http2::Cli
                     pdu_session_id);
         return std::nullopt;
     }
+    // ADR-0050 Stage 1: extract the real granted quota (if any) so N4 Session Establishment can
+    // provision a real Create URR with it. Best-effort parse -- an empty/malformed body still
+    // leaves the ChargingDataRef usable, just with no URR provisioned this call (same "grants
+    // nothing" fallback ADR-0048 already established for a catalog with no matching offering).
+    std::optional<std::uint64_t> granted_total_volume_octets;
+    try {
+        const auto resp_body = json::parse(chf_resp->body).get<sbi_gen::ChargingDataResponse>();
+        if (resp_body.multipleUnitInformation.has_value() &&
+            !resp_body.multipleUnitInformation->empty() &&
+            (*resp_body.multipleUnitInformation)[0].grantedUnit.has_value() &&
+            (*resp_body.multipleUnitInformation)[0].grantedUnit->totalVolume.has_value()) {
+            granted_total_volume_octets = *(*resp_body.multipleUnitInformation)[0].grantedUnit->totalVolume;
+        }
+    } catch (const json::exception& e) {
+        spdlog::warn("smf: could not parse CHF's ChargingDataResponse body for pduSessionId {}: {}",
+                    pdu_session_id, e.what());
+    }
+
     spdlog::info("smf: Nchf_ConvergedCharging_Create succeeded for pduSessionId {}, "
-                "ChargingDataRef={}",
-                pdu_session_id, charging_data_ref);
-    return charging_data_ref;
+                "ChargingDataRef={}, granted total volume={}",
+                pdu_session_id, charging_data_ref,
+                granted_total_volume_octets.has_value()
+                    ? std::to_string(*granted_total_volume_octets) + " octets"
+                    : "none");
+    return ChargingDataCreateResult{charging_data_ref, granted_total_volume_octets};
 }
 
 // Real Nchf_ConvergedCharging_Release (TS 32.291, N40, ADR-0046), SMF's side.
@@ -833,36 +897,42 @@ int main() {
                 json{{"smPolicyId", sm_policy_id}, {"policy", json(decision)}, {"supi", *body->supi}});
             pcf_sm_policy_create_counter->Add(1);
 
-            // ADR-0042: real N4 Session Establishment with UPF, using the Sx Association Stage 2
-            // already proved (run_pfcp_lifecycle populates upf_endpoint_store once, at startup).
-            // Best-effort, matching the N1N2MessageTransfer call below: no real datapath exists
-            // yet (Stage 4), so a failure here is disclosed via a log line, not fatal to this
-            // response -- the real gap it would block on (no UPF discovered yet) shouldn't also
-            // block CreateSMContext's own already-real PCF/AMF work.
+            // N40, ADR-0044/ADR-0046/ADR-0050: real Nchf_ConvergedCharging_Create, moved ahead of
+            // N4 Session Establishment (was previously called after it) -- TS 29.244 Annex
+            // C.2.1.1's real online-charging call flow requests credit from the charging function
+            // BEFORE provisioning the UP function with the resulting quota (its own steps 1 then
+            // 2), so the granted quota is known in time to include a real Create URR in the same
+            // N4 Session Establishment Request below, not a separate follow-up call. Best-effort:
+            // failure is logged, not fatal to CreateSMContext's own 201 response.
+            std::optional<std::uint64_t> granted_total_volume_octets;
+            if (const auto charging_result = perform_n40_charging_data_create(
+                    chf_client, chf_oauth, smf_instance_id, *body->supi,
+                    static_cast<std::uint8_t>(*body->pduSessionId));
+                charging_result.has_value()) {
+                chf_charging_data_create_counter->Add(1);
+                granted_total_volume_octets = charging_result->granted_total_volume_octets;
+                if (auto stored = sm_contexts.get(sm_context_ref); stored.has_value()) {
+                    (*stored)["chargingDataRef"] = charging_result->charging_data_ref;
+                    sm_contexts.update(sm_context_ref, *stored);
+                }
+            }
+
+            // ADR-0042/ADR-0050: real N4 Session Establishment with UPF, using the Sx Association
+            // Stage 2 already proved (run_pfcp_lifecycle populates upf_endpoint_store once, at
+            // startup), now also provisioning a real Create URR (Stage 1) if CHF granted a quota
+            // above. Best-effort, matching the N1N2MessageTransfer call below: no real datapath
+            // exists yet for anything beyond decapsulation (Phase 3), so a failure here is
+            // disclosed via a log line, not fatal to this response -- the real gap it would block
+            // on (no UPF discovered yet) shouldn't also block CreateSMContext's own already-real
+            // PCF/AMF/CHF work.
             if (const auto upf_ip = upf_endpoint_store.get(); upf_ip.has_value()) {
                 perform_n4_session_establishment(pfcp_peer, *upf_ip,
-                                                 static_cast<std::uint8_t>(*body->pduSessionId));
+                                                 static_cast<std::uint8_t>(*body->pduSessionId),
+                                                 granted_total_volume_octets);
             } else {
                 spdlog::warn("smf: no UPF Sx Association established yet, skipping N4 Session "
                             "Establishment for pduSessionId {}",
                             *body->pduSessionId);
-            }
-
-            // N40, ADR-0044/ADR-0046: real Nchf_ConvergedCharging_Create, same best-effort
-            // discipline as the N4 call directly above (see perform_n40_charging_data_create's own
-            // comment). The returned ChargingDataRef is merged into the already-stored sm context
-            // (read-modify-write, not a plain update -- SmContextStore::update replaces the whole
-            // entry, and smPolicyId/policy were already written above) so ReleaseSMContext can
-            // later call Nchf_ConvergedCharging_Release against the right resource.
-            if (const auto charging_data_ref = perform_n40_charging_data_create(
-                    chf_client, chf_oauth, smf_instance_id, *body->supi,
-                    static_cast<std::uint8_t>(*body->pduSessionId));
-                charging_data_ref.has_value()) {
-                chf_charging_data_create_counter->Add(1);
-                if (auto stored = sm_contexts.get(sm_context_ref); stored.has_value()) {
-                    (*stored)["chargingDataRef"] = *charging_data_ref;
-                    sm_contexts.update(sm_context_ref, *stored);
-                }
             }
 
             // ADR-0038: the real TS 23.502 §4.3.2.2.1 step 11 -- SMF decodes the UE's actual PDU

@@ -3694,3 +3694,40 @@ fire-and-forget-response code paths both work for real, not just in theory.
 **Consequence:** The real architectural blocker to quota-consumption tracking is closed. Next:
 Stage 1 (SMF sends a real Create URR, derived from CHF's ADR-0048 grant, as part of N4 Session
 Establishment), then Stages 2-6 per the approved plan.
+
+### Stage 1 (2026-08-10): SMF provisions a real Create URR from CHF's real grant
+
+**Real schema checked first, not assumed.** `Create PDR`'s own real field table (TS 29.244
+§7.5.2.2) confirms it has an optional `URR ID` field ("present if a measurement action shall be
+applied to packets matching this PDR") -- the real mechanism a PDR gets associated with a URR for
+measurement, same `UrrId` IE type Stage 0 already added.
+
+**Reordered CreateSMContext's handler**: `Nchf_ConvergedCharging_Create` now runs *before* N4
+Session Establishment (previously after) -- TS 29.244 Annex C.2.1.1's real call flow requests
+credit first, then provisions the UP function with the resulting quota (its steps 1 then 2); the
+old order couldn't have included a real grant-derived URR in the same Session Establishment
+Request. `perform_n40_charging_data_create` now returns a `ChargingDataCreateResult` (charging
+data ref + the real parsed `GrantedUnit.totalVolume`, when CHF's response includes one) instead of
+just the ref.
+
+**`perform_n4_session_establishment` provisions a real URR** when a grant is present: `URR ID`
+referenced from the uplink PDR, `Measurement Method` (VOLUM), `Reporting Triggers` (VOLTH+VOLQU),
+`Volume Threshold` = 90% of the grant, `Volume Quota` = the full grant -- the exact 90/100 ratio
+Annex C.2.1.1's own worked example uses, not an arbitrary choice.
+
+**Live-verified with the real seeded catalog data from ADR-0048's own test plan.** A real
+`nr-gnb`/`nr-ue` PDU Session Establishment against a real 10GB/$25 seeded plan produced: `smf`'s
+log -- `Nchf_ConvergedCharging_Create succeeded ... granted total volume=10000000000 octets` then
+`provisioning URR 1 for pduSessionId 1: threshold=9000000000 octets, quota=10000000000 octets`
+(exactly 90%/100% of the real grant) then `N4 Session Establishment succeeded`. UPF -- an
+independently-built process with no knowledge of Stage 1's changes beyond parsing whatever IEs
+arrive -- accepted the Session Establishment Request containing the new Create URR IE without
+rejecting it (`upf`'s own log: `Sx Session established from 127.0.0.1`), real proof the encoding is
+wire-correct, not just internally self-consistent. (UPF's eBPF datapath itself did not start this
+particular run -- an unrelated, already-disclosed capability-grant issue from a rebuild earlier in
+this session wiping `setcap`, not a Stage 1 regression; the PFCP control-plane flow under test here
+does not depend on the datapath being up.) 137/137 tests pass, zero regressions.
+
+**Consequence:** UPF now receives everything it needs to measure and report usage -- it just
+doesn't act on the URR yet (Stage 2's job: real per-TEID byte counting and the real unsolicited
+Session Report Request when the threshold is crossed).

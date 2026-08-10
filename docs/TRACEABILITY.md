@@ -777,3 +777,13 @@ convention, not a real IANA/spec assignment (real deployments convey this out-of
 (Create URR at session establishment, real UPF byte counting, real Update call, CHF's Update
 endpoint, pushing a new quota back to UPF, full end-to-end live verification) remain to be built.
 All disclosed in `nfs/smf/src/pfcp_peer.hpp`'s own header and ADR-0050.
+
+**Stage 1 (2026-08-10): real Create URR provisioning.** `Nchf_ConvergedCharging_Create` moved
+ahead of N4 Session Establishment (TS 29.244 Annex C.2.1.1's real credit-then-provision order);
+`perform_n4_session_establishment` now provisions a real URR (URR ID referenced from the uplink
+PDR, per Create PDR's own confirmed `URR ID` field, TS 29.244 §7.5.2.2) with Volume
+Threshold/Quota derived from CHF's real grant (90%/100% ratio, matching Annex C.2.1.1's own
+example exactly). Live-verified: a real PDU session against the real seeded 10GB/$25 plan produced
+`threshold=9000000000 octets, quota=10000000000 octets` in `smf`'s log, and UPF (independently
+built) accepted the Session Establishment Request containing the new IE without rejecting it. See
+ADR-0050's Stage 1 section.
