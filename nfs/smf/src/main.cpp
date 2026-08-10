@@ -58,13 +58,6 @@
 // discipline as the N4 Session Establishment call right above it in CreateSMContext's handler --
 // no real billing/quota dependency exists yet for a charging-data failure to correctly block on.
 
-#include "pfcp_core/common_ies.hpp"
-#include "pfcp_core/header.hpp"
-#include "pfcp_core/ie.hpp"
-#include "pfcp_core/session_ies.hpp"
-
-#include "pfcp_peer.hpp"
-
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -82,8 +75,6 @@
 #include <boost/asio/ip/udp.hpp>
 #include <nlohmann/json.hpp>
 
-#include <sys/socket.h>
-
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -91,11 +82,17 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <sys/socket.h>
 #include <thread>
 #include <unordered_map>
 
 #include "TS29122_CommonData_grp.hpp"
 #include "nas_5gsm_codec.hpp"
+#include "pfcp_core/common_ies.hpp"
+#include "pfcp_core/header.hpp"
+#include "pfcp_core/ie.hpp"
+#include "pfcp_core/session_ies.hpp"
+#include "pfcp_peer.hpp"
 #include "sm_context_store.hpp"
 
 namespace {
@@ -250,7 +247,8 @@ std::string discover_upf_ipv4(sbi_core::http2::Client& http_client, sbi_core::OA
         }
         sbi_core::http2::ClientRequest req;
         req.method = "GET";
-        req.url = std::string(kNrfBase) + "/nnrf-disc/v1/nf-instances?target-nf-type=UPF&requester-nf-type=SMF";
+        req.url = std::string(kNrfBase) +
+                  "/nnrf-disc/v1/nf-instances?target-nf-type=UPF&requester-nf-type=SMF";
         req.headers.emplace("authorization", "Bearer " + *token);
         auto resp = http_client.send(req);
         if (!resp.has_value() || resp->status != 200) {
@@ -377,8 +375,8 @@ public:
         auto it = next_seq_.find(charging_data_ref);
         if (it == next_seq_.end()) {
             spdlog::warn("smf: no invocation-sequence counter registered for ChargingDataRef={}, "
-                        "using an untracked value",
-                        charging_data_ref);
+                         "using an untracked value",
+                         charging_data_ref);
             return 2;
         }
         return it->second++;
@@ -389,7 +387,8 @@ private:
     std::unordered_map<std::string, std::int64_t> next_seq_;
 };
 
-void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& upf_endpoint_store,
+void run_pfcp_lifecycle(const std::string& smf_instance_id,
+                        UpfEndpointStore& upf_endpoint_store,
                         smf::PfcpPeer& pfcp_peer) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/smf/cert.pem",
@@ -403,8 +402,8 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& up
     const std::string upf_ip = discover_upf_ipv4(http_client, oauth);
     spdlog::info("smf: discovered UPF at {} via Nnrf_NFDiscovery", upf_ip);
 
-    const boost::asio::ip::udp::endpoint upf_endpoint(
-        boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
+    const boost::asio::ip::udp::endpoint upf_endpoint(boost::asio::ip::make_address(upf_ip),
+                                                      pfcp_core::kPfcpPort);
 
     while (true) {
         pfcp_core::Header req_header;
@@ -413,24 +412,31 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& up
         req_header.sequence_number = pfcp_peer.allocate_sequence_number();
 
         std::vector<std::uint8_t> ies;
-        pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+        pfcp_core::encode_ie(ies,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
                              pfcp_core::encode_node_id_ipv4(kSmfNodeIpv4));
-        pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::RecoveryTimeStamp),
+        pfcp_core::encode_ie(ies,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::RecoveryTimeStamp),
                              pfcp_core::encode_recovery_time_stamp(std::time(nullptr)));
-        pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::CpFunctionFeatures),
+        pfcp_core::encode_ie(ies,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::CpFunctionFeatures),
                              pfcp_core::encode_cp_function_features_none());
 
         auto pdu = pfcp_core::encode_header(req_header, static_cast<std::uint16_t>(ies.size()));
         pdu.insert(pdu.end(), ies.begin(), ies.end());
 
         const auto resp_ie_bytes = pfcp_peer.send_request_and_await_response(
-            upf_endpoint, pdu, pfcp_core::MessageType::AssociationSetupResponse,
-            req_header.sequence_number, "Association Setup");
+            upf_endpoint,
+            pdu,
+            pfcp_core::MessageType::AssociationSetupResponse,
+            req_header.sequence_number,
+            "Association Setup");
         const auto resp_ies =
             resp_ie_bytes.has_value() ? pfcp_core::decode_ies(*resp_ie_bytes) : std::nullopt;
         const auto* cause_ie =
             resp_ies.has_value()
-                ? pfcp_core::find_ie(*resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
+                ? pfcp_core::find_ie(*resp_ies,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
                 : nullptr;
         const auto cause =
             cause_ie != nullptr ? pfcp_core::decode_cause(cause_ie->value) : std::nullopt;
@@ -441,8 +447,8 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& up
             return;
         }
         spdlog::warn("smf: PFCP Association Setup did not succeed (cause={}), backing off and "
-                    "restarting the procedure",
-                    cause.has_value() ? static_cast<int>(*cause) : -1);
+                     "restarting the procedure",
+                     cause.has_value() ? static_cast<int>(*cause) : -1);
         std::this_thread::sleep_for(std::chrono::seconds(5));
     }
 }
@@ -477,31 +483,39 @@ struct N4EstablishmentResult {
     std::uint64_t up_seid = 0;
 };
 
-std::optional<N4EstablishmentResult> perform_n4_session_establishment(
-    smf::PfcpPeer& pfcp_peer, const std::string& upf_ip, std::uint8_t pdu_session_id,
-    std::optional<std::uint64_t> granted_total_volume_octets) {
-    const boost::asio::ip::udp::endpoint upf_endpoint(
-        boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
+std::optional<N4EstablishmentResult>
+perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer,
+                                 const std::string& upf_ip,
+                                 std::uint8_t pdu_session_id,
+                                 std::optional<std::uint64_t> granted_total_volume_octets) {
+    const boost::asio::ip::udp::endpoint upf_endpoint(boost::asio::ip::make_address(upf_ip),
+                                                      pfcp_core::kPfcpPort);
 
     static std::atomic<std::uint64_t> next_cp_seid{1};
     const std::uint64_t cp_seid = next_cp_seid++;
 
     std::vector<std::uint8_t> pdi;
-    pfcp_core::encode_ie(pdi, static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface),
+    pfcp_core::encode_ie(pdi,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface),
                          pfcp_core::encode_source_interface(pfcp_core::InterfaceValue::Access));
-    pfcp_core::encode_ie(pdi, static_cast<std::uint16_t>(pfcp_core::IeType::FTeid),
+    pfcp_core::encode_ie(pdi,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::FTeid),
                          pfcp_core::encode_f_teid_choose_ipv4());
 
     std::vector<std::uint8_t> create_pdr;
-    pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
+    pfcp_core::encode_ie(create_pdr,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
                          pfcp_core::encode_pdr_id(1));
-    pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Precedence),
+    pfcp_core::encode_ie(create_pdr,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::Precedence),
                          pfcp_core::encode_precedence(100));
     pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi), pdi);
-    pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
+    pfcp_core::encode_ie(create_pdr,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
                          pfcp_core::encode_far_id(1));
     if (granted_total_volume_octets.has_value()) {
-        pfcp_core::encode_ie(create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
+        pfcp_core::encode_ie(create_pdr,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
                              pfcp_core::encode_urr_id(kUrrId));
     }
 
@@ -511,11 +525,14 @@ std::optional<N4EstablishmentResult> perform_n4_session_establishment(
                          pfcp_core::encode_destination_interface(pfcp_core::InterfaceValue::Core));
 
     std::vector<std::uint8_t> create_far;
-    pfcp_core::encode_ie(create_far, static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
+    pfcp_core::encode_ie(create_far,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
                          pfcp_core::encode_far_id(1));
-    pfcp_core::encode_ie(create_far, static_cast<std::uint16_t>(pfcp_core::IeType::ApplyAction),
+    pfcp_core::encode_ie(create_far,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::ApplyAction),
                          pfcp_core::encode_apply_action_forward());
-    pfcp_core::encode_ie(create_far, static_cast<std::uint16_t>(pfcp_core::IeType::ForwardingParameters),
+    pfcp_core::encode_ie(create_far,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::ForwardingParameters),
                          forwarding_parameters);
 
     pfcp_core::FSeid cp_f_seid;
@@ -523,9 +540,11 @@ std::optional<N4EstablishmentResult> perform_n4_session_establishment(
     cp_f_seid.ipv4 = kSmfNodeIpv4;
 
     std::vector<std::uint8_t> ies;
-    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
                          pfcp_core::encode_node_id_ipv4(kSmfNodeIpv4));
-    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::FSeid),
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::FSeid),
                          pfcp_core::encode_f_seid_ipv4(cp_f_seid));
     pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatePdr), create_pdr);
     pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreateFar), create_far);
@@ -535,7 +554,8 @@ std::optional<N4EstablishmentResult> perform_n4_session_establishment(
             static_cast<std::uint64_t>(static_cast<double>(*granted_total_volume_octets) * 0.9);
 
         std::vector<std::uint8_t> create_urr;
-        pfcp_core::encode_ie(create_urr, static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
+        pfcp_core::encode_ie(create_urr,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
                              pfcp_core::encode_urr_id(kUrrId));
         pfcp_core::encode_ie(create_urr,
                              static_cast<std::uint16_t>(pfcp_core::IeType::MeasurementMethod),
@@ -546,13 +566,18 @@ std::optional<N4EstablishmentResult> perform_n4_session_establishment(
         pfcp_core::encode_ie(create_urr,
                              static_cast<std::uint16_t>(pfcp_core::IeType::VolumeThreshold),
                              pfcp_core::encode_volume_total(volume_threshold_octets));
-        pfcp_core::encode_ie(create_urr, static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota),
+        pfcp_core::encode_ie(create_urr,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota),
                              pfcp_core::encode_volume_total(*granted_total_volume_octets));
-        pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreateUrr), create_urr);
+        pfcp_core::encode_ie(
+            ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreateUrr), create_urr);
 
         spdlog::info("smf: provisioning URR {} for pduSessionId {}: threshold={} octets, "
-                    "quota={} octets",
-                    kUrrId, pdu_session_id, volume_threshold_octets, *granted_total_volume_octets);
+                     "quota={} octets",
+                     kUrrId,
+                     pdu_session_id,
+                     volume_threshold_octets,
+                     *granted_total_volume_octets);
     }
 
     pfcp_core::Header req_header;
@@ -567,8 +592,11 @@ std::optional<N4EstablishmentResult> perform_n4_session_establishment(
     pdu.insert(pdu.end(), ies.begin(), ies.end());
 
     const auto resp_ie_bytes = pfcp_peer.send_request_and_await_response(
-        upf_endpoint, pdu, pfcp_core::MessageType::SessionEstablishmentResponse,
-        req_header.sequence_number, "Session Establishment");
+        upf_endpoint,
+        pdu,
+        pfcp_core::MessageType::SessionEstablishmentResponse,
+        req_header.sequence_number,
+        "Session Establishment");
     if (!resp_ie_bytes.has_value()) {
         return std::nullopt;
     }
@@ -577,10 +605,12 @@ std::optional<N4EstablishmentResult> perform_n4_session_establishment(
         resp_ies.has_value()
             ? pfcp_core::find_ie(*resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
             : nullptr;
-    const auto cause = cause_ie != nullptr ? pfcp_core::decode_cause(cause_ie->value) : std::nullopt;
+    const auto cause =
+        cause_ie != nullptr ? pfcp_core::decode_cause(cause_ie->value) : std::nullopt;
     if (!cause.has_value() || *cause != pfcp_core::Cause::RequestAccepted) {
         spdlog::warn("smf: UPF rejected N4 Session Establishment for pduSessionId {} (cause={})",
-                    pdu_session_id, cause.has_value() ? static_cast<int>(*cause) : -1);
+                     pdu_session_id,
+                     cause.has_value() ? static_cast<int>(*cause) : -1);
         return std::nullopt;
     }
 
@@ -591,15 +621,16 @@ std::optional<N4EstablishmentResult> perform_n4_session_establishment(
         up_f_seid = pfcp_core::decode_f_seid_ipv4(up_f_seid_ie->value);
     }
     std::optional<std::uint32_t> allocated_teid;
-    if (const auto* created_pdr_ie =
-            pfcp_core::find_ie(*resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatedPdr));
+    if (const auto* created_pdr_ie = pfcp_core::find_ie(
+            *resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatedPdr));
         created_pdr_ie != nullptr) {
         if (const auto created_pdr_ies = pfcp_core::decode_ies(created_pdr_ie->value);
             created_pdr_ies.has_value()) {
             if (const auto* f_teid_ie = pfcp_core::find_ie(
                     *created_pdr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::FTeid));
                 f_teid_ie != nullptr) {
-                if (const auto allocated = pfcp_core::decode_f_teid_allocated_ipv4(f_teid_ie->value);
+                if (const auto allocated =
+                        pfcp_core::decode_f_teid_allocated_ipv4(f_teid_ie->value);
                     allocated.has_value()) {
                     allocated_teid = allocated->teid;
                 }
@@ -608,9 +639,10 @@ std::optional<N4EstablishmentResult> perform_n4_session_establishment(
     }
 
     spdlog::info("smf: N4 Session Establishment succeeded for pduSessionId {}, UPF F-SEID={:#x}, "
-                "allocated uplink F-TEID={:#x}",
-                pdu_session_id, up_f_seid.has_value() ? up_f_seid->seid : 0,
-                allocated_teid.value_or(0));
+                 "allocated uplink F-TEID={:#x}",
+                 pdu_session_id,
+                 up_f_seid.has_value() ? up_f_seid->seid : 0,
+                 allocated_teid.value_or(0));
     if (!up_f_seid.has_value()) {
         // Real spec: a successful (Cause=RequestAccepted) Establishment Response always carries
         // the UP F-SEID -- this is a malformed-but-accepted response, not a normal outcome.
@@ -618,8 +650,8 @@ std::optional<N4EstablishmentResult> perform_n4_session_establishment(
         // Modification has no way to address this session without it -- disclosed as std::nullopt
         // here rather than fabricating a SEID.
         spdlog::warn("smf: N4 Session Establishment response for pduSessionId {} had no UP F-SEID, "
-                    "quota re-authorization won't be able to reach UPF for this session",
-                    pdu_session_id);
+                     "quota re-authorization won't be able to reach UPF for this session",
+                     pdu_session_id);
         return std::nullopt;
     }
     return N4EstablishmentResult{cp_seid, up_f_seid->seid};
@@ -642,14 +674,18 @@ struct ChargingDataCreateResult {
     std::optional<std::uint64_t> granted_total_volume_octets;
 };
 
-std::optional<ChargingDataCreateResult> perform_n40_charging_data_create(
-    sbi_core::http2::Client& chf_client, sbi_core::OAuth2Client& chf_oauth,
-    const std::string& smf_instance_id, const std::string& supi, std::uint8_t pdu_session_id) {
+std::optional<ChargingDataCreateResult>
+perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
+                                 sbi_core::OAuth2Client& chf_oauth,
+                                 const std::string& smf_instance_id,
+                                 const std::string& supi,
+                                 std::uint8_t pdu_session_id) {
     auto token = chf_oauth.get_bearer_token();
     if (!token.has_value()) {
         spdlog::warn("smf: could not obtain a token for CHF, skipping Nchf_ConvergedCharging_"
-                    "Create for pduSessionId {}: {}",
-                    pdu_session_id, token.error());
+                     "Create for pduSessionId {}: {}",
+                     pdu_session_id,
+                     token.error());
         return std::nullopt;
     }
 
@@ -682,14 +718,16 @@ std::optional<ChargingDataCreateResult> perform_n40_charging_data_create(
     auto chf_resp = chf_client.send(chf_http_req);
     if (!chf_resp.has_value()) {
         spdlog::warn("smf: could not reach CHF for Nchf_ConvergedCharging_Create, pduSessionId "
-                    "{}: {}",
-                    pdu_session_id, chf_resp.error());
+                     "{}: {}",
+                     pdu_session_id,
+                     chf_resp.error());
         return std::nullopt;
     }
     if (chf_resp->status != 201) {
         spdlog::warn("smf: CHF Nchf_ConvergedCharging_Create returned unexpected status {} for "
-                    "pduSessionId {}",
-                    chf_resp->status, pdu_session_id);
+                     "pduSessionId {}",
+                     chf_resp->status,
+                     pdu_session_id);
         return std::nullopt;
     }
     std::string charging_data_ref;
@@ -700,9 +738,9 @@ std::optional<ChargingDataCreateResult> perform_n40_charging_data_create(
     }
     if (charging_data_ref.empty()) {
         spdlog::warn("smf: CHF Nchf_ConvergedCharging_Create succeeded but returned no usable "
-                    "location header for pduSessionId {}, Release will not be possible for this "
-                    "session",
-                    pdu_session_id);
+                     "location header for pduSessionId {}, Release will not be possible for this "
+                     "session",
+                     pdu_session_id);
         return std::nullopt;
     }
     // ADR-0050 Stage 1: extract the real granted quota (if any) so N4 Session Establishment can
@@ -716,19 +754,22 @@ std::optional<ChargingDataCreateResult> perform_n40_charging_data_create(
             !resp_body.multipleUnitInformation->empty() &&
             (*resp_body.multipleUnitInformation)[0].grantedUnit.has_value() &&
             (*resp_body.multipleUnitInformation)[0].grantedUnit->totalVolume.has_value()) {
-            granted_total_volume_octets = *(*resp_body.multipleUnitInformation)[0].grantedUnit->totalVolume;
+            granted_total_volume_octets =
+                *(*resp_body.multipleUnitInformation)[0].grantedUnit->totalVolume;
         }
     } catch (const json::exception& e) {
         spdlog::warn("smf: could not parse CHF's ChargingDataResponse body for pduSessionId {}: {}",
-                    pdu_session_id, e.what());
+                     pdu_session_id,
+                     e.what());
     }
 
     spdlog::info("smf: Nchf_ConvergedCharging_Create succeeded for pduSessionId {}, "
-                "ChargingDataRef={}, granted total volume={}",
-                pdu_session_id, charging_data_ref,
-                granted_total_volume_octets.has_value()
-                    ? std::to_string(*granted_total_volume_octets) + " octets"
-                    : "none");
+                 "ChargingDataRef={}, granted total volume={}",
+                 pdu_session_id,
+                 charging_data_ref,
+                 granted_total_volume_octets.has_value()
+                     ? std::to_string(*granted_total_volume_octets) + " octets"
+                     : "none");
     return ChargingDataCreateResult{charging_data_ref, granted_total_volume_octets};
 }
 
@@ -746,14 +787,16 @@ std::optional<ChargingDataCreateResult> perform_n40_charging_data_create(
 // 3, ... for the same ChargingDataRef).
 bool perform_n40_charging_data_release(sbi_core::http2::Client& chf_client,
                                        sbi_core::OAuth2Client& chf_oauth,
-                                       const std::string& smf_instance_id, const std::string& supi,
+                                       const std::string& smf_instance_id,
+                                       const std::string& supi,
                                        const std::string& charging_data_ref,
                                        std::int64_t invocation_sequence_number) {
     auto token = chf_oauth.get_bearer_token();
     if (!token.has_value()) {
         spdlog::warn("smf: could not obtain a token for CHF, skipping Nchf_ConvergedCharging_"
-                    "Release for ChargingDataRef={}: {}",
-                    charging_data_ref, token.error());
+                     "Release for ChargingDataRef={}: {}",
+                     charging_data_ref,
+                     token.error());
         return false;
     }
 
@@ -779,18 +822,20 @@ bool perform_n40_charging_data_release(sbi_core::http2::Client& chf_client,
     auto chf_resp = chf_client.send(chf_http_req);
     if (!chf_resp.has_value()) {
         spdlog::warn("smf: could not reach CHF for Nchf_ConvergedCharging_Release, "
-                    "ChargingDataRef={}: {}",
-                    charging_data_ref, chf_resp.error());
+                     "ChargingDataRef={}: {}",
+                     charging_data_ref,
+                     chf_resp.error());
         return false;
     }
     if (chf_resp->status != 204) {
         spdlog::warn("smf: CHF Nchf_ConvergedCharging_Release returned unexpected status {} for "
-                    "ChargingDataRef={}",
-                    chf_resp->status, charging_data_ref);
+                     "ChargingDataRef={}",
+                     chf_resp->status,
+                     charging_data_ref);
         return false;
     }
     spdlog::info("smf: Nchf_ConvergedCharging_Release succeeded for ChargingDataRef={}",
-                charging_data_ref);
+                 charging_data_ref);
     return true;
 }
 
@@ -817,17 +862,22 @@ struct ChargingDataUpdateResult {
     std::optional<std::uint64_t> granted_total_volume_octets;
 };
 
-std::optional<ChargingDataUpdateResult> perform_n40_charging_data_update(
-    sbi_core::http2::Client& chf_client, sbi_core::OAuth2Client& chf_oauth,
-    const std::string& smf_instance_id, const std::string& supi,
-    const std::string& charging_data_ref, std::int64_t invocation_sequence_number,
-    std::int64_t rating_group, std::int64_t local_sequence_number,
-    std::uint64_t used_total_volume_octets) {
+std::optional<ChargingDataUpdateResult>
+perform_n40_charging_data_update(sbi_core::http2::Client& chf_client,
+                                 sbi_core::OAuth2Client& chf_oauth,
+                                 const std::string& smf_instance_id,
+                                 const std::string& supi,
+                                 const std::string& charging_data_ref,
+                                 std::int64_t invocation_sequence_number,
+                                 std::int64_t rating_group,
+                                 std::int64_t local_sequence_number,
+                                 std::uint64_t used_total_volume_octets) {
     auto token = chf_oauth.get_bearer_token();
     if (!token.has_value()) {
         spdlog::warn("smf: could not obtain a token for CHF, skipping Nchf_ConvergedCharging_"
-                    "Update for ChargingDataRef={}: {}",
-                    charging_data_ref, token.error());
+                     "Update for ChargingDataRef={}: {}",
+                     charging_data_ref,
+                     token.error());
         return std::nullopt;
     }
 
@@ -862,14 +912,16 @@ std::optional<ChargingDataUpdateResult> perform_n40_charging_data_update(
     auto chf_resp = chf_client.send(chf_http_req);
     if (!chf_resp.has_value()) {
         spdlog::warn("smf: could not reach CHF for Nchf_ConvergedCharging_Update, "
-                    "ChargingDataRef={}: {}",
-                    charging_data_ref, chf_resp.error());
+                     "ChargingDataRef={}: {}",
+                     charging_data_ref,
+                     chf_resp.error());
         return std::nullopt;
     }
     if (chf_resp->status != 200) {
         spdlog::warn("smf: CHF Nchf_ConvergedCharging_Update returned unexpected status {} for "
-                    "ChargingDataRef={}",
-                    chf_resp->status, charging_data_ref);
+                     "ChargingDataRef={}",
+                     chf_resp->status,
+                     charging_data_ref);
         return std::nullopt;
     }
 
@@ -883,19 +935,23 @@ std::optional<ChargingDataUpdateResult> perform_n40_charging_data_update(
             !resp_body.multipleUnitInformation->empty() &&
             (*resp_body.multipleUnitInformation)[0].grantedUnit.has_value() &&
             (*resp_body.multipleUnitInformation)[0].grantedUnit->totalVolume.has_value()) {
-            granted_total_volume_octets = *(*resp_body.multipleUnitInformation)[0].grantedUnit->totalVolume;
+            granted_total_volume_octets =
+                *(*resp_body.multipleUnitInformation)[0].grantedUnit->totalVolume;
         }
     } catch (const json::exception& e) {
-        spdlog::warn("smf: could not parse CHF's ChargingDataResponse body for ChargingDataRef={}: {}",
-                    charging_data_ref, e.what());
+        spdlog::warn(
+            "smf: could not parse CHF's ChargingDataResponse body for ChargingDataRef={}: {}",
+            charging_data_ref,
+            e.what());
     }
 
     spdlog::info("smf: Nchf_ConvergedCharging_Update succeeded for ChargingDataRef={}, reported {} "
-                "octets used, re-authorized {}",
-                charging_data_ref, used_total_volume_octets,
-                granted_total_volume_octets.has_value()
-                    ? std::to_string(*granted_total_volume_octets) + " octets"
-                    : "nothing");
+                 "octets used, re-authorized {}",
+                 charging_data_ref,
+                 used_total_volume_octets,
+                 granted_total_volume_octets.has_value()
+                     ? std::to_string(*granted_total_volume_octets) + " octets"
+                     : "nothing");
     return ChargingDataUpdateResult{granted_total_volume_octets};
 }
 
@@ -906,19 +962,24 @@ std::optional<ChargingDataUpdateResult> perform_n40_charging_data_update(
 // needs to be modified" convention (Measurement Method/Reporting Triggers are omitted: unchanged
 // since Create). Header SEID is `up_seid` (the UP function's own F-SEID for this session, per this
 // file's own established addressing-rule comment), not `cp_seid`.
-bool perform_n4_session_modification_update_urr(smf::PfcpPeer& pfcp_peer, const std::string& upf_ip,
-                                                 std::uint64_t up_seid, std::uint32_t urr_id,
-                                                 std::uint64_t new_volume_threshold_octets,
-                                                 std::uint64_t new_volume_quota_octets) {
+bool perform_n4_session_modification_update_urr(smf::PfcpPeer& pfcp_peer,
+                                                const std::string& upf_ip,
+                                                std::uint64_t up_seid,
+                                                std::uint32_t urr_id,
+                                                std::uint64_t new_volume_threshold_octets,
+                                                std::uint64_t new_volume_quota_octets) {
     const boost::asio::ip::udp::endpoint upf_endpoint(boost::asio::ip::make_address(upf_ip),
-                                                       pfcp_core::kPfcpPort);
+                                                      pfcp_core::kPfcpPort);
 
     std::vector<std::uint8_t> update_urr;
-    pfcp_core::encode_ie(update_urr, static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
+    pfcp_core::encode_ie(update_urr,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
                          pfcp_core::encode_urr_id(urr_id));
-    pfcp_core::encode_ie(update_urr, static_cast<std::uint16_t>(pfcp_core::IeType::VolumeThreshold),
+    pfcp_core::encode_ie(update_urr,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::VolumeThreshold),
                          pfcp_core::encode_volume_total(new_volume_threshold_octets));
-    pfcp_core::encode_ie(update_urr, static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota),
+    pfcp_core::encode_ie(update_urr,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota),
                          pfcp_core::encode_volume_total(new_volume_quota_octets));
 
     std::vector<std::uint8_t> ies;
@@ -934,8 +995,11 @@ bool perform_n4_session_modification_update_urr(smf::PfcpPeer& pfcp_peer, const 
     pdu.insert(pdu.end(), ies.begin(), ies.end());
 
     const auto resp_ie_bytes = pfcp_peer.send_request_and_await_response(
-        upf_endpoint, pdu, pfcp_core::MessageType::SessionModificationResponse,
-        req_header.sequence_number, "Session Modification");
+        upf_endpoint,
+        pdu,
+        pfcp_core::MessageType::SessionModificationResponse,
+        req_header.sequence_number,
+        "Session Modification");
     if (!resp_ie_bytes.has_value()) {
         return false;
     }
@@ -944,16 +1008,22 @@ bool perform_n4_session_modification_update_urr(smf::PfcpPeer& pfcp_peer, const 
         resp_ies.has_value()
             ? pfcp_core::find_ie(*resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
             : nullptr;
-    const auto cause = cause_ie != nullptr ? pfcp_core::decode_cause(cause_ie->value) : std::nullopt;
+    const auto cause =
+        cause_ie != nullptr ? pfcp_core::decode_cause(cause_ie->value) : std::nullopt;
     if (!cause.has_value() || *cause != pfcp_core::Cause::RequestAccepted) {
         spdlog::warn("smf: UPF rejected N4 Session Modification for URR {} (UP F-SEID={:#x}, "
-                    "cause={})",
-                    urr_id, up_seid, cause.has_value() ? static_cast<int>(*cause) : -1);
+                     "cause={})",
+                     urr_id,
+                     up_seid,
+                     cause.has_value() ? static_cast<int>(*cause) : -1);
         return false;
     }
     spdlog::info("smf: N4 Session Modification succeeded for URR {} (UP F-SEID={:#x}): "
-                "threshold={} octets, quota={} octets",
-                urr_id, up_seid, new_volume_threshold_octets, new_volume_quota_octets);
+                 "threshold={} octets, quota={} octets",
+                 urr_id,
+                 up_seid,
+                 new_volume_threshold_octets,
+                 new_volume_quota_octets);
     return true;
 }
 
@@ -1010,11 +1080,8 @@ int main() {
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
     sbi_core::http2::Client amf_client(std::move(amf_client_tls));
-    sbi_core::OAuth2Client amf_oauth(amf_client,
-                                     std::string(kNrfBase) + "/oauth2/token",
-                                     smf_instance_id,
-                                     "namf-comm",
-                                     "AMF");
+    sbi_core::OAuth2Client amf_oauth(
+        amf_client, std::string(kNrfBase) + "/oauth2/token", smf_instance_id, "namf-comm", "AMF");
 
     // SMF's own client identity + token source for calling CHF's Nchf_ConvergedCharging (N40,
     // ADR-0044) -- same one-client-per-NF pattern as pcf_client/amf_client above.
@@ -1070,112 +1137,132 @@ int main() {
     // smf_instance_id) are all main()'s own locals, alive for this process's entire lifetime (it
     // never terminates, same disclosed simplification as every other NF in this project) -- safe to
     // capture by reference into a detached thread for that reason, not despite it.
-    pfcp_peer.set_session_report_handler(
-        [&pfcp_peer, &cp_seid_sessions, &charging_data_invocation_seq, &chf_report_client,
-         &chf_report_oauth, &smf_instance_id](const pfcp_core::Header& header,
-                                              const std::vector<std::uint8_t>& ie_bytes,
-                                              const boost::asio::ip::udp::endpoint& sender) {
-            spdlog::info("smf: received real Sx Session Report Request from {} (seq={})",
-                        sender.address().to_string(), header.sequence_number);
+    pfcp_peer.set_session_report_handler([&pfcp_peer,
+                                          &cp_seid_sessions,
+                                          &charging_data_invocation_seq,
+                                          &chf_report_client,
+                                          &chf_report_oauth,
+                                          &smf_instance_id](
+                                             const pfcp_core::Header& header,
+                                             const std::vector<std::uint8_t>& ie_bytes,
+                                             const boost::asio::ip::udp::endpoint& sender) {
+        spdlog::info("smf: received real Sx Session Report Request from {} (seq={})",
+                     sender.address().to_string(),
+                     header.sequence_number);
 
-            std::vector<std::uint8_t> ack_ies;
-            pfcp_core::encode_ie(ack_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
-                                 pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
-            pfcp_core::Header ack_header;
-            ack_header.has_seid = true;
-            ack_header.seid = header.seid;
-            ack_header.message_type = pfcp_core::MessageType::SessionReportResponse;
-            ack_header.sequence_number = header.sequence_number;
-            auto ack_pdu =
-                pfcp_core::encode_header(ack_header, static_cast<std::uint16_t>(ack_ies.size()));
-            ack_pdu.insert(ack_pdu.end(), ack_ies.begin(), ack_ies.end());
-            pfcp_peer.send_fire_and_forget(sender, ack_pdu);
+        std::vector<std::uint8_t> ack_ies;
+        pfcp_core::encode_ie(ack_ies,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                             pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+        pfcp_core::Header ack_header;
+        ack_header.has_seid = true;
+        ack_header.seid = header.seid;
+        ack_header.message_type = pfcp_core::MessageType::SessionReportResponse;
+        ack_header.sequence_number = header.sequence_number;
+        auto ack_pdu =
+            pfcp_core::encode_header(ack_header, static_cast<std::uint16_t>(ack_ies.size()));
+        ack_pdu.insert(ack_pdu.end(), ack_ies.begin(), ack_ies.end());
+        pfcp_peer.send_fire_and_forget(sender, ack_pdu);
 
-            // Decoding is fast/non-blocking -- safe to keep inline. Only the real network I/O
-            // below is handed off.
-            const auto ies = pfcp_core::decode_ies(ie_bytes);
-            const auto* report_type_ie =
-                ies.has_value()
-                    ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::ReportType))
-                    : nullptr;
-            const auto* usage_report_ie =
-                ies.has_value() ? pfcp_core::find_ie(
-                                       *ies, static_cast<std::uint16_t>(pfcp_core::IeType::UsageReport))
-                                : nullptr;
-            if (report_type_ie == nullptr ||
-                !pfcp_core::decode_report_type_has_usage_report(report_type_ie->value) ||
-                usage_report_ie == nullptr) {
-                spdlog::warn("smf: Sx Session Report Request from {} has no real Usage Report "
-                            "content, no CHF Update call",
-                            sender.address().to_string());
+        // Decoding is fast/non-blocking -- safe to keep inline. Only the real network I/O
+        // below is handed off.
+        const auto ies = pfcp_core::decode_ies(ie_bytes);
+        const auto* report_type_ie =
+            ies.has_value() ? pfcp_core::find_ie(
+                                  *ies, static_cast<std::uint16_t>(pfcp_core::IeType::ReportType))
+                            : nullptr;
+        const auto* usage_report_ie =
+            ies.has_value() ? pfcp_core::find_ie(
+                                  *ies, static_cast<std::uint16_t>(pfcp_core::IeType::UsageReport))
+                            : nullptr;
+        if (report_type_ie == nullptr ||
+            !pfcp_core::decode_report_type_has_usage_report(report_type_ie->value) ||
+            usage_report_ie == nullptr) {
+            spdlog::warn("smf: Sx Session Report Request from {} has no real Usage Report "
+                         "content, no CHF Update call",
+                         sender.address().to_string());
+            return;
+        }
+        const auto usage_ies = pfcp_core::decode_ies(usage_report_ie->value);
+        const auto* urr_id_ie =
+            usage_ies.has_value()
+                ? pfcp_core::find_ie(*usage_ies,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::UrrId))
+                : nullptr;
+        const auto* ur_seqn_ie =
+            usage_ies.has_value()
+                ? pfcp_core::find_ie(*usage_ies,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::UrSeqn))
+                : nullptr;
+        const auto* volume_ie =
+            usage_ies.has_value()
+                ? pfcp_core::find_ie(
+                      *usage_ies, static_cast<std::uint16_t>(pfcp_core::IeType::VolumeMeasurement))
+                : nullptr;
+        const auto ur_seqn =
+            ur_seqn_ie != nullptr ? pfcp_core::decode_ur_seqn(ur_seqn_ie->value) : std::nullopt;
+        const auto used_volume =
+            volume_ie != nullptr ? pfcp_core::decode_volume_total(volume_ie->value) : std::nullopt;
+        // URR ID itself is decoded (urr_id_ie) only to confirm the report is well-formed -- this
+        // build's Update call reports usage against the session's one fixed rating group
+        // (kDefaultRatingGroup, same simplification Create already carries), not a per-URR-ID
+        // rating group lookup that doesn't exist in this codebase.
+        if (urr_id_ie == nullptr || !ur_seqn.has_value() || !used_volume.has_value()) {
+            spdlog::warn("smf: Sx Session Report Request from {} has a malformed Usage Report, "
+                         "no CHF Update call",
+                         sender.address().to_string());
+            return;
+        }
+        const auto session = cp_seid_sessions.get(header.seid);
+        if (!session.has_value()) {
+            spdlog::warn("smf: Sx Session Report Request references unknown SEID {:#x}, no CHF "
+                         "Update call",
+                         header.seid);
+            return;
+        }
+        const CpSeidSessionInfo info = *session;
+        const std::int64_t invocation_seq =
+            charging_data_invocation_seq.get_and_advance(info.charging_data_ref);
+        const std::uint32_t ur_seqn_value = *ur_seqn;
+        const std::uint64_t used_volume_value = *used_volume;
+
+        std::thread([&pfcp_peer,
+                     &chf_report_client,
+                     &chf_report_oauth,
+                     &smf_instance_id,
+                     info,
+                     invocation_seq,
+                     ur_seqn_value,
+                     used_volume_value]() {
+            const auto update_result =
+                perform_n40_charging_data_update(chf_report_client,
+                                                 chf_report_oauth,
+                                                 smf_instance_id,
+                                                 info.supi,
+                                                 info.charging_data_ref,
+                                                 invocation_seq,
+                                                 kDefaultRatingGroup,
+                                                 static_cast<std::int64_t>(ur_seqn_value),
+                                                 used_volume_value);
+            if (!update_result.has_value() ||
+                !update_result->granted_total_volume_octets.has_value()) {
                 return;
             }
-            const auto usage_ies = pfcp_core::decode_ies(usage_report_ie->value);
-            const auto* urr_id_ie =
-                usage_ies.has_value()
-                    ? pfcp_core::find_ie(*usage_ies, static_cast<std::uint16_t>(pfcp_core::IeType::UrrId))
-                    : nullptr;
-            const auto* ur_seqn_ie =
-                usage_ies.has_value()
-                    ? pfcp_core::find_ie(*usage_ies,
-                                         static_cast<std::uint16_t>(pfcp_core::IeType::UrSeqn))
-                    : nullptr;
-            const auto* volume_ie =
-                usage_ies.has_value()
-                    ? pfcp_core::find_ie(*usage_ies,
-                                         static_cast<std::uint16_t>(pfcp_core::IeType::VolumeMeasurement))
-                    : nullptr;
-            const auto ur_seqn =
-                ur_seqn_ie != nullptr ? pfcp_core::decode_ur_seqn(ur_seqn_ie->value) : std::nullopt;
-            const auto used_volume =
-                volume_ie != nullptr ? pfcp_core::decode_volume_total(volume_ie->value) : std::nullopt;
-            // URR ID itself is decoded (urr_id_ie) only to confirm the report is well-formed -- this
-            // build's Update call reports usage against the session's one fixed rating group
-            // (kDefaultRatingGroup, same simplification Create already carries), not a per-URR-ID
-            // rating group lookup that doesn't exist in this codebase.
-            if (urr_id_ie == nullptr || !ur_seqn.has_value() || !used_volume.has_value()) {
-                spdlog::warn("smf: Sx Session Report Request from {} has a malformed Usage Report, "
-                            "no CHF Update call",
-                            sender.address().to_string());
-                return;
-            }
-            const auto session = cp_seid_sessions.get(header.seid);
-            if (!session.has_value()) {
-                spdlog::warn("smf: Sx Session Report Request references unknown SEID {:#x}, no CHF "
-                            "Update call",
-                            header.seid);
-                return;
-            }
-            const CpSeidSessionInfo info = *session;
-            const std::int64_t invocation_seq =
-                charging_data_invocation_seq.get_and_advance(info.charging_data_ref);
-            const std::uint32_t ur_seqn_value = *ur_seqn;
-            const std::uint64_t used_volume_value = *used_volume;
-
-            std::thread([&pfcp_peer, &chf_report_client, &chf_report_oauth, &smf_instance_id, info,
-                        invocation_seq, ur_seqn_value, used_volume_value]() {
-                const auto update_result = perform_n40_charging_data_update(
-                    chf_report_client, chf_report_oauth, smf_instance_id, info.supi,
-                    info.charging_data_ref, invocation_seq, kDefaultRatingGroup,
-                    static_cast<std::int64_t>(ur_seqn_value), used_volume_value);
-                if (!update_result.has_value() ||
-                    !update_result->granted_total_volume_octets.has_value()) {
-                    return;
-                }
-                // ADR-0050 Stage 5: the new Volume Threshold/Volume Quota are computed relative to
-                // this report's own real cumulative Volume Measurement -- the same technique TS
-                // 29.244 §5.2.2.2.1 NOTE 3 itself describes for online charging -- rather than
-                // resetting to a fresh small window, and the same 90%/100% ratio Stage 1's Create
-                // URR already uses. The next crossing is where the newly re-authorized budget
-                // itself runs out, not an arbitrary new baseline.
-                const std::uint64_t new_grant = *update_result->granted_total_volume_octets;
-                const std::uint64_t new_quota = used_volume_value + new_grant;
-                const std::uint64_t new_threshold =
-                    used_volume_value + static_cast<std::uint64_t>(static_cast<double>(new_grant) * 0.9);
-                perform_n4_session_modification_update_urr(pfcp_peer, info.upf_ip, info.up_seid,
-                                                           kUrrId, new_threshold, new_quota);
-            }).detach();
-        });
+            // ADR-0050 Stage 5: the new Volume Threshold/Volume Quota are computed relative to
+            // this report's own real cumulative Volume Measurement -- the same technique TS
+            // 29.244 §5.2.2.2.1 NOTE 3 itself describes for online charging -- rather than
+            // resetting to a fresh small window, and the same 90%/100% ratio Stage 1's Create
+            // URR already uses. The next crossing is where the newly re-authorized budget
+            // itself runs out, not an arbitrary new baseline.
+            const std::uint64_t new_grant = *update_result->granted_total_volume_octets;
+            const std::uint64_t new_quota = used_volume_value + new_grant;
+            const std::uint64_t new_threshold =
+                used_volume_value +
+                static_cast<std::uint64_t>(static_cast<double>(new_grant) * 0.9);
+            perform_n4_session_modification_update_urr(
+                pfcp_peer, info.upf_ip, info.up_seid, kUrrId, new_threshold, new_quota);
+        }).detach();
+    });
 
     smf::SmContextStore sm_contexts;
     UpfEndpointStore upf_endpoint_store;
@@ -1191,11 +1278,13 @@ int main() {
         meter->CreateUInt64Counter("smf_release_sm_context_total", "Total ReleaseSMContext calls");
     auto pcf_sm_policy_create_counter = meter->CreateUInt64Counter(
         "smf_pcf_sm_policy_create_total", "Total successful CreateSMPolicy calls to PCF");
-    auto pcf_sm_policy_delete_counter = meter->CreateUInt64Counter(
-        "smf_pcf_sm_policy_delete_total", "Total successful (best-effort) DeleteSMPolicy calls to PCF");
-    auto n1n2_transfer_counter = meter->CreateUInt64Counter(
-        "smf_n1n2_message_transfer_total",
-        "Total successful AMF N1N2MessageTransfer calls delivering a PDU Session Establishment Accept");
+    auto pcf_sm_policy_delete_counter =
+        meter->CreateUInt64Counter("smf_pcf_sm_policy_delete_total",
+                                   "Total successful (best-effort) DeleteSMPolicy calls to PCF");
+    auto n1n2_transfer_counter =
+        meter->CreateUInt64Counter("smf_n1n2_message_transfer_total",
+                                   "Total successful AMF N1N2MessageTransfer calls delivering a "
+                                   "PDU Session Establishment Accept");
     auto chf_charging_data_create_counter = meter->CreateUInt64Counter(
         "smf_chf_charging_data_create_total",
         "Total successful (best-effort) Nchf_ConvergedCharging_Create calls to CHF");
@@ -1210,10 +1299,22 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/sm-contexts",
-        [&verifier, &sm_contexts, &create_counter, &pcf_client, &pcf_oauth,
-         &pcf_sm_policy_create_counter, &amf_client, &amf_oauth, &upf_endpoint_store,
-         &n1n2_transfer_counter, &chf_client, &chf_oauth, &chf_charging_data_create_counter,
-         &smf_instance_id, &pfcp_peer, &cp_seid_sessions,
+        [&verifier,
+         &sm_contexts,
+         &create_counter,
+         &pcf_client,
+         &pcf_oauth,
+         &pcf_sm_policy_create_counter,
+         &amf_client,
+         &amf_oauth,
+         &upf_endpoint_store,
+         &n1n2_transfer_counter,
+         &chf_client,
+         &chf_oauth,
+         &chf_charging_data_create_counter,
+         &smf_instance_id,
+         &pfcp_peer,
+         &cp_seid_sessions,
          &charging_data_invocation_seq](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -1242,10 +1343,10 @@ int main() {
             auto token = pcf_oauth.get_bearer_token();
             if (!token.has_value()) {
                 sm_contexts.remove(sm_context_ref);
-                return sbi_core::http2::problem_response(
-                    500,
-                    "Internal Server Error",
-                    "SMF could not obtain a token for PCF: " + token.error());
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "SMF could not obtain a token for PCF: " +
+                                                             token.error());
             }
 
             sbi_gen::SmPolicyContextData pcf_req{};
@@ -1257,7 +1358,7 @@ int main() {
             pcf_req.pduSessionType.value = sbi_gen::PduSessionType::IPV4;
             pcf_req.dnn = *body->dnn;
             pcf_req.notificationUri = std::string(kSelfBase) + std::string(kApiRoot) +
-                                       "/sm-contexts/" + sm_context_ref + "/pcf-notify";
+                                      "/sm-contexts/" + sm_context_ref + "/pcf-notify";
             pcf_req.sliceInfo = *body->sNssai;
 
             sbi_core::http2::ClientRequest pcf_http_req;
@@ -1306,9 +1407,10 @@ int main() {
             // ReleaseSMContext can tear the association down again. `supi` is stored here too
             // (ADR-0046) so ReleaseSMContext can populate Nchf_ConvergedCharging_Release's
             // subscriberIdentifier without re-deriving it from anywhere else.
-            sm_contexts.update(
-                sm_context_ref,
-                json{{"smPolicyId", sm_policy_id}, {"policy", json(decision)}, {"supi", *body->supi}});
+            sm_contexts.update(sm_context_ref,
+                               json{{"smPolicyId", sm_policy_id},
+                                    {"policy", json(decision)},
+                                    {"supi", *body->supi}});
             pcf_sm_policy_create_counter->Add(1);
 
             // N40, ADR-0044/ADR-0046/ADR-0050: real Nchf_ConvergedCharging_Create, moved ahead of
@@ -1321,7 +1423,10 @@ int main() {
             std::optional<std::uint64_t> granted_total_volume_octets;
             std::string charging_data_ref;
             if (const auto charging_result = perform_n40_charging_data_create(
-                    chf_client, chf_oauth, smf_instance_id, *body->supi,
+                    chf_client,
+                    chf_oauth,
+                    smf_instance_id,
+                    *body->supi,
                     static_cast<std::uint8_t>(*body->pduSessionId));
                 charging_result.has_value()) {
                 chf_charging_data_create_counter->Add(1);
@@ -1347,23 +1452,26 @@ int main() {
             // on (no UPF discovered yet) shouldn't also block CreateSMContext's own already-real
             // PCF/AMF/CHF work.
             if (const auto upf_ip = upf_endpoint_store.get(); upf_ip.has_value()) {
-                const auto n4_result = perform_n4_session_establishment(
-                    pfcp_peer, *upf_ip, static_cast<std::uint8_t>(*body->pduSessionId),
-                    granted_total_volume_octets);
+                const auto n4_result =
+                    perform_n4_session_establishment(pfcp_peer,
+                                                     *upf_ip,
+                                                     static_cast<std::uint8_t>(*body->pduSessionId),
+                                                     granted_total_volume_octets);
                 // ADR-0050 Stage 3/5: only register a session for later Usage Report handling if a
                 // real URR was actually provisioned above -- a session with no granted quota can
                 // never produce a Session Report Request in the first place (UPF only counts/
                 // reports against TEIDs a Create URR was registered for, see nfs/upf/src/main.cpp).
                 if (n4_result.has_value() && granted_total_volume_octets.has_value() &&
                     !charging_data_ref.empty()) {
-                    cp_seid_sessions.put(n4_result->cp_seid,
-                                         CpSeidSessionInfo{*body->supi, charging_data_ref,
-                                                           n4_result->up_seid, *upf_ip});
+                    cp_seid_sessions.put(
+                        n4_result->cp_seid,
+                        CpSeidSessionInfo{
+                            *body->supi, charging_data_ref, n4_result->up_seid, *upf_ip});
                 }
             } else {
                 spdlog::warn("smf: no UPF Sx Association established yet, skipping N4 Session "
-                            "Establishment for pduSessionId {}",
-                            *body->pduSessionId);
+                             "Establishment for pduSessionId {}",
+                             *body->pduSessionId);
             }
 
             // ADR-0038: the real TS 23.502 §4.3.2.2.1 step 11 -- SMF decodes the UE's actual PDU
@@ -1395,10 +1503,12 @@ int main() {
                                           ? smf::nas5gsm::decode_establishment_request(n1_sm_bytes)
                                           : std::nullopt;
                 if (!req_info.has_value()) {
-                    spdlog::warn("smf: SUPI {} pduSessionId {} -- n1SmMsg referenced but its binary "
-                                "part was missing or not a PDU Session Establishment Request, no "
-                                "Accept sent",
-                                *body->supi, *body->pduSessionId);
+                    spdlog::warn(
+                        "smf: SUPI {} pduSessionId {} -- n1SmMsg referenced but its binary "
+                        "part was missing or not a PDU Session Establishment Request, no "
+                        "Accept sent",
+                        *body->supi,
+                        *body->pduSessionId);
                 } else {
                     // Sourced from PCF's real SmPolicyDecision.sessRules (built above), not
                     // fabricated -- falls back to nas_5gsm_codec's own disclosed defaults only if
@@ -1430,8 +1540,9 @@ int main() {
                     auto amf_token = amf_oauth.get_bearer_token();
                     if (!amf_token.has_value()) {
                         spdlog::warn("smf: could not obtain AMF token, PDU Session Establishment "
-                                    "Accept not delivered for SUPI {}: {}",
-                                    *body->supi, amf_token.error());
+                                     "Accept not delivered for SUPI {}: {}",
+                                     *body->supi,
+                                     amf_token.error());
                     } else {
                         sbi_gen::N1N2MessageTransferReqData n1n2_req{};
                         sbi_gen::N1MessageContainer n1_container{};
@@ -1473,8 +1584,9 @@ int main() {
                         } else {
                             n1n2_transfer_counter->Add(1);
                             spdlog::info("smf: PDU Session Establishment Accept delivered to AMF "
-                                        "for SUPI {}, pduSessionId {}",
-                                        *body->supi, *body->pduSessionId);
+                                         "for SUPI {}, pduSessionId {}",
+                                         *body->supi,
+                                         *body->pduSessionId);
                         }
                     }
                 }
@@ -1554,9 +1666,17 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/sm-contexts/{smContextRef}/release",
-        [&verifier, &sm_contexts, &release_counter, &pcf_client, &pcf_oauth,
-         &pcf_sm_policy_delete_counter, &chf_client, &chf_oauth, &chf_charging_data_release_counter,
-         &smf_instance_id, &charging_data_invocation_seq](const sbi_core::http2::Request& req) {
+        [&verifier,
+         &sm_contexts,
+         &release_counter,
+         &pcf_client,
+         &pcf_oauth,
+         &pcf_sm_policy_delete_counter,
+         &chf_client,
+         &chf_oauth,
+         &chf_charging_data_release_counter,
+         &smf_instance_id,
+         &charging_data_invocation_seq](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -1586,7 +1706,8 @@ int main() {
                         spdlog::warn(
                             "smf: could not obtain a PCF token for best-effort DeleteSMPolicy "
                             "(smPolicyId={}): {}",
-                            sm_policy_id, token.error());
+                            sm_policy_id,
+                            token.error());
                     } else {
                         sbi_core::http2::ClientRequest pcf_http_req;
                         pcf_http_req.method = "POST";
@@ -1600,9 +1721,8 @@ int main() {
                         if (pcf_resp.has_value() && pcf_resp->status == 204) {
                             pcf_sm_policy_delete_counter->Add(1);
                         } else {
-                            spdlog::warn(
-                                "smf: best-effort DeleteSMPolicy failed for smPolicyId={}",
-                                sm_policy_id);
+                            spdlog::warn("smf: best-effort DeleteSMPolicy failed for smPolicyId={}",
+                                         sm_policy_id);
                         }
                     }
                 }
@@ -1619,7 +1739,11 @@ int main() {
                 const auto supi = (*stored)["supi"].get<std::string>();
                 if (!charging_data_ref.empty() &&
                     perform_n40_charging_data_release(
-                        chf_client, chf_oauth, smf_instance_id, supi, charging_data_ref,
+                        chf_client,
+                        chf_oauth,
+                        smf_instance_id,
+                        supi,
+                        charging_data_ref,
                         charging_data_invocation_seq.get_and_advance(charging_data_ref))) {
                     chf_charging_data_release_counter->Add(1);
                 }
@@ -1633,7 +1757,8 @@ int main() {
         });
 
     std::thread(run_nrf_lifecycle, smf_instance_id).detach();
-    std::thread(run_pfcp_lifecycle, smf_instance_id, std::ref(upf_endpoint_store), std::ref(pfcp_peer))
+    std::thread(
+        run_pfcp_lifecycle, smf_instance_id, std::ref(upf_endpoint_store), std::ref(pfcp_peer))
         .detach();
 
     server.start();

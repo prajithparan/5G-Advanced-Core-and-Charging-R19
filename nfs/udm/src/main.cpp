@@ -35,9 +35,6 @@
 // own turn (ADR-0025) never implemented an authentication-data group to proxy from in the first
 // place.
 
-#include "aka_crypto/hex.hpp"
-#include "aka_crypto/kdf.hpp"
-#include "aka_crypto/milenage.hpp"
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
 #include "sbi_core/json_body.hpp"
@@ -59,6 +56,9 @@
 
 #include "TS29122_CommonData_grp.hpp"
 #include "TS29503_Nudm_UEAU_grp.hpp"
+#include "aka_crypto/hex.hpp"
+#include "aka_crypto/kdf.hpp"
+#include "aka_crypto/milenage.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -602,21 +602,22 @@ int main() {
                     aka_crypto::from_hex<14>(body->resynchronizationInfo->auts);
                 if (!resync_rand.has_value() || !resync_auts.has_value()) {
                     return sbi_core::http2::problem_response(
-                        400, "Bad Request",
-                        "resynchronizationInfo.rand/auts are not valid hex");
+                        400, "Bad Request", "resynchronizationInfo.rand/auts are not valid hex");
                 }
                 const auto resync_result =
                     auth_subscriptions.resync_sqn(supi_or_suci, *resync_rand, *resync_auts);
                 if (!resync_result.has_value()) {
                     return sbi_core::http2::problem_response(
-                        404, "Not Found",
+                        404,
+                        "Not Found",
                         "No authentication subscription for " + supi_or_suci +
                             " (real SUCI de-concealment is not implemented in this build -- pass "
                             "a SUPI-formatted id; see file header)");
                 }
                 if (!*resync_result) {
                     return sbi_core::http2::problem_response(
-                        400, "Bad Request",
+                        400,
+                        "Bad Request",
                         "resynchronizationInfo.auts failed to verify for " + supi_or_suci +
                             " -- wrong subscriber key material, tampered, or the RAND doesn't "
                             "match the AuthenticationRequest the UE is responding to");
@@ -661,9 +662,8 @@ int main() {
             } else {
                 const auto xres_star = aka_crypto::derive_res_star(
                     out.ck, out.ik, body->servingNetworkName, rand, out.res);
-                const auto kausf = aka_crypto::derive_kausf(out.ck, out.ik,
-                                                            body->servingNetworkName,
-                                                            sqn_xor_ak_value);
+                const auto kausf = aka_crypto::derive_kausf(
+                    out.ck, out.ik, body->servingNetworkName, sqn_xor_ak_value);
                 sbi_gen::Av5GHeAka av{};
                 av.avType.value = sbi_gen::AvType::V5G_HE_AKA;
                 av.rand = aka_crypto::to_hex(rand);
@@ -699,8 +699,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace(
-                "location", std::string(kUeauApiRoot) + "/" + supi + "/auth-events/" + id);
+            resp.headers.emplace("location",
+                                 std::string(kUeauApiRoot) + "/" + supi + "/auth-events/" + id);
             resp.body = j.dump();
             return resp;
         });

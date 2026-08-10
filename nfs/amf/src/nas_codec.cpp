@@ -74,13 +74,14 @@ char bcd_digit(std::uint8_t nibble) {
 // RegistrationAccept (sht=..AndCiphered, always ciphered) differ only in `sht`/`ciphered`, not in
 // how the envelope itself is built.
 std::vector<std::uint8_t> encode_secured_downlink(const aka_crypto::NasIntKey& knas_int,
-                                                   const aka_crypto::NasEncKey& knas_enc,
-                                                   std::uint8_t sht, bool ciphered,
-                                                   std::uint32_t downlink_count,
-                                                   const std::vector<std::uint8_t>& inner_plain) {
+                                                  const aka_crypto::NasEncKey& knas_enc,
+                                                  std::uint8_t sht,
+                                                  bool ciphered,
+                                                  std::uint32_t downlink_count,
+                                                  const std::vector<std::uint8_t>& inner_plain) {
     const std::vector<std::uint8_t> wire_inner =
-        ciphered ? aka_crypto::nea2_apply(knas_enc, downlink_count, kNasBearerId, kDirectionDownlink,
-                                          inner_plain)
+        ciphered ? aka_crypto::nea2_apply(
+                       knas_enc, downlink_count, kNasBearerId, kDirectionDownlink, inner_plain)
                  : inner_plain;
 
     // TS 24.501's NAS MAC construction prepends the 1-octet NAS sequence number (COUNT's
@@ -124,11 +125,13 @@ struct SecuredUplinkResult {
 };
 
 std::optional<SecuredUplinkResult> decode_secured_uplink(const aka_crypto::NasIntKey& knas_int,
-                                                          const aka_crypto::NasEncKey& knas_enc,
-                                                          std::uint8_t expected_sht, bool ciphered,
-                                                          std::uint32_t uplink_count,
-                                                          const std::vector<std::uint8_t>& p) {
-    if (p.size() < 7 || p[0] != kEpdMobilityManagement || p[1] != expected_sht) return std::nullopt;
+                                                         const aka_crypto::NasEncKey& knas_enc,
+                                                         std::uint8_t expected_sht,
+                                                         bool ciphered,
+                                                         std::uint32_t uplink_count,
+                                                         const std::vector<std::uint8_t>& p) {
+    if (p.size() < 7 || p[0] != kEpdMobilityManagement || p[1] != expected_sht)
+        return std::nullopt;
 
     const std::vector<std::uint8_t> wire_inner(p.begin() + 7, p.end());
     const std::uint32_t received_mac =
@@ -145,18 +148,20 @@ std::optional<SecuredUplinkResult> decode_secured_uplink(const aka_crypto::NasIn
 
     SecuredUplinkResult result;
     result.mac_valid = (expected_mac == received_mac);
-    if (!result.mac_valid) return result;
+    if (!result.mac_valid)
+        return result;
 
-    result.plain_inner = ciphered ? aka_crypto::nea2_apply(knas_enc, uplink_count, kNasBearerId,
-                                                           kDirectionUplink, wire_inner)
-                                  : wire_inner;
+    result.plain_inner =
+        ciphered ? aka_crypto::nea2_apply(
+                       knas_enc, uplink_count, kNasBearerId, kDirectionUplink, wire_inner)
+                 : wire_inner;
     return result;
 }
 
 } // namespace
 
-std::optional<RegistrationRequestInfo> decode_registration_request(
-    const std::vector<std::uint8_t>& p) {
+std::optional<RegistrationRequestInfo>
+decode_registration_request(const std::vector<std::uint8_t>& p) {
     if (p.size() < 4 || p[0] != kEpdMobilityManagement || p[1] != kSecurityHeaderNotProtected ||
         p[2] != kMessageTypeRegistrationRequest) {
         return std::nullopt;
@@ -168,10 +173,12 @@ std::optional<RegistrationRequestInfo> decode_registration_request(
     std::size_t off = 4;
 
     // 5GS Mobile Identity (TS 24.501 §9.11.3.4): Type-6 IE, 2-octet big-endian length, then value.
-    if (off + 2 > p.size()) return std::nullopt;
+    if (off + 2 > p.size())
+        return std::nullopt;
     const std::size_t id_len = (static_cast<std::size_t>(p[off]) << 8) | p[off + 1];
     off += 2;
-    if (id_len < 8 || off + id_len > p.size()) return std::nullopt;
+    if (id_len < 8 || off + id_len > p.size())
+        return std::nullopt;
 
     const std::uint8_t* id = &p[off];
     // byte0: bits0-2 identity type (1=SUCI), bit3 odd/even indicator, bits4-6 SUPI format
@@ -193,12 +200,12 @@ std::optional<RegistrationRequestInfo> decode_registration_request(
     const std::string mcc = {bcd_digit(static_cast<std::uint8_t>(mcc1)),
                              bcd_digit(static_cast<std::uint8_t>(mcc2)),
                              bcd_digit(static_cast<std::uint8_t>(mcc3))};
-    const std::string mnc =
-        long_mnc ? std::string{bcd_digit(static_cast<std::uint8_t>(mnc1)),
-                               bcd_digit(static_cast<std::uint8_t>(mnc2)),
-                               bcd_digit(static_cast<std::uint8_t>(mnc3_nibble))}
-                 : std::string{bcd_digit(static_cast<std::uint8_t>(mnc1)),
-                               bcd_digit(static_cast<std::uint8_t>(mnc2))};
+    const std::string mnc = long_mnc
+                                ? std::string{bcd_digit(static_cast<std::uint8_t>(mnc1)),
+                                              bcd_digit(static_cast<std::uint8_t>(mnc2)),
+                                              bcd_digit(static_cast<std::uint8_t>(mnc3_nibble))}
+                                : std::string{bcd_digit(static_cast<std::uint8_t>(mnc1)),
+                                              bcd_digit(static_cast<std::uint8_t>(mnc2))};
 
     // Routing indicator (TS 24.501 §9.11.3.4, TS 23.003 §2.2A): 1 or 2 BCD-packed octets.
     // Disclosed limitation -- this project's only real UE config
@@ -226,7 +233,8 @@ std::optional<RegistrationRequestInfo> decode_registration_request(
         const std::uint8_t lo = id[i] & 0xF;
         const std::uint8_t hi = (id[i] >> 4) & 0xF;
         msin += bcd_digit(lo);
-        if (hi == 0xF) break; // odd-length terminator
+        if (hi == 0xF)
+            break; // odd-length terminator
         msin += bcd_digit(hi);
     }
 
@@ -248,7 +256,8 @@ std::optional<RegistrationRequestInfo> decode_registration_request(
     while (scan + 2 <= p.size()) {
         const std::uint8_t iei = p[scan];
         const std::uint8_t len = p[scan + 1];
-        if (scan + 2 + len > p.size()) break;
+        if (scan + 2 + len > p.size())
+            break;
         if (iei == kIeiUeSecurityCapability) {
             const auto* value = p.data() + scan + 2;
             info.ue_security_capability.assign(value, value + len);
@@ -261,8 +270,8 @@ std::optional<RegistrationRequestInfo> decode_registration_request(
 }
 
 std::vector<std::uint8_t> encode_authentication_request(const std::array<std::uint8_t, 16>& rand,
-                                                         const std::array<std::uint8_t, 16>& autn,
-                                                         int ngksi) {
+                                                        const std::array<std::uint8_t, 16>& autn,
+                                                        int ngksi) {
     std::vector<std::uint8_t> out;
     out.push_back(kEpdMobilityManagement);
     out.push_back(kSecurityHeaderNotProtected);
@@ -291,8 +300,8 @@ std::vector<std::uint8_t> encode_authentication_request(const std::array<std::ui
     return out;
 }
 
-std::optional<AuthenticationOutcome> decode_authentication_outcome(
-    const std::vector<std::uint8_t>& p) {
+std::optional<AuthenticationOutcome>
+decode_authentication_outcome(const std::vector<std::uint8_t>& p) {
     if (p.size() < 3 || p[0] != kEpdMobilityManagement || p[1] != kSecurityHeaderNotProtected) {
         return std::nullopt;
     }
@@ -305,12 +314,15 @@ std::optional<AuthenticationOutcome> decode_authentication_outcome(
         // stopping as soon as RES* (0x2D) is found.
         std::size_t off = 3;
         while (off < p.size()) {
-            if (off + 2 > p.size()) return std::nullopt;
+            if (off + 2 > p.size())
+                return std::nullopt;
             const std::uint8_t iei = p[off];
             const std::uint8_t len = p[off + 1];
-            if (off + 2 + len > p.size()) return std::nullopt;
+            if (off + 2 + len > p.size())
+                return std::nullopt;
             if (iei == kIeiAuthenticationResponseParameter) {
-                if (len != 16) return std::nullopt; // RES* is always 16 octets for 5G-AKA
+                if (len != 16)
+                    return std::nullopt; // RES* is always 16 octets for 5G-AKA
                 AuthenticationOutcome out;
                 out.success = true;
                 const auto* value = p.data() + off + 2;
@@ -325,18 +337,22 @@ std::optional<AuthenticationOutcome> decode_authentication_outcome(
     if (p[2] == kMessageTypeAuthenticationFailure) {
         // AuthenticationFailure (TS 24.501 §8.2.7): mandatory 5GMM cause (Type-3, 1 octet, no
         // IEI/length), then an optional authenticationFailureParameter (AUTS, IEI 0x30).
-        if (p.size() < 4) return std::nullopt;
+        if (p.size() < 4)
+            return std::nullopt;
         AuthenticationOutcome out;
         out.success = false;
         out.mm_cause = p[3];
         std::size_t off = 4;
         if (off < p.size()) {
-            if (off + 2 > p.size()) return std::nullopt;
+            if (off + 2 > p.size())
+                return std::nullopt;
             const std::uint8_t iei = p[off];
             const std::uint8_t len = p[off + 1];
-            if (off + 2 + len > p.size()) return std::nullopt;
+            if (off + 2 + len > p.size())
+                return std::nullopt;
             if (iei == kIeiAuthenticationFailureParameter) {
-                if (len != 14) return std::nullopt; // AUTS is always 14 octets (SQN xor AK || MAC-S)
+                if (len != 14)
+                    return std::nullopt; // AUTS is always 14 octets (SQN xor AK || MAC-S)
                 std::array<std::uint8_t, 14> auts{};
                 const auto* value = p.data() + off + 2;
                 std::copy(value, value + len, auts.begin());
@@ -349,10 +365,10 @@ std::optional<AuthenticationOutcome> decode_authentication_outcome(
     return std::nullopt;
 }
 
-std::vector<std::uint8_t> encode_security_mode_command(
-    const aka_crypto::NasIntKey& knas_int,
-    const std::vector<std::uint8_t>& ue_security_capability,
-    std::uint32_t downlink_count) {
+std::vector<std::uint8_t>
+encode_security_mode_command(const aka_crypto::NasIntKey& knas_int,
+                             const std::vector<std::uint8_t>& ue_security_capability,
+                             std::uint32_t downlink_count) {
     // Inner plaintext message (TS 24.501 §8.2.25): own header (EPD + SHT=NOT_PROTECTED) then
     // mandatory selectedNasSecurityAlgorithms (Type-3, 1 octet: ciphering high nibble | integrity
     // low nibble, confirmed against
@@ -373,24 +389,33 @@ std::vector<std::uint8_t> encode_security_mode_command(
 
     // SecurityModeCommand is integrity-protected only, never ciphered (see this function's own
     // declaration comment).
-    return encode_secured_downlink(knas_int, /*knas_enc unused, not ciphered*/ aka_crypto::NasEncKey{},
-                                   kShtIntegrityProtectedWithNewSecurityContext, /*ciphered=*/false,
-                                   downlink_count, inner);
+    return encode_secured_downlink(knas_int,
+                                   /*knas_enc unused, not ciphered*/ aka_crypto::NasEncKey{},
+                                   kShtIntegrityProtectedWithNewSecurityContext,
+                                   /*ciphered=*/false,
+                                   downlink_count,
+                                   inner);
 }
 
-std::optional<SecurityModeCompleteOutcome> decode_security_mode_complete(
-    const aka_crypto::NasIntKey& knas_int,
-    const aka_crypto::NasEncKey& knas_enc,
-    std::uint32_t uplink_count,
-    const std::vector<std::uint8_t>& p) {
-    const auto result = decode_secured_uplink(
-        knas_int, knas_enc, kShtIntegrityProtectedAndCipheredWithNewSecurityContext,
-        /*ciphered=*/true, uplink_count, p);
-    if (!result.has_value()) return std::nullopt;
+std::optional<SecurityModeCompleteOutcome>
+decode_security_mode_complete(const aka_crypto::NasIntKey& knas_int,
+                              const aka_crypto::NasEncKey& knas_enc,
+                              std::uint32_t uplink_count,
+                              const std::vector<std::uint8_t>& p) {
+    const auto result =
+        decode_secured_uplink(knas_int,
+                              knas_enc,
+                              kShtIntegrityProtectedAndCipheredWithNewSecurityContext,
+                              /*ciphered=*/true,
+                              uplink_count,
+                              p);
+    if (!result.has_value())
+        return std::nullopt;
 
     SecurityModeCompleteOutcome out;
     out.mac_valid = result->mac_valid;
-    if (!out.mac_valid) return out;
+    if (!out.mac_valid)
+        return out;
 
     // A valid MAC on a message that doesn't decipher to a SecurityModeComplete header is not
     // realistically reachable (that would need an AES-128-CMAC collision against a
@@ -404,8 +429,8 @@ std::optional<SecurityModeCompleteOutcome> decode_security_mode_complete(
 }
 
 std::vector<std::uint8_t> encode_registration_accept(const aka_crypto::NasIntKey& knas_int,
-                                                      const aka_crypto::NasEncKey& knas_enc,
-                                                      std::uint32_t downlink_count) {
+                                                     const aka_crypto::NasEncKey& knas_enc,
+                                                     std::uint32_t downlink_count) {
     // Inner plaintext message (TS 24.501 §8.2.7): own header, then the ONLY mandatory IE,
     // registrationResult (Type-4, 1 octet: smsOverNasAllowed bit3 | registrationResult bits0-2,
     // confirmed against
@@ -425,22 +450,32 @@ std::vector<std::uint8_t> encode_registration_accept(const aka_crypto::NasIntKey
     inner.push_back(static_cast<std::uint8_t>((kSmsOverNasNotAllowed << 3) |
                                               kRegistrationResultThreeGppAccess));
 
-    return encode_secured_downlink(knas_int, knas_enc, kShtIntegrityProtectedAndCiphered,
-                                   /*ciphered=*/true, downlink_count, inner);
+    return encode_secured_downlink(knas_int,
+                                   knas_enc,
+                                   kShtIntegrityProtectedAndCiphered,
+                                   /*ciphered=*/true,
+                                   downlink_count,
+                                   inner);
 }
 
-std::optional<RegistrationCompleteOutcome> decode_registration_complete(
-    const aka_crypto::NasIntKey& knas_int,
-    const aka_crypto::NasEncKey& knas_enc,
-    std::uint32_t uplink_count,
-    const std::vector<std::uint8_t>& p) {
-    const auto result = decode_secured_uplink(knas_int, knas_enc, kShtIntegrityProtectedAndCiphered,
-                                              /*ciphered=*/true, uplink_count, p);
-    if (!result.has_value()) return std::nullopt;
+std::optional<RegistrationCompleteOutcome>
+decode_registration_complete(const aka_crypto::NasIntKey& knas_int,
+                             const aka_crypto::NasEncKey& knas_enc,
+                             std::uint32_t uplink_count,
+                             const std::vector<std::uint8_t>& p) {
+    const auto result = decode_secured_uplink(knas_int,
+                                              knas_enc,
+                                              kShtIntegrityProtectedAndCiphered,
+                                              /*ciphered=*/true,
+                                              uplink_count,
+                                              p);
+    if (!result.has_value())
+        return std::nullopt;
 
     RegistrationCompleteOutcome out;
     out.mac_valid = result->mac_valid;
-    if (!out.mac_valid) return out;
+    if (!out.mac_valid)
+        return out;
 
     // RegistrationComplete (TS 24.501 §8.2.5) has no mandatory IEs -- just header + message type,
     // matching simulators/ransim/vendor/UERANSIM/src/lib/nas/msg.cpp's own onBuild (only one
@@ -453,18 +488,23 @@ std::optional<RegistrationCompleteOutcome> decode_registration_complete(
     return out;
 }
 
-std::optional<UlNasTransportInfo> decode_ul_nas_transport(
-    const aka_crypto::NasIntKey& knas_int,
-    const aka_crypto::NasEncKey& knas_enc,
-    std::uint32_t uplink_count,
-    const std::vector<std::uint8_t>& p) {
-    const auto result = decode_secured_uplink(knas_int, knas_enc, kShtIntegrityProtectedAndCiphered,
-                                              /*ciphered=*/true, uplink_count, p);
-    if (!result.has_value()) return std::nullopt;
+std::optional<UlNasTransportInfo> decode_ul_nas_transport(const aka_crypto::NasIntKey& knas_int,
+                                                          const aka_crypto::NasEncKey& knas_enc,
+                                                          std::uint32_t uplink_count,
+                                                          const std::vector<std::uint8_t>& p) {
+    const auto result = decode_secured_uplink(knas_int,
+                                              knas_enc,
+                                              kShtIntegrityProtectedAndCiphered,
+                                              /*ciphered=*/true,
+                                              uplink_count,
+                                              p);
+    if (!result.has_value())
+        return std::nullopt;
 
     UlNasTransportInfo out;
     out.mac_valid = result->mac_valid;
-    if (!out.mac_valid) return out;
+    if (!out.mac_valid)
+        return out;
 
     const auto& inner = result->plain_inner;
     // header(3) + payloadContainerType(1) + payloadContainer length(2) = 6 bytes minimum, even for
@@ -498,21 +538,27 @@ std::optional<UlNasTransportInfo> decode_ul_nas_transport(
     // additionalInformation) to stay in sync rather than stopping early -- UERANSIM's real UE
     // sends pduSessionId, requestType, sNssai, and dnn all in one message for PDU Session
     // Establishment (simulators/ransim/vendor/UERANSIM/src/ue/nas/sm/transport.cpp), so requestType
-    // sitting between pduSessionId and sNssai/dnn must be skippable, not treated as "unknown, stop."
+    // sitting between pduSessionId and sNssai/dnn must be skippable, not treated as "unknown,
+    // stop."
     while (off < inner.size()) {
         const std::uint8_t tag = inner[off];
         if (tag == kIeiUlNasPduSessionId) {
-            if (off + 2 > inner.size()) break;
+            if (off + 2 > inner.size())
+                break;
             out.pdu_session_id = inner[off + 1];
             off += 2;
         } else if (tag == kIeiUlNasOldPduSessionId) {
-            if (off + 2 > inner.size()) break;
+            if (off + 2 > inner.size())
+                break;
             off += 2;
         } else if (tag == kIeiUlNasSNssai) {
-            if (off + 2 > inner.size()) break;
+            if (off + 2 > inner.size())
+                break;
             const std::uint8_t len = inner[off + 1];
-            if (off + 2 + len > inner.size()) break;
-            if (len >= 1) out.snssai_sst = inner[off + 2];
+            if (off + 2 + len > inner.size())
+                break;
+            if (len >= 1)
+                out.snssai_sst = inner[off + 2];
             if (len >= 4) {
                 std::array<std::uint8_t, 3> sd{};
                 sd[0] = inner[off + 3];
@@ -522,9 +568,11 @@ std::optional<UlNasTransportInfo> decode_ul_nas_transport(
             }
             off += 2 + len;
         } else if (tag == kIeiUlNasDnn) {
-            if (off + 2 > inner.size()) break;
+            if (off + 2 > inner.size())
+                break;
             const std::uint8_t len = inner[off + 1];
-            if (off + 2 + len > inner.size()) break;
+            if (off + 2 + len > inner.size())
+                break;
             // TS 23.003 §9.1 label encoding: [1-octet label length][ascii label]..., concatenated
             // with no separators -- reconstruct the dotted string by joining labels with '.'.
             std::string dnn;
@@ -532,17 +580,21 @@ std::optional<UlNasTransportInfo> decode_ul_nas_transport(
             const std::size_t label_end = off + 2 + len;
             while (label_off < label_end) {
                 const std::uint8_t label_len = inner[label_off];
-                if (label_off + 1 + label_len > label_end) break;
-                if (!dnn.empty()) dnn += '.';
+                if (label_off + 1 + label_len > label_end)
+                    break;
+                if (!dnn.empty())
+                    dnn += '.';
                 dnn.append(reinterpret_cast<const char*>(&inner[label_off + 1]), label_len);
                 label_off += 1 + label_len;
             }
             out.dnn = dnn;
             off += 2 + len;
         } else if (tag == kIeiUlNasAdditionalInformation) {
-            if (off + 2 > inner.size()) break;
+            if (off + 2 > inner.size())
+                break;
             const std::uint8_t len = inner[off + 1];
-            if (off + 2 + len > inner.size()) break;
+            if (off + 2 + len > inner.size())
+                break;
             off += 2 + len;
         } else if ((tag >> 4) == kIeiNibbleUlNasRequestType) {
             off += 1;
@@ -554,15 +606,17 @@ std::optional<UlNasTransportInfo> decode_ul_nas_transport(
     return out;
 }
 
-std::vector<std::uint8_t> encode_dl_nas_transport(const aka_crypto::NasIntKey& knas_int,
-                                                  const aka_crypto::NasEncKey& knas_enc,
-                                                  std::uint32_t downlink_count,
-                                                  std::uint8_t pdu_session_id,
-                                                  const std::vector<std::uint8_t>& n1_sm_container) {
+std::vector<std::uint8_t>
+encode_dl_nas_transport(const aka_crypto::NasIntKey& knas_int,
+                        const aka_crypto::NasEncKey& knas_enc,
+                        std::uint32_t downlink_count,
+                        std::uint8_t pdu_session_id,
+                        const std::vector<std::uint8_t>& n1_sm_container) {
     // Inner plaintext message (TS 24.501 §8.2.9): own header, then mandatory
     // payloadContainerType (Type-1, low nibble of its own byte) + payloadContainer (Type-6 LV-E),
-    // then optional pduSessionId (Type-3 TV, IEI 0x12 -- confirmed against DlNasTransport::onBuild's
-    // `b.optionalIE(0x12, &pduSessionId)`, same IEI value UlNasTransport uses).
+    // then optional pduSessionId (Type-3 TV, IEI 0x12 -- confirmed against
+    // DlNasTransport::onBuild's `b.optionalIE(0x12, &pduSessionId)`, same IEI value UlNasTransport
+    // uses).
     std::vector<std::uint8_t> inner;
     inner.push_back(kEpdMobilityManagement);
     inner.push_back(kSecurityHeaderNotProtected);
@@ -575,8 +629,12 @@ std::vector<std::uint8_t> encode_dl_nas_transport(const aka_crypto::NasIntKey& k
     inner.push_back(kIeiUlNasPduSessionId);
     inner.push_back(pdu_session_id);
 
-    return encode_secured_downlink(knas_int, knas_enc, kShtIntegrityProtectedAndCiphered,
-                                   /*ciphered=*/true, downlink_count, inner);
+    return encode_secured_downlink(knas_int,
+                                   knas_enc,
+                                   kShtIntegrityProtectedAndCiphered,
+                                   /*ciphered=*/true,
+                                   downlink_count,
+                                   inner);
 }
 
 } // namespace amf::nas

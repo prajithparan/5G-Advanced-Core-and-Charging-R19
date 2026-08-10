@@ -1,19 +1,21 @@
 #include "pfcp_peer.hpp"
 
-#include "pfcp_core/ie.hpp"
-
 #include <spdlog/spdlog.h>
+
+#include "pfcp_core/ie.hpp"
 
 namespace smf {
 
 PfcpPeer::PfcpPeer()
-    : socket_(ioc_, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(),
-                                                   pfcp_core::kSmfCpFunctionPfcpPort)) {
+    : socket_(ioc_,
+              boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(),
+                                             pfcp_core::kSmfCpFunctionPfcpPort)) {
     // SO_RCVTIMEO purely so receive_loop wakes periodically to check stop_ on shutdown -- distinct
     // from send_request_and_await_response's own T1 retry timing, which uses response_cv_'s own
     // wait_for below, not this socket-level timeout.
     constexpr timeval kPollTimeout{.tv_sec = 1, .tv_usec = 0};
-    setsockopt(socket_.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &kPollTimeout, sizeof(kPollTimeout));
+    setsockopt(
+        socket_.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &kPollTimeout, sizeof(kPollTimeout));
     receive_thread_ = std::thread(&PfcpPeer::receive_loop, this);
     spdlog::info("smf: PFCP peer listening on 0.0.0.0:{}", pfcp_core::kSmfCpFunctionPfcpPort);
 }
@@ -30,7 +32,9 @@ void PfcpPeer::set_session_report_handler(SessionReportHandler handler) {
     on_session_report_request_ = std::move(handler);
 }
 
-std::uint32_t PfcpPeer::allocate_sequence_number() { return next_sequence_number_++; }
+std::uint32_t PfcpPeer::allocate_sequence_number() {
+    return next_sequence_number_++;
+}
 
 void PfcpPeer::receive_loop() {
     while (!stop_) {
@@ -49,12 +53,12 @@ void PfcpPeer::receive_loop() {
         const auto header = pfcp_core::decode_header(datagram, offset, ies_length);
         if (!header.has_value() || offset + ies_length > datagram.size()) {
             spdlog::warn("smf: PFCP peer dropped a malformed datagram from {}",
-                        sender.address().to_string());
+                         sender.address().to_string());
             continue;
         }
-        std::vector<std::uint8_t> ie_bytes(
-            datagram.begin() + static_cast<std::ptrdiff_t>(offset),
-            datagram.begin() + static_cast<std::ptrdiff_t>(offset + ies_length));
+        std::vector<std::uint8_t> ie_bytes(datagram.begin() + static_cast<std::ptrdiff_t>(offset),
+                                           datagram.begin() +
+                                               static_cast<std::ptrdiff_t>(offset + ies_length));
 
         if (header->message_type == pfcp_core::MessageType::SessionReportRequest) {
             SessionReportHandler handler;
@@ -66,24 +70,26 @@ void PfcpPeer::receive_loop() {
                 handler(*header, ie_bytes, sender);
             } else {
                 spdlog::warn("smf: received a Sx Session Report Request with no handler installed "
-                            "yet, dropping");
+                             "yet, dropping");
             }
             continue;
         }
 
         {
             std::lock_guard<std::mutex> lock(response_mutex_);
-            pending_responses_[header->sequence_number] = PendingResponse{header->message_type,
-                                                                          std::move(ie_bytes)};
+            pending_responses_[header->sequence_number] =
+                PendingResponse{header->message_type, std::move(ie_bytes)};
         }
         response_cv_.notify_all();
     }
 }
 
-std::optional<std::vector<std::uint8_t>> PfcpPeer::send_request_and_await_response(
-    const boost::asio::ip::udp::endpoint& target, const std::vector<std::uint8_t>& request_pdu,
-    pfcp_core::MessageType expected_response_type, std::uint32_t sequence_number,
-    const std::string& procedure_name) {
+std::optional<std::vector<std::uint8_t>>
+PfcpPeer::send_request_and_await_response(const boost::asio::ip::udp::endpoint& target,
+                                          const std::vector<std::uint8_t>& request_pdu,
+                                          pfcp_core::MessageType expected_response_type,
+                                          std::uint32_t sequence_number,
+                                          const std::string& procedure_name) {
     constexpr int kN1Retries = 3;
     constexpr auto kT1Timeout = std::chrono::seconds(2);
 
@@ -103,7 +109,8 @@ std::optional<std::vector<std::uint8_t>> PfcpPeer::send_request_and_await_respon
             return pending_responses_.find(sequence_number) != pending_responses_.end();
         });
         if (!arrived) {
-            spdlog::warn("smf: PFCP {} attempt {} timed out, retrying", procedure_name, attempt + 1);
+            spdlog::warn(
+                "smf: PFCP {} attempt {} timed out, retrying", procedure_name, attempt + 1);
             continue;
         }
         auto pending = std::move(pending_responses_.at(sequence_number));
@@ -112,8 +119,8 @@ std::optional<std::vector<std::uint8_t>> PfcpPeer::send_request_and_await_respon
 
         if (pending.message_type != expected_response_type) {
             spdlog::warn("smf: PFCP {} got a response with the right sequence number but wrong "
-                        "message type, treating as failed",
-                        procedure_name);
+                         "message type, treating as failed",
+                         procedure_name);
             return std::nullopt;
         }
         return pending.ie_bytes;

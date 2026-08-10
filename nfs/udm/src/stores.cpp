@@ -119,8 +119,8 @@ void AuthenticationSubscriptionStore::seed(const std::string& supi,
     subs_[supi] = std::move(sub);
 }
 
-std::optional<AuthenticationSubscription> AuthenticationSubscriptionStore::get_and_advance_sqn(
-    const std::string& supi) {
+std::optional<AuthenticationSubscription>
+AuthenticationSubscriptionStore::get_and_advance_sqn(const std::string& supi) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = subs_.find(supi);
     if (it == subs_.end()) {
@@ -136,8 +136,8 @@ std::optional<AuthenticationSubscription> AuthenticationSubscriptionStore::get_a
 }
 
 std::optional<bool> AuthenticationSubscriptionStore::resync_sqn(const std::string& supi,
-                                                                 const aka_crypto::Key128& rand,
-                                                                 const aka_crypto::Auts& auts) {
+                                                                const aka_crypto::Key128& rand,
+                                                                const aka_crypto::Auts& auts) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = subs_.find(supi);
     if (it == subs_.end()) {
@@ -161,7 +161,7 @@ std::optional<bool> AuthenticationSubscriptionStore::resync_sqn(const std::strin
     for (auto b : *sqn_ms) {
         sqn_value = (sqn_value << 8) | b;
     }
-    sqn_value = (sqn_value + 0x10000) & 0xFFFFFFFFFFFFULL;  // mod 2^48
+    sqn_value = (sqn_value + 0x10000) & 0xFFFFFFFFFFFFULL; // mod 2^48
     for (size_t i = it->second.sqn.size(); i-- > 0;) {
         it->second.sqn[i] = static_cast<std::uint8_t>(sqn_value & 0xFF);
         sqn_value >>= 8;

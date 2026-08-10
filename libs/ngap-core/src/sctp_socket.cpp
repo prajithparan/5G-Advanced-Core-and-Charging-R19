@@ -57,9 +57,13 @@ SctpSocket::SctpSocket() {
 
 SctpSocket::SctpSocket(int fd) : fd_(fd) {}
 
-SctpSocket::~SctpSocket() { close_if_open(); }
+SctpSocket::~SctpSocket() {
+    close_if_open();
+}
 
-SctpSocket::SctpSocket(SctpSocket&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
+SctpSocket::SctpSocket(SctpSocket&& other) noexcept : fd_(other.fd_) {
+    other.fd_ = -1;
+}
 
 SctpSocket& SctpSocket::operator=(SctpSocket&& other) noexcept {
     if (this != &other) {
@@ -107,8 +111,8 @@ void SctpSocket::send(const std::vector<std::uint8_t>& data, std::uint16_t strea
     // simulators/ransim/vendor/UERANSIM/src/lib/sctp/internal.cpp's own SendMessage, a working
     // reference implementation on this exact system -- not guessed from the sctp_sendmsg man page
     // alone.
-    const int result = ::sctp_sendmsg(fd_, data.data(), data.size(), nullptr, 0,
-                                       htonl(kNgapPpid), 0, stream, 0, 0);
+    const int result = ::sctp_sendmsg(
+        fd_, data.data(), data.size(), nullptr, 0, htonl(kNgapPpid), 0, stream, 0, 0);
     if (result < 0) {
         throw_errno("sctp_sendmsg() failed");
     }
@@ -121,9 +125,13 @@ std::vector<std::uint8_t> SctpSocket::receive() {
     int flags = 0;
     auto from_len = static_cast<socklen_t>(sizeof(from));
 
-    const int received = ::sctp_recvmsg(fd_, buffer.data(), buffer.size(),
-                                         reinterpret_cast<sockaddr*>(&from), &from_len, &info,
-                                         &flags);
+    const int received = ::sctp_recvmsg(fd_,
+                                        buffer.data(),
+                                        buffer.size(),
+                                        reinterpret_cast<sockaddr*>(&from),
+                                        &from_len,
+                                        &info,
+                                        &flags);
     if (received < 0) {
         if (errno == ECONNRESET) {
             return {};
@@ -143,7 +151,7 @@ std::vector<std::uint8_t> SctpSocket::receive() {
     }
     if (!(flags & MSG_EOR)) {
         throw std::runtime_error("SCTP partial message received (not handled -- message exceeds "
-                                  "the receive buffer)");
+                                 "the receive buffer)");
     }
 
     buffer.resize(static_cast<std::size_t>(received));

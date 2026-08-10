@@ -18,8 +18,7 @@ std::vector<std::uint8_t> per_encode(const asn_TYPE_descriptor_s* type_descripto
     void* buffer = nullptr;
     // Aligned PER (X.691), not Unaligned -- TS 38.413 NGAP mandates Aligned PER, and real gNB/UE
     // peers (confirmed against UERANSIM's own encode.hpp) only speak that. See ADR-0031.
-    const ssize_t encoded =
-        aper_encode_to_new_buffer(type_descriptor, nullptr, value, &buffer);
+    const ssize_t encoded = aper_encode_to_new_buffer(type_descriptor, nullptr, value, &buffer);
     if (encoded < 0 || buffer == nullptr) {
         return {};
     }
@@ -31,7 +30,8 @@ std::vector<std::uint8_t> per_encode(const asn_TYPE_descriptor_s* type_descripto
 
 } // namespace
 
-ConcreteProtocolIE_Field_t make_ie(long id, Criticality_t criticality,
+ConcreteProtocolIE_Field_t make_ie(long id,
+                                   Criticality_t criticality,
                                    const asn_TYPE_descriptor_s* type_descriptor,
                                    const void* value) {
     ConcreteProtocolIE_Field_t ie{};
@@ -67,8 +67,8 @@ const ConcreteProtocolIE_Field_t* find_ie(const ConcreteProtocolIE_Container_t& 
 void* decode_ie_value(const asn_TYPE_descriptor_s* type_descriptor,
                       const ConcreteProtocolIE_Field_t& ie) {
     void* out = nullptr;
-    const asn_dec_rval_t rv = aper_decode_complete(nullptr, type_descriptor, &out, ie.value.buf,
-                                                   ie.value.size);
+    const asn_dec_rval_t rv =
+        aper_decode_complete(nullptr, type_descriptor, &out, ie.value.buf, ie.value.size);
     if (rv.code != RC_OK) {
         if (out != nullptr) {
             ASN_STRUCT_FREE(*type_descriptor, out);

@@ -23,8 +23,7 @@ std::vector<uint8_t> to_bytes(const std::string& s) {
     return std::vector<uint8_t>(s.begin(), s.end());
 }
 
-template <size_t N>
-std::vector<uint8_t> to_bytes(const std::array<uint8_t, N>& a) {
+template <size_t N> std::vector<uint8_t> to_bytes(const std::array<uint8_t, N>& a) {
     return std::vector<uint8_t>(a.begin(), a.end());
 }
 
@@ -33,11 +32,11 @@ std::vector<uint8_t> len_prefix(const std::vector<uint8_t>& p) {
     return {static_cast<uint8_t>((n >> 8) & 0xff), static_cast<uint8_t>(n & 0xff)};
 }
 
-}  // namespace
+} // namespace
 
 std::array<uint8_t, 32> generic_kdf(const std::vector<uint8_t>& key,
-                                     uint8_t fc,
-                                     const std::vector<std::vector<uint8_t>>& params) {
+                                    uint8_t fc,
+                                    const std::vector<std::vector<uint8_t>>& params) {
     std::vector<uint8_t> s{fc};
     for (const auto& p : params) {
         s.insert(s.end(), p.begin(), p.end());
@@ -47,8 +46,13 @@ std::array<uint8_t, 32> generic_kdf(const std::vector<uint8_t>& key,
 
     std::array<uint8_t, 32> out{};
     unsigned int out_len = 0;
-    const uint8_t* result = HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()), s.data(),
-                                  s.size(), out.data(), &out_len);
+    const uint8_t* result = HMAC(EVP_sha256(),
+                                 key.data(),
+                                 static_cast<int>(key.size()),
+                                 s.data(),
+                                 s.size(),
+                                 out.data(),
+                                 &out_len);
     if (result == nullptr || out_len != out.size()) {
         throw std::runtime_error("HMAC-SHA-256 failed in generic_kdf");
     }
@@ -64,17 +68,17 @@ Ak48 sqn_xor_ak(const Sqn& sqn, const Ak48& ak) {
 }
 
 Kausf derive_kausf(const Key128& ck,
-                    const Key128& ik,
-                    const std::string& serving_network_name,
-                    const Ak48& sqn_xor_ak_value) {
+                   const Key128& ik,
+                   const std::string& serving_network_name,
+                   const Ak48& sqn_xor_ak_value) {
     const auto key = concat({to_bytes(ck), to_bytes(ik)});
     return generic_kdf(key, 0x6A, {to_bytes(serving_network_name), to_bytes(sqn_xor_ak_value)});
 }
 
 std::pair<CkPrime, IkPrime> derive_ck_ik_prime(const Key128& ck,
-                                                const Key128& ik,
-                                                const std::string& serving_network_name,
-                                                const Ak48& sqn_xor_ak_value) {
+                                               const Key128& ik,
+                                               const std::string& serving_network_name,
+                                               const Ak48& sqn_xor_ak_value) {
     const auto key = concat({to_bytes(ck), to_bytes(ik)});
     const auto out =
         generic_kdf(key, 0x20, {to_bytes(serving_network_name), to_bytes(sqn_xor_ak_value)});
@@ -86,15 +90,15 @@ std::pair<CkPrime, IkPrime> derive_ck_ik_prime(const Key128& ck,
 }
 
 ResStar derive_res_star(const Key128& ck,
-                         const Key128& ik,
-                         const std::string& serving_network_name,
-                         const Key128& rand,
-                         const Res64& res) {
+                        const Key128& ik,
+                        const std::string& serving_network_name,
+                        const Key128& rand,
+                        const Res64& res) {
     const auto key = concat({to_bytes(ck), to_bytes(ik)});
     const auto out =
         generic_kdf(key, 0x6B, {to_bytes(serving_network_name), to_bytes(rand), to_bytes(res)});
     ResStar res_star{};
-    std::copy(out.begin() + 16, out.end(), res_star.begin());  // right half of the 256-bit output
+    std::copy(out.begin() + 16, out.end(), res_star.begin()); // right half of the 256-bit output
     return res_star;
 }
 
@@ -102,13 +106,13 @@ HxresStar derive_hxres_star(const Key128& rand, const ResStar& res_star) {
     const auto input = concat({to_bytes(rand), to_bytes(res_star)});
     std::array<uint8_t, 32> digest{};
     unsigned int digest_len = 0;
-    if (EVP_Digest(input.data(), input.size(), digest.data(), &digest_len, EVP_sha256(),
-                    nullptr) != 1 ||
+    if (EVP_Digest(input.data(), input.size(), digest.data(), &digest_len, EVP_sha256(), nullptr) !=
+            1 ||
         digest_len != digest.size()) {
         throw std::runtime_error("SHA-256 failed in derive_hxres_star");
     }
     HxresStar out{};
-    std::copy(digest.begin(), digest.begin() + 16, out.begin());  // leftmost 128 bits
+    std::copy(digest.begin(), digest.begin() + 16, out.begin()); // leftmost 128 bits
     return out;
 }
 
@@ -121,19 +125,19 @@ Kamf derive_kamf(const Kseaf& kseaf, const std::string& supi, const Abba& abba) 
 }
 
 NasEncKey derive_knas_enc(const Kamf& kamf, uint8_t algorithm_identity) {
-    const auto out = generic_kdf(to_bytes(kamf), 0x69,
-                                  {{kNasEncAlgorithmDistinguisher}, {algorithm_identity}});
+    const auto out =
+        generic_kdf(to_bytes(kamf), 0x69, {{kNasEncAlgorithmDistinguisher}, {algorithm_identity}});
     NasEncKey key{};
-    std::copy(out.begin() + 16, out.end(), key.begin());  // rightmost 128 bits
+    std::copy(out.begin() + 16, out.end(), key.begin()); // rightmost 128 bits
     return key;
 }
 
 NasIntKey derive_knas_int(const Kamf& kamf, uint8_t algorithm_identity) {
-    const auto out = generic_kdf(to_bytes(kamf), 0x69,
-                                  {{kNasIntAlgorithmDistinguisher}, {algorithm_identity}});
+    const auto out =
+        generic_kdf(to_bytes(kamf), 0x69, {{kNasIntAlgorithmDistinguisher}, {algorithm_identity}});
     NasIntKey key{};
-    std::copy(out.begin() + 16, out.end(), key.begin());  // rightmost 128 bits
+    std::copy(out.begin() + 16, out.end(), key.begin()); // rightmost 128 bits
     return key;
 }
 
-}  // namespace aka_crypto
+} // namespace aka_crypto

@@ -4,19 +4,18 @@
 // which agree digit-for-digit) rather than trusted from memory alone. See docs/DECISIONS.md
 // ADR-0026.
 
+#include <array>
+#include <cstdint>
+#include <string>
+
 #include "aka_crypto/kdf.hpp"
 #include "aka_crypto/milenage.hpp"
 
 #include <gtest/gtest.h>
 
-#include <array>
-#include <cstdint>
-#include <string>
-
 namespace {
 
-template <size_t N>
-std::array<uint8_t, N> hex(const std::string& s) {
+template <size_t N> std::array<uint8_t, N> hex(const std::string& s) {
     std::array<uint8_t, N> out{};
     for (size_t i = 0; i < N; ++i) {
         out[i] = static_cast<uint8_t>(std::stoul(s.substr(i * 2, 2), nullptr, 16));
@@ -24,7 +23,7 @@ std::array<uint8_t, N> hex(const std::string& s) {
     return out;
 }
 
-}  // namespace
+} // namespace
 
 TEST(Milenage, TS35207TestSet1) {
     const auto k = hex<16>("465b5ce8b199b49faa5f0a2ee238a6bc");
@@ -105,8 +104,8 @@ TEST(AkaKdf, ResStarAndHxresStarRoundTrip) {
     const auto rand = hex<16>("23553cbe9637a89d218ae64dae47bf35");
     const auto res = hex<8>("a54211d5e3ba50bf");
 
-    const auto xres_star = aka_crypto::derive_res_star(ck, ik, "5G:mnc070.mcc999.3gppnetwork.org",
-                                                         rand, res);
+    const auto xres_star =
+        aka_crypto::derive_res_star(ck, ik, "5G:mnc070.mcc999.3gppnetwork.org", rand, res);
     const auto hxres_star = aka_crypto::derive_hxres_star(rand, xres_star);
 
     // Same formula (TS 33.501 Annex A.5) applied by the UE/SEAF side to a claimed RES* must
@@ -116,14 +115,14 @@ TEST(AkaKdf, ResStarAndHxresStarRoundTrip) {
     EXPECT_EQ(hxres_star, hxres_star_recomputed);
 }
 
-// f1*/f5*/verify_and_decode_auts (SQN resynchronisation, ADR-0037) have no published TS 35.207-style
-// known-answer vector to check against (TS 35.207 Test Set 1 only covers f1/f2/f3/f4/f5, not the
-// star variants) -- the real correctness proof is a standalone harness that cross-checked these
-// against UERANSIM's real, independent milenage_f1/milenage_f2345/milenage_auts directly (80/80
-// byte-exact matches across 20 random trials x 4 checks each: f5*, f1*, full AUTS round-trip,
-// tamper-rejection -- see docs/DECISIONS.md ADR-0037). These tests use the same TS 35.207 Test Set
-// 1 K/OPc/RAND as every other test in this file (real values, not fabricated) to check the
-// properties that harness already proved: determinism, input-sensitivity, and round-trip.
+// f1*/f5*/verify_and_decode_auts (SQN resynchronisation, ADR-0037) have no published
+// TS 35.207-style known-answer vector to check against (TS 35.207 Test Set 1 only covers
+// f1/f2/f3/f4/f5, not the star variants) -- the real correctness proof is a standalone harness that
+// cross-checked these against UERANSIM's real, independent milenage_f1/milenage_f2345/milenage_auts
+// directly (80/80 byte-exact matches across 20 random trials x 4 checks each: f5*, f1*, full AUTS
+// round-trip, tamper-rejection -- see docs/DECISIONS.md ADR-0037). These tests use the same
+// TS 35.207 Test Set 1 K/OPc/RAND as every other test in this file (real values, not fabricated) to
+// check the properties that harness already proved: determinism, input-sensitivity, and round-trip.
 
 TEST(Milenage, F1StarIsDeterministicAndInputDependent) {
     const auto k = hex<16>("465b5ce8b199b49faa5f0a2ee238a6bc");
@@ -171,7 +170,8 @@ TEST(Milenage, VerifyAndDecodeAutsRoundTripsAndRejectsTampering) {
     const auto ak_star = aka_crypto::f5_star(opc, k, rand);
     const auto mac_s = aka_crypto::f1_star(opc, k, rand, sqn_ms);
     aka_crypto::Auts auts{};
-    for (size_t i = 0; i < 6; ++i) auts[i] = static_cast<uint8_t>(sqn_ms[i] ^ ak_star[i]);
+    for (size_t i = 0; i < 6; ++i)
+        auts[i] = static_cast<uint8_t>(sqn_ms[i] ^ ak_star[i]);
     std::copy(mac_s.begin(), mac_s.end(), auts.begin() + 6);
 
     const auto decoded = aka_crypto::verify_and_decode_auts(opc, k, rand, auts);

@@ -1,9 +1,9 @@
 #pragma once
 
-#include "aka_crypto/kdf.hpp"
-
 #include <cstdint>
 #include <vector>
+
+#include "aka_crypto/kdf.hpp"
 
 // 128-NEA2 (AES-128 CTR) and 128-NIA2 (AES-128 CMAC), TS 33.401 Annex B.1.3/B.2.3 -- originally
 // defined for E-UTRAN, reused unchanged as the 5G NAS/AS algorithm identity 2 pair by TS 33.501
@@ -27,10 +27,10 @@ namespace aka_crypto {
 
 // Encrypts (or decrypts -- AES-CTR is its own inverse) `data` in place semantics via return value.
 std::vector<uint8_t> nea2_apply(const NasEncKey& key,
-                                 uint32_t count,
-                                 uint8_t bearer,
-                                 uint8_t direction,
-                                 const std::vector<uint8_t>& data);
+                                uint32_t count,
+                                uint8_t bearer,
+                                uint8_t direction,
+                                const std::vector<uint8_t>& data);
 
 // Returns the leftmost 32 bits of AES-128-CMAC(key, COUNT(32) || BEARER(5)|DIRECTION(1)|00(2) ||
 // 0x000000 || message) -- TS 24.501's NAS MAC covers whatever bytes were actually transmitted on
@@ -38,9 +38,9 @@ std::vector<uint8_t> nea2_apply(const NasEncKey& key,
 // never the plaintext), matching UERANSIM's own enc.cpp (`ComputeMac(..., encryptedData)` on both
 // the encode and decode paths) -- callers here must pass the same bytes for the same reason.
 uint32_t nia2_mac(const NasIntKey& key,
-                   uint32_t count,
-                   uint8_t bearer,
-                   uint8_t direction,
-                   const std::vector<uint8_t>& message);
+                  uint32_t count,
+                  uint8_t bearer,
+                  uint8_t direction,
+                  const std::vector<uint8_t>& message);
 
-}  // namespace aka_crypto
+} // namespace aka_crypto

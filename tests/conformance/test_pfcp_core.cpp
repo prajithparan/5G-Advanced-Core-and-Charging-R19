@@ -88,8 +88,8 @@ TEST(PfcpHeader, RejectsUnrecognizedVersion) {
 TEST(PfcpIe, EncodeDecodeRoundTrips) {
     std::vector<std::uint8_t> out;
     pfcp_core::encode_ie(out, static_cast<std::uint16_t>(pfcp_core::IeType::Cause), {0x01});
-    pfcp_core::encode_ie(out, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
-                         {0x00, 10, 0, 0, 1});
+    pfcp_core::encode_ie(
+        out, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId), {0x00, 10, 0, 0, 1});
 
     const auto ies = pfcp_core::decode_ies(out);
     ASSERT_TRUE(ies.has_value());
@@ -98,14 +98,16 @@ TEST(PfcpIe, EncodeDecodeRoundTrips) {
     EXPECT_EQ((*ies)[0].value, (std::vector<std::uint8_t>{0x01}));
     EXPECT_EQ((*ies)[1].type, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId));
 
-    const auto* cause_ie = pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause));
+    const auto* cause_ie =
+        pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause));
     ASSERT_NE(cause_ie, nullptr);
     EXPECT_EQ(cause_ie->value, (std::vector<std::uint8_t>{0x01}));
     EXPECT_EQ(pfcp_core::find_ie(*ies, 9999), nullptr);
 }
 
 TEST(PfcpIe, DecodeRejectsTruncatedIe) {
-    const std::vector<std::uint8_t> bytes = {0x00, 19, 0x00, 0x05, 0x01}; // declares length 5, has 1
+    const std::vector<std::uint8_t> bytes = {
+        0x00, 19, 0x00, 0x05, 0x01}; // declares length 5, has 1
     EXPECT_FALSE(pfcp_core::decode_ies(bytes).has_value());
 }
 
@@ -219,23 +221,26 @@ TEST(PfcpSessionIes, GroupedIeRoundTripsViaExistingIeCodec) {
     // confirms encode_ie/decode_ies (built for flat IEs) work unmodified for grouped IEs too, per
     // TS 29.244 §7.2.3.3's own statement that a grouped IE's value is just concatenated child IEs.
     std::vector<std::uint8_t> pdi;
-    pfcp_core::encode_ie(pdi, static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface),
+    pfcp_core::encode_ie(pdi,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface),
                          pfcp_core::encode_source_interface(pfcp_core::InterfaceValue::Access));
 
     std::vector<std::uint8_t> pdr;
-    pfcp_core::encode_ie(pdr, static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
-                         pfcp_core::encode_pdr_id(1));
-    pfcp_core::encode_ie(pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Precedence),
+    pfcp_core::encode_ie(
+        pdr, static_cast<std::uint16_t>(pfcp_core::IeType::PdrId), pfcp_core::encode_pdr_id(1));
+    pfcp_core::encode_ie(pdr,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::Precedence),
                          pfcp_core::encode_precedence(100));
     pfcp_core::encode_ie(pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi), pdi);
-    pfcp_core::encode_ie(pdr, static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
-                         pfcp_core::encode_far_id(1));
+    pfcp_core::encode_ie(
+        pdr, static_cast<std::uint16_t>(pfcp_core::IeType::FarId), pfcp_core::encode_far_id(1));
 
     const auto pdr_ies = pfcp_core::decode_ies(pdr);
     ASSERT_TRUE(pdr_ies.has_value());
     ASSERT_EQ(pdr_ies->size(), 4u);
 
-    const auto* pdi_ie = pfcp_core::find_ie(*pdr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi));
+    const auto* pdi_ie =
+        pfcp_core::find_ie(*pdr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi));
     ASSERT_NE(pdi_ie, nullptr);
     const auto pdi_ies = pfcp_core::decode_ies(pdi_ie->value);
     ASSERT_TRUE(pdi_ies.has_value());
@@ -243,7 +248,8 @@ TEST(PfcpSessionIes, GroupedIeRoundTripsViaExistingIeCodec) {
     const auto* src_if_ie = pfcp_core::find_ie(
         *pdi_ies, static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface));
     ASSERT_NE(src_if_ie, nullptr);
-    EXPECT_EQ(pfcp_core::decode_interface_value(src_if_ie->value), pfcp_core::InterfaceValue::Access);
+    EXPECT_EQ(pfcp_core::decode_interface_value(src_if_ie->value),
+              pfcp_core::InterfaceValue::Access);
 }
 
 TEST(PfcpSessionIes, UrrIdRoundTrips) {
@@ -287,7 +293,7 @@ TEST(PfcpSessionIes, VolumeTotalDecodeRejectsMissingTovolBit) {
 }
 
 TEST(PfcpSessionIes, ReportTypeDetectsUsageReportBit) {
-    EXPECT_TRUE(pfcp_core::decode_report_type_has_usage_report({0x02})); // bit 2 - USAR
+    EXPECT_TRUE(pfcp_core::decode_report_type_has_usage_report({0x02}));  // bit 2 - USAR
     EXPECT_FALSE(pfcp_core::decode_report_type_has_usage_report({0x01})); // bit 1 - DLDR only
 }
 
@@ -312,11 +318,13 @@ TEST(PfcpSessionIes, UsageReportTriggerDecodesOtherForUnrecognizedBits) {
 }
 
 TEST(PfcpSessionIes, EncodeUsageReportTriggerVolthRoundTrips) {
-    EXPECT_EQ(pfcp_core::decode_usage_report_trigger(pfcp_core::encode_usage_report_trigger_volth()),
-              pfcp_core::UsageReportTriggerValue::VolumeThreshold);
+    EXPECT_EQ(
+        pfcp_core::decode_usage_report_trigger(pfcp_core::encode_usage_report_trigger_volth()),
+        pfcp_core::UsageReportTriggerValue::VolumeThreshold);
 }
 
 TEST(PfcpSessionIes, EncodeUsageReportTriggerVolquRoundTrips) {
-    EXPECT_EQ(pfcp_core::decode_usage_report_trigger(pfcp_core::encode_usage_report_trigger_volqu()),
-              pfcp_core::UsageReportTriggerValue::VolumeQuotaExhausted);
+    EXPECT_EQ(
+        pfcp_core::decode_usage_report_trigger(pfcp_core::encode_usage_report_trigger_volqu()),
+        pfcp_core::UsageReportTriggerValue::VolumeQuotaExhausted);
 }

@@ -1,7 +1,5 @@
 #pragma once
 
-#include "aka_crypto/milenage.hpp"
-
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -10,6 +8,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "aka_crypto/milenage.hpp"
 
 // Private to nfs/udm -- not shared with any other NF, per CLAUDE.md's "no NF includes another NF's
 // private headers" rule. In-memory only, no persistence across restarts -- same disclosed
@@ -31,7 +31,7 @@ struct AuthenticationSubscription {
     aka_crypto::Key128 opc;
     aka_crypto::Sqn sqn;
     aka_crypto::Amf amf;
-    std::string authentication_method;  // "5G_AKA" or "EAP_AKA_PRIME"
+    std::string authentication_method; // "5G_AKA" or "EAP_AKA_PRIME"
 };
 
 class AuthenticationSubscriptionStore {
@@ -49,7 +49,8 @@ public:
     // introducing full Annex C windowing. Returns std::nullopt if supi is unknown; true if AUTS
     // verified and SQN was reset; false if AUTS failed to verify (SQN is left untouched in that
     // case -- a failed verification must not silently move the subscriber's SQN state).
-    std::optional<bool> resync_sqn(const std::string& supi, const aka_crypto::Key128& rand,
+    std::optional<bool> resync_sqn(const std::string& supi,
+                                   const aka_crypto::Key128& rand,
                                    const aka_crypto::Auts& auts);
 
 private:

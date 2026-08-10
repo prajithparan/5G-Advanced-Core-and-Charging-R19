@@ -12,11 +12,16 @@ namespace aka_crypto::eap {
 namespace {
 
 std::array<uint8_t, 32> hmac_sha256(const std::vector<uint8_t>& key,
-                                     const std::vector<uint8_t>& data) {
+                                    const std::vector<uint8_t>& data) {
     std::array<uint8_t, 32> out{};
     unsigned int out_len = 0;
-    const uint8_t* result = HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()),
-                                  data.data(), data.size(), out.data(), &out_len);
+    const uint8_t* result = HMAC(EVP_sha256(),
+                                 key.data(),
+                                 static_cast<int>(key.size()),
+                                 data.data(),
+                                 data.size(),
+                                 out.data(),
+                                 &out_len);
     if (result == nullptr || out_len != out.size()) {
         throw std::runtime_error("HMAC-SHA-256 failed");
     }
@@ -50,19 +55,19 @@ std::vector<uint8_t> make_attr(uint8_t type, const std::vector<uint8_t>& value) 
 }
 
 std::vector<uint8_t> encode_rand_attr(const Key128& rand) {
-    std::vector<uint8_t> value{0, 0};  // reserved
+    std::vector<uint8_t> value{0, 0}; // reserved
     append(value, std::vector<uint8_t>(rand.begin(), rand.end()));
     return make_attr(1, value);
 }
 
 std::vector<uint8_t> encode_autn_attr(const std::array<uint8_t, 16>& autn) {
-    std::vector<uint8_t> value{0, 0};  // reserved
+    std::vector<uint8_t> value{0, 0}; // reserved
     append(value, std::vector<uint8_t>(autn.begin(), autn.end()));
     return make_attr(2, value);
 }
 
 std::vector<uint8_t> encode_mac_attr(const std::array<uint8_t, 16>& mac) {
-    std::vector<uint8_t> value{0, 0};  // reserved
+    std::vector<uint8_t> value{0, 0}; // reserved
     append(value, std::vector<uint8_t>(mac.begin(), mac.end()));
     return make_attr(11, value);
 }
@@ -77,13 +82,13 @@ std::vector<uint8_t> encode_kdf_input_attr(const std::string& network_name) {
 
 std::vector<uint8_t> encode_kdf_attr() {
     std::vector<uint8_t> value;
-    append_u16be(value, 1);  // the one standardised EAP-AKA' KDF
+    append_u16be(value, 1); // the one standardised EAP-AKA' KDF
     return make_attr(24, value);
 }
 
 std::vector<uint8_t> encode_res_attr(const std::vector<uint8_t>& res) {
     std::vector<uint8_t> value;
-    append_u16be(value, static_cast<uint16_t>(res.size() * 8));  // Actual RES Length, in bits
+    append_u16be(value, static_cast<uint16_t>(res.size() * 8)); // Actual RES Length, in bits
     append(value, res);
     pad_value_to_word_boundary(value);
     return make_attr(3, value);
@@ -95,18 +100,22 @@ std::vector<uint8_t> encode_client_error_attr(uint16_t code) {
     return make_attr(22, value);
 }
 
-std::vector<uint8_t> build_header(Code code, uint8_t identifier, size_t total_len,
-                                   Subtype subtype) {
-    std::vector<uint8_t> header{static_cast<uint8_t>(code), identifier,
-                                 static_cast<uint8_t>((total_len >> 8) & 0xff),
-                                 static_cast<uint8_t>(total_len & 0xff), kTypeAkaPrime,
-                                 static_cast<uint8_t>(subtype), 0, 0};
+std::vector<uint8_t>
+build_header(Code code, uint8_t identifier, size_t total_len, Subtype subtype) {
+    std::vector<uint8_t> header{static_cast<uint8_t>(code),
+                                identifier,
+                                static_cast<uint8_t>((total_len >> 8) & 0xff),
+                                static_cast<uint8_t>(total_len & 0xff),
+                                kTypeAkaPrime,
+                                static_cast<uint8_t>(subtype),
+                                0,
+                                0};
     return header;
 }
 
 struct AttrSpan {
-    size_t value_offset;  // offset of the byte right after Type+Length
-    size_t value_length;  // length_words*4 - 2
+    size_t value_offset; // offset of the byte right after Type+Length
+    size_t value_length; // length_words*4 - 2
 };
 
 // Scans the TLV attribute list starting at byte 8 (right after the 8-byte EAP+AKA' header).
@@ -116,11 +125,11 @@ std::optional<AttrSpan> find_attribute(const std::vector<uint8_t>& packet, uint8
         const uint8_t attr_type = packet[pos];
         const uint8_t length_words = packet[pos + 1];
         if (length_words == 0) {
-            return std::nullopt;  // malformed: would infinite-loop
+            return std::nullopt; // malformed: would infinite-loop
         }
         const size_t attr_total = static_cast<size_t>(length_words) * 4;
         if (pos + attr_total > packet.size()) {
-            return std::nullopt;  // malformed: truncated attribute
+            return std::nullopt; // malformed: truncated attribute
         }
         if (attr_type == type) {
             return AttrSpan{pos + 2, attr_total - 2};
@@ -130,11 +139,10 @@ std::optional<AttrSpan> find_attribute(const std::vector<uint8_t>& packet, uint8
     return std::nullopt;
 }
 
-}  // namespace
+} // namespace
 
-std::vector<uint8_t> prf_prime(const std::vector<uint8_t>& key,
-                                const std::vector<uint8_t>& seed,
-                                size_t output_len) {
+std::vector<uint8_t>
+prf_prime(const std::vector<uint8_t>& key, const std::vector<uint8_t>& seed, size_t output_len) {
     std::vector<uint8_t> out;
     std::vector<uint8_t> t_prev;
     uint8_t counter = 1;
@@ -152,9 +160,9 @@ std::vector<uint8_t> prf_prime(const std::vector<uint8_t>& key,
 }
 
 DerivedKeys derive_keys(const std::array<uint8_t, 16>& ck_prime,
-                         const std::array<uint8_t, 16>& ik_prime,
-                         const std::string& identity) {
-    std::vector<uint8_t> key(ik_prime.begin(), ik_prime.end());  // MK = PRF'(IK'||CK', ...)
+                        const std::array<uint8_t, 16>& ik_prime,
+                        const std::string& identity) {
+    std::vector<uint8_t> key(ik_prime.begin(), ik_prime.end()); // MK = PRF'(IK'||CK', ...)
     append(key, std::vector<uint8_t>(ck_prime.begin(), ck_prime.end()));
 
     // NOT std::string("EAP-AKA'").begin()/.end() as two separate expressions -- that constructs
@@ -172,27 +180,32 @@ DerivedKeys derive_keys(const std::array<uint8_t, 16>& ck_prime,
 
     DerivedKeys out{};
     size_t off = 0;
-    std::copy(mk.begin() + static_cast<long>(off), mk.begin() + static_cast<long>(off + 16),
+    std::copy(mk.begin() + static_cast<long>(off),
+              mk.begin() + static_cast<long>(off + 16),
               out.k_encr.begin());
     off += 16;
-    std::copy(mk.begin() + static_cast<long>(off), mk.begin() + static_cast<long>(off + 32),
+    std::copy(mk.begin() + static_cast<long>(off),
+              mk.begin() + static_cast<long>(off + 32),
               out.k_aut.begin());
     off += 32;
-    std::copy(mk.begin() + static_cast<long>(off), mk.begin() + static_cast<long>(off + 32),
+    std::copy(mk.begin() + static_cast<long>(off),
+              mk.begin() + static_cast<long>(off + 32),
               out.k_re.begin());
     off += 32;
-    std::copy(mk.begin() + static_cast<long>(off), mk.begin() + static_cast<long>(off + 64),
+    std::copy(mk.begin() + static_cast<long>(off),
+              mk.begin() + static_cast<long>(off + 64),
               out.msk.begin());
     off += 64;
-    std::copy(mk.begin() + static_cast<long>(off), mk.begin() + static_cast<long>(off + 64),
+    std::copy(mk.begin() + static_cast<long>(off),
+              mk.begin() + static_cast<long>(off + 64),
               out.emsk.begin());
     return out;
 }
 
 std::array<uint8_t, 16> compute_mac(const std::vector<uint8_t>& packet_with_mac_zeroed,
-                                     const std::array<uint8_t, 32>& k_aut) {
-    const auto full = hmac_sha256(std::vector<uint8_t>(k_aut.begin(), k_aut.end()),
-                                   packet_with_mac_zeroed);
+                                    const std::array<uint8_t, 32>& k_aut) {
+    const auto full =
+        hmac_sha256(std::vector<uint8_t>(k_aut.begin(), k_aut.end()), packet_with_mac_zeroed);
     std::array<uint8_t, 16> out{};
     std::copy(full.begin(), full.begin() + 16, out.begin());
     return out;
@@ -200,43 +213,48 @@ std::array<uint8_t, 16> compute_mac(const std::vector<uint8_t>& packet_with_mac_
 
 namespace {
 
-std::vector<uint8_t> finalize_with_mac(Code code, uint8_t identifier, Subtype subtype,
-                                        std::vector<uint8_t> attrs_with_zero_mac,
-                                        size_t mac_value_offset_in_attrs,
-                                        const std::array<uint8_t, 32>& k_aut) {
+std::vector<uint8_t> finalize_with_mac(Code code,
+                                       uint8_t identifier,
+                                       Subtype subtype,
+                                       std::vector<uint8_t> attrs_with_zero_mac,
+                                       size_t mac_value_offset_in_attrs,
+                                       const std::array<uint8_t, 32>& k_aut) {
     std::vector<uint8_t> packet =
         build_header(code, identifier, 8 + attrs_with_zero_mac.size(), subtype);
     append(packet, attrs_with_zero_mac);
     const auto mac = compute_mac(packet, k_aut);
-    std::copy(mac.begin(), mac.end(), packet.begin() + static_cast<long>(8 + mac_value_offset_in_attrs));
+    std::copy(
+        mac.begin(), mac.end(), packet.begin() + static_cast<long>(8 + mac_value_offset_in_attrs));
     return packet;
 }
 
-}  // namespace
+} // namespace
 
-std::vector<uint8_t> build_challenge_request(uint8_t identifier, const Key128& rand,
-                                              const std::array<uint8_t, 16>& autn,
-                                              const std::string& network_name,
-                                              const std::array<uint8_t, 32>& k_aut) {
+std::vector<uint8_t> build_challenge_request(uint8_t identifier,
+                                             const Key128& rand,
+                                             const std::array<uint8_t, 16>& autn,
+                                             const std::string& network_name,
+                                             const std::array<uint8_t, 32>& k_aut) {
     std::vector<uint8_t> attrs;
     append(attrs, encode_rand_attr(rand));
     append(attrs, encode_autn_attr(autn));
     append(attrs, encode_kdf_input_attr(network_name));
     append(attrs, encode_kdf_attr());
-    const size_t mac_offset = attrs.size() + 4;  // skip this attr's own Type+Length+Reserved(2)
+    const size_t mac_offset = attrs.size() + 4; // skip this attr's own Type+Length+Reserved(2)
     append(attrs, encode_mac_attr({}));
-    return finalize_with_mac(Code::kRequest, identifier, Subtype::kChallenge, std::move(attrs),
-                              mac_offset, k_aut);
+    return finalize_with_mac(
+        Code::kRequest, identifier, Subtype::kChallenge, std::move(attrs), mac_offset, k_aut);
 }
 
-std::vector<uint8_t> build_challenge_response(uint8_t identifier, const std::vector<uint8_t>& res,
-                                               const std::array<uint8_t, 32>& k_aut) {
+std::vector<uint8_t> build_challenge_response(uint8_t identifier,
+                                              const std::vector<uint8_t>& res,
+                                              const std::array<uint8_t, 32>& k_aut) {
     std::vector<uint8_t> attrs;
     append(attrs, encode_res_attr(res));
     const size_t mac_offset = attrs.size() + 4;
     append(attrs, encode_mac_attr({}));
-    return finalize_with_mac(Code::kResponse, identifier, Subtype::kChallenge, std::move(attrs),
-                              mac_offset, k_aut);
+    return finalize_with_mac(
+        Code::kResponse, identifier, Subtype::kChallenge, std::move(attrs), mac_offset, k_aut);
 }
 
 std::vector<uint8_t> build_client_error_response(uint8_t identifier, uint16_t error_code) {
@@ -255,8 +273,7 @@ std::vector<uint8_t> build_failure(uint8_t identifier) {
     return {static_cast<uint8_t>(Code::kFailure), identifier, 0, 4};
 }
 
-std::optional<ChallengeRequestFields> parse_challenge_request(
-    const std::vector<uint8_t>& packet) {
+std::optional<ChallengeRequestFields> parse_challenge_request(const std::vector<uint8_t>& packet) {
     if (packet.size() < 8 || packet[0] != static_cast<uint8_t>(Code::kRequest) ||
         packet[4] != kTypeAkaPrime || packet[5] != static_cast<uint8_t>(Subtype::kChallenge)) {
         return std::nullopt;
@@ -273,15 +290,17 @@ std::optional<ChallengeRequestFields> parse_challenge_request(
 
     ChallengeRequestFields out{};
     std::copy(packet.begin() + static_cast<long>(rand_span->value_offset + 2),
-              packet.begin() + static_cast<long>(rand_span->value_offset + 18), out.rand.begin());
+              packet.begin() + static_cast<long>(rand_span->value_offset + 18),
+              out.rand.begin());
     std::copy(packet.begin() + static_cast<long>(autn_span->value_offset + 2),
-              packet.begin() + static_cast<long>(autn_span->value_offset + 18), out.autn.begin());
+              packet.begin() + static_cast<long>(autn_span->value_offset + 18),
+              out.autn.begin());
     std::copy(packet.begin() + static_cast<long>(mac_span->value_offset + 2),
-              packet.begin() + static_cast<long>(mac_span->value_offset + 18), out.mac.begin());
+              packet.begin() + static_cast<long>(mac_span->value_offset + 18),
+              out.mac.begin());
 
-    const size_t name_len =
-        (static_cast<size_t>(packet[kdf_input_span->value_offset]) << 8) |
-        packet[kdf_input_span->value_offset + 1];
+    const size_t name_len = (static_cast<size_t>(packet[kdf_input_span->value_offset]) << 8) |
+                            packet[kdf_input_span->value_offset + 1];
     if (2 + name_len > kdf_input_span->value_length) {
         return std::nullopt;
     }
@@ -291,8 +310,8 @@ std::optional<ChallengeRequestFields> parse_challenge_request(
     return out;
 }
 
-std::optional<ChallengeResponseFields> parse_challenge_response(
-    const std::vector<uint8_t>& packet) {
+std::optional<ChallengeResponseFields>
+parse_challenge_response(const std::vector<uint8_t>& packet) {
     if (packet.size() < 8 || packet[0] != static_cast<uint8_t>(Code::kResponse) ||
         packet[4] != kTypeAkaPrime || packet[5] != static_cast<uint8_t>(Subtype::kChallenge)) {
         return std::nullopt;
@@ -303,8 +322,8 @@ std::optional<ChallengeResponseFields> parse_challenge_response(
         return std::nullopt;
     }
 
-    const size_t res_bits =
-        (static_cast<size_t>(packet[res_span->value_offset]) << 8) | packet[res_span->value_offset + 1];
+    const size_t res_bits = (static_cast<size_t>(packet[res_span->value_offset]) << 8) |
+                            packet[res_span->value_offset + 1];
     const size_t res_bytes = (res_bits + 7) / 8;
     if (2 + res_bytes > res_span->value_length) {
         return std::nullopt;
@@ -312,9 +331,10 @@ std::optional<ChallengeResponseFields> parse_challenge_response(
 
     ChallengeResponseFields out{};
     out.res.assign(packet.begin() + static_cast<long>(res_span->value_offset + 2),
-                    packet.begin() + static_cast<long>(res_span->value_offset + 2 + res_bytes));
+                   packet.begin() + static_cast<long>(res_span->value_offset + 2 + res_bytes));
     std::copy(packet.begin() + static_cast<long>(mac_span->value_offset + 2),
-              packet.begin() + static_cast<long>(mac_span->value_offset + 18), out.mac.begin());
+              packet.begin() + static_cast<long>(mac_span->value_offset + 18),
+              out.mac.begin());
     return out;
 }
 
@@ -325,10 +345,12 @@ bool verify_mac(const std::vector<uint8_t>& packet, const std::array<uint8_t, 32
     }
     std::vector<uint8_t> zeroed = packet;
     std::fill(zeroed.begin() + static_cast<long>(mac_span->value_offset + 2),
-              zeroed.begin() + static_cast<long>(mac_span->value_offset + 18), 0);
+              zeroed.begin() + static_cast<long>(mac_span->value_offset + 18),
+              0);
     const auto expected = compute_mac(zeroed, k_aut);
-    return std::equal(expected.begin(), expected.end(),
-                       packet.begin() + static_cast<long>(mac_span->value_offset + 2));
+    return std::equal(expected.begin(),
+                      expected.end(),
+                      packet.begin() + static_cast<long>(mac_span->value_offset + 2));
 }
 
 std::string base64_encode(const std::vector<uint8_t>& data) {
@@ -336,8 +358,8 @@ std::string base64_encode(const std::vector<uint8_t>& data) {
         return "";
     }
     std::string out(4 * ((data.size() + 2) / 3) + 1, '\0');
-    const int len = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(out.data()), data.data(),
-                                     static_cast<int>(data.size()));
+    const int len = EVP_EncodeBlock(
+        reinterpret_cast<unsigned char*>(out.data()), data.data(), static_cast<int>(data.size()));
     out.resize(static_cast<size_t>(len));
     return out;
 }
@@ -347,8 +369,9 @@ std::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
         return std::vector<uint8_t>{};
     }
     std::vector<uint8_t> out(3 * ((text.size() + 3) / 4) + 1, 0);
-    const int len = EVP_DecodeBlock(out.data(), reinterpret_cast<const unsigned char*>(text.data()),
-                                     static_cast<int>(text.size()));
+    const int len = EVP_DecodeBlock(out.data(),
+                                    reinterpret_cast<const unsigned char*>(text.data()),
+                                    static_cast<int>(text.size()));
     if (len < 0) {
         return std::nullopt;
     }
@@ -365,4 +388,4 @@ std::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
     return out;
 }
 
-}  // namespace aka_crypto::eap
+} // namespace aka_crypto::eap

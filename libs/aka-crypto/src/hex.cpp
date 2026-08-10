@@ -12,4 +12,4 @@ std::string to_hex(const std::vector<uint8_t>& data) {
     return out;
 }
 
-}  // namespace aka_crypto
+} // namespace aka_crypto

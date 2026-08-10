@@ -1,12 +1,12 @@
 #pragma once
 
-#include "pfcp_core/ie.hpp"
-
 #include <array>
 #include <cstdint>
 #include <ctime>
 #include <optional>
 #include <vector>
+
+#include "pfcp_core/ie.hpp"
 
 // Encode/decode helpers for the small set of PFCP Information Elements this project's Stage 1
 // (Heartbeat, Association Setup) needs -- TS 29.244 §8.2.1 (Cause), §8.2.25/§8.2.58 (UP/CP
@@ -38,7 +38,8 @@ std::optional<std::time_t> decode_recovery_time_stamp(const std::vector<std::uin
 // every NF in this project already only speaks IPv4 (see e.g. libs/sbi-core's own IPv4-only
 // scope) -- disclosed narrowing, not the full IPv4/IPv6/FQDN union the IE type supports.
 std::vector<std::uint8_t> encode_node_id_ipv4(std::array<std::uint8_t, 4> ipv4);
-std::optional<std::array<std::uint8_t, 4>> decode_node_id_ipv4(const std::vector<std::uint8_t>& value);
+std::optional<std::array<std::uint8_t, 4>>
+decode_node_id_ipv4(const std::vector<std::uint8_t>& value);
 
 // TS 29.244 §8.2.25/§8.2.58: a Supported-Features bitmask. This project declares no optional
 // features on either side (UP or CP) -- disclosed minimal-viable scope, not because any feature

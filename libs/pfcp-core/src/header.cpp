@@ -3,8 +3,9 @@
 namespace pfcp_core {
 
 namespace {
-constexpr std::size_t kNodeHeaderOverhead = 4;    // sequence number(3) + spare(1)
-constexpr std::size_t kSessionHeaderOverhead = 12; // SEID(8) + sequence number(3) + priority/spare(1)
+constexpr std::size_t kNodeHeaderOverhead = 4; // sequence number(3) + spare(1)
+constexpr std::size_t kSessionHeaderOverhead =
+    12; // SEID(8) + sequence number(3) + priority/spare(1)
 } // namespace
 
 std::vector<std::uint8_t> encode_header(const Header& header, std::uint16_t ies_length) {
@@ -32,7 +33,8 @@ std::vector<std::uint8_t> encode_header(const Header& header, std::uint16_t ies_
     return out;
 }
 
-std::optional<Header> decode_header(const std::vector<std::uint8_t>& bytes, std::size_t& offset,
+std::optional<Header> decode_header(const std::vector<std::uint8_t>& bytes,
+                                    std::size_t& offset,
                                     std::uint16_t& ies_length) {
     if (bytes.size() < offset + 4) {
         return std::nullopt;
@@ -48,9 +50,8 @@ std::optional<Header> decode_header(const std::vector<std::uint8_t>& bytes, std:
     Header header;
     header.has_seid = has_seid;
     header.message_type = static_cast<MessageType>(bytes[offset + 1]);
-    const std::uint16_t message_length =
-        static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset + 2]) << 8) |
-                                   bytes[offset + 3]);
+    const std::uint16_t message_length = static_cast<std::uint16_t>(
+        (static_cast<std::uint16_t>(bytes[offset + 2]) << 8) | bytes[offset + 3]);
     if (message_length < overhead) {
         return std::nullopt;
     }

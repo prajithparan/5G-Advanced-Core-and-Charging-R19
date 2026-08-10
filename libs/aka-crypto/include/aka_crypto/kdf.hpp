@@ -1,12 +1,12 @@
 #pragma once
 
-#include "aka_crypto/milenage.hpp"
-
 #include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "aka_crypto/milenage.hpp"
 
 // 3GPP generic KDF (TS 33.220 Annex B.2.0, HMAC-SHA-256 based) and the specific 5G-AKA / 5G
 // EAP-AKA' key derivations built on it from TS 33.501 Annex A. FC values and per-derivation
@@ -59,26 +59,26 @@ using IkPrime = std::array<uint8_t, 16>;
 // where each Li is the 2-byte big-endian length of the preceding Pi. Returns the full 32-byte
 // HMAC-SHA-256 output.
 std::array<uint8_t, 32> generic_kdf(const std::vector<uint8_t>& key,
-                                     uint8_t fc,
-                                     const std::vector<std::vector<uint8_t>>& params);
+                                    uint8_t fc,
+                                    const std::vector<std::vector<uint8_t>>& params);
 
 Ak48 sqn_xor_ak(const Sqn& sqn, const Ak48& ak);
 
 Kausf derive_kausf(const Key128& ck,
-                    const Key128& ik,
-                    const std::string& serving_network_name,
-                    const Ak48& sqn_xor_ak);
+                   const Key128& ik,
+                   const std::string& serving_network_name,
+                   const Ak48& sqn_xor_ak);
 
 std::pair<CkPrime, IkPrime> derive_ck_ik_prime(const Key128& ck,
-                                                const Key128& ik,
-                                                const std::string& serving_network_name,
-                                                const Ak48& sqn_xor_ak);
+                                               const Key128& ik,
+                                               const std::string& serving_network_name,
+                                               const Ak48& sqn_xor_ak);
 
 ResStar derive_res_star(const Key128& ck,
-                         const Key128& ik,
-                         const std::string& serving_network_name,
-                         const Key128& rand,
-                         const Res64& res);
+                        const Key128& ik,
+                        const std::string& serving_network_name,
+                        const Key128& rand,
+                        const Res64& res);
 
 // Same TS 33.501 Annex A.5 formula computes both HRES* (SEAF, from the UE's RES*) and HXRES*
 // (AUSF, from UDM's XRES*) -- one function, two call sites.
@@ -114,4 +114,4 @@ constexpr uint8_t kNia2AlgorithmIdentity = 0x02;
 NasEncKey derive_knas_enc(const Kamf& kamf, uint8_t algorithm_identity);
 NasIntKey derive_knas_int(const Kamf& kamf, uint8_t algorithm_identity);
 
-}  // namespace aka_crypto
+} // namespace aka_crypto

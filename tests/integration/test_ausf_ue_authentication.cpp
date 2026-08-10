@@ -1,15 +1,12 @@
-// Drives nrf, udm, and ausf as real, separate OS processes to exercise ausf's Nausf_UEAuthentication
-// surface (docs/DECISIONS.md ADR-0027) end to end: ausf really calls udm's GenerateAuthData over
-// real TLS 1.3 + mTLS + a real signed OAuth2 token (the first NF-to-NF business-logic call in this
-// build, not just NRF registration), and this test plays the UE/USIM role -- independently
-// re-deriving every key from the same TS 35.207 Test Set 1 (K, OP) values nfs/udm/src/main.cpp
-// seeds its test subscribers with -- to cross-check ausf's HXRES*/KSEAF/EAP-AKA' output against a
-// second, independent computation, not just round-tripping ausf's own numbers back at it.
+// Drives nrf, udm, and ausf as real, separate OS processes to exercise ausf's
+// Nausf_UEAuthentication surface (docs/DECISIONS.md ADR-0027) end to end: ausf really calls udm's
+// GenerateAuthData over real TLS 1.3 + mTLS + a real signed OAuth2 token (the first NF-to-NF
+// business-logic call in this build, not just NRF registration), and this test plays the UE/USIM
+// role -- independently re-deriving every key from the same TS 35.207 Test Set 1 (K, OP) values
+// nfs/udm/src/main.cpp seeds its test subscribers with -- to cross-check ausf's
+// HXRES*/KSEAF/EAP-AKA' output against a second, independent computation, not just round-tripping
+// ausf's own numbers back at it.
 
-#include "aka_crypto/eap_aka_prime.hpp"
-#include "aka_crypto/hex.hpp"
-#include "aka_crypto/kdf.hpp"
-#include "aka_crypto/milenage.hpp"
 #include "sbi_core/http2_client.hpp"
 
 #include <nlohmann/json.hpp>
@@ -22,6 +19,10 @@
 #include <unistd.h>
 
 #include "TS29509_Nausf_UEAuthentication.hpp"
+#include "aka_crypto/eap_aka_prime.hpp"
+#include "aka_crypto/hex.hpp"
+#include "aka_crypto/kdf.hpp"
+#include "aka_crypto/milenage.hpp"
 
 #include <gtest/gtest.h>
 
@@ -145,7 +146,8 @@ TEST(AusfIntegration, FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf) 
     auto t = spawn_all();
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
-        client, "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
+        client,
+        "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
         50))
         << "ausf never became reachable";
 
@@ -181,9 +183,8 @@ TEST(AusfIntegration, FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf) 
     const auto ue = ue_compute(rand, autn);
     ASSERT_TRUE(ue.network_authenticated) << "MAC-A verification failed -- ausf sent a bad AUTN";
 
-    const auto xres_star =
-        aka_crypto::derive_res_star(ue.f2345_out.ck, ue.f2345_out.ik, kServingNetworkName, rand,
-                                     ue.f2345_out.res);
+    const auto xres_star = aka_crypto::derive_res_star(
+        ue.f2345_out.ck, ue.f2345_out.ik, kServingNetworkName, rand, ue.f2345_out.res);
     const auto hxres_star_expected = aka_crypto::derive_hxres_star(rand, xres_star);
     EXPECT_EQ(aka_crypto::to_hex(hxres_star_expected), av.hxresStar)
         << "ausf's HXRES* doesn't match an independent computation from the same RAND/XRES*";
@@ -206,8 +207,7 @@ TEST(AusfIntegration, FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf) 
     auto confirm_resp = client.send(confirm_req);
     ASSERT_TRUE(confirm_resp.has_value());
     EXPECT_EQ(confirm_resp->status, 200);
-    const auto confirmed =
-        json::parse(confirm_resp->body).get<sbi_gen::ConfirmationDataResponse>();
+    const auto confirmed = json::parse(confirm_resp->body).get<sbi_gen::ConfirmationDataResponse>();
     EXPECT_EQ(confirmed.authResult.value, sbi_gen::AuthResult::AUTHENTICATION_SUCCESS);
     ASSERT_TRUE(confirmed.supi.has_value());
     EXPECT_EQ(*confirmed.supi, supi);
@@ -234,7 +234,8 @@ TEST(AusfIntegration, FiveGAkaWrongResStarIsAuthenticationFailure) {
     auto t = spawn_all();
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
-        client, "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
+        client,
+        "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
         50))
         << "ausf never became reachable";
 
@@ -272,8 +273,7 @@ TEST(AusfIntegration, FiveGAkaWrongResStarIsAuthenticationFailure) {
     auto confirm_resp = client.send(confirm_req);
     ASSERT_TRUE(confirm_resp.has_value());
     EXPECT_EQ(confirm_resp->status, 200); // spec: same status for match or mismatch
-    const auto confirmed =
-        json::parse(confirm_resp->body).get<sbi_gen::ConfirmationDataResponse>();
+    const auto confirmed = json::parse(confirm_resp->body).get<sbi_gen::ConfirmationDataResponse>();
     EXPECT_EQ(confirmed.authResult.value, sbi_gen::AuthResult::AUTHENTICATION_FAILURE);
     EXPECT_FALSE(confirmed.kseaf.has_value());
 
@@ -284,7 +284,8 @@ TEST(AusfIntegration, EapAkaPrimeSuccessfulAuthenticationCrossChecksMacKseafAndM
     auto t = spawn_all();
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
-        client, "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
+        client,
+        "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
         50))
         << "ausf never became reachable";
 
@@ -325,10 +326,9 @@ TEST(AusfIntegration, EapAkaPrimeSuccessfulAuthenticationCrossChecksMacKseafAndM
     ASSERT_TRUE(ue.network_authenticated);
 
     const auto sqn_xor_ak = aka_crypto::sqn_xor_ak(ue.sqn, ue.f2345_out.ak);
-    const auto ck_ik_prime = aka_crypto::derive_ck_ik_prime(ue.f2345_out.ck, ue.f2345_out.ik,
-                                                             kServingNetworkName, sqn_xor_ak);
-    const auto keys =
-        aka_crypto::eap::derive_keys(ck_ik_prime.first, ck_ik_prime.second, supi);
+    const auto ck_ik_prime = aka_crypto::derive_ck_ik_prime(
+        ue.f2345_out.ck, ue.f2345_out.ik, kServingNetworkName, sqn_xor_ak);
+    const auto keys = aka_crypto::eap::derive_keys(ck_ik_prime.first, ck_ik_prime.second, supi);
 
     EXPECT_TRUE(aka_crypto::eap::verify_mac(*packet, keys.k_aut))
         << "ausf's Request/AKA'-Challenge AT_MAC doesn't verify against an independently derived "
@@ -389,7 +389,8 @@ TEST(AusfIntegration, EapAkaPrimeWrongResIsAuthenticationFailure) {
     auto t = spawn_all();
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
-        client, "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
+        client,
+        "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
         50))
         << "ausf never became reachable";
 
@@ -425,10 +426,9 @@ TEST(AusfIntegration, EapAkaPrimeWrongResIsAuthenticationFailure) {
 
     const auto ue = ue_compute(parsed->rand, parsed->autn);
     const auto sqn_xor_ak = aka_crypto::sqn_xor_ak(ue.sqn, ue.f2345_out.ak);
-    const auto ck_ik_prime = aka_crypto::derive_ck_ik_prime(ue.f2345_out.ck, ue.f2345_out.ik,
-                                                             kServingNetworkName, sqn_xor_ak);
-    const auto keys =
-        aka_crypto::eap::derive_keys(ck_ik_prime.first, ck_ik_prime.second, supi);
+    const auto ck_ik_prime = aka_crypto::derive_ck_ik_prime(
+        ue.f2345_out.ck, ue.f2345_out.ik, kServingNetworkName, sqn_xor_ak);
+    const auto keys = aka_crypto::eap::derive_keys(ck_ik_prime.first, ck_ik_prime.second, supi);
 
     const std::vector<uint8_t> wrong_res{0, 0, 0, 0, 0, 0, 0, 0};
     const auto response_packet =
@@ -464,7 +464,8 @@ TEST(AusfIntegration, DeregisterRemovesContextThenSecondDeregisterIs404) {
     auto t = spawn_all();
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
-        client, "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
+        client,
+        "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
         50))
         << "ausf never became reachable";
 
@@ -512,7 +513,8 @@ TEST(AusfIntegration, UnknownSupiIs404AndTamperedTokenIs401) {
     auto t = spawn_all();
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
-        client, "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
+        client,
+        "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session",
         50))
         << "ausf never became reachable";
 

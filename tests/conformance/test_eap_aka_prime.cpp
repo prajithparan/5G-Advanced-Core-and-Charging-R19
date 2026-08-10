@@ -28,7 +28,7 @@ std::array<uint8_t, 32> make_k_aut(uint8_t seed) {
     return k;
 }
 
-}  // namespace
+} // namespace
 
 TEST(EapAkaPrime, PrfPrimeIsDeterministicAndKeySensitive) {
     const std::vector<uint8_t> key1(32, 0x01);
@@ -122,7 +122,7 @@ TEST(EapAkaPrime, TamperedMacFailsVerification) {
     const auto k_aut = make_k_aut(0x33);
 
     auto packet = aka_crypto::eap::build_challenge_response(1, res, k_aut);
-    packet.back() ^= 0xff;  // corrupt the last byte of AT_MAC's value
+    packet.back() ^= 0xff; // corrupt the last byte of AT_MAC's value
 
     EXPECT_FALSE(aka_crypto::eap::verify_mac(packet, k_aut));
 }

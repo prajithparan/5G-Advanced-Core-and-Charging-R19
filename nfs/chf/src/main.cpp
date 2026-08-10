@@ -47,8 +47,6 @@
 // - No persistence across restarts (in-memory ChargingDataStore only) -- same disclosed
 //   simplification as every other NF's store so far.
 
-#include "bss_sid/party.hpp"
-#include "bss_sid/product.hpp"
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -70,6 +68,8 @@
 #include <thread>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "bss_sid/party.hpp"
+#include "bss_sid/product.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -151,7 +151,7 @@ std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& 
     });
     if (offering_it == offerings.end()) {
         spdlog::info("chf: no Active/isSellable ProductOffering with a price found, granting "
-                    "nothing this call");
+                     "nothing this call");
         return std::nullopt;
     }
 
@@ -162,7 +162,7 @@ std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& 
     auto price_resp = catalog_client.send(price_req);
     if (!price_resp.has_value() || price_resp->status != 200) {
         spdlog::warn("chf: could not fetch ProductOfferingPrice {}, granting nothing",
-                    offering_it->productOfferingPrice.front().id);
+                     offering_it->productOfferingPrice.front().id);
         return std::nullopt;
     }
 
@@ -175,7 +175,7 @@ std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& 
     }
     if (!price.unitOfMeasure.has_value() || !price.unitOfMeasure->amount.has_value()) {
         spdlog::info("chf: ProductOfferingPrice {} has no unitOfMeasure, granting nothing",
-                    *price.id);
+                     *price.id);
         return std::nullopt;
     }
 
@@ -190,11 +190,12 @@ std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& 
         grant.serviceSpecificUnits = static_cast<std::uint64_t>(amount);
     }
     spdlog::info("chf: rating engine granted {} from ProductOffering '{}' / ProductOfferingPrice "
-                "'{}'",
-                units == "GB" || units == "MB" ? std::to_string(*grant.totalVolume) + " octets"
-                                                : std::to_string(*grant.serviceSpecificUnits) +
-                                                      " service-specific units",
-                offering_it->name.value_or(""), price.name.value_or(""));
+                 "'{}'",
+                 units == "GB" || units == "MB"
+                     ? std::to_string(*grant.totalVolume) + " octets"
+                     : std::to_string(*grant.serviceSpecificUnits) + " service-specific units",
+                 offering_it->name.value_or(""),
+                 price.name.value_or(""));
     return grant;
 }
 
@@ -315,12 +316,12 @@ int main() {
     sbi_core::http2::Client catalog_client(std::move(catalog_client_tls));
 
     auto meter = sbi_core::get_meter("chf");
-    auto create_counter = meter->CreateUInt64Counter(
-        "chf_charging_data_create_total", "Total Nchf_ConvergedCharging_Create calls");
-    auto release_counter = meter->CreateUInt64Counter(
-        "chf_charging_data_release_total", "Total Nchf_ConvergedCharging_Release calls");
-    auto update_counter = meter->CreateUInt64Counter(
-        "chf_charging_data_update_total", "Total Nchf_ConvergedCharging_Update calls");
+    auto create_counter = meter->CreateUInt64Counter("chf_charging_data_create_total",
+                                                     "Total Nchf_ConvergedCharging_Create calls");
+    auto release_counter = meter->CreateUInt64Counter("chf_charging_data_release_total",
+                                                      "Total Nchf_ConvergedCharging_Release calls");
+    auto update_counter = meter->CreateUInt64Counter("chf_charging_data_update_total",
+                                                     "Total Nchf_ConvergedCharging_Update calls");
     auto grant_counter = meter->CreateUInt64Counter(
         "chf_rating_grant_total", "Total real GrantedUnit rating decisions issued");
 
@@ -333,8 +334,8 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/chargingdata",
-        [&verifier, &charging_data_store, &create_counter, &catalog_client,
-         &grant_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &charging_data_store, &create_counter, &catalog_client, &grant_counter](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -353,13 +354,15 @@ int main() {
             // as much of the mapping as has a real, unambiguous 3GPP field to build it from today
             // (see the mapping doc's own scope section for why every other field is deferred).
             if (body->subscriberIdentifier.has_value()) {
-                const auto individual = bss_sid::map_supi_to_individual(*body->subscriberIdentifier);
+                const auto individual =
+                    bss_sid::map_supi_to_individual(*body->subscriberIdentifier);
                 spdlog::info("chf: mapped subscriberIdentifier to TM Forum SID Individual: {}",
-                            nlohmann::json(individual).dump());
+                             nlohmann::json(individual).dump());
             }
 
             sbi_gen::ChargingDataResponse response{};
-            response.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
+            response.invocationTimeStamp =
+                sbi_core::format_rfc3339(std::chrono::system_clock::now());
             // See file header for why this echoes the request's value rather than assigning an
             // independent CHF-side sequence.
             response.invocationSequenceNumber = body->invocationSequenceNumber;
@@ -396,8 +399,8 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/chargingdata/{ChargingDataRef}/update",
-        [&verifier, &charging_data_store, &update_counter, &catalog_client,
-         &grant_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &charging_data_store, &update_counter, &catalog_client, &grant_counter](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -421,17 +424,21 @@ int main() {
                 for (const auto& usage : *body->multipleUnitUsage) {
                     if (usage.usedUnitContainer.has_value()) {
                         for (const auto& used : *usage.usedUnitContainer) {
-                            spdlog::info("chf: Update for ChargingDataRef={} reports ratingGroup={} "
-                                        "used {} octets (localSequenceNumber={})",
-                                        ref, usage.ratingGroup, used.totalVolume.value_or(0),
-                                        used.localSequenceNumber);
+                            spdlog::info(
+                                "chf: Update for ChargingDataRef={} reports ratingGroup={} "
+                                "used {} octets (localSequenceNumber={})",
+                                ref,
+                                usage.ratingGroup,
+                                used.totalVolume.value_or(0),
+                                used.localSequenceNumber);
                         }
                     }
                 }
             }
 
             sbi_gen::ChargingDataResponse response{};
-            response.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
+            response.invocationTimeStamp =
+                sbi_core::format_rfc3339(std::chrono::system_clock::now());
             response.invocationSequenceNumber = body->invocationSequenceNumber;
 
             // Real re-authorization: a fresh grant for continued usage, from the same rating

@@ -26,7 +26,13 @@ jobs:
 
       - name: Bootstrap vcpkg
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          # NOT --depth 1: vcpkg.json pins a specific historical builtin-baseline commit (not
+          # necessarily vcpkg's current HEAD), and vcpkg.cmake's manifest install resolves it via
+          # `git show <baseline-commit>:versions/baseline.json` inside this clone -- a shallow
+          # clone only has the tip commit, so that `git show` fails with exit 128 the moment the
+          # pinned baseline isn't HEAD (the normal case, not an edge case). Real bug this comment
+          # documents: every CI run failed on exactly this until it was found and fixed.
+          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Install Ninja
@@ -68,7 +74,7 @@ jobs:
 
       - name: Bootstrap vcpkg
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Install Ninja
@@ -122,7 +128,7 @@ jobs:
 
       - name: Bootstrap vcpkg
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Install sbi-codegen Python deps

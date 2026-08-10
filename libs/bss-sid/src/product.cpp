@@ -4,13 +4,15 @@ namespace bss_sid {
 
 namespace {
 
-template <typename T> void put_optional(nlohmann::json& j, const char* key, const std::optional<T>& v) {
+template <typename T>
+void put_optional(nlohmann::json& j, const char* key, const std::optional<T>& v) {
     if (v.has_value()) {
         j[key] = *v;
     }
 }
 
-template <typename T> void get_optional(const nlohmann::json& j, const char* key, std::optional<T>& v) {
+template <typename T>
+void get_optional(const nlohmann::json& j, const char* key, std::optional<T>& v) {
     if (const auto it = j.find(key); it != j.end() && !it->is_null()) {
         v = it->template get<T>();
     } else {

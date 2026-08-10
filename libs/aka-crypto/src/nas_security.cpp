@@ -15,7 +15,8 @@ namespace {
 // 00(2 bits spare). The two formats differ only in total padding length after that shared prefix
 // (EEA2's IV pads to a full 16-byte block; EIA2's M-prefix is exactly 8 bytes before the message),
 // so this helper produces just the shared 5-byte prefix and callers zero-pad the rest themselves.
-std::array<uint8_t, 5> count_bearer_direction_prefix(uint32_t count, uint8_t bearer, uint8_t direction) {
+std::array<uint8_t, 5>
+count_bearer_direction_prefix(uint32_t count, uint8_t bearer, uint8_t direction) {
     std::array<uint8_t, 5> out{};
     out[0] = static_cast<uint8_t>((count >> 24) & 0xff);
     out[1] = static_cast<uint8_t>((count >> 16) & 0xff);
@@ -25,14 +26,14 @@ std::array<uint8_t, 5> count_bearer_direction_prefix(uint32_t count, uint8_t bea
     return out;
 }
 
-}  // namespace
+} // namespace
 
 std::vector<uint8_t> nea2_apply(const NasEncKey& key,
-                                 uint32_t count,
-                                 uint8_t bearer,
-                                 uint8_t direction,
-                                 const std::vector<uint8_t>& data) {
-    std::array<uint8_t, 16> iv{};  // remaining 11 bytes stay zero, per Annex B.1.3
+                                uint32_t count,
+                                uint8_t bearer,
+                                uint8_t direction,
+                                const std::vector<uint8_t>& data) {
+    std::array<uint8_t, 16> iv{}; // remaining 11 bytes stay zero, per Annex B.1.3
     const auto prefix = count_bearer_direction_prefix(count, bearer, direction);
     std::copy(prefix.begin(), prefix.end(), iv.begin());
 
@@ -45,8 +46,8 @@ std::vector<uint8_t> nea2_apply(const NasEncKey& key,
     int final_len = 0;
     bool ok = EVP_EncryptInit_ex(ctx, EVP_aes_128_ctr(), nullptr, key.data(), iv.data()) == 1;
     ok = ok && (data.empty() ||
-                EVP_EncryptUpdate(ctx, out.data(), &out_len, data.data(),
-                                   static_cast<int>(data.size())) == 1);
+                EVP_EncryptUpdate(
+                    ctx, out.data(), &out_len, data.data(), static_cast<int>(data.size())) == 1);
     ok = ok && (EVP_EncryptFinal_ex(ctx, out.data() + out_len, &final_len) == 1);
     EVP_CIPHER_CTX_free(ctx);
     if (!ok) {
@@ -56,14 +57,14 @@ std::vector<uint8_t> nea2_apply(const NasEncKey& key,
 }
 
 uint32_t nia2_mac(const NasIntKey& key,
-                   uint32_t count,
-                   uint8_t bearer,
-                   uint8_t direction,
-                   const std::vector<uint8_t>& message) {
+                  uint32_t count,
+                  uint8_t bearer,
+                  uint8_t direction,
+                  const std::vector<uint8_t>& message) {
     std::vector<uint8_t> input;
     const auto prefix = count_bearer_direction_prefix(count, bearer, direction);
     input.insert(input.end(), prefix.begin(), prefix.end());
-    input.insert(input.end(), {0x00, 0x00, 0x00});  // pad the 5-byte prefix to 8 bytes, Annex B.2.3
+    input.insert(input.end(), {0x00, 0x00, 0x00}); // pad the 5-byte prefix to 8 bytes, Annex B.2.3
     input.insert(input.end(), message.begin(), message.end());
 
     EVP_MAC* mac_algo = EVP_MAC_fetch(nullptr, "CMAC", nullptr);
@@ -95,4 +96,4 @@ uint32_t nia2_mac(const NasIntKey& key,
            (static_cast<uint32_t>(full_mac[2]) << 8) | static_cast<uint32_t>(full_mac[3]);
 }
 
-}  // namespace aka_crypto
+} // namespace aka_crypto

@@ -1,13 +1,13 @@
 #pragma once
 
-#include "aka_crypto/milenage.hpp"
-#include "aka_crypto/kdf.hpp"
-
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+
+#include "aka_crypto/kdf.hpp"
+#include "aka_crypto/milenage.hpp"
 
 // Private to nfs/ausf -- not shared with any other NF, per CLAUDE.md's "no NF includes another
 // NF's private headers" rule. In-memory only, no persistence across restarts, no expiry/TTL --
@@ -25,7 +25,8 @@ namespace ausf {
 struct AuthContext {
     std::string supi;
     std::string serving_network_name;
-    std::string auth_type; // "5G_AKA" or "EAP_AKA_PRIME" -- sbi_gen::AuthType_Nausf_UEAuthentication's values
+    std::string auth_type; // "5G_AKA" or "EAP_AKA_PRIME" --
+                           // sbi_gen::AuthType_Nausf_UEAuthentication's values
 
     // 5G-AKA path (PUT .../5g-aka-confirmation compares ConfirmationData.resStar against this).
     aka_crypto::ResStar xres_star{};

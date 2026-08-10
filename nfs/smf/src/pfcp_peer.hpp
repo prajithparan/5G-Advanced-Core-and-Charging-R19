@@ -1,7 +1,5 @@
 #pragma once
 
-#include "pfcp_core/header.hpp"
-
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/udp.hpp>
 
@@ -15,6 +13,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include "pfcp_core/header.hpp"
 
 // Private to nfs/smf -- not shared with any other NF, per CLAUDE.md's "no NF includes another NF's
 // private headers" rule.
@@ -38,9 +38,9 @@ namespace smf {
 
 class PfcpPeer {
 public:
-    using SessionReportHandler = std::function<void(
-        const pfcp_core::Header& header, const std::vector<std::uint8_t>& ie_bytes,
-        const boost::asio::ip::udp::endpoint& sender)>;
+    using SessionReportHandler = std::function<void(const pfcp_core::Header& header,
+                                                    const std::vector<std::uint8_t>& ie_bytes,
+                                                    const boost::asio::ip::udp::endpoint& sender)>;
 
     // Binds the persistent socket to 0.0.0.0:kSmfCpFunctionPfcpPort and starts the receive-
     // dispatch thread immediately -- with no session-report handler set yet (set_session_report_
@@ -70,10 +70,12 @@ public:
     // sequence_number, retrying (T1=2s, N1=3 attempts per TS 29.244 §6.4 -- unchanged from the
     // prior per-call-socket implementation's own choices) before giving up. Thread-safe: multiple
     // callers may have outstanding requests concurrently.
-    std::optional<std::vector<std::uint8_t>> send_request_and_await_response(
-        const boost::asio::ip::udp::endpoint& target, const std::vector<std::uint8_t>& request_pdu,
-        pfcp_core::MessageType expected_response_type, std::uint32_t sequence_number,
-        const std::string& procedure_name);
+    std::optional<std::vector<std::uint8_t>>
+    send_request_and_await_response(const boost::asio::ip::udp::endpoint& target,
+                                    const std::vector<std::uint8_t>& request_pdu,
+                                    pfcp_core::MessageType expected_response_type,
+                                    std::uint32_t sequence_number,
+                                    const std::string& procedure_name);
 
     // Sends a PDU without waiting for anything back -- used to acknowledge an unsolicited request
     // (e.g. a Session Report Response) from within the SessionReportHandler.

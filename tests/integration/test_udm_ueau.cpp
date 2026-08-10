@@ -95,8 +95,8 @@ TEST(UdmIntegration, GenerateAuthDataFor5GAkaSubscriberProducesDistinctVectors) 
 
     sbi_core::http2::ClientRequest req;
     req.method = "POST";
-    req.url = "https://127.0.0.1:7780/nudm-ueau/v1/" + supi +
-               "/security-information/generate-auth-data";
+    req.url =
+        "https://127.0.0.1:7780/nudm-ueau/v1/" + supi + "/security-information/generate-auth-data";
     req.headers.emplace("content-type", "application/json");
     req.headers.emplace("authorization", "Bearer " + token);
     req.body = json(body).dump();
@@ -158,8 +158,8 @@ TEST(UdmIntegration, GenerateAuthDataForEapAkaPrimeSubscriberReturnsEapAkaPrimeV
 
     sbi_core::http2::ClientRequest req;
     req.method = "POST";
-    req.url = "https://127.0.0.1:7780/nudm-ueau/v1/" + supi +
-               "/security-information/generate-auth-data";
+    req.url =
+        "https://127.0.0.1:7780/nudm-ueau/v1/" + supi + "/security-information/generate-auth-data";
     req.headers.emplace("content-type", "application/json");
     req.headers.emplace("authorization", "Bearer " + token);
     req.body = json(body).dump();
@@ -278,7 +278,7 @@ TEST(UdmIntegration, GenerateAuthDataUnknownSupiIs404AndTamperedTokenIs401) {
     sbi_core::http2::ClientRequest req;
     req.method = "POST";
     req.url = "https://127.0.0.1:7780/nudm-ueau/v1/imsi-999700000000099/"
-               "security-information/generate-auth-data";
+              "security-information/generate-auth-data";
     req.headers.emplace("content-type", "application/json");
     req.headers.emplace("authorization", "Bearer " + token);
     req.body = json(body).dump();

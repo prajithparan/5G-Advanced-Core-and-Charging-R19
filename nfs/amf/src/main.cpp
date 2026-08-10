@@ -477,8 +477,8 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/ue-contexts/{ueContextId}/n1-n2-messages",
-        [&verifier, &ue_contexts, &ue_ngap_registry,
-         &n1n2_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &ue_contexts, &ue_ngap_registry, &n1n2_counter](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return problem_response(401, "Unauthorized", auth->error);
             }
@@ -502,8 +502,7 @@ int main() {
             if (body->n1MessageContainer.has_value()) {
                 const auto content_type_it = req.headers.find("content-type");
                 if (content_type_it != req.headers.end()) {
-                    if (auto parts =
-                            sbi_core::multipart::parse(content_type_it->second, req.body);
+                    if (auto parts = sbi_core::multipart::parse(content_type_it->second, req.body);
                         parts.has_value()) {
                         for (const auto& part : *parts) {
                             if (part.content_id.has_value() &&
@@ -517,22 +516,25 @@ int main() {
                 }
             }
             if (!n1_bytes.has_value()) {
-                return problem_response(400, "Missing binary part",
+                return problem_response(400,
+                                        "Missing binary part",
                                         "n1MessageContainer referenced but its binary part was "
                                         "not found in the multipart body");
             }
             if (!body->pduSessionId.has_value()) {
                 return problem_response(
-                    400, "Missing mandatory IE",
+                    400,
+                    "Missing mandatory IE",
                     "This build requires pduSessionId to route the N1 message to a PDU session");
             }
 
             const auto delivered = ue_ngap_registry.send_dl_nas_transport(
                 ue_context_id, static_cast<std::uint8_t>(*body->pduSessionId), *n1_bytes);
             if (!delivered) {
-                return problem_response(
-                    404, "Not Found",
-                    "No live NGAP association registered for UE context " + ue_context_id);
+                return problem_response(404,
+                                        "Not Found",
+                                        "No live NGAP association registered for UE context " +
+                                            ue_context_id);
             }
 
             n1n2_counter->Add(1);
@@ -722,8 +724,13 @@ int main() {
     // NGAP/N2 (SCTP), its own dedicated thread -- see docs/DECISIONS.md ADR-0030/ADR-0031.
     // 127.0.0.5:38412 matches simulators/ransim/config/gnb.yaml's pre-agreed AMF target exactly
     // (ADR-0016), not an arbitrary choice.
-    std::thread(amf::ngap::run_ngap_lifecycle, "127.0.0.5", 38412, amf_instance_id,
-               std::string(kNrfBase), std::ref(ue_contexts), std::ref(ue_ngap_registry))
+    std::thread(amf::ngap::run_ngap_lifecycle,
+                "127.0.0.5",
+                38412,
+                amf_instance_id,
+                std::string(kNrfBase),
+                std::ref(ue_contexts),
+                std::ref(ue_ngap_registry))
         .detach();
 
     server.start();

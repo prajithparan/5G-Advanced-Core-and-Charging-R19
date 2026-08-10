@@ -39,7 +39,8 @@ struct EstablishmentRequestInfo {
 // unconditionally rejects any config.type != IPV4 before even building the message -- see
 // establishment.cpp), so nothing else in the request currently affects what SMF sends back.
 // std::nullopt if the bytes aren't shaped like a PDU Session Establishment Request.
-std::optional<EstablishmentRequestInfo> decode_establishment_request(const std::vector<std::uint8_t>& p);
+std::optional<EstablishmentRequestInfo>
+decode_establishment_request(const std::vector<std::uint8_t>& p);
 
 // Encodes a real TS 24.501 §8.3.5 PDU Session Establishment Accept: PDU session type IPv4, SSC
 // mode 1 (this build's only supported combination, matching the request), one QoS rule, and
@@ -59,9 +60,10 @@ std::optional<EstablishmentRequestInfo> decode_establishment_request(const std::
 // PCF's real AuthorizedDefaultQos.n5qi (5QI), NOT a fabricated value, though a real network would
 // allocate QFI via separate QoS flow binding rather than reusing the 5QI numerically -- disclosed
 // simplification, no QoS flow binding subsystem exists in this project.
-std::vector<std::uint8_t> encode_establishment_accept(std::uint8_t pdu_session_id, std::uint8_t pti,
-                                                       const std::string& session_ambr_uplink,
-                                                       const std::string& session_ambr_downlink,
-                                                       std::uint8_t qfi);
+std::vector<std::uint8_t> encode_establishment_accept(std::uint8_t pdu_session_id,
+                                                      std::uint8_t pti,
+                                                      const std::string& session_ambr_uplink,
+                                                      const std::string& session_ambr_downlink,
+                                                      std::uint8_t qfi);
 
 } // namespace smf::nas5gsm

@@ -50,7 +50,8 @@ public:
     // octets) the XDP program counts against -- called from run_pfcp_lifecycle whenever Session
     // Establishment (ADR-0050 Stage 1) parses a real Create URR out of the request. Returns false
     // if the underlying BPF map update fails.
-    bool register_urr(std::uint32_t teid, std::uint64_t volume_threshold_octets,
+    bool register_urr(std::uint32_t teid,
+                      std::uint64_t volume_threshold_octets,
                       std::uint64_t volume_quota_octets);
 
     // ADR-0050 Stage 5: real Session Modification support -- pushes a re-authorized Volume
@@ -63,7 +64,8 @@ public:
     // reset to 0, so a future crossing of the newly-provisioned (necessarily higher) values can
     // fire again. Returns false if no URR is currently registered for this TEID, or the underlying
     // BPF map operation fails.
-    bool update_urr_thresholds(std::uint32_t teid, std::uint64_t new_volume_threshold_octets,
+    bool update_urr_thresholds(std::uint32_t teid,
+                               std::uint64_t new_volume_threshold_octets,
                                std::uint64_t new_volume_quota_octets);
 
 private:

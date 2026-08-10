@@ -27,20 +27,20 @@ aka_crypto::NasEncKey make_key16(uint8_t fill) {
     return k;
 }
 
-}  // namespace
+} // namespace
 
 TEST(Nea2, EncryptThenEncryptAgainRecoversPlaintext) {
     const auto key = make_key16(0x11);
     const std::vector<uint8_t> plaintext = {0x7e, 0x00, 0x5e, 0x01, 0x02, 0x03, 0x04, 0x05};
 
-    const auto ciphertext = aka_crypto::nea2_apply(key, /*count=*/0, /*bearer=*/1, /*direction=*/0,
-                                                    plaintext);
+    const auto ciphertext =
+        aka_crypto::nea2_apply(key, /*count=*/0, /*bearer=*/1, /*direction=*/0, plaintext);
     ASSERT_EQ(ciphertext.size(), plaintext.size());
     EXPECT_NE(ciphertext, plaintext);
 
     // AES-CTR is its own inverse: applying the identical keystream parameters again undoes it.
-    const auto recovered = aka_crypto::nea2_apply(key, /*count=*/0, /*bearer=*/1, /*direction=*/0,
-                                                   ciphertext);
+    const auto recovered =
+        aka_crypto::nea2_apply(key, /*count=*/0, /*bearer=*/1, /*direction=*/0, ciphertext);
     EXPECT_EQ(recovered, plaintext);
 }
 

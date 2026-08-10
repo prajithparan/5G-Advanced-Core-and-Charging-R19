@@ -29,10 +29,6 @@
 // (ADR-0026): AuthenticationInfo.supiOrSuci is passed straight through to UDM, so a real
 // SUCI-formatted id 404s exactly like it does calling UDM directly.
 
-#include "aka_crypto/eap_aka_prime.hpp"
-#include "aka_crypto/hex.hpp"
-#include "aka_crypto/kdf.hpp"
-#include "aka_crypto/milenage.hpp"
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
 #include "sbi_core/json_body.hpp"
@@ -56,6 +52,10 @@
 #include <vector>
 
 #include "TS29509_Nausf_UEAuthentication.hpp"
+#include "aka_crypto/eap_aka_prime.hpp"
+#include "aka_crypto/hex.hpp"
+#include "aka_crypto/kdf.hpp"
+#include "aka_crypto/milenage.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -208,23 +208,20 @@ int main() {
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
     sbi_core::http2::Client udm_client(std::move(udm_client_tls));
-    sbi_core::OAuth2Client udm_oauth(udm_client,
-                                     std::string(kNrfBase) + "/oauth2/token",
-                                     ausf_instance_id,
-                                     "nudm-ueau",
-                                     "UDM");
+    sbi_core::OAuth2Client udm_oauth(
+        udm_client, std::string(kNrfBase) + "/oauth2/token", ausf_instance_id, "nudm-ueau", "UDM");
 
     ausf::AuthContextStore auth_contexts;
 
     auto meter = sbi_core::get_meter("ausf");
-    auto ue_auth_counter = meter->CreateUInt64Counter(
-        "ausf_ue_authentications_total", "Total POST /ue-authentications calls");
+    auto ue_auth_counter = meter->CreateUInt64Counter("ausf_ue_authentications_total",
+                                                      "Total POST /ue-authentications calls");
     auto confirm_5g_aka_counter = meter->CreateUInt64Counter(
         "ausf_5g_aka_confirmation_total", "Total Confirm5gAkaAuthentication calls");
     auto eap_session_counter =
         meter->CreateUInt64Counter("ausf_eap_session_total", "Total EapAuthMethod calls");
-    auto deregister_counter = meter->CreateUInt64Counter(
-        "ausf_deregister_total", "Total UEAuthenticationsDeregister calls");
+    auto deregister_counter = meter->CreateUInt64Counter("ausf_deregister_total",
+                                                         "Total UEAuthenticationsDeregister calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -235,8 +232,8 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/ue-authentications",
-        [&verifier, &udm_client, &udm_oauth, &auth_contexts, &ausf_instance_id,
-         &ue_auth_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &udm_client, &udm_oauth, &auth_contexts, &ausf_instance_id, &ue_auth_counter](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -248,9 +245,10 @@ int main() {
 
             auto token = udm_oauth.get_bearer_token();
             if (!token.has_value()) {
-                return sbi_core::http2::problem_response(
-                    500, "Internal Server Error", "AUSF could not obtain a token for UDM: " +
-                                                       token.error());
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "AUSF could not obtain a token for UDM: " +
+                                                             token.error());
             }
 
             sbi_gen::AuthenticationInfoRequest udm_req{};
@@ -265,7 +263,7 @@ int main() {
             sbi_core::http2::ClientRequest udm_http_req;
             udm_http_req.method = "POST";
             udm_http_req.url = std::string(kUdmBase) + "/nudm-ueau/v1/" + body->supiOrSuci +
-                                "/security-information/generate-auth-data";
+                               "/security-information/generate-auth-data";
             udm_http_req.headers.emplace("content-type", "application/json");
             udm_http_req.headers.emplace("authorization", "Bearer " + *token);
             udm_http_req.body = json(udm_req).dump();
@@ -292,8 +290,9 @@ int main() {
                 udm_result = json::parse(udm_resp->body).get<sbi_gen::AuthenticationInfoResult>();
             } catch (const json::exception& e) {
                 return sbi_core::http2::problem_response(
-                    500, "Internal Server Error", "UDM returned a malformed AuthenticationInfoResult: " +
-                                                       std::string(e.what()));
+                    500,
+                    "Internal Server Error",
+                    "UDM returned a malformed AuthenticationInfoResult: " + std::string(e.what()));
             }
             if (!udm_result.authenticationVector.has_value()) {
                 return sbi_core::http2::problem_response(
@@ -319,7 +318,9 @@ int main() {
                 const auto ik_prime = aka_crypto::from_hex<16>(av.ikPrime);
                 if (!rand || !autn || !xres || !ck_prime || !ik_prime) {
                     return sbi_core::http2::problem_response(
-                        500, "Internal Server Error", "UDM returned malformed hex in AvEapAkaPrime");
+                        500,
+                        "Internal Server Error",
+                        "UDM returned malformed hex in AvEapAkaPrime");
                 }
 
                 const auto keys = aka_crypto::eap::derive_keys(*ck_prime, *ik_prime, supi);
@@ -331,9 +332,8 @@ int main() {
                 // directly either, same as a real UE/USIM.
                 aka_crypto::Ak48 sqn_xor_ak{};
                 std::copy(autn->begin(), autn->begin() + 6, sqn_xor_ak.begin());
-                const auto kausf_eap = aka_crypto::derive_kausf(*ck_prime, *ik_prime,
-                                                                body->servingNetworkName,
-                                                                sqn_xor_ak);
+                const auto kausf_eap = aka_crypto::derive_kausf(
+                    *ck_prime, *ik_prime, body->servingNetworkName, sqn_xor_ak);
                 // Identifier: derived from the AV's own RAND rather than a separate counter/RNG --
                 // deterministic given this context, and RFC 3748 only requires it be distinct
                 // across concurrent exchanges, not globally unique.
@@ -355,8 +355,9 @@ int main() {
                 ctx.authType.value = sbi_gen::AuthType_Nausf_UEAuthentication::EAP_AKA_PRIME;
                 ctx.n5gAuthData = json(eap_payload_b64);
                 ctx._links = json{{"eap-session",
-                                   json{{"href", std::string(kApiRoot) + "/ue-authentications/" +
-                                                     auth_ctx_id + "/eap-session"}}}};
+                                   json{{"href",
+                                         std::string(kApiRoot) + "/ue-authentications/" +
+                                             auth_ctx_id + "/eap-session"}}}};
             } else {
                 sbi_gen::Av5GHeAka av;
                 try {
@@ -391,8 +392,9 @@ int main() {
                 ctx.authType.value = sbi_gen::AuthType_Nausf_UEAuthentication::V5G_AKA;
                 ctx.n5gAuthData = json(ausf_av);
                 ctx._links = json{{"5g-aka",
-                                   json{{"href", std::string(kApiRoot) + "/ue-authentications/" +
-                                                     auth_ctx_id + "/5g-aka-confirmation"}}}};
+                                   json{{"href",
+                                         std::string(kApiRoot) + "/ue-authentications/" +
+                                             auth_ctx_id + "/5g-aka-confirmation"}}}};
             }
             ctx.servingNetworkName = body->servingNetworkName;
 
@@ -401,8 +403,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace(
-                "location", std::string(kApiRoot) + "/ue-authentications/" + auth_ctx_id);
+            resp.headers.emplace("location",
+                                 std::string(kApiRoot) + "/ue-authentications/" + auth_ctx_id);
             resp.body = j.dump();
             return resp;
         });
@@ -436,9 +438,8 @@ int main() {
             if (*res_star == ctx->xres_star) {
                 resp_data.authResult.value = sbi_gen::AuthResult::AUTHENTICATION_SUCCESS;
                 resp_data.supi = ctx->supi;
-                resp_data.kseaf =
-                    aka_crypto::to_hex(aka_crypto::derive_kseaf(ctx->kausf_5g_aka,
-                                                                 ctx->serving_network_name));
+                resp_data.kseaf = aka_crypto::to_hex(
+                    aka_crypto::derive_kseaf(ctx->kausf_5g_aka, ctx->serving_network_name));
             } else {
                 resp_data.authResult.value = sbi_gen::AuthResult::AUTHENTICATION_FAILURE;
             }
@@ -495,10 +496,9 @@ int main() {
 
             const bool mac_ok = aka_crypto::eap::verify_mac(*packet, ctx->k_aut);
             const auto parsed = aka_crypto::eap::parse_challenge_response(*packet);
-            const bool res_ok = mac_ok && parsed.has_value() &&
-                                parsed->res.size() == ctx->xres.size() &&
-                                std::equal(parsed->res.begin(), parsed->res.end(),
-                                          ctx->xres.begin());
+            const bool res_ok =
+                mac_ok && parsed.has_value() && parsed->res.size() == ctx->xres.size() &&
+                std::equal(parsed->res.begin(), parsed->res.end(), ctx->xres.begin());
 
             if (res_ok) {
                 const auto kseaf =
@@ -509,7 +509,8 @@ int main() {
                 resp_data.authResult->value = sbi_gen::AuthResult::AUTHENTICATION_SUCCESS;
                 resp_data.supi = ctx->supi;
                 resp_data.kSeaf = aka_crypto::to_hex(kseaf);
-                resp_data.msk = aka_crypto::to_hex(std::vector<uint8_t>(ctx->msk.begin(), ctx->msk.end()));
+                resp_data.msk =
+                    aka_crypto::to_hex(std::vector<uint8_t>(ctx->msk.begin(), ctx->msk.end()));
             } else {
                 resp_data.eapPayload =
                     aka_crypto::eap::base64_encode(aka_crypto::eap::build_failure(identifier));

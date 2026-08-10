@@ -41,7 +41,8 @@ std::optional<std::uint32_t> decode_precedence(const std::vector<std::uint8_t>& 
     if (value.size() != 4) {
         return std::nullopt;
     }
-    return (static_cast<std::uint32_t>(value[0]) << 24) | (static_cast<std::uint32_t>(value[1]) << 16) |
+    return (static_cast<std::uint32_t>(value[0]) << 24) |
+           (static_cast<std::uint32_t>(value[1]) << 16) |
            (static_cast<std::uint32_t>(value[2]) << 8) | static_cast<std::uint32_t>(value[3]);
 }
 
@@ -58,7 +59,8 @@ std::optional<std::uint32_t> decode_far_id(const std::vector<std::uint8_t>& valu
     if (value.size() != 4) {
         return std::nullopt;
     }
-    return (static_cast<std::uint32_t>(value[0]) << 24) | (static_cast<std::uint32_t>(value[1]) << 16) |
+    return (static_cast<std::uint32_t>(value[0]) << 24) |
+           (static_cast<std::uint32_t>(value[1]) << 16) |
            (static_cast<std::uint32_t>(value[2]) << 8) | static_cast<std::uint32_t>(value[3]);
 }
 
@@ -66,7 +68,9 @@ namespace {
 constexpr std::uint8_t kApplyActionForwBit = 0x02; // bit 2 - FORW
 } // namespace
 
-std::vector<std::uint8_t> encode_apply_action_forward() { return {kApplyActionForwBit}; }
+std::vector<std::uint8_t> encode_apply_action_forward() {
+    return {kApplyActionForwBit};
+}
 
 bool decode_apply_action_has_forward(const std::vector<std::uint8_t>& value) {
     return value.size() == 1 && (value[0] & kApplyActionForwBit) != 0;
@@ -77,10 +81,12 @@ constexpr std::uint8_t kFTeidV4Bit = 0x01;
 constexpr std::uint8_t kFTeidChBit = 0x04;
 } // namespace
 
-std::vector<std::uint8_t> encode_f_teid_choose_ipv4() { return {kFTeidV4Bit | kFTeidChBit}; }
+std::vector<std::uint8_t> encode_f_teid_choose_ipv4() {
+    return {kFTeidV4Bit | kFTeidChBit};
+}
 
 std::vector<std::uint8_t> encode_f_teid_allocated_ipv4(std::uint32_t teid,
-                                                        std::array<std::uint8_t, 4> ipv4) {
+                                                       std::array<std::uint8_t, 4> ipv4) {
     std::vector<std::uint8_t> out;
     out.push_back(kFTeidV4Bit);
     out.push_back(static_cast<std::uint8_t>((teid >> 24) & 0xFF));
@@ -96,8 +102,9 @@ std::optional<FTeidAllocated> decode_f_teid_allocated_ipv4(const std::vector<std
         return std::nullopt;
     }
     FTeidAllocated out;
-    out.teid = (static_cast<std::uint32_t>(value[1]) << 24) | (static_cast<std::uint32_t>(value[2]) << 16) |
-              (static_cast<std::uint32_t>(value[3]) << 8) | static_cast<std::uint32_t>(value[4]);
+    out.teid = (static_cast<std::uint32_t>(value[1]) << 24) |
+               (static_cast<std::uint32_t>(value[2]) << 16) |
+               (static_cast<std::uint32_t>(value[3]) << 8) | static_cast<std::uint32_t>(value[4]);
     out.ipv4 = {value[5], value[6], value[7], value[8]};
     return out;
 }
@@ -147,7 +154,8 @@ std::optional<std::uint32_t> decode_urr_id(const std::vector<std::uint8_t>& valu
     if (value.size() != 4) {
         return std::nullopt;
     }
-    return (static_cast<std::uint32_t>(value[0]) << 24) | (static_cast<std::uint32_t>(value[1]) << 16) |
+    return (static_cast<std::uint32_t>(value[0]) << 24) |
+           (static_cast<std::uint32_t>(value[1]) << 16) |
            (static_cast<std::uint32_t>(value[2]) << 8) | static_cast<std::uint32_t>(value[3]);
 }
 
@@ -164,7 +172,8 @@ std::optional<std::uint32_t> decode_ur_seqn(const std::vector<std::uint8_t>& val
     if (value.size() != 4) {
         return std::nullopt;
     }
-    return (static_cast<std::uint32_t>(value[0]) << 24) | (static_cast<std::uint32_t>(value[1]) << 16) |
+    return (static_cast<std::uint32_t>(value[0]) << 24) |
+           (static_cast<std::uint32_t>(value[1]) << 16) |
            (static_cast<std::uint32_t>(value[2]) << 8) | static_cast<std::uint32_t>(value[3]);
 }
 
@@ -172,13 +181,15 @@ namespace {
 constexpr std::uint8_t kMeasurementMethodVolumBit = 0x02; // bit 2 - VOLUM
 constexpr std::uint8_t kReportingTriggersVolth = 0x02;    // octet 5, bit 2 - VOLTH
 constexpr std::uint8_t kReportingTriggersVolqu = 0x01;    // octet 6, bit 1 - VOLQU
-constexpr std::uint8_t kVolumeTovolBit = 0x01;            // octet 5, bit 1 - TOVOL (all 3 volume IEs)
-constexpr std::uint8_t kReportTypeUsar = 0x02;            // bit 2 - USAR
-constexpr std::uint8_t kUsageReportTriggerVolth = 0x02;   // octet 5, bit 2 - VOLTH
-constexpr std::uint8_t kUsageReportTriggerVolqu = 0x01;   // octet 6, bit 1 - VOLQU
+constexpr std::uint8_t kVolumeTovolBit = 0x01;          // octet 5, bit 1 - TOVOL (all 3 volume IEs)
+constexpr std::uint8_t kReportTypeUsar = 0x02;          // bit 2 - USAR
+constexpr std::uint8_t kUsageReportTriggerVolth = 0x02; // octet 5, bit 2 - VOLTH
+constexpr std::uint8_t kUsageReportTriggerVolqu = 0x01; // octet 6, bit 1 - VOLQU
 } // namespace
 
-std::vector<std::uint8_t> encode_measurement_method_volume() { return {kMeasurementMethodVolumBit}; }
+std::vector<std::uint8_t> encode_measurement_method_volume() {
+    return {kMeasurementMethodVolumBit};
+}
 
 std::vector<std::uint8_t> encode_reporting_triggers_volume() {
     return {kReportingTriggersVolth, kReportingTriggersVolqu};
@@ -208,7 +219,9 @@ bool decode_report_type_has_usage_report(const std::vector<std::uint8_t>& value)
     return !value.empty() && (value[0] & kReportTypeUsar) != 0;
 }
 
-std::vector<std::uint8_t> encode_report_type_usage_report() { return {kReportTypeUsar}; }
+std::vector<std::uint8_t> encode_report_type_usage_report() {
+    return {kReportTypeUsar};
+}
 
 UsageReportTriggerValue decode_usage_report_trigger(const std::vector<std::uint8_t>& value) {
     if (value.size() >= 1 && (value[0] & kUsageReportTriggerVolth) != 0) {

@@ -2,7 +2,6 @@
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-
 #include <fcntl.h>
 #include <linux/if.h>       // struct ifreq, IFNAMSIZ
 #include <linux/if_link.h>  // XDP_FLAGS_SKB_MODE
@@ -120,14 +119,15 @@ bool ensure_datapath_caps_ambient() {
     cap_free(caps);
     if (!set_ok) {
         spdlog::error("upf-datapath: failed to add CAP_NET_ADMIN/CAP_SYS_ADMIN/CAP_DAC_OVERRIDE "
-                    "to the inheritable set: {}",
-                    std::strerror(errno));
+                      "to the inheritable set: {}",
+                      std::strerror(errno));
         return false;
     }
     for (const cap_value_t cap : cap_list) {
         if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, cap, 0, 0) != 0) {
             spdlog::error("upf-datapath: prctl(PR_CAP_AMBIENT_RAISE, {}) failed: {}",
-                        static_cast<int>(cap), std::strerror(errno));
+                          static_cast<int>(cap),
+                          std::strerror(errno));
             return false;
         }
     }
@@ -195,16 +195,18 @@ int handle_tpdu_sample(void* ctx, void* data, std::size_t data_sz) {
     const std::size_t tpdu_len = rec->length;
     if (tpdu_len > sizeof(rec->data)) {
         spdlog::warn("upf-datapath: ring buffer record claims implausible length {}, ignoring",
-                    tpdu_len);
+                     tpdu_len);
         return 0;
     }
     const ssize_t written = write(tun_fd, rec->data, tpdu_len);
     if (written < 0 || static_cast<std::size_t>(written) != tpdu_len) {
         spdlog::warn("upf-datapath: short/failed write of decapsulated T-PDU ({} bytes) to {}: {}",
-                    tpdu_len, kTunIface, std::strerror(errno));
+                     tpdu_len,
+                     kTunIface,
+                     std::strerror(errno));
     } else {
-        spdlog::info("upf-datapath: delivered decapsulated T-PDU ({} bytes) to {}", tpdu_len,
-                    kTunIface);
+        spdlog::info(
+            "upf-datapath: delivered decapsulated T-PDU ({} bytes) to {}", tpdu_len, kTunIface);
     }
     return 0;
 }
@@ -230,8 +232,8 @@ struct Datapath::Impl {
         auto* impl = static_cast<Impl*>(ctx);
         if (data_sz < sizeof(UsageReportEventRecord)) {
             spdlog::warn("upf-datapath: usage report ring buffer sample too small ({} bytes), "
-                        "ignoring",
-                        data_sz);
+                         "ignoring",
+                         data_sz);
             return 0;
         }
         const auto* rec = static_cast<const UsageReportEventRecord*>(data);
@@ -297,7 +299,7 @@ std::optional<Datapath> Datapath::create(UsageReportHandler on_usage_report) {
     // program itself matches on GTP-U/TEID content, not on these addresses.
     run_ip_command(std::string("addr add 10.99.0.1/30 dev ") + kN3Iface);
     run_ip_command(std::string("-n ") + kN3PeerNetns + " addr add 10.99.0.2/30 dev " +
-                    kN3PeerIface);
+                   kN3PeerIface);
 
     dp.impl_->tun_fd = create_tun_device(kTunIface);
     if (dp.impl_->tun_fd < 0) {
@@ -314,7 +316,7 @@ std::optional<Datapath> Datapath::create(UsageReportHandler on_usage_report) {
     }
     if (bpf_object__load(dp.impl_->obj) != 0) {
         spdlog::error("upf-datapath: bpf_object__load failed -- likely missing CAP_BPF, see "
-                    "nfs/upf/src/datapath.hpp's own comment");
+                      "nfs/upf/src/datapath.hpp's own comment");
         return std::nullopt;
     }
 
@@ -331,7 +333,7 @@ std::optional<Datapath> Datapath::create(UsageReportHandler on_usage_report) {
     if (bpf_xdp_attach(dp.impl_->n3_ifindex, bpf_program__fd(prog), XDP_FLAGS_SKB_MODE, nullptr) !=
         0) {
         spdlog::error("upf-datapath: bpf_xdp_attach to {} failed -- likely missing CAP_NET_ADMIN",
-                    kN3Iface);
+                      kN3Iface);
         dp.impl_->n3_ifindex = 0; // nothing to detach in the destructor
         return std::nullopt;
     }
@@ -349,16 +351,18 @@ std::optional<Datapath> Datapath::create(UsageReportHandler on_usage_report) {
     dp.impl_->teid_map_fd = bpf_map__fd(teid_map);
     dp.impl_->urr_map_fd = bpf_map__fd(urr_map);
 
-    dp.impl_->rb = ring_buffer__new(bpf_map__fd(ringbuf_map), handle_tpdu_sample,
-                                    &dp.impl_->tun_fd, nullptr);
+    dp.impl_->rb =
+        ring_buffer__new(bpf_map__fd(ringbuf_map), handle_tpdu_sample, &dp.impl_->tun_fd, nullptr);
     if (dp.impl_->rb == nullptr) {
         spdlog::error("upf-datapath: ring_buffer__new failed");
         return std::nullopt;
     }
     // Second BPF map added to the *same* ring_buffer manager/poll loop (not a second thread) --
     // libbpf's ring_buffer__poll() services every map added via ring_buffer__add() together.
-    if (ring_buffer__add(dp.impl_->rb, bpf_map__fd(usage_ringbuf_map),
-                         Impl::handle_usage_report_sample, dp.impl_.get()) != 0) {
+    if (ring_buffer__add(dp.impl_->rb,
+                         bpf_map__fd(usage_ringbuf_map),
+                         Impl::handle_usage_report_sample,
+                         dp.impl_.get()) != 0) {
         spdlog::error("upf-datapath: ring_buffer__add(usage_report_ringbuf) failed");
         return std::nullopt;
     }
@@ -377,8 +381,9 @@ std::optional<Datapath> Datapath::create(UsageReportHandler on_usage_report) {
     });
 
     spdlog::info("upf-datapath: real eBPF/XDP GTP-U decapsulation active on {} (generic/SKB "
-                "mode), delivering decapsulated T-PDUs to {}",
-                kN3Iface, kTunIface);
+                 "mode), delivering decapsulated T-PDUs to {}",
+                 kN3Iface,
+                 kTunIface);
     return dp;
 }
 
@@ -391,7 +396,8 @@ bool Datapath::register_teid(std::uint32_t teid) {
     return true;
 }
 
-bool Datapath::register_urr(std::uint32_t teid, std::uint64_t volume_threshold_octets,
+bool Datapath::register_urr(std::uint32_t teid,
+                            std::uint64_t volume_threshold_octets,
                             std::uint64_t volume_quota_octets) {
     UrrState state{};
     state.volume_threshold = volume_threshold_octets;
@@ -401,18 +407,19 @@ bool Datapath::register_urr(std::uint32_t teid, std::uint64_t volume_threshold_o
     state.quota_reported = 0;
     if (bpf_map_update_elem(impl_->urr_map_fd, &teid, &state, BPF_ANY) != 0) {
         spdlog::warn("upf-datapath: failed to register URR for TEID {:#x} with the XDP program",
-                    teid);
+                     teid);
         return false;
     }
     return true;
 }
 
-bool Datapath::update_urr_thresholds(std::uint32_t teid, std::uint64_t new_volume_threshold_octets,
+bool Datapath::update_urr_thresholds(std::uint32_t teid,
+                                     std::uint64_t new_volume_threshold_octets,
                                      std::uint64_t new_volume_quota_octets) {
     UrrState state{};
     if (bpf_map_lookup_elem(impl_->urr_map_fd, &teid, &state) != 0) {
         spdlog::warn("upf-datapath: no URR registered for TEID {:#x}, cannot update thresholds",
-                    teid);
+                     teid);
         return false;
     }
     state.volume_threshold = new_volume_threshold_octets;

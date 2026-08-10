@@ -78,7 +78,8 @@ std::vector<std::uint8_t> encode_header(const Header& header, std::uint16_t ies_
 // into `offset` -- the same quantity encode_header's `ies_length` parameter takes, so callers
 // never need to do this arithmetic themselves). Returns std::nullopt on a too-short buffer,
 // unrecognized version, or a Message Length field too small to even cover the fixed overhead.
-std::optional<Header> decode_header(const std::vector<std::uint8_t>& bytes, std::size_t& offset,
+std::optional<Header> decode_header(const std::vector<std::uint8_t>& bytes,
+                                    std::size_t& offset,
                                     std::uint16_t& ies_length);
 
 } // namespace pfcp_core

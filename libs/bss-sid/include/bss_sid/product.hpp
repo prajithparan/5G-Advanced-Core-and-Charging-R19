@@ -38,7 +38,7 @@ void to_json(nlohmann::json& j, const TimePeriod& v);
 void from_json(const nlohmann::json& j, TimePeriod& v);
 
 struct Money {
-    std::optional<std::string> unit;  // ISO 4217 currency code, per the real spec's description
+    std::optional<std::string> unit; // ISO 4217 currency code, per the real spec's description
     std::optional<double> value;
 };
 void to_json(nlohmann::json& j, const Money& v);

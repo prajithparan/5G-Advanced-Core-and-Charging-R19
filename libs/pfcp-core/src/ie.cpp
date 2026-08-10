@@ -2,8 +2,9 @@
 
 namespace pfcp_core {
 
-void encode_ie(std::vector<std::uint8_t>& out, std::uint16_t type,
-              const std::vector<std::uint8_t>& value) {
+void encode_ie(std::vector<std::uint8_t>& out,
+               std::uint16_t type,
+               const std::vector<std::uint8_t>& value) {
     const auto length = static_cast<std::uint16_t>(value.size());
     out.push_back(static_cast<std::uint8_t>(type >> 8));
     out.push_back(static_cast<std::uint8_t>(type & 0xFF));
@@ -22,9 +23,8 @@ std::optional<std::vector<Ie>> decode_ies(const std::vector<std::uint8_t>& bytes
         Ie ie;
         ie.type = static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset]) << 8) |
                                              bytes[offset + 1]);
-        const std::uint16_t length =
-            static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset + 2]) << 8) |
-                                       bytes[offset + 3]);
+        const std::uint16_t length = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(bytes[offset + 2]) << 8) | bytes[offset + 3]);
         offset += 4;
         if (offset + length > bytes.size()) {
             return std::nullopt;

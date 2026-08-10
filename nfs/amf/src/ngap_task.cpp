@@ -1,27 +1,24 @@
 #include "ngap_task.hpp"
 
-#include "nas_codec.hpp"
-#include "ngap_codec.hpp"
-
-#include "aka_crypto/hex.hpp"
-#include "aka_crypto/kdf.hpp"
-
-#include "ngap_core/sctp_socket.hpp"
-
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/logging.hpp"
 #include "sbi_core/multipart.hpp"
 #include "sbi_core/oauth2_client.hpp"
 #include "sbi_core/tls_config.hpp"
 
-#include "TS29122_CommonData_grp.hpp"
-#include "TS29509_Nausf_UEAuthentication.hpp"
-
 #include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+
+#include "TS29122_CommonData_grp.hpp"
+#include "TS29509_Nausf_UEAuthentication.hpp"
+#include "aka_crypto/hex.hpp"
+#include "aka_crypto/kdf.hpp"
+#include "nas_codec.hpp"
+#include "ngap_codec.hpp"
+#include "ngap_core/sctp_socket.hpp"
 
 extern "C" {
 #include <AMF-UE-NGAP-ID.h>
@@ -43,9 +40,9 @@ extern "C" {
 #include <ProcedureCode.h>
 #include <RAN-UE-NGAP-ID.h>
 #include <RelativeAMFCapacity.h>
+#include <S-NSSAI.h>
 #include <SD.h>
 #include <SST.h>
-#include <S-NSSAI.h>
 #include <ServedGUAMIItem.h>
 #include <ServedGUAMIList.h>
 #include <SliceSupportItem.h>
@@ -234,9 +231,9 @@ NGSetupResponse_t build_ng_setup_response() {
     AMFName_t amf_name{};
     amf_name.buf = reinterpret_cast<std::uint8_t*>(::strdup(kAmfName));
     amf_name.size = std::strlen(kAmfName);
-    ::ngap::add_ie(resp.protocolIEs,
-                ::ngap::make_ie(1 /* id-AMFName */, Criticality_reject, &asn_DEF_AMFName,
-                              &amf_name));
+    ::ngap::add_ie(
+        resp.protocolIEs,
+        ::ngap::make_ie(1 /* id-AMFName */, Criticality_reject, &asn_DEF_AMFName, &amf_name));
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_AMFName, &amf_name);
 
     // id-ServedGUAMIList (mandatory) -- one GUAMI, this lab's fixed PLMN + all-zero AMF Identifier.
@@ -250,15 +247,19 @@ NGSetupResponse_t build_ng_setup_response() {
     guami_item->gUAMI.aMFPointer = make_zero_bit_string(6);
     ASN_SEQUENCE_ADD(&guami_list.list, guami_item);
     ::ngap::add_ie(resp.protocolIEs,
-                ::ngap::make_ie(96 /* id-ServedGUAMIList */, Criticality_reject,
-                              &asn_DEF_ServedGUAMIList, &guami_list));
+                   ::ngap::make_ie(96 /* id-ServedGUAMIList */,
+                                   Criticality_reject,
+                                   &asn_DEF_ServedGUAMIList,
+                                   &guami_list));
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_ServedGUAMIList, &guami_list);
 
     // id-RelativeAMFCapacity (mandatory) -- arbitrary mid-range lab value (0..255 per spec range).
     RelativeAMFCapacity_t capacity = 128;
     ::ngap::add_ie(resp.protocolIEs,
-                ::ngap::make_ie(86 /* id-RelativeAMFCapacity */, Criticality_ignore,
-                              &asn_DEF_RelativeAMFCapacity, &capacity));
+                   ::ngap::make_ie(86 /* id-RelativeAMFCapacity */,
+                                   Criticality_ignore,
+                                   &asn_DEF_RelativeAMFCapacity,
+                                   &capacity));
 
     // id-PLMNSupportList (mandatory) -- this lab's fixed PLMN + S-NSSAI (sst=1, sd=1).
     PLMNSupportList_t plmn_support{};
@@ -275,8 +276,10 @@ NGSetupResponse_t build_ng_setup_response() {
     ASN_SEQUENCE_ADD(&plmn_item->sliceSupportList.list, slice_item);
     ASN_SEQUENCE_ADD(&plmn_support.list, plmn_item);
     ::ngap::add_ie(resp.protocolIEs,
-                ::ngap::make_ie(80 /* id-PLMNSupportList */, Criticality_reject,
-                              &asn_DEF_PLMNSupportList, &plmn_support));
+                   ::ngap::make_ie(80 /* id-PLMNSupportList */,
+                                   Criticality_reject,
+                                   &asn_DEF_PLMNSupportList,
+                                   &plmn_support));
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PLMNSupportList, &plmn_support);
 
     return resp;
@@ -285,8 +288,8 @@ NGSetupResponse_t build_ng_setup_response() {
 NGAP_PDU_t wrap_successful_outcome_ng_setup(NGSetupResponse_t response) {
     NGAP_PDU_t pdu{};
     pdu.present = NGAP_PDU_PR_successfulOutcome;
-    pdu.choice.successfulOutcome = static_cast<SuccessfulOutcome_t*>(
-        std::calloc(1, sizeof(SuccessfulOutcome_t)));
+    pdu.choice.successfulOutcome =
+        static_cast<SuccessfulOutcome_t*>(std::calloc(1, sizeof(SuccessfulOutcome_t)));
     pdu.choice.successfulOutcome->procedureCode = 21 /* id-NGSetup */;
     pdu.choice.successfulOutcome->criticality = Criticality_reject;
     pdu.choice.successfulOutcome->value.present = SuccessfulOutcome__value_PR_NGSetupResponse;
@@ -325,8 +328,8 @@ void handle_ng_setup_request(ngap_core::SctpSocket& assoc, const InitiatingMessa
 NGAP_PDU_t wrap_initiating_downlink_nas_transport(DownlinkNASTransport_t msg) {
     NGAP_PDU_t pdu{};
     pdu.present = NGAP_PDU_PR_initiatingMessage;
-    pdu.choice.initiatingMessage = static_cast<InitiatingMessage_t*>(
-        std::calloc(1, sizeof(InitiatingMessage_t)));
+    pdu.choice.initiatingMessage =
+        static_cast<InitiatingMessage_t*>(std::calloc(1, sizeof(InitiatingMessage_t)));
     pdu.choice.initiatingMessage->procedureCode = 4 /* id-DownlinkNASTransport */;
     pdu.choice.initiatingMessage->criticality = Criticality_ignore;
     pdu.choice.initiatingMessage->value.present = InitiatingMessage__value_PR_DownlinkNASTransport;
@@ -337,8 +340,10 @@ NGAP_PDU_t wrap_initiating_downlink_nas_transport(DownlinkNASTransport_t msg) {
 // Shared DownlinkNASTransport send path -- Stage 2's AuthenticationRequest and Stage 4's
 // SecurityModeCommand both just wrap a NAS-PDU byte string with the same two UE identifiers and
 // send it, previously duplicated inline (see this function's call sites).
-void send_downlink_nas_transport(ngap_core::SctpSocket& assoc, unsigned long amf_ue_id,
-                                 unsigned long ran_ue_id, const std::vector<std::uint8_t>& nas_bytes) {
+void send_downlink_nas_transport(ngap_core::SctpSocket& assoc,
+                                 unsigned long amf_ue_id,
+                                 unsigned long ran_ue_id,
+                                 const std::vector<std::uint8_t>& nas_bytes) {
     NAS_PDU_t out_nas_pdu = make_octet_string(nas_bytes.data(), nas_bytes.size());
     AMF_UE_NGAP_ID_t amf_ue_ngap_id{};
     asn_ulong2INTEGER(&amf_ue_ngap_id, amf_ue_id);
@@ -346,14 +351,18 @@ void send_downlink_nas_transport(ngap_core::SctpSocket& assoc, unsigned long amf
 
     DownlinkNASTransport_t dl{};
     ::ngap::add_ie(dl.protocolIEs,
-                ::ngap::make_ie(10 /* id-AMF-UE-NGAP-ID */, Criticality_reject,
-                              &asn_DEF_AMF_UE_NGAP_ID, &amf_ue_ngap_id));
+                   ::ngap::make_ie(10 /* id-AMF-UE-NGAP-ID */,
+                                   Criticality_reject,
+                                   &asn_DEF_AMF_UE_NGAP_ID,
+                                   &amf_ue_ngap_id));
     ::ngap::add_ie(dl.protocolIEs,
-                ::ngap::make_ie(85 /* id-RAN-UE-NGAP-ID */, Criticality_reject,
-                              &asn_DEF_RAN_UE_NGAP_ID, &out_ran_ue_id));
-    ::ngap::add_ie(dl.protocolIEs,
-                ::ngap::make_ie(38 /* id-NAS-PDU */, Criticality_reject, &asn_DEF_NAS_PDU,
-                              &out_nas_pdu));
+                   ::ngap::make_ie(85 /* id-RAN-UE-NGAP-ID */,
+                                   Criticality_reject,
+                                   &asn_DEF_RAN_UE_NGAP_ID,
+                                   &out_ran_ue_id));
+    ::ngap::add_ie(
+        dl.protocolIEs,
+        ::ngap::make_ie(38 /* id-NAS-PDU */, Criticality_reject, &asn_DEF_NAS_PDU, &out_nas_pdu));
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_AMF_UE_NGAP_ID, &amf_ue_ngap_id);
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NAS_PDU, &out_nas_pdu);
 
@@ -378,8 +387,10 @@ void send_downlink_nas_transport(ngap_core::SctpSocket& assoc, unsigned long amf
 // (having already logged why) on any failure; auth_state.confirmation_path/last_auth_rand are
 // only updated on success.
 bool initiate_5g_aka_authentication(
-    ngap_core::SctpSocket& assoc, sbi_core::http2::Client& ausf_client,
-    sbi_core::OAuth2Client& ausf_oauth, UeAuthState& auth_state,
+    ngap_core::SctpSocket& assoc,
+    sbi_core::http2::Client& ausf_client,
+    sbi_core::OAuth2Client& ausf_oauth,
+    UeAuthState& auth_state,
     const std::optional<sbi_gen::ResynchronizationInfo_Nudm_UEAU>& resync_info) {
     auto token = ausf_oauth.get_bearer_token();
     if (!token.has_value()) {
@@ -405,7 +416,8 @@ bool initiate_5g_aka_authentication(
         return false;
     }
     if (resp->status != 201) {
-        spdlog::error("amf-ngap: AUSF returned unexpected status {} for SUPI {}", resp->status,
+        spdlog::error("amf-ngap: AUSF returned unexpected status {} for SUPI {}",
+                      resp->status,
                       auth_state.supi);
         return false;
     }
@@ -419,8 +431,8 @@ bool initiate_5g_aka_authentication(
     }
     if (ctx.authType.value != sbi_gen::AuthType_Nausf_UEAuthentication::V5G_AKA) {
         spdlog::warn("amf-ngap: AUSF returned auth method '{}', only 5G_AKA is supported yet, "
-                    "ignoring",
-                    ctx.authType.value);
+                     "ignoring",
+                     ctx.authType.value);
         return false;
     }
 
@@ -448,15 +460,16 @@ bool initiate_5g_aka_authentication(
         spdlog::error("amf-ngap: AUSF returned malformed hex RAND/AUTN");
         return false;
     }
-    auth_state.last_auth_rand = *rand;  // needed if THIS AuthenticationRequest itself later resyncs
+    auth_state.last_auth_rand = *rand; // needed if THIS AuthenticationRequest itself later resyncs
 
     const std::vector<std::uint8_t> auth_req_nas =
         amf::nas::encode_authentication_request(*rand, *autn, /*ngksi=*/0);
     send_downlink_nas_transport(assoc, auth_state.amf_ue_id, auth_state.ran_ue_id, auth_req_nas);
     spdlog::info("amf-ngap: sent DownlinkNASTransport with AuthenticationRequest ({} bytes), "
-                "AMF-UE-NGAP-ID={}{}",
-                auth_req_nas.size(), auth_state.amf_ue_id,
-                resync_info.has_value() ? " (SQN resync retry)" : "");
+                 "AMF-UE-NGAP-ID={}{}",
+                 auth_req_nas.size(),
+                 auth_state.amf_ue_id,
+                 resync_info.has_value() ? " (SQN resync retry)" : "");
     return true;
 }
 
@@ -477,7 +490,7 @@ void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
     const auto* ran_ue_ngap_id_ie = ::ngap::find_ie(container, 85 /* id-RAN-UE-NGAP-ID */);
     if (nas_pdu_ie == nullptr || ran_ue_ngap_id_ie == nullptr) {
         spdlog::warn("amf-ngap: InitialUEMessage missing mandatory NAS-PDU/RAN-UE-NGAP-ID IE, "
-                    "ignoring");
+                     "ignoring");
         return;
     }
 
@@ -486,13 +499,16 @@ void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
         ::ngap::decode_ie_value(&asn_DEF_RAN_UE_NGAP_ID, *ran_ue_ngap_id_ie));
     if (nas_pdu == nullptr || ran_ue_ngap_id == nullptr) {
         spdlog::warn("amf-ngap: InitialUEMessage's NAS-PDU/RAN-UE-NGAP-ID failed to PER-decode, "
-                    "ignoring");
-        if (nas_pdu != nullptr) ASN_STRUCT_FREE(asn_DEF_NAS_PDU, nas_pdu);
-        if (ran_ue_ngap_id != nullptr) ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, ran_ue_ngap_id);
+                     "ignoring");
+        if (nas_pdu != nullptr)
+            ASN_STRUCT_FREE(asn_DEF_NAS_PDU, nas_pdu);
+        if (ran_ue_ngap_id != nullptr)
+            ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, ran_ue_ngap_id);
         return;
     }
     spdlog::info("amf-ngap: InitialUEMessage decoded OK: RAN-UE-NGAP-ID={}, NAS-PDU {} bytes",
-                *ran_ue_ngap_id, nas_pdu->size);
+                 *ran_ue_ngap_id,
+                 nas_pdu->size);
 
     const std::vector<std::uint8_t> nas_pdu_bytes(nas_pdu->buf, nas_pdu->buf + nas_pdu->size);
     const unsigned long ran_ue_id = *ran_ue_ngap_id;
@@ -502,11 +518,11 @@ void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
     const auto reg_info = amf::nas::decode_registration_request(nas_pdu_bytes);
     if (!reg_info.has_value()) {
         spdlog::warn("amf-ngap: InitialUEMessage's NAS-PDU is not a supported RegistrationRequest "
-                    "(plain, null-scheme SUCI), ignoring");
+                     "(plain, null-scheme SUCI), ignoring");
         return;
     }
-    spdlog::info("amf-ngap: InitialUEMessage from RAN-UE-NGAP-ID={}, SUPI={}", ran_ue_id,
-                reg_info->supi);
+    spdlog::info(
+        "amf-ngap: InitialUEMessage from RAN-UE-NGAP-ID={}, SUPI={}", ran_ue_id, reg_info->supi);
 
     // Stage 4 reuses both IDs to send SecurityModeCommand on this same association once
     // authentication succeeds -- see UeAuthState's own comment.
@@ -528,7 +544,8 @@ void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
 // fresh AuthenticationRequest is sent using the corrected vector, staying in
 // AwaitingAuthenticationResponse to receive its response. Capped at one retry per association --
 // see UeAuthState::sqn_resync_attempted's own comment.
-void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::Client& ausf_client,
+void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc,
+                                 sbi_core::http2::Client& ausf_client,
                                  sbi_core::OAuth2Client& ausf_oauth,
                                  UeAuthState& auth_state,
                                  const InitiatingMessage_t& msg) {
@@ -541,7 +558,7 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::
     const auto outcome = amf::nas::decode_authentication_outcome(nas_pdu_bytes);
     if (!outcome.has_value()) {
         spdlog::warn("amf-ngap: UplinkNASTransport's NAS-PDU is not a supported "
-                    "AuthenticationResponse/AuthenticationFailure, ignoring");
+                     "AuthenticationResponse/AuthenticationFailure, ignoring");
         return;
     }
 
@@ -549,19 +566,21 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::
         if (auth_state.sqn_resync_attempted || !outcome->auts.has_value() ||
             !auth_state.last_auth_rand.has_value()) {
             spdlog::warn("amf-ngap: UE sent AuthenticationFailure (mmCause=0x{:02x}{}) for SUPI "
-                        "{} -- giving up ({})",
-                        outcome->mm_cause, outcome->auts.has_value() ? ", with AUTS" : "",
-                        auth_state.supi,
-                        auth_state.sqn_resync_attempted
-                            ? "resync already attempted once this association"
-                        : !outcome->auts.has_value() ? "no AUTS to resync with"
+                         "{} -- giving up ({})",
+                         outcome->mm_cause,
+                         outcome->auts.has_value() ? ", with AUTS" : "",
+                         auth_state.supi,
+                         auth_state.sqn_resync_attempted
+                             ? "resync already attempted once this association"
+                         : !outcome->auts.has_value() ? "no AUTS to resync with"
                                                       : "no stored RAND to resync against");
             return;
         }
 
         spdlog::info("amf-ngap: UE sent AuthenticationFailure (mmCause=0x{:02x}, with AUTS) for "
-                    "SUPI {} -- attempting SQN resynchronisation",
-                    outcome->mm_cause, auth_state.supi);
+                     "SUPI {} -- attempting SQN resynchronisation",
+                     outcome->mm_cause,
+                     auth_state.supi);
         auth_state.sqn_resync_attempted = true;
 
         sbi_gen::ResynchronizationInfo_Nudm_UEAU resync_info{};
@@ -569,14 +588,14 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::
         resync_info.auts = aka_crypto::to_hex(*outcome->auts);
 
         initiate_5g_aka_authentication(assoc, ausf_client, ausf_oauth, auth_state, resync_info);
-        return;  // stay in AwaitingAuthenticationResponse either way -- success just sent a fresh
-                 // AuthenticationRequest; failure was already logged by
-                 // initiate_5g_aka_authentication itself
+        return; // stay in AwaitingAuthenticationResponse either way -- success just sent a fresh
+                // AuthenticationRequest; failure was already logged by
+                // initiate_5g_aka_authentication itself
     }
 
     if (auth_state.confirmation_path.empty()) {
         spdlog::warn("amf-ngap: received AuthenticationResponse with no pending authentication "
-                    "context (out-of-order message or lost association state), ignoring");
+                     "context (out-of-order message or lost association state), ignoring");
         return;
     }
 
@@ -603,7 +622,8 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::
     }
     if (resp->status != 200) {
         spdlog::error("amf-ngap: AUSF confirmation returned unexpected status {} for SUPI {}",
-                      resp->status, auth_state.supi);
+                      resp->status,
+                      auth_state.supi);
         return;
     }
 
@@ -616,8 +636,8 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::
     }
     if (cresp.authResult.value != sbi_gen::AuthResult::AUTHENTICATION_SUCCESS) {
         spdlog::warn("amf-ngap: AUSF confirmation reports authentication FAILURE for SUPI {} "
-                    "(claimed RES* did not match XRES*)",
-                    auth_state.supi);
+                     "(claimed RES* did not match XRES*)",
+                     auth_state.supi);
         return;
     }
     if (!cresp.kseaf.has_value()) {
@@ -642,14 +662,15 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc, sbi_core::http2::
     auth_state.knas_int = aka_crypto::derive_knas_int(kamf, aka_crypto::kNia2AlgorithmIdentity);
     auth_state.knas_enc = aka_crypto::derive_knas_enc(kamf, aka_crypto::kNea2AlgorithmIdentity);
 
-    const auto smc_nas =
-        amf::nas::encode_security_mode_command(*auth_state.knas_int, auth_state.ue_security_capability,
-                                               /*downlink_count=*/0);
+    const auto smc_nas = amf::nas::encode_security_mode_command(*auth_state.knas_int,
+                                                                auth_state.ue_security_capability,
+                                                                /*downlink_count=*/0);
     send_downlink_nas_transport(assoc, auth_state.amf_ue_id, auth_state.ran_ue_id, smc_nas);
     auth_state.phase = UeAuthState::Phase::AwaitingSecurityModeComplete;
     spdlog::info("amf-ngap: sent DownlinkNASTransport with SecurityModeCommand ({} bytes), "
-                "AMF-UE-NGAP-ID={}",
-                smc_nas.size(), auth_state.amf_ue_id);
+                 "AMF-UE-NGAP-ID={}",
+                 smc_nas.size(),
+                 auth_state.amf_ue_id);
 }
 
 // Stage 4 continued: decodes+verifies the NAS-PDU carried in the UplinkNASTransport that follows
@@ -676,8 +697,8 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
 
     if (!auth_state.knas_int.has_value() || !auth_state.knas_enc.has_value()) {
         spdlog::warn("amf-ngap: received a post-SecurityModeCommand UplinkNASTransport with no "
-                    "NAS security context (out-of-order message or lost association state), "
-                    "ignoring");
+                     "NAS security context (out-of-order message or lost association state), "
+                     "ignoring");
         return;
     }
 
@@ -685,43 +706,48 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
         *auth_state.knas_int, *auth_state.knas_enc, /*uplink_count=*/0, *nas_pdu_bytes_opt);
     if (!outcome.has_value()) {
         spdlog::warn("amf-ngap: UplinkNASTransport's NAS-PDU is not shaped like a "
-                    "SecurityModeComplete, ignoring");
+                     "SecurityModeComplete, ignoring");
         return;
     }
     if (!outcome->mac_valid) {
         spdlog::warn("amf-ngap: SecurityModeComplete MAC verification FAILED for SUPI {} -- wrong "
-                    "keys, a tampered/replayed message, or a NAS COUNT desync",
-                    auth_state.supi);
+                     "keys, a tampered/replayed message, or a NAS COUNT desync",
+                     auth_state.supi);
         return;
     }
 
     spdlog::info("amf-ngap: SecurityModeComplete verified OK for SUPI {} -- NAS security context "
-                "active",
-                auth_state.supi);
+                 "active",
+                 auth_state.supi);
 
-    const auto reg_accept_nas =
-        amf::nas::encode_registration_accept(*auth_state.knas_int, *auth_state.knas_enc,
-                                             /*downlink_count=*/1);
+    const auto reg_accept_nas = amf::nas::encode_registration_accept(*auth_state.knas_int,
+                                                                     *auth_state.knas_enc,
+                                                                     /*downlink_count=*/1);
     send_downlink_nas_transport(assoc, auth_state.amf_ue_id, auth_state.ran_ue_id, reg_accept_nas);
     spdlog::info("amf-ngap: sent DownlinkNASTransport with RegistrationAccept ({} bytes), "
-                "AMF-UE-NGAP-ID={}",
-                reg_accept_nas.size(), auth_state.amf_ue_id);
+                 "AMF-UE-NGAP-ID={}",
+                 reg_accept_nas.size(),
+                 auth_state.amf_ue_id);
 
     auth_state.phase = UeAuthState::Phase::AwaitingPduSessionEstablishmentRequest;
     spdlog::info("amf-ngap: registration procedure complete for SUPI {} (no RegistrationComplete "
-                "expected -- this build's RegistrationAccept carries no GUTI/NSSAI change, see "
-                "UeAuthState::Phase's comment), requesting AM Policy Association from PCF",
-                auth_state.supi);
+                 "expected -- this build's RegistrationAccept carries no GUTI/NSSAI change, see "
+                 "UeAuthState::Phase's comment), requesting AM Policy Association from PCF",
+                 auth_state.supi);
 
     // Register this UE's live association so a later Namf_Communication N1N2MessageTransfer call
     // (arriving on the SBI HTTP/2 server's thread, from SMF once it has a real PDU Session
-    // Establishment Accept to deliver) can reach it -- ADR-0038. downlink_count=2: RegistrationAccept
-    // just used 1, so the next secured downlink message (the eventual Accept) is genuinely 2.
+    // Establishment Accept to deliver) can reach it -- ADR-0038. downlink_count=2:
+    // RegistrationAccept just used 1, so the next secured downlink message (the eventual Accept) is
+    // genuinely 2.
     ue_ngap_registry.register_ue(
         auth_state.supi,
-        NgapUeRegistry::Entry{&assoc, static_cast<std::uint32_t>(auth_state.amf_ue_id),
-                              static_cast<std::uint32_t>(auth_state.ran_ue_id), *auth_state.knas_int,
-                              *auth_state.knas_enc, /*next_downlink_count=*/2});
+        NgapUeRegistry::Entry{&assoc,
+                              static_cast<std::uint32_t>(auth_state.amf_ue_id),
+                              static_cast<std::uint32_t>(auth_state.ran_ue_id),
+                              *auth_state.knas_int,
+                              *auth_state.knas_enc,
+                              /*next_downlink_count=*/2});
 
     auto token = pcf_oauth.get_bearer_token();
     if (!token.has_value()) {
@@ -756,8 +782,9 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
     }
     if (resp->status != 201) {
         spdlog::error("amf-ngap: PCF CreateIndividualAMPolicyAssociation returned unexpected "
-                    "status {} for SUPI {}",
-                    resp->status, auth_state.supi);
+                      "status {} for SUPI {}",
+                      resp->status,
+                      auth_state.supi);
         return;
     }
 
@@ -771,8 +798,8 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
 
     ue_contexts.put(auth_state.supi, association_json);
     spdlog::info("amf-ngap: AM Policy Association established with PCF for SUPI {} -- UE "
-                "registration procedure fully complete",
-                auth_state.supi);
+                 "registration procedure fully complete",
+                 auth_state.supi);
 }
 
 // PDU Session Establishment (TS 23.502 §4.3.2.2.1), AMF's side of it: decodes+verifies the
@@ -790,10 +817,10 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
 // here) -- see ADR-0038, which closed the "no N1 SM Accept to forward" gap this comment used to
 // describe.
 void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Client& smf_client,
-                                                            sbi_core::OAuth2Client& smf_oauth,
-                                                            const std::string& amf_instance_id,
-                                                            UeAuthState& auth_state,
-                                                            const InitiatingMessage_t& msg) {
+                                                           sbi_core::OAuth2Client& smf_oauth,
+                                                           const std::string& amf_instance_id,
+                                                           UeAuthState& auth_state,
+                                                           const InitiatingMessage_t& msg) {
     const auto nas_pdu_bytes_opt = extract_uplink_nas_pdu(msg);
     if (!nas_pdu_bytes_opt.has_value()) {
         return;
@@ -801,7 +828,7 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
 
     if (!auth_state.knas_int.has_value() || !auth_state.knas_enc.has_value()) {
         spdlog::warn("amf-ngap: received a post-registration UplinkNASTransport with no NAS "
-                    "security context (out-of-order message or lost association state), ignoring");
+                     "security context (out-of-order message or lost association state), ignoring");
         return;
     }
 
@@ -809,32 +836,36 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
     // comment) a real UE never sends RegistrationComplete for this build's minimal
     // RegistrationAccept, so this UlNasTransport is genuinely the second secured uplink message,
     // not the third -- confirmed via real interop.
-    const auto outcome = amf::nas::decode_ul_nas_transport(*auth_state.knas_int, *auth_state.knas_enc,
-                                                            /*uplink_count=*/1, *nas_pdu_bytes_opt);
+    const auto outcome = amf::nas::decode_ul_nas_transport(*auth_state.knas_int,
+                                                           *auth_state.knas_enc,
+                                                           /*uplink_count=*/1,
+                                                           *nas_pdu_bytes_opt);
     if (!outcome.has_value()) {
         spdlog::warn("amf-ngap: UplinkNASTransport's NAS-PDU is not shaped like a UlNasTransport "
-                    "carrying N1 SM information, ignoring");
+                     "carrying N1 SM information, ignoring");
         return;
     }
     if (!outcome->mac_valid) {
         spdlog::warn("amf-ngap: UlNasTransport MAC verification FAILED for SUPI {} -- wrong keys, "
-                    "a tampered/replayed message, or a NAS COUNT desync",
-                    auth_state.supi);
+                     "a tampered/replayed message, or a NAS COUNT desync",
+                     auth_state.supi);
         return;
     }
     auth_state.phase = UeAuthState::Phase::Done; // this project's only implemented SM procedure
 
     if (!outcome->dnn.has_value() || !outcome->snssai_sst.has_value()) {
         spdlog::error("amf-ngap: UlNasTransport for SUPI {} is missing DNN and/or S-NSSAI -- this "
-                    "build requires both to call SMF (matches SMF's own CreateSMContext "
-                    "requirement, see docs/DECISIONS.md ADR-0029), ignoring",
-                    auth_state.supi);
+                      "build requires both to call SMF (matches SMF's own CreateSMContext "
+                      "requirement, see docs/DECISIONS.md ADR-0029), ignoring",
+                      auth_state.supi);
         return;
     }
 
     spdlog::info("amf-ngap: PDU Session Establishment Request verified OK for SUPI {}, "
-                "pduSessionId={}, dnn={} -- requesting SM context from SMF",
-                auth_state.supi, outcome->pdu_session_id, *outcome->dnn);
+                 "pduSessionId={}, dnn={} -- requesting SM context from SMF",
+                 auth_state.supi,
+                 outcome->pdu_session_id,
+                 *outcome->dnn);
 
     auto token = smf_oauth.get_bearer_token();
     if (!token.has_value()) {
@@ -849,8 +880,7 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
     create_data.anType.value = sbi_gen::AccessType::V3GPP_ACCESS;
     // Mandatory per TS 29.502's schema even though nothing here implements a receiver yet -- same
     // disclosed-deferred-callback shape as kSelfBase's other uses (PCF's notificationUri).
-    create_data.smContextStatusUri =
-        std::string(kSelfBase) + "/namf-callback/v1/sm-context-status";
+    create_data.smContextStatusUri = std::string(kSelfBase) + "/namf-callback/v1/sm-context-status";
     create_data.supi = auth_state.supi;
     create_data.pduSessionId = outcome->pdu_session_id;
     create_data.dnn = *outcome->dnn;
@@ -858,8 +888,12 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
     snssai.sst = *outcome->snssai_sst;
     if (outcome->snssai_sd.has_value()) {
         char sd_hex[7];
-        std::snprintf(sd_hex, sizeof(sd_hex), "%02x%02x%02x", (*outcome->snssai_sd)[0],
-                     (*outcome->snssai_sd)[1], (*outcome->snssai_sd)[2]);
+        std::snprintf(sd_hex,
+                      sizeof(sd_hex),
+                      "%02x%02x%02x",
+                      (*outcome->snssai_sd)[0],
+                      (*outcome->snssai_sd)[1],
+                      (*outcome->snssai_sd)[2]);
         snssai.sd = std::string(sd_hex);
     }
     create_data.sNssai = snssai;
@@ -894,21 +928,28 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
     }
     if (resp->status != 201) {
         spdlog::error("amf-ngap: SMF CreateSMContext returned unexpected status {} for SUPI {}",
-                    resp->status, auth_state.supi);
+                      resp->status,
+                      auth_state.supi);
         return;
     }
 
     spdlog::info("amf-ngap: SM context established with SMF for SUPI {}, pduSessionId={} -- SMF "
-                "will deliver the PDU Session Establishment Accept via a separate "
-                "N1N2MessageTransfer call (ADR-0038)",
-                auth_state.supi, outcome->pdu_session_id);
+                 "will deliver the PDU Session Establishment Accept via a separate "
+                 "N1N2MessageTransfer call (ADR-0038)",
+                 auth_state.supi,
+                 outcome->pdu_session_id);
 }
 
-void handle_association(ngap_core::SctpSocket assoc, sbi_core::http2::Client& ausf_client,
-                        sbi_core::OAuth2Client& ausf_oauth, sbi_core::http2::Client& pcf_client,
-                        sbi_core::OAuth2Client& pcf_oauth, sbi_core::http2::Client& smf_client,
-                        sbi_core::OAuth2Client& smf_oauth, const std::string& amf_instance_id,
-                        UeContextStore& ue_contexts, NgapUeRegistry& ue_ngap_registry) {
+void handle_association(ngap_core::SctpSocket assoc,
+                        sbi_core::http2::Client& ausf_client,
+                        sbi_core::OAuth2Client& ausf_oauth,
+                        sbi_core::http2::Client& pcf_client,
+                        sbi_core::OAuth2Client& pcf_oauth,
+                        sbi_core::http2::Client& smf_client,
+                        sbi_core::OAuth2Client& smf_oauth,
+                        const std::string& amf_instance_id,
+                        UeContextStore& ue_contexts,
+                        NgapUeRegistry& ue_ngap_registry) {
     spdlog::info("amf-ngap: gNB association established");
     UeAuthState auth_state{}; // this association's single UE, see UeAuthState's own comment
     while (true) {
@@ -929,7 +970,8 @@ void handle_association(ngap_core::SctpSocket assoc, sbi_core::http2::Client& au
                 std::snprintf(buf, sizeof(buf), "%02x", b);
                 hex += buf;
             }
-            spdlog::warn("amf-ngap: failed to decode NGAP PDU ({} bytes), ignoring: {}", bytes.size(), hex);
+            spdlog::warn(
+                "amf-ngap: failed to decode NGAP PDU ({} bytes), ignoring: {}", bytes.size(), hex);
             continue;
         }
 
@@ -937,37 +979,45 @@ void handle_association(ngap_core::SctpSocket assoc, sbi_core::http2::Client& au
             pdu->choice.initiatingMessage->procedureCode == 21 /* id-NGSetup */) {
             handle_ng_setup_request(assoc, *pdu->choice.initiatingMessage);
         } else if (pdu->present == NGAP_PDU_PR_initiatingMessage &&
-                  pdu->choice.initiatingMessage->procedureCode == 15 /* id-InitialUEMessage */) {
-            handle_initial_ue_message(assoc, ausf_client, ausf_oauth, auth_state,
-                                      *pdu->choice.initiatingMessage);
+                   pdu->choice.initiatingMessage->procedureCode == 15 /* id-InitialUEMessage */) {
+            handle_initial_ue_message(
+                assoc, ausf_client, ausf_oauth, auth_state, *pdu->choice.initiatingMessage);
         } else if (pdu->present == NGAP_PDU_PR_initiatingMessage &&
-                  pdu->choice.initiatingMessage->procedureCode == 46 /* id-UplinkNASTransport */) {
+                   pdu->choice.initiatingMessage->procedureCode == 46 /* id-UplinkNASTransport */) {
             switch (auth_state.phase) {
-            case UeAuthState::Phase::AwaitingAuthenticationResponse:
-                handle_uplink_nas_transport(assoc, ausf_client, ausf_oauth, auth_state,
-                                            *pdu->choice.initiatingMessage);
-                break;
-            case UeAuthState::Phase::AwaitingSecurityModeComplete:
-                handle_uplink_nas_transport_smc_complete(assoc, pcf_client, pcf_oauth, ue_contexts,
-                                                         ue_ngap_registry, auth_state,
-                                                         *pdu->choice.initiatingMessage);
-                break;
-            case UeAuthState::Phase::AwaitingPduSessionEstablishmentRequest:
-                handle_uplink_nas_transport_pdu_session_establishment(
-                    smf_client, smf_oauth, amf_instance_id, auth_state,
-                    *pdu->choice.initiatingMessage);
-                break;
-            case UeAuthState::Phase::Done:
-                spdlog::warn("amf-ngap: received an UplinkNASTransport after this association's "
-                            "one PDU session was already established for SUPI {}, ignoring (out "
-                            "of scope: no second PDU session or other post-establishment NAS "
-                            "procedure implemented yet)",
-                            auth_state.supi);
-                break;
+                case UeAuthState::Phase::AwaitingAuthenticationResponse:
+                    handle_uplink_nas_transport(
+                        assoc, ausf_client, ausf_oauth, auth_state, *pdu->choice.initiatingMessage);
+                    break;
+                case UeAuthState::Phase::AwaitingSecurityModeComplete:
+                    handle_uplink_nas_transport_smc_complete(assoc,
+                                                             pcf_client,
+                                                             pcf_oauth,
+                                                             ue_contexts,
+                                                             ue_ngap_registry,
+                                                             auth_state,
+                                                             *pdu->choice.initiatingMessage);
+                    break;
+                case UeAuthState::Phase::AwaitingPduSessionEstablishmentRequest:
+                    handle_uplink_nas_transport_pdu_session_establishment(
+                        smf_client,
+                        smf_oauth,
+                        amf_instance_id,
+                        auth_state,
+                        *pdu->choice.initiatingMessage);
+                    break;
+                case UeAuthState::Phase::Done:
+                    spdlog::warn(
+                        "amf-ngap: received an UplinkNASTransport after this association's "
+                        "one PDU session was already established for SUPI {}, ignoring (out "
+                        "of scope: no second PDU session or other post-establishment NAS "
+                        "procedure implemented yet)",
+                        auth_state.supi);
+                    break;
             }
         } else {
             spdlog::warn("amf-ngap: received NGAP PDU (present={}) with no handler yet, ignoring",
-                        static_cast<int>(pdu->present));
+                         static_cast<int>(pdu->present));
         }
 
         ASN_STRUCT_FREE(asn_DEF_NGAP_PDU, pdu);
@@ -986,7 +1036,8 @@ void NgapUeRegistry::unregister_ue(const std::string& supi) {
     entries_.erase(supi);
 }
 
-bool NgapUeRegistry::send_dl_nas_transport(const std::string& supi, std::uint8_t pdu_session_id,
+bool NgapUeRegistry::send_dl_nas_transport(const std::string& supi,
+                                           std::uint8_t pdu_session_id,
                                            const std::vector<std::uint8_t>& n1_sm_container) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = entries_.find(supi);
@@ -1001,9 +1052,12 @@ bool NgapUeRegistry::send_dl_nas_transport(const std::string& supi, std::uint8_t
     return true;
 }
 
-void run_ngap_lifecycle(const std::string& bind_address, unsigned short bind_port,
-                        const std::string& amf_instance_id, const std::string& nrf_base,
-                        UeContextStore& ue_contexts, NgapUeRegistry& ue_ngap_registry) {
+void run_ngap_lifecycle(const std::string& bind_address,
+                        unsigned short bind_port,
+                        const std::string& amf_instance_id,
+                        const std::string& nrf_base,
+                        UeContextStore& ue_contexts,
+                        NgapUeRegistry& ue_ngap_registry) {
     ngap_core::SctpSocket listener;
     listener.bind_and_listen(bind_address, bind_port);
     spdlog::info("amf-ngap: listening for NGAP/N2 (SCTP) on {}:{}", bind_address, bind_port);
@@ -1019,8 +1073,8 @@ void run_ngap_lifecycle(const std::string& bind_address, unsigned short bind_por
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
     sbi_core::http2::Client ausf_client(std::move(ausf_client_tls));
-    sbi_core::OAuth2Client ausf_oauth(ausf_client, nrf_base + "/oauth2/token", amf_instance_id,
-                                      "nausf-auth", "AUSF");
+    sbi_core::OAuth2Client ausf_oauth(
+        ausf_client, nrf_base + "/oauth2/token", amf_instance_id, "nausf-auth", "AUSF");
 
     // Same pattern, a second dedicated Client/OAuth2Client pair for PCF (Stage 5).
     sbi_core::http2::TlsConfig pcf_client_tls{
@@ -1029,8 +1083,8 @@ void run_ngap_lifecycle(const std::string& bind_address, unsigned short bind_por
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
     sbi_core::http2::Client pcf_client(std::move(pcf_client_tls));
-    sbi_core::OAuth2Client pcf_oauth(pcf_client, nrf_base + "/oauth2/token", amf_instance_id,
-                                     "npcf-am-policy-control", "PCF");
+    sbi_core::OAuth2Client pcf_oauth(
+        pcf_client, nrf_base + "/oauth2/token", amf_instance_id, "npcf-am-policy-control", "PCF");
 
     // Same pattern, a third dedicated Client/OAuth2Client pair for SMF (PDU Session Establishment).
     sbi_core::http2::TlsConfig smf_client_tls{
@@ -1039,16 +1093,24 @@ void run_ngap_lifecycle(const std::string& bind_address, unsigned short bind_por
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
     sbi_core::http2::Client smf_client(std::move(smf_client_tls));
-    sbi_core::OAuth2Client smf_oauth(smf_client, nrf_base + "/oauth2/token", amf_instance_id,
-                                     "nsmf-pdusession", "SMF");
+    sbi_core::OAuth2Client smf_oauth(
+        smf_client, nrf_base + "/oauth2/token", amf_instance_id, "nsmf-pdusession", "SMF");
 
     while (true) {
         ngap_core::SctpSocket assoc = listener.accept();
         // Single-association handling, sequentially, on this same thread -- this lab's scope is
         // one gNB/one UE at a time (see docs/DECISIONS.md ADR-0031); a real AMF would handle
         // multiple concurrent associations.
-        handle_association(std::move(assoc), ausf_client, ausf_oauth, pcf_client, pcf_oauth,
-                           smf_client, smf_oauth, amf_instance_id, ue_contexts, ue_ngap_registry);
+        handle_association(std::move(assoc),
+                           ausf_client,
+                           ausf_oauth,
+                           pcf_client,
+                           pcf_oauth,
+                           smf_client,
+                           smf_oauth,
+                           amf_instance_id,
+                           ue_contexts,
+                           ue_ngap_registry);
     }
 }
 

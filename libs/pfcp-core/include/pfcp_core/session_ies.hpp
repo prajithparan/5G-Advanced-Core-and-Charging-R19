@@ -1,11 +1,11 @@
 #pragma once
 
-#include "pfcp_core/ie.hpp"
-
 #include <array>
 #include <cstdint>
 #include <optional>
 #include <vector>
+
+#include "pfcp_core/ie.hpp"
 
 // Encode/decode helpers for the Information Elements Phase 3 Stage 3 (real N4 Session
 // Establishment, docs/DECISIONS.md ADR-0042) needs: F-SEID, PDR ID, Precedence, FAR ID, Apply
@@ -56,7 +56,8 @@ bool decode_apply_action_has_forward(const std::vector<std::uint8_t>& value);
 //  - "allocated" (UP -> CP, inside a Created PDR): V4 bit set, real TEID (4 octets) + real IPv4
 //    address (4 octets), no CH/CHID bits.
 std::vector<std::uint8_t> encode_f_teid_choose_ipv4();
-std::vector<std::uint8_t> encode_f_teid_allocated_ipv4(std::uint32_t teid, std::array<std::uint8_t, 4> ipv4);
+std::vector<std::uint8_t> encode_f_teid_allocated_ipv4(std::uint32_t teid,
+                                                       std::array<std::uint8_t, 4> ipv4);
 struct FTeidAllocated {
     std::uint32_t teid = 0;
     std::array<std::uint8_t, 4> ipv4{};

@@ -28,13 +28,13 @@
 
 namespace aka_crypto {
 
-using Key128 = std::array<uint8_t, 16>;  // K, OP, OPc, RAND, CK, IK
-using Sqn = std::array<uint8_t, 6>;      // 48-bit SQN
-using Amf = std::array<uint8_t, 2>;      // 16-bit AMF field
-using Mac64 = std::array<uint8_t, 8>;    // MAC-A
-using Res64 = std::array<uint8_t, 8>;    // RES (f2 output; 3GPP allows up to 128 bits, we use the
-                                          // fixed 64-bit example length like the reference vectors)
-using Ak48 = std::array<uint8_t, 6>;     // 48-bit anonymity key
+using Key128 = std::array<uint8_t, 16>; // K, OP, OPc, RAND, CK, IK
+using Sqn = std::array<uint8_t, 6>;     // 48-bit SQN
+using Amf = std::array<uint8_t, 2>;     // 16-bit AMF field
+using Mac64 = std::array<uint8_t, 8>;   // MAC-A
+using Res64 = std::array<uint8_t, 8>;   // RES (f2 output; 3GPP allows up to 128 bits, we use the
+                                        // fixed 64-bit example length like the reference vectors)
+using Ak48 = std::array<uint8_t, 6>;    // 48-bit anonymity key
 
 // OPc = E_K(OP) XOR OP (TS 35.205 clause 4.1). Real deployments provision OPc directly (so K is
 // never needed to compute it at runtime); this helper exists only so nfs/udm's seeded test
@@ -73,7 +73,7 @@ Mac64 f1_star(const Key128& opc, const Key128& k, const Key128& rand, const Sqn&
 // it's concealing). r5 = 96 bits (12-byte rotation), c5 = 0x08 -- distinct from f5's r2=0/c2=0x01.
 Ak48 f5_star(const Key128& opc, const Key128& k, const Key128& rand);
 
-using Auts = std::array<uint8_t, 14>;  // (SQN_MS xor AK*) || MAC-S, TS 24.501 §9.11.3.1
+using Auts = std::array<uint8_t, 14>; // (SQN_MS xor AK*) || MAC-S, TS 24.501 §9.11.3.1
 
 // Verifies AUTS against the subscriber's real (OPc, K) and the RAND from the original
 // AuthenticationRequest the UE is responding to (AUTS decode only works with the exact RAND the
@@ -82,7 +82,7 @@ using Auts = std::array<uint8_t, 14>;  // (SQN_MS xor AK*) || MAC-S, TS 24.501 �
 // subscriber, tampered, or a RAND mismatch) -- caller must reject the resync attempt outright, not
 // fall back to guessing SQN_MS. Mirrors UERANSIM's own `milenage_auts` (the only other real,
 // independent implementation of this exact check available to cross-check against in this repo).
-std::optional<Sqn> verify_and_decode_auts(const Key128& opc, const Key128& k, const Key128& rand,
-                                          const Auts& auts);
+std::optional<Sqn>
+verify_and_decode_auts(const Key128& opc, const Key128& k, const Key128& rand, const Auts& auts);
 
-}  // namespace aka_crypto
+} // namespace aka_crypto

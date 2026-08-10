@@ -24,7 +24,8 @@ namespace ngap {
 
 // Encodes `value` via `type_descriptor`'s own PER codec and wraps it as one IE tuple.
 // `type_descriptor`/`value` must outlive nothing -- the encoded bytes are copied in.
-ConcreteProtocolIE_Field_t make_ie(long id, Criticality_t criticality,
+ConcreteProtocolIE_Field_t make_ie(long id,
+                                   Criticality_t criticality,
                                    const struct asn_TYPE_descriptor_s* type_descriptor,
                                    const void* value);
 
@@ -32,8 +33,7 @@ ConcreteProtocolIE_Field_t make_ie(long id, Criticality_t criticality,
 void add_ie(ConcreteProtocolIE_Container_t& container, ConcreteProtocolIE_Field_t ie);
 
 // Finds the first IE with the given id, or nullptr if absent.
-const ConcreteProtocolIE_Field_t* find_ie(const ConcreteProtocolIE_Container_t& container,
-                                          long id);
+const ConcreteProtocolIE_Field_t* find_ie(const ConcreteProtocolIE_Container_t& container, long id);
 
 // PER-decodes an IE's value via `type_descriptor`. Returns nullptr on decode failure. Caller owns
 // the returned pointer (free via ASN_STRUCT_FREE(*type_descriptor, ptr)).

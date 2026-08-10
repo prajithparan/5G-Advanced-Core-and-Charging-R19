@@ -121,7 +121,8 @@ TEST(PcfIntegration, AmPolicyAssociationFullLifecycle) {
     const auto created = json::parse(create_resp->body).get<sbi_gen::PolicyAssociation>();
     ASSERT_TRUE(created.request.has_value());
     EXPECT_EQ(created.request->supi, create_data.supi);
-    ASSERT_TRUE(created.ueAmbr.has_value()); // PCF's default session AMBR, request didn't supply one
+    ASSERT_TRUE(
+        created.ueAmbr.has_value()); // PCF's default session AMBR, request didn't supply one
 
     sbi_core::http2::ClientRequest get_req;
     get_req.method = "GET";
@@ -161,8 +162,7 @@ TEST(PcfIntegration, AmPolicyAssociationFullLifecycle) {
     // Confirm the update is really persisted, not just echoed.
     auto get_after_update = client.send(get_req);
     ASSERT_TRUE(get_after_update.has_value());
-    const auto after_update =
-        json::parse(get_after_update->body).get<sbi_gen::PolicyAssociation>();
+    const auto after_update = json::parse(get_after_update->body).get<sbi_gen::PolicyAssociation>();
     ASSERT_TRUE(after_update.ueAmbr.has_value());
     EXPECT_EQ(after_update.ueAmbr->uplink, "500 Mbps");
 
@@ -264,8 +264,7 @@ TEST(PcfIntegration, SmPolicyFullLifecycleUsesRequestSuppliedDefaults) {
     auto update_resp = client.send(update_req);
     ASSERT_TRUE(update_resp.has_value());
     EXPECT_EQ(update_resp->status, 200);
-    const auto updated_decision =
-        json::parse(update_resp->body).get<sbi_gen::SmPolicyDecision>();
+    const auto updated_decision = json::parse(update_resp->body).get<sbi_gen::SmPolicyDecision>();
     ASSERT_TRUE(updated_decision.sessRules.has_value());
     ASSERT_TRUE(updated_decision.sessRules->contains("default"));
 

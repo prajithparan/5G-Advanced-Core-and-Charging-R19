@@ -20,8 +20,8 @@ std::optional<Cause> decode_cause(const std::vector<std::uint8_t>& value) {
 }
 
 std::vector<std::uint8_t> encode_recovery_time_stamp(std::time_t unix_time) {
-    const auto ntp_time =
-        static_cast<std::uint32_t>(static_cast<std::int64_t>(unix_time) + kNtpUnixEpochOffsetSeconds);
+    const auto ntp_time = static_cast<std::uint32_t>(static_cast<std::int64_t>(unix_time) +
+                                                     kNtpUnixEpochOffsetSeconds);
     return {
         static_cast<std::uint8_t>((ntp_time >> 24) & 0xFF),
         static_cast<std::uint8_t>((ntp_time >> 16) & 0xFF),
@@ -38,7 +38,8 @@ std::optional<std::time_t> decode_recovery_time_stamp(const std::vector<std::uin
                                    (static_cast<std::uint32_t>(value[1]) << 16) |
                                    (static_cast<std::uint32_t>(value[2]) << 8) |
                                    static_cast<std::uint32_t>(value[3]);
-    return static_cast<std::time_t>(static_cast<std::int64_t>(ntp_time) - kNtpUnixEpochOffsetSeconds);
+    return static_cast<std::time_t>(static_cast<std::int64_t>(ntp_time) -
+                                    kNtpUnixEpochOffsetSeconds);
 }
 
 std::vector<std::uint8_t> encode_node_id_ipv4(std::array<std::uint8_t, 4> ipv4) {
@@ -49,7 +50,8 @@ std::vector<std::uint8_t> encode_node_id_ipv4(std::array<std::uint8_t, 4> ipv4) 
     return out;
 }
 
-std::optional<std::array<std::uint8_t, 4>> decode_node_id_ipv4(const std::vector<std::uint8_t>& value) {
+std::optional<std::array<std::uint8_t, 4>>
+decode_node_id_ipv4(const std::vector<std::uint8_t>& value) {
     constexpr std::uint8_t kNodeIdTypeIpv4 = 0;
     if (value.size() != 5 || (value[0] & 0x0F) != kNodeIdTypeIpv4) {
         return std::nullopt;
@@ -57,8 +59,12 @@ std::optional<std::array<std::uint8_t, 4>> decode_node_id_ipv4(const std::vector
     return std::array<std::uint8_t, 4>{value[1], value[2], value[3], value[4]};
 }
 
-std::vector<std::uint8_t> encode_up_function_features_none() { return {0x00, 0x00}; }
+std::vector<std::uint8_t> encode_up_function_features_none() {
+    return {0x00, 0x00};
+}
 
-std::vector<std::uint8_t> encode_cp_function_features_none() { return {0x00}; }
+std::vector<std::uint8_t> encode_cp_function_features_none() {
+    return {0x00};
+}
 
 } // namespace pfcp_core

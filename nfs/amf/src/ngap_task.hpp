@@ -1,16 +1,14 @@
 #pragma once
 
-#include "ue_context_store.hpp"
-
-#include "aka_crypto/kdf.hpp"
-
-#include <ngap_core/sctp_socket.hpp>
-
 #include <cstdint>
 #include <mutex>
+#include <ngap_core/sctp_socket.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "aka_crypto/kdf.hpp"
+#include "ue_context_store.hpp"
 
 // AMF's NGAP/N2 termination (TS 38.413) + minimal NAS-5GS (TS 24.501), per docs/DECISIONS.md's
 // staged NGAP/NAS plan (Stage 1: NG Setup; Stage 2: InitialUEMessage -> RegistrationRequest ->
@@ -51,7 +49,8 @@ public:
     // Encodes (amf::nas::encode_dl_nas_transport) and sends a secured DlNasTransport carrying
     // n1_sm_container over the registered UE's live association, incrementing its downlink_count.
     // Returns false if no live association is registered for this SUPI.
-    bool send_dl_nas_transport(const std::string& supi, std::uint8_t pdu_session_id,
+    bool send_dl_nas_transport(const std::string& supi,
+                               std::uint8_t pdu_session_id,
                                const std::vector<std::uint8_t>& n1_sm_container);
 
 private:
@@ -66,8 +65,11 @@ private:
 // `ue_contexts`/`ue_ngap_registry` must outlive this call (it runs forever) -- same
 // shared-by-reference-across-threads convention as main()'s other stores already use with the
 // HTTP/2 server's route handlers.
-void run_ngap_lifecycle(const std::string& bind_address, unsigned short bind_port,
-                        const std::string& amf_instance_id, const std::string& nrf_base,
-                        UeContextStore& ue_contexts, NgapUeRegistry& ue_ngap_registry);
+void run_ngap_lifecycle(const std::string& bind_address,
+                        unsigned short bind_port,
+                        const std::string& amf_instance_id,
+                        const std::string& nrf_base,
+                        UeContextStore& ue_contexts,
+                        NgapUeRegistry& ue_ngap_registry);
 
 } // namespace amf::ngap

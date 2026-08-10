@@ -58,8 +58,9 @@ struct Ie {
 };
 
 // Appends one IE (type + 2-byte length + value) to `out`.
-void encode_ie(std::vector<std::uint8_t>& out, std::uint16_t type,
-              const std::vector<std::uint8_t>& value);
+void encode_ie(std::vector<std::uint8_t>& out,
+               std::uint16_t type,
+               const std::vector<std::uint8_t>& value);
 
 // Decodes every top-level IE in `bytes` (a message's IE region, i.e. the bytes after the PFCP
 // header -- see header.hpp's decode_header). Does not recurse into Grouped IEs (TS 29.244 §7.2.3.3

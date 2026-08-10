@@ -13,8 +13,8 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
-#include <cstdint>
 #include <csignal>
+#include <cstdint>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -77,9 +77,8 @@ std::string fetch_pcf_token(sbi_core::http2::Client& client) {
     req.method = "POST";
     req.url = "https://127.0.0.1:7777/oauth2/token";
     req.headers.emplace("content-type", "application/x-www-form-urlencoded");
-    req.body =
-        "grant_type=client_credentials&nfInstanceId=test-client&scope=npcf-smpolicycontrol&"
-        "targetNfType=PCF";
+    req.body = "grant_type=client_credentials&nfInstanceId=test-client&scope=npcf-smpolicycontrol&"
+               "targetNfType=PCF";
     auto resp = client.send(req);
     if (!resp.has_value() || resp->status != 200) {
         return "";
@@ -92,19 +91,21 @@ std::string fetch_pcf_token(sbi_core::http2::Client& client) {
 // sNssai are all required in this build even though SmContextCreateData's own schema allows them
 // to be absent).
 sbi_core::multipart::Encoded encode_create_sm_context_body(const std::string& supi,
-                                                            std::int64_t pdu_session_id) {
+                                                           std::int64_t pdu_session_id) {
     sbi_core::multipart::Part create_json_part;
     create_json_part.content_type = "application/json";
-    create_json_part.body = json{
-        {"servingNfId", "00000000-0000-4000-8000-0000000000aa"},
-        {"servingNetwork", json{{"mcc", "999"}, {"mnc", "70"}}},
-        {"anType", "3GPP_ACCESS"},
-        {"smContextStatusUri", "https://example.com/sm-status"},
-        {"supi", supi},
-        {"pduSessionId", pdu_session_id},
-        {"dnn", "internet"},
-        {"sNssai", json{{"sst", 1}}},
-    }.dump();
+    create_json_part.body =
+        json{
+            {"servingNfId", "00000000-0000-4000-8000-0000000000aa"},
+            {"servingNetwork", json{{"mcc", "999"}, {"mnc", "70"}}},
+            {"anType", "3GPP_ACCESS"},
+            {"smContextStatusUri", "https://example.com/sm-status"},
+            {"supi", supi},
+            {"pduSessionId", pdu_session_id},
+            {"dnn", "internet"},
+            {"sNssai", json{{"sst", 1}}},
+        }
+            .dump();
     return sbi_core::multipart::encode({create_json_part});
 }
 
@@ -182,8 +183,7 @@ TEST(SmfIntegration, FullSmContextLifecycleOverRealHttp2) {
         auto pcf_get_resp = client.send(pcf_get_req);
         ASSERT_TRUE(pcf_get_resp.has_value());
         ASSERT_EQ(pcf_get_resp->status, 200) << "smf did not really create an SM Policy at pcf";
-        const auto pcf_control =
-            json::parse(pcf_get_resp->body).get<sbi_gen::SmPolicyControl>();
+        const auto pcf_control = json::parse(pcf_get_resp->body).get<sbi_gen::SmPolicyControl>();
         EXPECT_EQ(pcf_control.context.supi, supi);
         EXPECT_EQ(pcf_control.context.dnn, "internet");
         ASSERT_TRUE(pcf_control.policy.sessRules.has_value());

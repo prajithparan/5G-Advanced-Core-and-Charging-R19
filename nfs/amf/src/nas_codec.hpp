@@ -1,12 +1,12 @@
 #pragma once
 
-#include "aka_crypto/kdf.hpp"
-
 #include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include "aka_crypto/kdf.hpp"
 
 // Minimal NAS-5GS (TS 24.501) codec -- Stage 2+ of docs/DECISIONS.md's staged NGAP/NAS plan.
 // Hand-rolled: NAS-5GS is TLV-encoded, not ASN.1, so no codegen tool applies the way NGAP's PER
@@ -48,15 +48,15 @@ struct RegistrationRequestInfo {
 // RegistrationRequest carrying a null-protection-scheme SUCI encoding an IMSI-format SUPI --
 // every other case (ciphered NAS, GUTI-based registration, a real protection scheme) is
 // explicitly out of scope for this stage, not silently misparsed.
-std::optional<RegistrationRequestInfo> decode_registration_request(
-    const std::vector<std::uint8_t>& nas_pdu);
+std::optional<RegistrationRequestInfo>
+decode_registration_request(const std::vector<std::uint8_t>& nas_pdu);
 
 // ngksi: 0-6, a fresh key set identifier this AMF is allocating for this authentication run (no
 // prior security context exists yet, so any fresh value is correct; this lab's single-UE-at-a-time
 // scope, see ADR-0031, makes a fixed value 0 unambiguous -- disclosed, not a spec-mandated value).
 std::vector<std::uint8_t> encode_authentication_request(const std::array<std::uint8_t, 16>& rand,
-                                                         const std::array<std::uint8_t, 16>& autn,
-                                                         int ngksi);
+                                                        const std::array<std::uint8_t, 16>& autn,
+                                                        int ngksi);
 
 // Result of decoding a NAS-PDU carried in UplinkNASTransport in response to a Stage 2
 // AuthenticationRequest -- TS 24.501 defines exactly two real outcomes here (ignoring EAP, out of
@@ -90,8 +90,8 @@ struct AuthenticationOutcome {
 // AuthenticationResponse carrying authenticationResponseParameter (RES*) or a plain
 // AuthenticationFailure -- e.g. an EAP-only AuthenticationResponse is out of scope (this project
 // only implements the 5G-AKA path, not EAP-AKA' end-to-end over NAS).
-std::optional<AuthenticationOutcome> decode_authentication_outcome(
-    const std::vector<std::uint8_t>& nas_pdu);
+std::optional<AuthenticationOutcome>
+decode_authentication_outcome(const std::vector<std::uint8_t>& nas_pdu);
 
 // Encodes a SecurityModeCommand (TS 24.501 §8.2.25, network->UE), integrity-protected only (never
 // ciphered -- the UE cannot yet be assumed to trust the new KNASenc when it first receives this
@@ -99,21 +99,21 @@ std::optional<AuthenticationOutcome> decode_authentication_outcome(
 // simulators/ransim/vendor/UERANSIM/src/ue/nas/enc.cpp's own MakeSecurityHeaderType always
 // returning INTEGRITY_PROTECTED_WITH_NEW_SECURITY_CONTEXT for this message type regardless of the
 // selected ciphering algorithm), secured with 128-NIA2 over knas_int. Only the mandatory IEs this
-// stage's single-UE, single-algorithm-pair happy path needs are encoded -- selectedNasSecurityAlgorithms
-// (fixed to 128-NEA2/128-NIA2, this project's only implemented pair), a fresh ngKSI=0, and
-// ue_security_capability replayed verbatim (see RegistrationRequestInfo's own comment). Optional
-// IEs (imeiSvRequest, EPS algorithms, additional5GSecurityInformation, eapMessage, abba,
-// replayedS1UeNetworkCapability) are out of scope -- disclosed simplification, not silently
-// dropped support for a case this build actually hits.
+// stage's single-UE, single-algorithm-pair happy path needs are encoded --
+// selectedNasSecurityAlgorithms (fixed to 128-NEA2/128-NIA2, this project's only implemented pair),
+// a fresh ngKSI=0, and ue_security_capability replayed verbatim (see RegistrationRequestInfo's own
+// comment). Optional IEs (imeiSvRequest, EPS algorithms, additional5GSecurityInformation,
+// eapMessage, abba, replayedS1UeNetworkCapability) are out of scope -- disclosed simplification,
+// not silently dropped support for a case this build actually hits.
 //
 // downlink_count: this association's NAS downlink COUNT for this message. This project's
 // single-registration-per-association scope (ADR-0031) means this is always the first secured
 // downlink message, so callers always pass 0 -- kept as an explicit parameter (not hardcoded)
 // so a future multi-message-per-association stage doesn't need a signature change.
-std::vector<std::uint8_t> encode_security_mode_command(
-    const aka_crypto::NasIntKey& knas_int,
-    const std::vector<std::uint8_t>& ue_security_capability,
-    std::uint32_t downlink_count);
+std::vector<std::uint8_t>
+encode_security_mode_command(const aka_crypto::NasIntKey& knas_int,
+                             const std::vector<std::uint8_t>& ue_security_capability,
+                             std::uint32_t downlink_count);
 
 struct SecurityModeCompleteOutcome {
     // False means the MAC genuinely didn't verify (wrong keys, a tampered/replayed message, or a
@@ -127,11 +127,11 @@ struct SecurityModeCompleteOutcome {
 // expected to be a SecurityModeComplete (TS 24.501 §8.2.26) responding to
 // encode_security_mode_command's output. uplink_count mirrors downlink_count's own doc comment --
 // always 0 in this project's current scope.
-std::optional<SecurityModeCompleteOutcome> decode_security_mode_complete(
-    const aka_crypto::NasIntKey& knas_int,
-    const aka_crypto::NasEncKey& knas_enc,
-    std::uint32_t uplink_count,
-    const std::vector<std::uint8_t>& nas_pdu);
+std::optional<SecurityModeCompleteOutcome>
+decode_security_mode_complete(const aka_crypto::NasIntKey& knas_int,
+                              const aka_crypto::NasEncKey& knas_enc,
+                              std::uint32_t uplink_count,
+                              const std::vector<std::uint8_t>& nas_pdu);
 
 // Encodes a RegistrationAccept (TS 24.501 §8.2.7, network->UE), integrity-protected AND ciphered
 // (the normal secured-message case, not SecurityModeCommand's "new security context" variant --
@@ -145,8 +145,8 @@ std::optional<SecurityModeCompleteOutcome> decode_security_mode_complete(
 // single-registration-per-association scope, kept explicit for the same reason
 // encode_security_mode_command's downlink_count parameter is.
 std::vector<std::uint8_t> encode_registration_accept(const aka_crypto::NasIntKey& knas_int,
-                                                      const aka_crypto::NasEncKey& knas_enc,
-                                                      std::uint32_t downlink_count);
+                                                     const aka_crypto::NasEncKey& knas_enc,
+                                                     std::uint32_t downlink_count);
 
 struct RegistrationCompleteOutcome {
     // Same split as SecurityModeCompleteOutcome::mac_valid -- see that struct's own comment.
@@ -166,11 +166,11 @@ struct RegistrationCompleteOutcome {
 // indication, or a configuredNSSAI -- encode_registration_accept sends none of those (disclosed
 // simplification, see its own comment), so this decoder is currently unreachable in practice.
 // Kept (unit-tested, spec-correct) for when a future turn adds GUTI reassignment.
-std::optional<RegistrationCompleteOutcome> decode_registration_complete(
-    const aka_crypto::NasIntKey& knas_int,
-    const aka_crypto::NasEncKey& knas_enc,
-    std::uint32_t uplink_count,
-    const std::vector<std::uint8_t>& nas_pdu);
+std::optional<RegistrationCompleteOutcome>
+decode_registration_complete(const aka_crypto::NasIntKey& knas_int,
+                             const aka_crypto::NasEncKey& knas_enc,
+                             std::uint32_t uplink_count,
+                             const std::vector<std::uint8_t>& nas_pdu);
 
 struct UlNasTransportInfo {
     // Same split as SecurityModeCompleteOutcome::mac_valid -- see that struct's own comment.
@@ -217,11 +217,10 @@ struct UlNasTransportInfo {
 // uplink_count: this association's second secured uplink message (SecurityModeComplete=0; no
 // RegistrationComplete is ever sent, see UeAuthState::Phase's own comment in ngap_task.cpp) --
 // callers pass 1 in this project's current single-PDU-session scope.
-std::optional<UlNasTransportInfo> decode_ul_nas_transport(
-    const aka_crypto::NasIntKey& knas_int,
-    const aka_crypto::NasEncKey& knas_enc,
-    std::uint32_t uplink_count,
-    const std::vector<std::uint8_t>& nas_pdu);
+std::optional<UlNasTransportInfo> decode_ul_nas_transport(const aka_crypto::NasIntKey& knas_int,
+                                                          const aka_crypto::NasEncKey& knas_enc,
+                                                          std::uint32_t uplink_count,
+                                                          const std::vector<std::uint8_t>& nas_pdu);
 
 // Encodes a secured DlNasTransport (TS 24.501 §8.2.9) wrapping opaque N1 SM information
 // (payloadContainerType=1) -- AMF's delivery vehicle for the PDU Session Establishment Accept SMF

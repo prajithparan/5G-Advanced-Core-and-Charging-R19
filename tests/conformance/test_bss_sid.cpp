@@ -24,8 +24,8 @@ TEST(BssSidParty, MapSupiToIndividualLeavesIdUnset) {
 TEST(BssSidParty, IndividualJsonRoundTrips) {
     bss_sid::Individual original{};
     original.id = "party-1";
-    original.individualIdentification.push_back(
-        bss_sid::IndividualIdentification{.identificationType = "SUPI", .identificationId = "imsi-1"});
+    original.individualIdentification.push_back(bss_sid::IndividualIdentification{
+        .identificationType = "SUPI", .identificationId = "imsi-1"});
 
     const nlohmann::json j = original;
     const auto decoded = j.get<bss_sid::Individual>();

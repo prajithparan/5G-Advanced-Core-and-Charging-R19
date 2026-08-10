@@ -30,13 +30,6 @@
 // Modification/Deletion exists yet to ever remove an entry either (a real, disclosed gap, not
 // urgent while this project has no process-restart/session-teardown testing).
 
-#include "datapath.hpp"
-
-#include "pfcp_core/common_ies.hpp"
-#include "pfcp_core/header.hpp"
-#include "pfcp_core/ie.hpp"
-#include "pfcp_core/session_ies.hpp"
-
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/logging.hpp"
 #include "sbi_core/metrics.hpp"
@@ -44,8 +37,6 @@
 #include "sbi_core/otel.hpp"
 #include "sbi_core/sbi_headers.hpp"
 #include "sbi_core/uuid.hpp"
-
-#include "TS29122_CommonData_grp.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/udp.hpp>
@@ -57,6 +48,13 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+
+#include "TS29122_CommonData_grp.hpp"
+#include "datapath.hpp"
+#include "pfcp_core/common_ies.hpp"
+#include "pfcp_core/header.hpp"
+#include "pfcp_core/ie.hpp"
+#include "pfcp_core/session_ies.hpp"
 
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see nfs/upf/CMakeLists.txt)"
@@ -107,7 +105,8 @@ public:
     // next time. std::nullopt if no Create URR was ever provisioned for this TEID (e.g. the usage
     // report handler firing for a TEID this store never learned about -- shouldn't happen given
     // the datapath only counts TEIDs register_urr was called for, but checked rather than assumed).
-    std::optional<std::pair<UrrSessionInfo, std::uint32_t>> get_and_advance_seqn(std::uint32_t teid) {
+    std::optional<std::pair<UrrSessionInfo, std::uint32_t>>
+    get_and_advance_seqn(std::uint32_t teid) {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = sessions_.find(teid);
         if (it == sessions_.end()) {
@@ -171,13 +170,15 @@ class ReportSender {
 public:
     ReportSender() : socket_(ioc_, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), 0)) {}
 
-    void send(const boost::asio::ip::udp::endpoint& target, const std::vector<std::uint8_t>& bytes) {
+    void send(const boost::asio::ip::udp::endpoint& target,
+              const std::vector<std::uint8_t>& bytes) {
         std::lock_guard<std::mutex> lock(mutex_);
         boost::system::error_code ec;
         socket_.send_to(boost::asio::buffer(bytes), target, 0, ec);
         if (ec) {
             spdlog::warn("upf: failed to send unsolicited PFCP message to {}: {}",
-                        target.address().to_string(), ec.message());
+                         target.address().to_string(),
+                         ec.message());
         }
     }
 
@@ -290,7 +291,8 @@ void run_nrf_lifecycle(const std::string& upf_instance_id) {
 // number, dispatched by run_pfcp_lifecycle below.
 std::vector<std::uint8_t> build_heartbeat_response_ies(std::time_t start_time) {
     std::vector<std::uint8_t> ies;
-    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::RecoveryTimeStamp),
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::RecoveryTimeStamp),
                          pfcp_core::encode_recovery_time_stamp(start_time));
     return ies;
 }
@@ -304,16 +306,21 @@ std::vector<std::uint8_t> encode_up_function_features_ftup_only() {
     return {kFtupBit, 0x00};
 }
 
-std::vector<std::uint8_t> build_association_setup_response_ies(std::time_t start_time,
-                                                                std::array<std::uint8_t, 4> node_ipv4) {
+std::vector<std::uint8_t>
+build_association_setup_response_ies(std::time_t start_time,
+                                     std::array<std::uint8_t, 4> node_ipv4) {
     std::vector<std::uint8_t> ies;
-    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
                          pfcp_core::encode_node_id_ipv4(node_ipv4));
-    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
                          pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
-    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::RecoveryTimeStamp),
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::RecoveryTimeStamp),
                          pfcp_core::encode_recovery_time_stamp(start_time));
-    pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::UpFunctionFeatures),
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::UpFunctionFeatures),
                          encode_up_function_features_ftup_only());
     return ies;
 }
@@ -342,9 +349,12 @@ struct SessionEstablishmentResult {
 // and a real UP F-SEID, and builds the response. `next_seid`/`next_teid` are simple counters --
 // safe as plain (non-atomic) locals since this function only ever runs on run_pfcp_lifecycle's
 // single thread.
-std::optional<SessionEstablishmentResult> build_session_establishment_response_ies(
-    const std::vector<std::uint8_t>& request_ies, std::array<std::uint8_t, 4> node_ipv4,
-    std::uint64_t& next_seid, std::uint32_t& next_teid, upf::Datapath* datapath) {
+std::optional<SessionEstablishmentResult>
+build_session_establishment_response_ies(const std::vector<std::uint8_t>& request_ies,
+                                         std::array<std::uint8_t, 4> node_ipv4,
+                                         std::uint64_t& next_seid,
+                                         std::uint32_t& next_teid,
+                                         upf::Datapath* datapath) {
     const auto ies = pfcp_core::decode_ies(request_ies);
     if (!ies.has_value()) {
         return std::nullopt;
@@ -354,7 +364,8 @@ std::optional<SessionEstablishmentResult> build_session_establishment_response_i
     const auto* create_pdr_ie =
         pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatePdr));
     if (cp_f_seid_ie == nullptr || create_pdr_ie == nullptr) {
-        spdlog::warn("upf: Session Establishment Request missing mandatory CP F-SEID or Create PDR");
+        spdlog::warn(
+            "upf: Session Establishment Request missing mandatory CP F-SEID or Create PDR");
         return std::nullopt;
     }
     const auto cp_f_seid = pfcp_core::decode_f_seid_ipv4(cp_f_seid_ie->value);
@@ -372,7 +383,8 @@ std::optional<SessionEstablishmentResult> build_session_establishment_response_i
         pdr_ies.has_value()
             ? pfcp_core::find_ie(*pdr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi))
             : nullptr;
-    const auto pdr_id = pdr_id_ie != nullptr ? pfcp_core::decode_pdr_id(pdr_id_ie->value) : std::nullopt;
+    const auto pdr_id =
+        pdr_id_ie != nullptr ? pfcp_core::decode_pdr_id(pdr_id_ie->value) : std::nullopt;
 
     // ADR-0050 Stage 2: the real Create URR IE (TS 29.244 §7.5.2.4), if SMF's Stage 1 provisioned
     // one from CHF's actual grant (ADR-0048's Nchf_ConvergedCharging_Create) -- top-level sibling
@@ -391,8 +403,8 @@ std::optional<SessionEstablishmentResult> build_session_establishment_response_i
                 pfcp_core::find_ie(*urr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::UrrId));
             const auto* threshold_ie = pfcp_core::find_ie(
                 *urr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::VolumeThreshold));
-            const auto* quota_ie =
-                pfcp_core::find_ie(*urr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota));
+            const auto* quota_ie = pfcp_core::find_ie(
+                *urr_ies, static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota));
             if (urr_id_ie != nullptr) {
                 urr_id = pfcp_core::decode_urr_id(urr_id_ie->value);
             }
@@ -403,25 +415,29 @@ std::optional<SessionEstablishmentResult> build_session_establishment_response_i
                 urr_volume_quota = pfcp_core::decode_volume_total(quota_ie->value);
             }
         }
-        if (!urr_id.has_value() || !urr_volume_threshold.has_value() || !urr_volume_quota.has_value()) {
+        if (!urr_id.has_value() || !urr_volume_threshold.has_value() ||
+            !urr_volume_quota.has_value()) {
             spdlog::warn("upf: Session Establishment Request carried a malformed Create URR, "
-                        "ignoring usage tracking for this session");
+                         "ignoring usage tracking for this session");
         }
     }
 
     SessionEstablishmentResult result;
 
     std::vector<std::uint8_t> ies_out;
-    pfcp_core::encode_ie(ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+    pfcp_core::encode_ie(ies_out,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
                          pfcp_core::encode_node_id_ipv4(node_ipv4));
-    pfcp_core::encode_ie(ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+    pfcp_core::encode_ie(ies_out,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
                          pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
 
     pfcp_core::FSeid up_f_seid;
     up_f_seid.seid = next_seid++;
     up_f_seid.ipv4 = node_ipv4;
     result.up_seid = up_f_seid.seid;
-    pfcp_core::encode_ie(ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::FSeid),
+    pfcp_core::encode_ie(ies_out,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::FSeid),
                          pfcp_core::encode_f_seid_ipv4(up_f_seid));
 
     if (pdr_id.has_value() && pdi_ie != nullptr) {
@@ -433,13 +449,15 @@ std::optional<SessionEstablishmentResult> build_session_establishment_response_i
         if (f_teid_ie != nullptr && pfcp_core::decode_f_teid_is_choose_request(f_teid_ie->value)) {
             const std::uint32_t allocated_teid = next_teid++;
             std::vector<std::uint8_t> created_pdr;
-            pfcp_core::encode_ie(created_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
+            pfcp_core::encode_ie(created_pdr,
+                                 static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
                                  pfcp_core::encode_pdr_id(*pdr_id));
             pfcp_core::encode_ie(
-                created_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::FTeid),
+                created_pdr,
+                static_cast<std::uint16_t>(pfcp_core::IeType::FTeid),
                 pfcp_core::encode_f_teid_allocated_ipv4(allocated_teid, node_ipv4));
-            pfcp_core::encode_ie(ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::CreatedPdr),
-                                 created_pdr);
+            pfcp_core::encode_ie(
+                ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::CreatedPdr), created_pdr);
             spdlog::info("upf: allocated F-TEID {:#x} for PDR ID {}", allocated_teid, *pdr_id);
             // ADR-0043: registers the TEID with the real XDP program so it actually recognizes
             // and decapsulates uplink traffic for this PDR -- a no-op (logged, not fatal) if no
@@ -448,12 +466,18 @@ std::optional<SessionEstablishmentResult> build_session_establishment_response_i
                 datapath->register_teid(allocated_teid);
                 if (urr_id.has_value() && urr_volume_threshold.has_value() &&
                     urr_volume_quota.has_value()) {
-                    datapath->register_urr(allocated_teid, *urr_volume_threshold, *urr_volume_quota);
-                    spdlog::info("upf: registered URR {} for TEID {:#x}: threshold={} quota={} octets",
-                                *urr_id, allocated_teid, *urr_volume_threshold, *urr_volume_quota);
+                    datapath->register_urr(
+                        allocated_teid, *urr_volume_threshold, *urr_volume_quota);
+                    spdlog::info(
+                        "upf: registered URR {} for TEID {:#x}: threshold={} quota={} octets",
+                        *urr_id,
+                        allocated_teid,
+                        *urr_volume_threshold,
+                        *urr_volume_quota);
                 }
             }
-            if (urr_id.has_value() && urr_volume_threshold.has_value() && urr_volume_quota.has_value()) {
+            if (urr_id.has_value() && urr_volume_threshold.has_value() &&
+                urr_volume_quota.has_value()) {
                 result.allocated_teid_with_urr = allocated_teid;
                 result.urr_id = urr_id;
             }
@@ -476,10 +500,12 @@ struct SessionModificationResult {
 // is the incoming header's own SEID -- this UPF's own F-SEID for the session (the value the CP
 // addressed the request TO, per the addressing rule SessionEstablishmentResult's own comment
 // documents), not what the response should echo back.
-std::optional<SessionModificationResult> build_session_modification_response_ies(
-    const std::vector<std::uint8_t>& request_ies, std::uint64_t request_seid,
-    SeidToTeidStore& seid_to_teid_store, TeidSessionStore& teid_session_store,
-    upf::Datapath* datapath) {
+std::optional<SessionModificationResult>
+build_session_modification_response_ies(const std::vector<std::uint8_t>& request_ies,
+                                        std::uint64_t request_seid,
+                                        SeidToTeidStore& seid_to_teid_store,
+                                        TeidSessionStore& teid_session_store,
+                                        upf::Datapath* datapath) {
     SessionModificationResult result;
     // Real spec addressing rule: the response echoes the CP's own SEID for this session -- only
     // known via the session's already-stored UrrSessionInfo below. Falls back to request_seid
@@ -489,8 +515,10 @@ std::optional<SessionModificationResult> build_session_modification_response_ies
 
     const auto teid = seid_to_teid_store.get(request_seid);
     if (!teid.has_value()) {
-        spdlog::warn("upf: Session Modification Request references unknown SEID {:#x}", request_seid);
-        pfcp_core::encode_ie(result.ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+        spdlog::warn("upf: Session Modification Request references unknown SEID {:#x}",
+                     request_seid);
+        pfcp_core::encode_ie(result.ies,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
                              pfcp_core::encode_cause(pfcp_core::Cause::RequestRejected));
         return result;
     }
@@ -507,7 +535,8 @@ std::optional<SessionModificationResult> build_session_modification_response_ies
         // Real spec: Update URR is conditional, only present if a URR needs modifying -- this
         // build has no other real Modification content (Update PDR/FAR etc.), so an absent Update
         // URR just means nothing to do; still a real, valid (accepted) Modification.
-        pfcp_core::encode_ie(result.ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+        pfcp_core::encode_ie(result.ies,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
                              pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
         return result;
     }
@@ -523,20 +552,25 @@ std::optional<SessionModificationResult> build_session_modification_response_ies
             ? pfcp_core::find_ie(*update_urr_ies,
                                  static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota))
             : nullptr;
-    const auto new_threshold =
-        threshold_ie != nullptr ? pfcp_core::decode_volume_total(threshold_ie->value) : std::nullopt;
+    const auto new_threshold = threshold_ie != nullptr
+                                   ? pfcp_core::decode_volume_total(threshold_ie->value)
+                                   : std::nullopt;
     const auto new_quota =
         quota_ie != nullptr ? pfcp_core::decode_volume_total(quota_ie->value) : std::nullopt;
     if (!new_threshold.has_value() || !new_quota.has_value() || datapath == nullptr ||
         !datapath->update_urr_thresholds(*teid, *new_threshold, *new_quota)) {
         spdlog::warn("upf: failed to apply Update URR for TEID {:#x}", *teid);
-        pfcp_core::encode_ie(result.ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+        pfcp_core::encode_ie(result.ies,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
                              pfcp_core::encode_cause(pfcp_core::Cause::RequestRejected));
         return result;
     }
-    spdlog::info("upf: applied Update URR for TEID {:#x}: threshold={} quota={} octets", *teid,
-                *new_threshold, *new_quota);
-    pfcp_core::encode_ie(result.ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+    spdlog::info("upf: applied Update URR for TEID {:#x}: threshold={} quota={} octets",
+                 *teid,
+                 *new_threshold,
+                 *new_quota);
+    pfcp_core::encode_ie(result.ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
                          pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
     return result;
 }
@@ -544,8 +578,10 @@ std::optional<SessionModificationResult> build_session_modification_response_ies
 // Runs on the main thread (blocking UDP I/O, same "blocking transport gets its own thread"
 // discipline ADR-0006/ADR-0030 already established -- here it's simply the only thread, since
 // UPF has no HTTP2 server to share time with). Never returns.
-void run_pfcp_lifecycle(std::time_t start_time, upf::Datapath* datapath,
-                        TeidSessionStore& teid_session_store, SeidToTeidStore& seid_to_teid_store) {
+void run_pfcp_lifecycle(std::time_t start_time,
+                        upf::Datapath* datapath,
+                        TeidSessionStore& teid_session_store,
+                        SeidToTeidStore& seid_to_teid_store) {
     boost::asio::io_context ioc;
     boost::asio::ip::udp::socket socket(
         ioc, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), pfcp_core::kPfcpPort));
@@ -572,7 +608,7 @@ void run_pfcp_lifecycle(std::time_t start_time, upf::Datapath* datapath,
         const auto header = pfcp_core::decode_header(msg, offset, ies_length);
         if (!header.has_value()) {
             spdlog::warn("upf: failed to decode PFCP header from {}, ignoring",
-                        sender.address().to_string());
+                         sender.address().to_string());
             continue;
         }
         if (offset + ies_length > msg.size()) {
@@ -591,17 +627,19 @@ void run_pfcp_lifecycle(std::time_t start_time, upf::Datapath* datapath,
         if (header->message_type == pfcp_core::MessageType::HeartbeatRequest) {
             resp_header.message_type = pfcp_core::MessageType::HeartbeatResponse;
             resp_ies = build_heartbeat_response_ies(start_time);
-            spdlog::info("upf: replying to Heartbeat Request from {}", sender.address().to_string());
+            spdlog::info("upf: replying to Heartbeat Request from {}",
+                         sender.address().to_string());
         } else if (header->message_type == pfcp_core::MessageType::AssociationSetupRequest) {
             resp_header.message_type = pfcp_core::MessageType::AssociationSetupResponse;
             resp_ies = build_association_setup_response_ies(start_time, kNodeIpv4);
-            spdlog::info("upf: Sx Association Setup accepted from {}", sender.address().to_string());
+            spdlog::info("upf: Sx Association Setup accepted from {}",
+                         sender.address().to_string());
         } else if (header->message_type == pfcp_core::MessageType::SessionEstablishmentRequest) {
             const auto result = build_session_establishment_response_ies(
                 ie_bytes, kNodeIpv4, next_seid, next_teid, datapath);
             if (!result.has_value()) {
                 spdlog::warn("upf: malformed Session Establishment Request from {}, ignoring",
-                            sender.address().to_string());
+                             sender.address().to_string());
                 continue;
             }
             resp_header.message_type = pfcp_core::MessageType::SessionEstablishmentResponse;
@@ -629,7 +667,7 @@ void run_pfcp_lifecycle(std::time_t start_time, upf::Datapath* datapath,
                 ie_bytes, header->seid, seid_to_teid_store, teid_session_store, datapath);
             if (!result.has_value()) {
                 spdlog::warn("upf: malformed Session Modification Request from {}, ignoring",
-                            sender.address().to_string());
+                             sender.address().to_string());
                 continue;
             }
             resp_header.message_type = pfcp_core::MessageType::SessionModificationResponse;
@@ -637,15 +675,15 @@ void run_pfcp_lifecycle(std::time_t start_time, upf::Datapath* datapath,
             resp_header.seid = result->response_header_seid;
             resp_ies = result->ies;
             spdlog::info("upf: Sx Session Modification processed from {}",
-                        sender.address().to_string());
+                         sender.address().to_string());
         } else {
             spdlog::warn("upf: received PFCP message type {} with no handler yet, ignoring",
-                        static_cast<int>(header->message_type));
+                         static_cast<int>(header->message_type));
             continue;
         }
 
-        auto resp_bytes = pfcp_core::encode_header(
-            resp_header, static_cast<std::uint16_t>(resp_ies.size()));
+        auto resp_bytes =
+            pfcp_core::encode_header(resp_header, static_cast<std::uint16_t>(resp_ies.size()));
         resp_bytes.insert(resp_bytes.end(), resp_ies.begin(), resp_ies.end());
         socket.send_to(boost::asio::buffer(resp_bytes), sender, 0, ec);
         if (ec) {
@@ -686,12 +724,13 @@ int main() {
     std::atomic<std::uint32_t> next_pfcp_sequence_number{1};
 
     auto usage_report_handler = [&teid_session_store, &report_sender, &next_pfcp_sequence_number](
-                                     std::uint32_t teid, std::uint64_t total_octets,
-                                     bool quota_exhausted) {
+                                    std::uint32_t teid,
+                                    std::uint64_t total_octets,
+                                    bool quota_exhausted) {
         const auto info = teid_session_store.get_and_advance_seqn(teid);
         if (!info.has_value()) {
             spdlog::warn("upf: usage report fired for TEID {:#x} with no known session, dropping",
-                        teid);
+                         teid);
             return;
         }
         const auto& [session, ur_seqn] = *info;
@@ -701,23 +740,26 @@ int main() {
         // flow needs; this project models no others (see session_ies.hpp's own file-header
         // disclosure of that scope).
         std::vector<std::uint8_t> usage_report;
-        pfcp_core::encode_ie(usage_report, static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
+        pfcp_core::encode_ie(usage_report,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
                              pfcp_core::encode_urr_id(session.urr_id));
-        pfcp_core::encode_ie(usage_report, static_cast<std::uint16_t>(pfcp_core::IeType::UrSeqn),
+        pfcp_core::encode_ie(usage_report,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::UrSeqn),
                              pfcp_core::encode_ur_seqn(ur_seqn));
-        pfcp_core::encode_ie(
-            usage_report, static_cast<std::uint16_t>(pfcp_core::IeType::UsageReportTrigger),
-            quota_exhausted ? pfcp_core::encode_usage_report_trigger_volqu()
-                            : pfcp_core::encode_usage_report_trigger_volth());
+        pfcp_core::encode_ie(usage_report,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::UsageReportTrigger),
+                             quota_exhausted ? pfcp_core::encode_usage_report_trigger_volqu()
+                                             : pfcp_core::encode_usage_report_trigger_volth());
         pfcp_core::encode_ie(usage_report,
                              static_cast<std::uint16_t>(pfcp_core::IeType::VolumeMeasurement),
                              pfcp_core::encode_volume_total(total_octets));
 
         std::vector<std::uint8_t> ies;
-        pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::ReportType),
+        pfcp_core::encode_ie(ies,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::ReportType),
                              pfcp_core::encode_report_type_usage_report());
-        pfcp_core::encode_ie(ies, static_cast<std::uint16_t>(pfcp_core::IeType::UsageReport),
-                             usage_report);
+        pfcp_core::encode_ie(
+            ies, static_cast<std::uint16_t>(pfcp_core::IeType::UsageReport), usage_report);
 
         pfcp_core::Header header;
         header.message_type = pfcp_core::MessageType::SessionReportRequest;
@@ -733,9 +775,11 @@ int main() {
         bytes.insert(bytes.end(), ies.begin(), ies.end());
         report_sender.send(session.smf_endpoint, bytes);
         spdlog::info("upf: sent Sx Session Report Request to {} for TEID {:#x}: total={} octets, "
-                    "trigger={}",
-                    session.smf_endpoint.address().to_string(), teid, total_octets,
-                    quota_exhausted ? "VOLQU" : "VOLTH");
+                     "trigger={}",
+                     session.smf_endpoint.address().to_string(),
+                     teid,
+                     total_octets,
+                     quota_exhausted ? "VOLQU" : "VOLTH");
     };
 
     // ADR-0043: real eBPF/XDP GTP-U decapsulation datapath. Failure is disclosed and non-fatal --
@@ -744,12 +788,14 @@ int main() {
     auto datapath = upf::Datapath::create(usage_report_handler);
     if (!datapath.has_value()) {
         spdlog::warn("upf: eBPF/XDP datapath not started (see preceding error) -- PFCP "
-                    "control-plane signalling still works, but no uplink packet will actually "
-                    "be decapsulated/forwarded");
+                     "control-plane signalling still works, but no uplink packet will actually "
+                     "be decapsulated/forwarded");
     }
 
     std::thread(run_nrf_lifecycle, upf_instance_id).detach();
-    run_pfcp_lifecycle(start_time, datapath.has_value() ? &*datapath : nullptr, teid_session_store,
+    run_pfcp_lifecycle(start_time,
+                       datapath.has_value() ? &*datapath : nullptr,
+                       teid_session_store,
                        seid_to_teid_store); // blocks forever
     return 0;
 }

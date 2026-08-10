@@ -80,7 +80,8 @@ ParsedAmbr parse_bitrate(const std::string& bitrate, bool& parsed_for_real) {
 
 } // namespace
 
-std::optional<EstablishmentRequestInfo> decode_establishment_request(const std::vector<std::uint8_t>& p) {
+std::optional<EstablishmentRequestInfo>
+decode_establishment_request(const std::vector<std::uint8_t>& p) {
     if (p.size() < 4 || p[0] != kEpdSessionManagement || p[3] != kMessageTypeEstablishmentRequest) {
         return std::nullopt;
     }
@@ -90,10 +91,11 @@ std::optional<EstablishmentRequestInfo> decode_establishment_request(const std::
     return out;
 }
 
-std::vector<std::uint8_t> encode_establishment_accept(std::uint8_t pdu_session_id, std::uint8_t pti,
-                                                       const std::string& session_ambr_uplink,
-                                                       const std::string& session_ambr_downlink,
-                                                       std::uint8_t qfi) {
+std::vector<std::uint8_t> encode_establishment_accept(std::uint8_t pdu_session_id,
+                                                      std::uint8_t pti,
+                                                      const std::string& session_ambr_uplink,
+                                                      const std::string& session_ambr_downlink,
+                                                      std::uint8_t qfi) {
     std::vector<std::uint8_t> out;
     out.push_back(kEpdSessionManagement);
     out.push_back(pdu_session_id);
@@ -114,8 +116,8 @@ std::vector<std::uint8_t> encode_establishment_accept(std::uint8_t pdu_session_i
     constexpr std::uint8_t kOpCodeCreateDqrNoFilters = 0b001'1'0000;
     constexpr std::uint8_t kPrecedence = 1;
     const std::uint8_t qfi_byte = static_cast<std::uint8_t>(qfi & 0x3F);
-    const std::vector<std::uint8_t> qos_rule = {kQosRuleId, 0x00, 0x03, kOpCodeCreateDqrNoFilters,
-                                                kPrecedence, qfi_byte};
+    const std::vector<std::uint8_t> qos_rule = {
+        kQosRuleId, 0x00, 0x03, kOpCodeCreateDqrNoFilters, kPrecedence, qfi_byte};
     const std::uint16_t qos_rules_len = static_cast<std::uint16_t>(qos_rule.size());
     out.push_back(static_cast<std::uint8_t>(qos_rules_len >> 8));
     out.push_back(static_cast<std::uint8_t>(qos_rules_len & 0xFF));
