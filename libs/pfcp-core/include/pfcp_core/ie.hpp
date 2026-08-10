@@ -21,6 +21,12 @@ enum class IeType : std::uint16_t {
     ForwardingParameters = 4,
     CreateUrr = 6,
     CreatedPdr = 8,
+    // ADR-0050 Stage 5: real IE type confirmed against TS 29.244 Table 7.5.4.4-1 -- the grouped IE
+    // a Sx Session Modification Request uses to push a real, updated Volume Threshold/Volume
+    // Quota for an already-created URR (same child IEs as CreateUrr's own UrrId/VolumeThreshold/
+    // VolumeQuota, reused as-is -- only fields that "need to be modified" are present per the real
+    // spec table, so MeasurementMethod/ReportingTriggers are omitted when unchanged).
+    UpdateUrr = 13,
     ReportType = 39,
     Cause = 19,
     SourceInterface = 20,

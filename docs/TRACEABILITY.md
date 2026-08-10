@@ -856,3 +856,30 @@ ADR-0050's Stage 4 section.
 **Consequence**: the full quota-consumption-tracking loop (UPF measures → reports → SMF decodes →
 CHF re-authorizes) is real end to end. Stage 5 (SMF pushes the new quota back to UPF via Session
 Modification) and Stage 6 (dedicated full-stack live-verification pass) remain.
+
+**Stage 5 (2026-08-10): SMF pushes the re-authorized quota to UPF via real Session Modification.**
+Real Update URR IE (type=13, TS 29.244 Table 7.5.4.4-1). New absolute Volume Threshold/Volume Quota
+computed relative to the report's own real cumulative Volume Measurement (`+0.9*grant`/`+grant`),
+applied to UPF's BPF map via a real read-modify-write (`Datapath::update_urr_thresholds`) that
+preserves `total_octets` while resetting only the report latches. The CHF-Update-then-Session-
+Modification work is dispatched from the Session Report handler onto a detached thread -- calling
+`send_request_and_await_response` directly from `PfcpPeer`'s own receive thread (where the handler
+runs) would deadlock against the very thread that must deliver the Modification's response.
+
+| Procedure | TS clause / message | Test |
+|---|---|---|
+| Real Session Modification: Update URR encode/decode, real read-modify-write applying it, correct UP→CP response addressing | TS 29.244 §7.5.4 (Sx Session Modification Request), §7.5.4.4 (Update URR IE) | Same small-seeded-grant (1,000 octets), real `nr-gnb`/`nr-ue`, 25-packet GTP-U burst as Stages 2-4: `smf`'s log -- `Nchf_ConvergedCharging_Update succeeded ... reported 924 octets used, re-authorized 1000 octets` then `N4 Session Modification succeeded for URR 1 (UP F-SEID=0x1): threshold=1824 octets, quota=1924 octets` (924+900/924+1000, confirming the computation); `upf`'s log independently confirms the identical values applied to its own map (`applied Update URR for TEID 0x1: threshold=1824 quota=1924 octets`). Repeated correctly for the second (VOLQU) report (`threshold=1912 quota=2012`) |
+
+**Real, disclosed finding from live verification, not a bug**: the VOLQU report fired ~100ms after
+VOLTH, before the first re-authorization's real CHF-call-plus-PFCP-round-trip (~101ms) could land --
+exactly the race TS 29.244 §5.2.2.2.1 NOTE 3/4 itself describes (the Threshold/Quota gap exists to
+give the OCS round-trip time to complete). This test's artificially tiny 1,000-octet quota (needed
+for practical live verification) left far too little real headroom (~2 packets) for a real ~100ms
+round trip; a real deployment sizes this gap in megabytes for exactly this reason. Both
+Modifications still landed and were applied correctly, just after momentary quota overrun (traffic
+was never stopped either way -- Stage 2's own disclosed gap). 140/140 tests pass, zero regressions.
+See ADR-0050's Stage 5 section.
+
+**Consequence**: the full quota-consumption-tracking loop, including the feedback path back into
+the datapath, is real end to end. Stage 6 (dedicated, larger-quota full-stack live-verification pass
+plus documentation summary) remains.

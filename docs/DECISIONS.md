@@ -3905,3 +3905,86 @@ calls CHF → CHF applies it and re-authorizes. What remains: Stage 5 (SMF pushe
 to UPF via a real Session Modification, so the datapath's own `urr_map` state reflects the
 re-authorized quota rather than staying latched at the original one) and Stage 6 (a dedicated
 end-to-end live-verification pass across all six stages together, plus a documentation summary).
+
+### Stage 5 (2026-08-10): SMF pushes the re-authorized quota to UPF via real Session Modification
+
+**Real spec path read directly, not assumed, before writing any code.** TS 29.244 §7.5.4 (Sx
+Session Modification Request) and §7.5.4.4 (Update URR IE, Table 7.5.4.4-1) read from the vendored
+`specs/PFCP/29244-e30.pdf`: real Update URR IE type = **13** (decimal, confirmed), URR ID mandatory,
+every other field (including Volume Threshold/Volume Quota) conditional -- "present if X needs to
+be modified" -- so this stage's Update URR carries only URR ID + the two fields actually changing,
+correctly omitting Measurement Method/Reporting Triggers (unchanged since Create). Also read
+§5.2.2.2.1 NOTE 3/4: real online-charging deployments arm Volume Threshold/Volume Quota relative to
+a UP-side counter that keeps accumulating across re-authorizations, with the threshold sized to give
+the OCS round-trip time to complete before the quota itself is reached -- confirmed this project's
+existing cumulative-Volume-Measurement design (Stage 1 onward) is the real, spec-recognized
+approach, not an invented one, and directly informed how this stage computes the new absolute
+threshold/quota values (see below).
+
+**The real deadlock this stage's design had to avoid.** SMF's Session Report handler runs
+synchronously on `PfcpPeer`'s own receive thread (`pfcp_peer.cpp`'s `receive_loop`, unchanged since
+Stage 0). A naive Stage 5 implementation -- call `Nchf_ConvergedCharging_Update`, then call
+`send_request_and_await_response` for the Session Modification directly from inside that same
+handler -- would deadlock: `send_request_and_await_response` blocks on a response that can only be
+delivered BY `receive_loop`, which is the very thread currently blocked inside the handler that
+called it. Caught before it was ever live-tested (blocking-call chain traced through
+`pfcp_peer.cpp` first), not discovered as a hang. **Fix:** the handler still acks the Sx Session
+Report Request and does its (fast, non-blocking) decode inline, then hands the two real network
+calls (CHF Update, Session Modification) off to a detached `std::thread`. Captured references
+(`pfcp_peer`, the dedicated `chf_report_client`/`_oauth`, `smf_instance_id`) are all `main()`'s own
+locals, safe to capture into a detached thread specifically because this process never terminates
+(same disclosed simplification every other NF in this project already carries) -- not despite that,
+because of it. This also retroactively improves on Stage 3's own inline CHF call, which blocked the
+receive thread for the HTTP round-trip without being a hard deadlock, but was never ideal either.
+
+**New Volume Threshold/Volume Quota computed relative to the report's own real cumulative usage,
+not a fresh baseline.** `perform_n40_charging_data_update` now also parses and returns CHF's
+re-authorized `GrantedUnit.totalVolume` (same best-effort parse discipline as Create's own grant
+parsing). The new absolute values: `new_quota = reported_used_octets + new_grant`,
+`new_threshold = reported_used_octets + 0.9 * new_grant` -- the exact real technique §5.2.2.2.1
+NOTE 3/4 describes, and the same 90%/100% ratio Stage 1's own Create URR already uses. This also
+means UPF's own `total_octets` counter is deliberately NOT reset on a Modification (only
+`register_urr`, Create's own path, zeroes it) -- a new
+`Datapath::update_urr_thresholds(teid, new_threshold, new_quota)` does a real read-modify-write of
+the BPF map entry (`bpf_map_lookup_elem` then `bpf_map_update_elem` with `BPF_EXIST`), preserving
+`total_octets` and resetting only the two one-shot report latches so the new (necessarily higher)
+values can be crossed and reported again.
+
+**UPF-side wiring, real and new:** a `SeidToTeidStore` resolves a Session Modification Request's
+header SEID (UPF's own F-SEID for the session, allocated at Establishment) back to the TEID it
+belongs to; a new pure `TeidSessionStore::get()` (non-mutating, unlike the existing
+`get_and_advance_seqn`) resolves the session's real `cp_seid` so the Modification Response's header
+SEID is addressed *correctly* this time -- UP-to-CP direction uses the CP's own SEID, per this
+file's own already-established addressing rule -- rather than repeating Stage 0's disclosed
+echo-the-request's-own-SEID simplification for Session Report Response. `build_session_modification_
+response_ies` decodes the real Update URR, applies it via `update_urr_thresholds`, and returns
+Cause=RequestAccepted/RequestRejected accordingly.
+
+**Live-verified end to end, including a real, honest timing finding.** Same small-seeded-grant
+(1,000 octets, threshold=900) setup, real `nr-gnb`/`nr-ue`, 25-packet GTP-U burst as Stages 2-4.
+Both re-authorizations succeeded for real: `smf`'s log -- `Nchf_ConvergedCharging_Update succeeded
+... reported 924 octets used, re-authorized 1000 octets` immediately followed by `N4 Session
+Modification succeeded for URR 1 (UP F-SEID=0x1): threshold=1824 octets, quota=1924 octets` (=
+924 + 1000 and 924 + 900 exactly, confirming the computation above); `upf`'s log independently
+confirms the exact same values applied to its own map: `applied Update URR for TEID 0x1:
+threshold=1824 quota=1924 octets`. The same pair repeated for the second (VOLQU) report
+(`threshold=1912 quota=2012`, i.e. 1012 + 1000 / 1012 + 900).
+**Real, disclosed finding, not a bug:** the VOLQU report (at total=1012, exceeding the *original*
+quota=1000) fired only ~100ms after the VOLTH report -- before the first re-authorization's real
+CHF-call-plus-PFCP-round-trip (which itself took ~101ms) could land in UPF's map. This is exactly
+the race TS 29.244 §5.2.2.2.1 NOTE 3/4's own real design intent warns about: the gap between Volume
+Threshold and Volume Quota exists specifically to give the OCS round-trip time to complete before
+quota exhaustion. This test's artificially tiny quota (1,000 octets, needed to make live
+verification practical without sending gigabytes of real traffic) left only a ~100-octet
+(~2-packet) window -- nowhere near enough real headroom for a ~100ms multi-hop round trip. A real
+deployment sizes this gap in megabytes for exactly this reason; the race is a property of this
+test's scale choice, not of the implementation's correctness -- both Modifications still landed and
+were applied correctly, just after their respective quota had already been momentarily exceeded by
+a couple of packets (traffic was never stopped either way -- Stage 2's own disclosed gap, forwarding
+never halts on quota exhaustion in this build). 140/140 tests pass, zero regressions.
+
+**Consequence:** the full quota-consumption-tracking loop (UPF measures → reports → SMF decodes →
+CHF re-authorizes → SMF pushes the new quota back to UPF) is real end to end, including the
+feedback path back into the datapath. Stage 6 (a dedicated, larger-quota end-to-end live-
+verification pass demonstrating the re-authorized quota being respected with real headroom, plus a
+documentation summary closing out this 7-stage effort) remains.

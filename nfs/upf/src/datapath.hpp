@@ -53,6 +53,19 @@ public:
     bool register_urr(std::uint32_t teid, std::uint64_t volume_threshold_octets,
                       std::uint64_t volume_quota_octets);
 
+    // ADR-0050 Stage 5: real Session Modification support -- pushes a re-authorized Volume
+    // Threshold/Volume Quota for an ALREADY-registered URR. Unlike register_urr (which always
+    // writes a fresh UrrState, zeroing total_octets and both report latches -- correct for a new
+    // Create), this does a read-modify-write: total_octets is preserved (it's the real cumulative
+    // session usage, TS 29.244's own convention this project already follows -- see
+    // nfs/smf/src/main.cpp's own Stage 5 comment on why the new threshold/quota are computed
+    // relative to it rather than a fresh baseline) and only the two one-shot report latches are
+    // reset to 0, so a future crossing of the newly-provisioned (necessarily higher) values can
+    // fire again. Returns false if no URR is currently registered for this TEID, or the underlying
+    // BPF map operation fails.
+    bool update_urr_thresholds(std::uint32_t teid, std::uint64_t new_volume_threshold_octets,
+                               std::uint64_t new_volume_quota_octets);
+
 private:
     Datapath();
     struct Impl;

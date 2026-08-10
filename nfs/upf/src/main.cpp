@@ -117,10 +117,49 @@ public:
         return std::make_pair(it->second, seqn);
     }
 
+    // ADR-0050 Stage 5: a pure, non-mutating read -- Session Modification Response needs this
+    // session's real cp_seid (to address the response correctly, TS 29.244's addressing rule) but
+    // must not advance the UR-SEQN counter as a side effect of that lookup.
+    std::optional<UrrSessionInfo> get(std::uint32_t teid) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = sessions_.find(teid);
+        if (it == sessions_.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
 private:
     std::mutex mutex_;
     std::unordered_map<std::uint32_t, UrrSessionInfo> sessions_;
     std::unordered_map<std::uint32_t, std::uint32_t> next_ur_seqn_;
+};
+
+// ADR-0050 Stage 5: resolves a real Session Modification Request's header SEID (this UPF's own
+// F-SEID for the session, allocated at Establishment -- see SessionEstablishmentResult::up_seid)
+// back to the TEID it corresponds to. Written and read on run_pfcp_lifecycle's single thread only
+// (unlike TeidSessionStore, no datapath-thread access here) -- mutex-guarded anyway, for the same
+// "don't rely on today's single-thread access staying true" reasoning already applied elsewhere in
+// this file.
+class SeidToTeidStore {
+public:
+    void put(std::uint64_t seid, std::uint32_t teid) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        seid_to_teid_[seid] = teid;
+    }
+
+    std::optional<std::uint32_t> get(std::uint64_t seid) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = seid_to_teid_.find(seid);
+        if (it == seid_to_teid_.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::uint64_t, std::uint32_t> seid_to_teid_;
 };
 
 // ADR-0050 Stage 2: a small, dedicated UDP socket the usage report handler uses (from Datapath's
@@ -291,6 +330,11 @@ struct SessionEstablishmentResult {
     // to SMF). std::nullopt in every other case (no F-TEID allocated, or no URR requested).
     std::optional<std::uint32_t> allocated_teid_with_urr;
     std::optional<std::uint32_t> urr_id;
+    // ADR-0050 Stage 5: this UPF's own newly-generated F-SEID for the session -- exposed so
+    // run_pfcp_lifecycle can register it in SeidToTeidStore (a later real Session Modification
+    // Request addresses this session using exactly this value, per the same addressing rule this
+    // struct's own response_header_seid comment already documents).
+    std::uint64_t up_seid = 0;
 };
 
 // Session Establishment (TS 29.244 §7.5.2/§7.5.3, ADR-0042). Decodes the CP F-SEID and the first
@@ -376,6 +420,7 @@ std::optional<SessionEstablishmentResult> build_session_establishment_response_i
     pfcp_core::FSeid up_f_seid;
     up_f_seid.seid = next_seid++;
     up_f_seid.ipv4 = node_ipv4;
+    result.up_seid = up_f_seid.seid;
     pfcp_core::encode_ie(ies_out, static_cast<std::uint16_t>(pfcp_core::IeType::FSeid),
                          pfcp_core::encode_f_seid_ipv4(up_f_seid));
 
@@ -420,11 +465,87 @@ std::optional<SessionEstablishmentResult> build_session_establishment_response_i
     return result;
 }
 
+struct SessionModificationResult {
+    std::vector<std::uint8_t> ies;
+    std::uint64_t response_header_seid = 0;
+};
+
+// Real Sx Session Modification (TS 29.244 §7.5.4/§7.5.5, ADR-0050 Stage 5) -- this build's only
+// supported modification is a real Update URR (grouped IE type=13, TS 29.244 Table 7.5.4.4-1)
+// pushing a re-authorized Volume Threshold/Volume Quota for an already-created URR. `request_seid`
+// is the incoming header's own SEID -- this UPF's own F-SEID for the session (the value the CP
+// addressed the request TO, per the addressing rule SessionEstablishmentResult's own comment
+// documents), not what the response should echo back.
+std::optional<SessionModificationResult> build_session_modification_response_ies(
+    const std::vector<std::uint8_t>& request_ies, std::uint64_t request_seid,
+    SeidToTeidStore& seid_to_teid_store, TeidSessionStore& teid_session_store,
+    upf::Datapath* datapath) {
+    SessionModificationResult result;
+    // Real spec addressing rule: the response echoes the CP's own SEID for this session -- only
+    // known via the session's already-stored UrrSessionInfo below. Falls back to request_seid
+    // (technically the wrong direction, same disclosed simplification ADR-0050 Stage 0 already
+    // carries for Session Report Response) only if that lookup fails.
+    result.response_header_seid = request_seid;
+
+    const auto teid = seid_to_teid_store.get(request_seid);
+    if (!teid.has_value()) {
+        spdlog::warn("upf: Session Modification Request references unknown SEID {:#x}", request_seid);
+        pfcp_core::encode_ie(result.ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                             pfcp_core::encode_cause(pfcp_core::Cause::RequestRejected));
+        return result;
+    }
+    if (const auto session_info = teid_session_store.get(*teid); session_info.has_value()) {
+        result.response_header_seid = session_info->cp_seid;
+    }
+
+    const auto ies = pfcp_core::decode_ies(request_ies);
+    const auto* update_urr_ie =
+        ies.has_value()
+            ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::UpdateUrr))
+            : nullptr;
+    if (update_urr_ie == nullptr) {
+        // Real spec: Update URR is conditional, only present if a URR needs modifying -- this
+        // build has no other real Modification content (Update PDR/FAR etc.), so an absent Update
+        // URR just means nothing to do; still a real, valid (accepted) Modification.
+        pfcp_core::encode_ie(result.ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                             pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+        return result;
+    }
+
+    const auto update_urr_ies = pfcp_core::decode_ies(update_urr_ie->value);
+    const auto* threshold_ie =
+        update_urr_ies.has_value()
+            ? pfcp_core::find_ie(*update_urr_ies,
+                                 static_cast<std::uint16_t>(pfcp_core::IeType::VolumeThreshold))
+            : nullptr;
+    const auto* quota_ie =
+        update_urr_ies.has_value()
+            ? pfcp_core::find_ie(*update_urr_ies,
+                                 static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota))
+            : nullptr;
+    const auto new_threshold =
+        threshold_ie != nullptr ? pfcp_core::decode_volume_total(threshold_ie->value) : std::nullopt;
+    const auto new_quota =
+        quota_ie != nullptr ? pfcp_core::decode_volume_total(quota_ie->value) : std::nullopt;
+    if (!new_threshold.has_value() || !new_quota.has_value() || datapath == nullptr ||
+        !datapath->update_urr_thresholds(*teid, *new_threshold, *new_quota)) {
+        spdlog::warn("upf: failed to apply Update URR for TEID {:#x}", *teid);
+        pfcp_core::encode_ie(result.ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                             pfcp_core::encode_cause(pfcp_core::Cause::RequestRejected));
+        return result;
+    }
+    spdlog::info("upf: applied Update URR for TEID {:#x}: threshold={} quota={} octets", *teid,
+                *new_threshold, *new_quota);
+    pfcp_core::encode_ie(result.ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                         pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+    return result;
+}
+
 // Runs on the main thread (blocking UDP I/O, same "blocking transport gets its own thread"
 // discipline ADR-0006/ADR-0030 already established -- here it's simply the only thread, since
 // UPF has no HTTP2 server to share time with). Never returns.
 void run_pfcp_lifecycle(std::time_t start_time, upf::Datapath* datapath,
-                        TeidSessionStore& teid_session_store) {
+                        TeidSessionStore& teid_session_store, SeidToTeidStore& seid_to_teid_store) {
     boost::asio::io_context ioc;
     boost::asio::ip::udp::socket socket(
         ioc, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), pfcp_core::kPfcpPort));
@@ -498,7 +619,25 @@ void run_pfcp_lifecycle(std::time_t start_time, upf::Datapath* datapath,
                 info.cp_seid = result->response_header_seid;
                 info.urr_id = *result->urr_id;
                 teid_session_store.put(*result->allocated_teid_with_urr, info);
+                // ADR-0050 Stage 5: only sessions with a real URR can ever receive a real Session
+                // Modification pushing an updated one -- same scoping as the TeidSessionStore
+                // registration above.
+                seid_to_teid_store.put(result->up_seid, *result->allocated_teid_with_urr);
             }
+        } else if (header->message_type == pfcp_core::MessageType::SessionModificationRequest) {
+            const auto result = build_session_modification_response_ies(
+                ie_bytes, header->seid, seid_to_teid_store, teid_session_store, datapath);
+            if (!result.has_value()) {
+                spdlog::warn("upf: malformed Session Modification Request from {}, ignoring",
+                            sender.address().to_string());
+                continue;
+            }
+            resp_header.message_type = pfcp_core::MessageType::SessionModificationResponse;
+            resp_header.has_seid = true;
+            resp_header.seid = result->response_header_seid;
+            resp_ies = result->ies;
+            spdlog::info("upf: Sx Session Modification processed from {}",
+                        sender.address().to_string());
         } else {
             spdlog::warn("upf: received PFCP message type {} with no handler yet, ignoring",
                         static_cast<int>(header->message_type));
@@ -534,6 +673,11 @@ int main() {
     // lifetime) and are shared between run_pfcp_lifecycle's main thread (populates
     // teid_session_store) and the datapath's own thread (reads it, sends via report_sender).
     TeidSessionStore teid_session_store;
+    // ADR-0050 Stage 5: only ever touched by run_pfcp_lifecycle's own single thread (Establishment
+    // writes, Modification reads), declared here alongside teid_session_store for the same
+    // "outlives everything that could touch it" reasoning, not because it's actually shared with
+    // the datapath thread the way teid_session_store is.
+    SeidToTeidStore seid_to_teid_store;
     ReportSender report_sender;
     // Real PFCP header Sequence Number (TS 29.244 §7.2.2.1) for messages UPF itself originates --
     // a real, node-level counter, deliberately NOT the same value as UR-SEQN (TeidSessionStore's
@@ -605,7 +749,7 @@ int main() {
     }
 
     std::thread(run_nrf_lifecycle, upf_instance_id).detach();
-    run_pfcp_lifecycle(start_time, datapath.has_value() ? &*datapath : nullptr,
-                       teid_session_store); // blocks forever
+    run_pfcp_lifecycle(start_time, datapath.has_value() ? &*datapath : nullptr, teid_session_store,
+                       seid_to_teid_store); // blocks forever
     return 0;
 }

@@ -407,4 +407,25 @@ bool Datapath::register_urr(std::uint32_t teid, std::uint64_t volume_threshold_o
     return true;
 }
 
+bool Datapath::update_urr_thresholds(std::uint32_t teid, std::uint64_t new_volume_threshold_octets,
+                                     std::uint64_t new_volume_quota_octets) {
+    UrrState state{};
+    if (bpf_map_lookup_elem(impl_->urr_map_fd, &teid, &state) != 0) {
+        spdlog::warn("upf-datapath: no URR registered for TEID {:#x}, cannot update thresholds",
+                    teid);
+        return false;
+    }
+    state.volume_threshold = new_volume_threshold_octets;
+    state.volume_quota = new_volume_quota_octets;
+    // total_octets deliberately left as read -- see this method's own header comment. Both latches
+    // reset so the newly-provisioned (necessarily higher) values can be crossed and reported again.
+    state.threshold_reported = 0;
+    state.quota_reported = 0;
+    if (bpf_map_update_elem(impl_->urr_map_fd, &teid, &state, BPF_EXIST) != 0) {
+        spdlog::warn("upf-datapath: failed to update URR thresholds for TEID {:#x}", teid);
+        return false;
+    }
+    return true;
+}
+
 } // namespace upf
