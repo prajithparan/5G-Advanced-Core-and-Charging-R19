@@ -883,3 +883,28 @@ See ADR-0050's Stage 5 section.
 **Consequence**: the full quota-consumption-tracking loop, including the feedback path back into
 the datapath, is real end to end. Stage 6 (dedicated, larger-quota full-stack live-verification pass
 plus documentation summary) remains.
+
+**Stage 6 (2026-08-10): dedicated end-to-end live verification with real headroom, effort closed.**
+No new code. A real 200,000-octet grant (threshold=180,000) sent as 260 real, MTU-sized (~1400-byte)
+GTP-U G-PDUs, 30ms apart -- a real ~420ms Threshold/Quota window, several times Stage 5's own
+measured ~100ms round-trip latency.
+
+| Procedure | TS clause / message | Test |
+|---|---|---|
+| Full quota-consumption-tracking loop under real timing headroom (no race) | TS 29.244 §5.2.2.2.1 NOTE 3/4 (the Threshold/Quota gap's real design intent) | `upf`'s log: real VOLTH at total=180,600 -> real re-authorization landed 104ms later (`threshold=360600 quota=380600`) -> **zero VOLQU reports at any point** (traffic passed the original 200,000-octet quota mark because the datapath's map already held the new values in time) -> a second real VOLTH at total=361,200 (matching the new threshold almost exactly) -> re-authorized again. All 260 T-PDUs delivered uninterrupted; `smf`/`chf` logs independently confirm both real Update-then-Modification cycles |
+
+140/140 tests pass -- final full-suite run for this effort, zero regressions across all 6 stages.
+
+**Real, disclosed gaps still standing at the close of this effort** (none silently dropped): UPF
+never stops forwarding on Volume Quota exhaustion (Stage 2); CHF applies no real balance/wallet
+deduction, re-granting the same catalog amount unconditionally rather than a remaining-balance-aware
+one (Stage 4); neither SMF nor CHF differentiate a Volume-Threshold report from a
+Volume-Quota-exhaustion one via a real `Trigger` (Stage 3/4); `perform_n40_charging_data_release`
+still hardcodes its own `invocationSequenceNumber` (Stage 3); `kSmfCpFunctionPfcpPort` remains a
+lab-only convention, not an IANA/spec assignment (Stage 0). See ADR-0050's Stage 6 section for the
+complete list and reasoning.
+
+**Consequence**: ADR-0048's quota-consumption-tracking/re-authorization gap is closed end to end --
+UPF measures, reports, SMF calls CHF, CHF re-authorizes, SMF pushes the new quota back into the live
+datapath -- demonstrated both under real timing pressure (Stage 5) and with real headroom (this
+stage). This closes the 7-stage effort (ADR-0050).

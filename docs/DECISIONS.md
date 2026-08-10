@@ -3988,3 +3988,46 @@ CHF re-authorizes → SMF pushes the new quota back to UPF) is real end to end, 
 feedback path back into the datapath. Stage 6 (a dedicated, larger-quota end-to-end live-
 verification pass demonstrating the re-authorized quota being respected with real headroom, plus a
 documentation summary closing out this 7-stage effort) remains.
+
+### Stage 6 (2026-08-10): dedicated end-to-end live verification with real headroom -- effort closed
+
+No new code -- this stage is a dedicated live-verification pass, deliberately sized to give the
+real CHF-call-plus-PFCP-Modification round trip (Stage 5's own live verification measured it at
+~100-104ms) genuine headroom to complete before a quota is exhausted, closing the one honestly-
+disclosed gap Stage 5's live verification left open (its artificially tiny 1,000-octet test grant
+raced the round trip and hit the original Volume Quota before the first re-authorization landed).
+
+**Real grant, real headroom, real packet size.** Seeded via `bss/product-catalog`: 200,000-octet
+grant (threshold=180,000, the same 90%/100% ratio every stage has used), sent as 260 real GTP-U
+G-PDUs carrying a realistic ~1400-byte T-PDU each (MTU-sized, not the earlier stages' 44-byte test
+payload), 30ms apart -- a real ~14-packet (~420ms) window between the original Volume Threshold and
+Volume Quota, several times the measured round-trip latency.
+
+**Result: the re-authorized quota was genuinely respected, not raced.** `upf`'s log: real VOLTH at
+total=180,600 (crossing the real 180,000 threshold) -> real re-authorization landed 104ms later
+(`applied Update URR for TEID 0x1: threshold=360600 quota=380600 octets`) -> **zero VOLQU reports
+at any point** -- traffic sailed straight through the ORIGINAL quota=200,000 mark because the
+datapath's own map already held the new, far higher threshold/quota by the time cumulative usage
+reached it, not because forwarding was ever stopped (Stage 2's own disclosed non-enforcement still
+applies, but was never even reached here) -- then a second, real VOLTH fired at total=361,200,
+matching the NEW threshold=360,600 almost exactly, and re-authorized again
+(threshold=541,200/quota=561,200). All 260 real T-PDUs were delivered to `upf-tun0` throughout,
+uninterrupted. `smf`'s and `chf`'s logs independently confirm the same two real
+Update-then-Modification cycles. 140/140 tests pass, zero regressions -- final full-suite run for
+this effort.
+
+**Consequence, and this 7-stage effort's real, honest final state:** ADR-0048's quota-consumption-
+tracking/re-authorization gap is closed, end to end, for real: UPF measures real usage in-kernel,
+reports it unsolicited to SMF, SMF calls CHF's real Update endpoint, CHF applies the reported usage
+and re-authorizes, and SMF pushes the new quota back into the live datapath -- demonstrated both
+under real timing pressure (Stage 5, an honest disclosed race at an artificially tiny scale) and
+with real headroom (this stage, at a scale closer to how a real deployment would size the
+Threshold/Quota gap). Real, disclosed gaps still standing, none silently dropped: UPF never actually
+stops forwarding on Volume Quota exhaustion (Stage 2); CHF applies no real balance/wallet deduction
+and re-grants the same catalog amount unconditionally every time, not a remaining-balance-aware
+amount (Stage 4); neither SMF nor CHF differentiate a Volume-Threshold report from a
+Volume-Quota-exhaustion one via a real `Trigger` (Stage 3/4); `perform_n40_charging_data_release`
+still hardcodes its own `invocationSequenceNumber` rather than sharing the per-session counter
+(Stage 3); `kSmfCpFunctionPfcpPort` remains a lab-only convention, not an IANA/spec assignment
+(Stage 0). None of these block the real capability this effort set out to build; all are recorded
+here, not discovered later in review.
