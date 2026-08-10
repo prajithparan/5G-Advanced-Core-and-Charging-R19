@@ -926,3 +926,24 @@ concurrent callers -- a real `std::mutex` added to `Client::send()` fixes it for
 140/140 conformance tests + all 31 integration tests (run directly; not currently registered with
 `ctest` -- a separate, smaller pending item noted by the same audit, not fixed here) pass, zero
 regressions. See ADR-0051.
+
+## sbi-codegen: real cyclic-schema back-edge fix, std::shared_ptr indirection (ADR-0052)
+
+`tools/sbi-codegen`'s `render.py` now detects, per-field, whether a referenced type is both part
+of a real 3GPP schema cycle (`SharedData.sharedAmData` <-> `AccessAndMobilitySubscriptionData.
+sharedDataList`, already documented in ADR-0022) and not yet complete at that field's own
+position in emission order -- the actual "back-edge" of the cycle. That one field now generates
+as `std::shared_ptr<T>` instead of direct `std::optional<T>`/`std::vector<T>` embedding, which
+cannot work for a genuine 2-struct cycle regardless of declaration order. New
+`sbi_core::put_optional`/`get_optional` overloads for `std::shared_ptr<T>` keep the existing
+`source.cpp.j2` template's (de)serialization call sites unchanged.
+
+| Procedure | TS clause / message | Test |
+|---|---|---|
+| Real cyclic-schema field correctly compiles under both GCC (build/sanitize) and Clang (lint/clang-tidy) | TS 29.503 (`SharedData`/`AccessAndMobilitySubscriptionData`, Nudm_SDM) | Full corpus regenerated (1917 types -> 42 files, unchanged counts), full project rebuild with GCC: 140/140 conformance + 31/31 integration tests pass. Direct `clang++-18 -fsyntax-only` compile of a minimal translation unit constructing both types: clean, zero errors -- confirms the fix at the exact previous failure point without waiting for a full whole-tree `clang-tidy` pass |
+
+**Disclosed, not fixed**: a *required* field that's also a cyclic back-edge would need different
+(de)serialize codegen (enforcing presence, not silently-absent) that doesn't exist yet -- no real
+instance of this exists in the current R19 corpus, but `render.py` now raises `NotImplementedError`
+with a clear message if one is ever found, rather than silently generating untested code. See
+ADR-0052.

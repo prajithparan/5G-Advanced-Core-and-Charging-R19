@@ -58,12 +58,27 @@ def ts_number_from_filename(stem: str) -> str:
 
 
 class RenderField:
-    def __init__(self, f, optional: bool):
+    def __init__(self, f, optional: bool, needs_indirection: bool = False):
         self.json_name = f.json_name
         self.cpp_name = f.cpp_name
         self.optional = optional
         inner = _type_ref_to_cpp(f.type_ref)
-        self.cpp_type = f"std::optional<{inner}>" if optional else inner
+        if needs_indirection:
+            # Real cycle in 3GPP's own schema (see _topo_sort_types' own docstring for the
+            # confirmed example: SharedData.sharedAmData -> AccessAndMobilitySubscriptionData ->
+            # AccessAndMobilitySubscriptionData.sharedDataList -> SharedData). This field's
+            # referenced type is only forward-declared, not yet complete, at this point in
+            # emission order -- direct std::optional<T>/std::vector<T> embedding needs T
+            # complete (both for their own destructor and, for vector, essentially every other
+            # operation too), which a forward declaration alone can never satisfy for a genuine
+            # cycle, no matter which emission order is chosen. std::shared_ptr<T> does not need
+            # T complete at this point: its deleter is type-erased at construction time (in the
+            # generated .cpp file, where T IS complete by then), not at the point the containing
+            # struct's implicitly-defaulted destructor is instantiated here in the header. See
+            # docs/DECISIONS.md ADR-0052.
+            self.cpp_type = f"std::shared_ptr<{inner}>"
+        else:
+            self.cpp_type = f"std::optional<{inner}>" if optional else inner
 
 
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -149,6 +164,26 @@ def _tarjan_scc(nodes: list[str], edges: dict[str, set[str]]) -> list[list[str]]
         sys.setrecursionlimit(old_limit)
 
     return result
+
+
+def _forward_only_ref_name(
+    type_ref: TypeRef, container_position: int, position: dict, cyclic_names: set
+) -> "str | None":
+    """If type_ref (possibly array-of) references a same-group type that participates in a
+    real cycle (see _topo_sort_types' docstring) AND is not yet fully defined at
+    container_position (this field's own containing type's position in emission order), returns
+    that referenced type's name -- the field needs std::shared_ptr<T> indirection instead of
+    direct embedding, see RenderField's own comment. Returns None otherwise (including for a
+    cyclic-group type that DOES already have a full definition earlier in emission order --
+    only one side of a 2-cycle actually needs the indirection, whichever is emitted second gets
+    to reference the first directly)."""
+    if type_ref.kind == "array":
+        return _forward_only_ref_name(type_ref.array_of, container_position, position, cyclic_names)
+    if type_ref.kind == "ref":
+        name = type_ref.cpp_name
+        if name in cyclic_names and name in position and position[name] > container_position:
+            return name
+    return None
 
 
 def _topo_sort_types(
@@ -297,6 +332,7 @@ def render(ir_types: dict, commit: str, out_dir: pathlib.Path) -> list[pathlib.P
         ordered_names, cyclic_names = _topo_sort_types(
             group["types"], name_to_type, all_names_in_group
         )
+        position = {n: i for i, n in enumerate(ordered_names)}
 
         deps: set[str] = set()
         object_types = []
@@ -325,9 +361,30 @@ def render(ir_types: dict, commit: str, out_dir: pathlib.Path) -> list[pathlib.P
 
             if isinstance(t, ObjectType):
                 render_fields = []
+                this_position = position[n]
                 for f in t.fields:
                     optional = (not f.required) or f.nullable
-                    render_fields.append(RenderField(f, optional))
+                    forward_only = _forward_only_ref_name(
+                        f.type_ref, this_position, position, cyclic_names
+                    )
+                    if forward_only is not None and not optional:
+                        # Not yet a real case in the R19 corpus (both known instances of this
+                        # cycle -- SharedData.sharedAmData and AccessAndMobilitySubscriptionData.
+                        # sharedDataList -- are optional in the real schema). A REQUIRED field
+                        # that's also a cyclic back-edge would need real, different (de)serialize
+                        # codegen (std::shared_ptr<T> but enforcing presence like a required
+                        # field, not silently-absent like an optional one) that doesn't exist yet
+                        # -- stop and ask rather than silently emit something never exercised.
+                        raise NotImplementedError(
+                            f"{t.name}.{f.cpp_name}: required field is a cyclic-schema "
+                            "back-edge (references forward-declared-only type "
+                            f"'{forward_only}') -- no codegen support for this combination yet, "
+                            "see RenderField's ADR-0052 comment. Not silently generating "
+                            "unverified code for it."
+                        )
+                    render_fields.append(
+                        RenderField(f, optional, needs_indirection=forward_only is not None)
+                    )
                 object_types.append((t, render_fields))
             elif isinstance(t, OpenEnumType):
                 open_enum_types.append(t)
