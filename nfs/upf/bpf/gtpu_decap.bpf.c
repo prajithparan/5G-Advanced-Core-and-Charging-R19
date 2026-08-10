@@ -75,6 +75,43 @@ struct {
     __uint(max_entries, 262144);
 } tpdu_ringbuf SEC(".maps");
 
+// ADR-0050 Stage 2: real per-TEID Usage Reporting Rule (URR) state, populated by
+// nfs/upf/src/main.cpp whenever Stage 1's Create URR (real, from CHF's grant) is parsed out of a
+// Session Establishment Request. `total_octets` is updated here, in-kernel, on every matched
+// packet -- the real per-TEID byte counter this project didn't have before this stage.
+// `threshold_reported`/`quota_reported` are one-shot latches so a crossing is reported exactly
+// once (TS 29.244 Annex C.2.1.1's own real flow: the UP function keeps forwarding after the
+// Volume Threshold report, so total_octets keeps growing past threshold_reported=1 -- without the
+// latch, every subsequent packet would re-report).
+struct urr_state {
+    __u64 volume_threshold;
+    __u64 volume_quota;
+    __u64 total_octets;
+    __u8 threshold_reported;
+    __u8 quota_reported;
+} __attribute__((packed));
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 64);
+    __type(key, __u32); // TEID
+    __type(value, struct urr_state);
+} urr_map SEC(".maps");
+
+// A Volume Threshold/Quota crossing, pushed here for UPF's userspace to pick up and turn into a
+// real, unsolicited Sx Session Report Request (TS 29.244 §7.5.8, ADR-0050 Stage 2/3). Fixed-size
+// record, same `bpf_ringbuf_reserve`-needs-a-compile-time-constant reasoning as tpdu_record above.
+struct usage_report_event {
+    __u32 teid;
+    __u64 total_octets;
+    __u8 quota_exhausted; // 0 = Volume Threshold crossed, 1 = Volume Quota exhausted
+} __attribute__((packed));
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 4096); // small control-plane events, not packet payloads -- no need for 256KiB
+} usage_report_ringbuf SEC(".maps");
+
 SEC("xdp")
 int gtpu_decap_prog(struct xdp_md *ctx) {
     void *data = (void *)(long)ctx->data;
@@ -142,6 +179,47 @@ int gtpu_decap_prog(struct xdp_md *ctx) {
     // this call was never the problem; bpf_ringbuf_reserve's constant-size requirement was, see
     // struct tpdu_record's own comment).
     tpdu_len &= 2047;
+
+    // ADR-0050 Stage 2: real per-TEID usage tracking, if a URR was provisioned for this TEID
+    // (Stage 1's Create URR). No URR entry (e.g. CHF granted nothing this session, ADR-0048's own
+    // disclosed empty-grant fallback) means this TEID is simply not measured -- decapsulation
+    // still proceeds unconditionally below either way, matching this project's original Phase 3
+    // Stage 4 scope (decap doesn't depend on charging having anything to say about it).
+    struct urr_state *urr = bpf_map_lookup_elem(&urr_map, &teid);
+    if (urr) {
+        // __sync_fetch_and_add compiles to a real atomic add -- correct even though XDP on a
+        // single veth in this lab only ever runs on one CPU at a time, and forward-compatible
+        // with multi-queue/multi-CPU XDP where it would not be.
+        __u64 total = __sync_fetch_and_add(&urr->total_octets, tpdu_len) + tpdu_len;
+
+        if (urr->volume_quota != 0 && total >= urr->volume_quota && !urr->quota_reported) {
+            urr->quota_reported = 1;
+            struct usage_report_event *ev = bpf_ringbuf_reserve(&usage_report_ringbuf, sizeof(*ev), 0);
+            if (ev) {
+                ev->teid = teid;
+                ev->total_octets = total;
+                ev->quota_exhausted = 1;
+                bpf_ringbuf_submit(ev, 0);
+            }
+            // Real TS 29.244 Annex C.2.1.1 behaviour once Volume Quota is reached is for the UP
+            // function to stop forwarding traffic until a new quota is provisioned -- NOT
+            // implemented yet (disclosed, not silently different): this stage proves real
+            // counting and real reporting; enforcing a stop here, before Stage 5 gives this
+            // datapath any way to receive a *new* quota, would strand every session permanently
+            // the first time it's tested. Revisit once Stage 5 (Session Modification pushing a
+            // fresh Update URR) exists.
+        } else if (urr->volume_threshold != 0 && total >= urr->volume_threshold &&
+                   !urr->threshold_reported) {
+            urr->threshold_reported = 1;
+            struct usage_report_event *ev = bpf_ringbuf_reserve(&usage_report_ringbuf, sizeof(*ev), 0);
+            if (ev) {
+                ev->teid = teid;
+                ev->total_octets = total;
+                ev->quota_exhausted = 0;
+                bpf_ringbuf_submit(ev, 0);
+            }
+        }
+    }
 
     struct tpdu_record *rec = bpf_ringbuf_reserve(&tpdu_ringbuf, sizeof(*rec), 0);
     if (!rec) {

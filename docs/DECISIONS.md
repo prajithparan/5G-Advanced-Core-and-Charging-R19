@@ -3731,3 +3731,72 @@ does not depend on the datapath being up.) 137/137 tests pass, zero regressions.
 **Consequence:** UPF now receives everything it needs to measure and report usage -- it just
 doesn't act on the URR yet (Stage 2's job: real per-TEID byte counting and the real unsolicited
 Session Report Request when the threshold is crossed).
+
+### Stage 2 (2026-08-10): UPF real per-TEID byte counting + real unsolicited Session Report Request
+
+**BPF-side: real in-kernel counting, not a userspace estimate.** `gtpu_decap.bpf.c` gained a
+`urr_map` (TEID -> `struct urr_state`: threshold/quota/running total/two one-shot report latches)
+and a `usage_report_ringbuf`. On every matched G-PDU, `__sync_fetch_and_add` atomically adds the
+real T-PDU length to the running total (a real atomic, not merely correct-on-one-CPU today --
+forward-compatible with multi-queue/multi-CPU XDP where it would matter); crossing Volume
+Quota/Volume Threshold pushes a `usage_report_event` (checked quota before threshold, since a
+single large burst could cross both in one packet) and the latch stops it from repeating on every
+subsequent packet -- TS 29.244 Annex C.2.1.1's own real behaviour is for UP to keep forwarding
+after a Volume Threshold report, so the counter keeps climbing past the point that already fired.
+**Real, disclosed gap, not silently different:** Annex C.2.1.1 has UP function stop forwarding once
+Volume Quota is reached (until a new quota arrives); this stage does NOT implement that stop --
+doing so before Stage 5 exists to ever provision a fresh quota would strand every session
+permanently the first time this is tested. Revisit once Stage 5 lands.
+
+**`datapath.hpp`/`.cpp`: a second BPF map wired into the *same* ring-buffer poll loop.**
+`Datapath::create()` now takes a `UsageReportHandler` (invoked on the datapath's own polling
+thread), registers `usage_report_ringbuf` via `ring_buffer__add()` onto the existing `ring_buffer`
+manager (one polling thread services both maps -- no second thread), and a new
+`Datapath::register_urr(teid, threshold, quota)` writes the real per-TEID state UPF's control
+plane parses out of a Create URR. One real implementation snag: the ring-buffer callback needs the
+complete `Datapath::Impl` type (to reach the handler stashed on it), but `Impl` is a private nested
+type -- a free function can't name it from outside. Fixed by making the callback a `static` member
+function of `Impl` itself rather than adding a friend declaration.
+
+**`nfs/upf/src/main.cpp`: parses the real Create URR, remembers what a report needs, sends it.**
+`build_session_establishment_response_ies` now also decodes `CreateUrr`'s child `UrrId`/
+`VolumeThreshold`/`VolumeQuota` (URR ID read off the wire, not assumed to always be SMF's `1`) and
+calls `register_urr` alongside the existing `register_teid`. A new `TeidSessionStore` (mutex-
+guarded -- written by `run_pfcp_lifecycle`'s main thread on Session Establishment, read and its
+per-URR UR-SEQN counter advanced by the datapath's polling thread when a report fires) remembers,
+per TEID, exactly what a Session Report Request needs to be addressed and correlated: SMF's real
+sender endpoint, the session's CP F-SEID, and the URR ID. The SMF endpoint needs no separate
+discovery -- Stage 0's `PfcpPeer` sends every request (including the Session Establishment Request
+that reaches this code) from the same persistent socket it also listens on, so `sender` on receipt
+already **is** SMF's real, addressable peer. A new `ReportSender` (its own dedicated UDP socket,
+mutex-protected `send`) lets the datapath's thread fire the report without touching
+`run_pfcp_lifecycle`'s own receive socket concurrently. Two new `pfcp_core` encoders were needed
+(UPF is now the encoder, not just the decoder, of these two IEs -- the reverse direction from every
+prior stage): `encode_report_type_usage_report()` and `encode_usage_report_trigger_volth()`/
+`_volqu()`, added with round-trip unit tests. The header's Sequence Number field uses UPF's own new
+node-level counter (`next_pfcp_sequence_number`), deliberately NOT the same value as UR-SEQN --
+TS 29.244 gives Sequence Number and UR-SEQN different scopes (per-message node-level correlator vs.
+per-URR-lifetime counter) and conflating them was considered and rejected while writing this.
+
+**Live-verified end to end, all real.** Full stack + real `nr-gnb`/`nr-ue`, with a deliberately tiny
+seeded grant (`bss/product-catalog` ProductOfferingPrice `unitOfMeasure={amount: 0.000001,
+units: "GB"}` -> 1,000 real octets, so a handful of real packets could practically cross it) so this
+run's crossing is reachable without sending gigabytes: `smf`'s log --
+`granted total volume=1000 octets` -> `provisioning URR 1 ... threshold=900 octets, quota=1000
+octets`; `upf`'s log -- `registered URR 1 for TEID 0x1: threshold=900 quota=1000 octets`. A 25-packet
+real GTP-U burst (44 real T-PDU octets each, 1,100 cumulative) sent from the isolated peer namespace
+(same mechanism ADR-0043's own live verification established) produced, in order: `upf-datapath:
+delivered decapsulated T-PDU` x25 (decapsulation itself unaffected), then at real total=924 octets
+`upf: sent Sx Session Report Request to 127.0.0.1 for TEID 0x1: total=924 octets, trigger=VOLTH`,
+then at real total=1012 octets `... trigger=VOLQU` -- **exactly one of each**, confirming the
+one-shot latches work under continued post-crossing traffic, not just once by luck. `smf`'s log
+independently confirms real receipt of both, via Stage 0's already-proven handler: `received real
+Sx Session Report Request from 127.0.0.1 (seq=1)` then `(seq=2)`. 140/140 tests pass (3 new for this
+stage's new UPF-side encoders: `EncodeReportTypeUsageReportRoundTrips`,
+`EncodeUsageReportTriggerVolthRoundTrips`, `EncodeUsageReportTriggerVolquRoundTrips`) -- zero
+regressions, up from Stage 1's 137/137.
+
+**Consequence:** UPF now genuinely measures real usage and reports it, unsolicited, to a real SMF
+that receives it -- the exact real capability ADR-0048's rating engine was missing. SMF's handler
+still only architecture-proof-acks (Stage 0's disclosed scope); it does not yet parse the real
+Usage Report content or call `Nchf_ConvergedCharging_Update` -- that is Stage 3's job next.

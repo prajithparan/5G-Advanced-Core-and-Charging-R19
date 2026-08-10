@@ -208,6 +208,8 @@ bool decode_report_type_has_usage_report(const std::vector<std::uint8_t>& value)
     return !value.empty() && (value[0] & kReportTypeUsar) != 0;
 }
 
+std::vector<std::uint8_t> encode_report_type_usage_report() { return {kReportTypeUsar}; }
+
 UsageReportTriggerValue decode_usage_report_trigger(const std::vector<std::uint8_t>& value) {
     if (value.size() >= 1 && (value[0] & kUsageReportTriggerVolth) != 0) {
         return UsageReportTriggerValue::VolumeThreshold;
@@ -216,6 +218,14 @@ UsageReportTriggerValue decode_usage_report_trigger(const std::vector<std::uint8
         return UsageReportTriggerValue::VolumeQuotaExhausted;
     }
     return UsageReportTriggerValue::Other;
+}
+
+std::vector<std::uint8_t> encode_usage_report_trigger_volth() {
+    return {kUsageReportTriggerVolth, 0x00};
+}
+
+std::vector<std::uint8_t> encode_usage_report_trigger_volqu() {
+    return {0x00, kUsageReportTriggerVolqu};
 }
 
 } // namespace pfcp_core

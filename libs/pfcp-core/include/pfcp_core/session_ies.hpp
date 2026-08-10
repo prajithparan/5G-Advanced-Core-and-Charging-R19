@@ -117,6 +117,10 @@ std::optional<std::uint64_t> decode_volume_total(const std::vector<std::uint8_t>
 // TS 29.244 §8.2.21: Report Type -- this project only ever needs to recognize USAR (bit 2, Usage
 // Report present).
 bool decode_report_type_has_usage_report(const std::vector<std::uint8_t>& value);
+// ADR-0050 Stage 2: UPF is the encoder of Report Type in the real UP->CP direction (a real,
+// unsolicited Session Report Request) -- the mirror image of decode_report_type_has_usage_report
+// above, which SMF (the CP side) uses to recognize one on receipt.
+std::vector<std::uint8_t> encode_report_type_usage_report();
 
 // TS 29.244 §8.2.41: Usage Report Trigger -- 2-octet bitmask, same octet-pair convention as
 // Reporting Triggers but a different bit assignment per the real spec (confirmed independently,
@@ -127,5 +131,11 @@ enum class UsageReportTriggerValue : std::uint8_t {
     Other,
 };
 UsageReportTriggerValue decode_usage_report_trigger(const std::vector<std::uint8_t>& value);
+// ADR-0050 Stage 2: UPF-side encoders for the two real triggers its own datapath can detect (see
+// gtpu_decap.bpf.c's urr_state/usage_report_event) -- no encoder for Other, since UPF itself never
+// produces that value (it exists only as decode_usage_report_trigger's fallback for bit patterns
+// this project doesn't otherwise model).
+std::vector<std::uint8_t> encode_usage_report_trigger_volth();
+std::vector<std::uint8_t> encode_usage_report_trigger_volqu();
 
 } // namespace pfcp_core

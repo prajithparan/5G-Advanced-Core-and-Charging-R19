@@ -291,6 +291,11 @@ TEST(PfcpSessionIes, ReportTypeDetectsUsageReportBit) {
     EXPECT_FALSE(pfcp_core::decode_report_type_has_usage_report({0x01})); // bit 1 - DLDR only
 }
 
+TEST(PfcpSessionIes, EncodeReportTypeUsageReportRoundTrips) {
+    EXPECT_TRUE(pfcp_core::decode_report_type_has_usage_report(
+        pfcp_core::encode_report_type_usage_report()));
+}
+
 TEST(PfcpSessionIes, UsageReportTriggerDecodesVolumeThreshold) {
     EXPECT_EQ(pfcp_core::decode_usage_report_trigger({0x02, 0x00}),
               pfcp_core::UsageReportTriggerValue::VolumeThreshold);
@@ -304,4 +309,14 @@ TEST(PfcpSessionIes, UsageReportTriggerDecodesVolumeQuotaExhausted) {
 TEST(PfcpSessionIes, UsageReportTriggerDecodesOtherForUnrecognizedBits) {
     EXPECT_EQ(pfcp_core::decode_usage_report_trigger({0x01, 0x00}), // PERIO only
               pfcp_core::UsageReportTriggerValue::Other);
+}
+
+TEST(PfcpSessionIes, EncodeUsageReportTriggerVolthRoundTrips) {
+    EXPECT_EQ(pfcp_core::decode_usage_report_trigger(pfcp_core::encode_usage_report_trigger_volth()),
+              pfcp_core::UsageReportTriggerValue::VolumeThreshold);
+}
+
+TEST(PfcpSessionIes, EncodeUsageReportTriggerVolquRoundTrips) {
+    EXPECT_EQ(pfcp_core::decode_usage_report_trigger(pfcp_core::encode_usage_report_trigger_volqu()),
+              pfcp_core::UsageReportTriggerValue::VolumeQuotaExhausted);
 }

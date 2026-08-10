@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -25,7 +26,14 @@ namespace upf {
 
 class Datapath {
 public:
-    static std::optional<Datapath> create();
+    // ADR-0050 Stage 2: invoked (on the datapath's own ring-buffer-polling thread -- callers
+    // needing more than quick, non-blocking work should hand off to their own thread) whenever
+    // the real in-kernel per-TEID byte counter crosses a provisioned URR's Volume Threshold or
+    // Volume Quota. quota_exhausted distinguishes which.
+    using UsageReportHandler =
+        std::function<void(std::uint32_t teid, std::uint64_t total_octets, bool quota_exhausted)>;
+
+    static std::optional<Datapath> create(UsageReportHandler on_usage_report);
 
     Datapath(Datapath&& other) noexcept;
     Datapath& operator=(Datapath&& other) noexcept;
@@ -37,6 +45,13 @@ public:
     // whenever Session Establishment (ADR-0042) allocates one. Returns false if the underlying
     // BPF map update fails.
     bool register_teid(std::uint32_t teid);
+
+    // ADR-0050 Stage 2: provisions the real per-TEID URR state (Volume Threshold/Quota, both in
+    // octets) the XDP program counts against -- called from run_pfcp_lifecycle whenever Session
+    // Establishment (ADR-0050 Stage 1) parses a real Create URR out of the request. Returns false
+    // if the underlying BPF map update fails.
+    bool register_urr(std::uint32_t teid, std::uint64_t volume_threshold_octets,
+                      std::uint64_t volume_quota_octets);
 
 private:
     Datapath();

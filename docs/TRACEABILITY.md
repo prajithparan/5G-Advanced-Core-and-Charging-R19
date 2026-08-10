@@ -787,3 +787,30 @@ example exactly). Live-verified: a real PDU session against the real seeded 10GB
 `threshold=9000000000 octets, quota=10000000000 octets` in `smf`'s log, and UPF (independently
 built) accepted the Session Establishment Request containing the new IE without rejecting it. See
 ADR-0050's Stage 1 section.
+
+**Stage 2 (2026-08-10): real UPF per-TEID byte counting + real unsolicited Session Report
+Request.** `nfs/upf/bpf/gtpu_decap.bpf.c` gained a real, atomically-updated (`__sync_fetch_and_add`)
+per-TEID `urr_map` and a `usage_report_ringbuf`; crossing Volume Threshold/Quota fires a one-shot
+(latched) usage-report event. `nfs/upf/src/datapath.{hpp,cpp}` wires the second ring buffer into
+the existing poll loop via `ring_buffer__add()` and adds `register_urr()`. `nfs/upf/src/main.cpp`
+parses the real Create URR (URR ID/Volume Threshold/Volume Quota) out of a Session Establishment
+Request, registers it with the datapath, remembers per-TEID what a report needs (SMF's real
+persistent peer endpoint from Stage 0, the session's CP F-SEID, the URR ID) in a new
+`TeidSessionStore`, and builds+sends a real, spec-correct Sx Session Report Request (`ReportType`
+USAR + a `UsageReport` grouped IE: URR ID/UR-SEQN/Usage Report Trigger/Volume Measurement) when the
+datapath's handler fires. Two new UPF-side `pfcp_core` encoders needed for this reverse direction:
+`encode_report_type_usage_report()`, `encode_usage_report_trigger_volth()`/`_volqu()` (3 new round-
+trip unit tests).
+
+| Procedure | TS clause / message | Test |
+|---|---|---|
+| Real per-TEID Volume measurement, one-shot Volume Threshold/Quota report triggers | TS 29.244 §7.5.8 (Session Report procedure), Annex C.2.1.1 | 25-packet real GTP-U burst (44 real T-PDU octets each) against a real, small seeded grant (1,000 octets): `upf`'s log shows exactly one VOLTH report at real total=924 octets and exactly one VOLQU report at real total=1012 octets, despite 25 packets continuing to flow past both crossings -- the latch is proven under continued traffic, not just a single-shot coincidence |
+| Real, unsolicited Sx Session Report Request delivery, UP -> CP | TS 29.244 §7.2.2.3 (session-related header), §7.5.8.3 (Usage Report IE) | `smf`'s log independently confirms real receipt of both reports via Stage 0's handler: `received real Sx Session Report Request from 127.0.0.1 (seq=1)` then `(seq=2)` |
+
+**Disclosed gaps carried forward**: TS 29.244 Annex C.2.1.1's real behaviour (UP function stops
+forwarding once Volume Quota is reached, until a new quota arrives) is NOT implemented -- traffic
+keeps flowing after the VOLQU report; enforcing a stop before Stage 5 exists to ever provision a
+fresh quota would strand every session permanently. SMF's handler for the reports it now genuinely
+receives is still Stage 0's architecture-proof-only ack -- it does not yet parse the real Usage
+Report content or call `Nchf_ConvergedCharging_Update` (Stage 3, next). 140/140 tests pass, zero
+regressions. See ADR-0050's Stage 2 section.

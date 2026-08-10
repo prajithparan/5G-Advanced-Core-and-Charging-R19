@@ -167,6 +167,24 @@ struct TpduRecord {
     unsigned char data[1500];
 } __attribute__((packed));
 
+// Mirrors nfs/upf/bpf/gtpu_decap.bpf.c's struct urr_state exactly -- same field order/packing
+// requirement as TpduRecord above, since this is written directly into the BPF map's memory via
+// bpf_map_update_elem.
+struct UrrState {
+    std::uint64_t volume_threshold;
+    std::uint64_t volume_quota;
+    std::uint64_t total_octets;
+    std::uint8_t threshold_reported;
+    std::uint8_t quota_reported;
+} __attribute__((packed));
+
+// Mirrors nfs/upf/bpf/gtpu_decap.bpf.c's struct usage_report_event exactly.
+struct UsageReportEventRecord {
+    std::uint32_t teid;
+    std::uint64_t total_octets;
+    std::uint8_t quota_exhausted;
+} __attribute__((packed));
+
 int handle_tpdu_sample(void* ctx, void* data, std::size_t data_sz) {
     const int tun_fd = *static_cast<int*>(ctx);
     if (data_sz < sizeof(TpduRecord)) {
@@ -198,9 +216,30 @@ struct Datapath::Impl {
     ring_buffer* rb = nullptr;
     int tun_fd = -1;
     int teid_map_fd = -1;
+    int urr_map_fd = -1;
     int n3_ifindex = 0;
     std::thread poll_thread;
     bool stop_polling = false;
+    UsageReportHandler on_usage_report;
+
+    // A static member function (not a free function like handle_tpdu_sample above) specifically
+    // because it needs to name the complete Impl type to reach on_usage_report -- Impl is a
+    // private nested type of Datapath, so only Datapath's own members (this one included) can
+    // refer to it by name at all.
+    static int handle_usage_report_sample(void* ctx, void* data, std::size_t data_sz) {
+        auto* impl = static_cast<Impl*>(ctx);
+        if (data_sz < sizeof(UsageReportEventRecord)) {
+            spdlog::warn("upf-datapath: usage report ring buffer sample too small ({} bytes), "
+                        "ignoring",
+                        data_sz);
+            return 0;
+        }
+        const auto* rec = static_cast<const UsageReportEventRecord*>(data);
+        if (impl->on_usage_report) {
+            impl->on_usage_report(rec->teid, rec->total_octets, rec->quota_exhausted != 0);
+        }
+        return 0;
+    }
 
     ~Impl() {
         stop_polling = true;
@@ -232,8 +271,9 @@ Datapath::Datapath(Datapath&&) noexcept = default;
 Datapath& Datapath::operator=(Datapath&&) noexcept = default;
 Datapath::~Datapath() = default;
 
-std::optional<Datapath> Datapath::create() {
+std::optional<Datapath> Datapath::create(UsageReportHandler on_usage_report) {
     Datapath dp;
+    dp.impl_->on_usage_report = std::move(on_usage_report);
 
     if (!run_ip_command(std::string("link add ") + kN3Iface + " type veth peer name " +
                         kN3PeerIface)) {
@@ -298,16 +338,28 @@ std::optional<Datapath> Datapath::create() {
 
     bpf_map* teid_map = bpf_object__find_map_by_name(dp.impl_->obj, "teid_map");
     bpf_map* ringbuf_map = bpf_object__find_map_by_name(dp.impl_->obj, "tpdu_ringbuf");
-    if (teid_map == nullptr || ringbuf_map == nullptr) {
+    bpf_map* urr_map = bpf_object__find_map_by_name(dp.impl_->obj, "urr_map");
+    bpf_map* usage_ringbuf_map =
+        bpf_object__find_map_by_name(dp.impl_->obj, "usage_report_ringbuf");
+    if (teid_map == nullptr || ringbuf_map == nullptr || urr_map == nullptr ||
+        usage_ringbuf_map == nullptr) {
         spdlog::error("upf-datapath: expected BPF maps not found in {}", GTPU_BPF_OBJ_PATH);
         return std::nullopt;
     }
     dp.impl_->teid_map_fd = bpf_map__fd(teid_map);
+    dp.impl_->urr_map_fd = bpf_map__fd(urr_map);
 
     dp.impl_->rb = ring_buffer__new(bpf_map__fd(ringbuf_map), handle_tpdu_sample,
                                     &dp.impl_->tun_fd, nullptr);
     if (dp.impl_->rb == nullptr) {
         spdlog::error("upf-datapath: ring_buffer__new failed");
+        return std::nullopt;
+    }
+    // Second BPF map added to the *same* ring_buffer manager/poll loop (not a second thread) --
+    // libbpf's ring_buffer__poll() services every map added via ring_buffer__add() together.
+    if (ring_buffer__add(dp.impl_->rb, bpf_map__fd(usage_ringbuf_map),
+                         Impl::handle_usage_report_sample, dp.impl_.get()) != 0) {
+        spdlog::error("upf-datapath: ring_buffer__add(usage_report_ringbuf) failed");
         return std::nullopt;
     }
 
@@ -334,6 +386,22 @@ bool Datapath::register_teid(std::uint32_t teid) {
     constexpr std::uint32_t kDummyValue = 1;
     if (bpf_map_update_elem(impl_->teid_map_fd, &teid, &kDummyValue, BPF_ANY) != 0) {
         spdlog::warn("upf-datapath: failed to register TEID {:#x} with the XDP program", teid);
+        return false;
+    }
+    return true;
+}
+
+bool Datapath::register_urr(std::uint32_t teid, std::uint64_t volume_threshold_octets,
+                            std::uint64_t volume_quota_octets) {
+    UrrState state{};
+    state.volume_threshold = volume_threshold_octets;
+    state.volume_quota = volume_quota_octets;
+    state.total_octets = 0;
+    state.threshold_reported = 0;
+    state.quota_reported = 0;
+    if (bpf_map_update_elem(impl_->urr_map_fd, &teid, &state, BPF_ANY) != 0) {
+        spdlog::warn("upf-datapath: failed to register URR for TEID {:#x} with the XDP program",
+                    teid);
         return false;
     }
     return true;
