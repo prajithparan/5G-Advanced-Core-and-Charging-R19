@@ -814,3 +814,25 @@ fresh quota would strand every session permanently. SMF's handler for the report
 receives is still Stage 0's architecture-proof-only ack -- it does not yet parse the real Usage
 Report content or call `Nchf_ConvergedCharging_Update` (Stage 3, next). 140/140 tests pass, zero
 regressions. See ADR-0050's Stage 2 section.
+
+**Stage 3 (2026-08-10): SMF decodes the real Usage Report and calls
+`Nchf_ConvergedCharging_Update`.** The Session Report handler now decodes `ReportType`/`UsageReport`
+(`UrrId`/`UrSeqn`/`UsageReportTrigger`/`VolumeMeasurement`), resolves the report's header SEID back
+to its session via a new `CpSeidSessionStore` (SUPI + `ChargingDataRef`, keyed by the real `cp_seid`
+`perform_n4_session_establishment` now returns), and calls a new `perform_n40_charging_data_update`
+-- a real `POST /chargingdata/{ChargingDataRef}/update` (confirmed against the vendored
+`TS32291_Nchf_ConvergedCharging.yaml`) carrying the real consumed octets in
+`multipleUnitUsage[0].usedUnitContainer[0].totalVolume`. Runs on a dedicated
+`chf_report_client`/`chf_report_oauth` pair (PfcpPeer's own thread, not the route handlers' `ioc`
+thread).
+
+| Procedure | TS clause / message | Test |
+|---|---|---|
+| Real Usage Report decode + session resolution + `Nchf_ConvergedCharging_Update` call | TS 29.244 §7.5.8.3 (Usage Report IE); TS 32.291 `POST /chargingdata/{ChargingDataRef}/update` | Same small-seeded-grant (1,000 octets) 25-packet real GTP-U burst as Stage 2: `smf`'s log shows `received real Sx Session Report Request ... (seq=1)` immediately followed by `CHF Nchf_ConvergedCharging_Update returned status 404 ...` (expected -- CHF has no Update handler yet), then the same pair for `(seq=2)`. `chf`'s own log/generic server confirms the request genuinely arrived (a real unregistered-route 404, not a connection failure) |
+
+**Disclosed gaps carried forward**: `perform_n40_charging_data_release` still hardcodes
+`invocationSequenceNumber=2` rather than sharing `CpSeidSessionStore`'s real per-session counter --
+a real TS 32.291 "strictly increasing per invocation" violation if both an Update and a Release land
+on the same `ChargingDataRef`; pre-existing, out of this stage's scope, flagged not fixed. CHF still
+has no real Update endpoint (Stage 4, next) -- every Update call in this stage's live verification
+legitimately 404s. 140/140 tests pass, zero regressions. See ADR-0050's Stage 3 section.

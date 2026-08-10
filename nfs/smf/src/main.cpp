@@ -92,6 +92,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <unordered_map>
 
 #include "TS29122_CommonData_grp.hpp"
 #include "nas_5gsm_codec.hpp"
@@ -298,6 +299,49 @@ private:
     std::optional<std::string> ipv4_;
 };
 
+// ADR-0050 Stage 3: what a real Sx Session Report Request's SEID resolves to -- the pieces
+// perform_n40_charging_data_update needs to build a real Nchf_ConvergedCharging_Update call.
+// `cp_seid` is the same value perform_n4_session_establishment generated and sent as the CP
+// F-SEID at Session Establishment (UPF's Stage 2 code echoes it back verbatim as the Session
+// Report Request's header SEID, per TS 29.244's addressing rule already relied on elsewhere in
+// this file). Written by CreateSMContext's handler (the ioc thread); read from PfcpPeer's own
+// receive thread when a report arrives -- hence the mutex, same reasoning as
+// nfs/upf/src/main.cpp's TeidSessionStore.
+struct CpSeidSessionInfo {
+    std::string supi;
+    std::string charging_data_ref;
+};
+
+class CpSeidSessionStore {
+public:
+    void put(std::uint64_t cp_seid, CpSeidSessionInfo info) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sessions_[cp_seid] = std::move(info);
+        next_invocation_seq_[cp_seid] = 2; // 1 was Create's own invocationSequenceNumber
+    }
+
+    // Returns the session info plus the real invocationSequenceNumber to use for this Update call,
+    // advancing the counter for next time (TS 32.291's real "strictly increasing per invocation"
+    // requirement -- see perform_n40_charging_data_update's own comment for the one, disclosed,
+    // pre-existing interaction this doesn't cover). std::nullopt if no session was ever registered
+    // for this cp_seid.
+    std::optional<std::pair<CpSeidSessionInfo, std::int64_t>> get_and_advance_invocation_seq(
+        std::uint64_t cp_seid) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = sessions_.find(cp_seid);
+        if (it == sessions_.end()) {
+            return std::nullopt;
+        }
+        const std::int64_t seq = next_invocation_seq_[cp_seid]++;
+        return std::make_pair(it->second, seq);
+    }
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::uint64_t, CpSeidSessionInfo> sessions_;
+    std::unordered_map<std::uint64_t, std::int64_t> next_invocation_seq_;
+};
+
 void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& upf_endpoint_store,
                         smf::PfcpPeer& pfcp_peer) {
     sbi_core::http2::TlsConfig client_tls{
@@ -372,9 +416,14 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id, UpfEndpointStore& up
 // with Volume Threshold set to 90% of the granted quota and Volume Quota set to the full granted
 // amount -- the exact ratio TS 29.244 Annex C.2.1.1's real worked example uses (quota=100 Mbytes,
 // threshold=90 Mbytes), not an arbitrary choice.
-bool perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer, const std::string& upf_ip,
-                                      std::uint8_t pdu_session_id,
-                                      std::optional<std::uint64_t> granted_total_volume_octets) {
+//
+// ADR-0050 Stage 3: returns the real CP F-SEID this call generated (instead of plain bool) on
+// success, so CreateSMContext's handler can register it in CpSeidSessionStore -- the only way to
+// resolve a later, real Session Report Request's header SEID back to this session's
+// ChargingDataRef for a real Nchf_ConvergedCharging_Update call.
+std::optional<std::uint64_t> perform_n4_session_establishment(
+    smf::PfcpPeer& pfcp_peer, const std::string& upf_ip, std::uint8_t pdu_session_id,
+    std::optional<std::uint64_t> granted_total_volume_octets) {
     const boost::asio::ip::udp::endpoint upf_endpoint(
         boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
 
@@ -466,7 +515,7 @@ bool perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer, const std::strin
         upf_endpoint, pdu, pfcp_core::MessageType::SessionEstablishmentResponse,
         req_header.sequence_number, "Session Establishment");
     if (!resp_ie_bytes.has_value()) {
-        return false;
+        return std::nullopt;
     }
     const auto resp_ies = pfcp_core::decode_ies(*resp_ie_bytes);
     const auto* cause_ie =
@@ -477,7 +526,7 @@ bool perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer, const std::strin
     if (!cause.has_value() || *cause != pfcp_core::Cause::RequestAccepted) {
         spdlog::warn("smf: UPF rejected N4 Session Establishment for pduSessionId {} (cause={})",
                     pdu_session_id, cause.has_value() ? static_cast<int>(*cause) : -1);
-        return false;
+        return std::nullopt;
     }
 
     std::optional<pfcp_core::FSeid> up_f_seid;
@@ -507,7 +556,7 @@ bool perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer, const std::strin
                 "allocated uplink F-TEID={:#x}",
                 pdu_session_id, up_f_seid.has_value() ? up_f_seid->seid : 0,
                 allocated_teid.value_or(0));
-    return true;
+    return cp_seid;
 }
 
 // Real Nchf_ConvergedCharging_Create (TS 32.291, N40, ADR-0044), SMF's side -- see this file's own
@@ -672,6 +721,89 @@ bool perform_n40_charging_data_release(sbi_core::http2::Client& chf_client,
     return true;
 }
 
+// Real Nchf_ConvergedCharging_Update (TS 32.291, N40, ADR-0050 Stage 3), SMF's side. POST
+// /chargingdata/{ChargingDataRef}/update -- confirmed directly against the real, vendored
+// TS32291_Nchf_ConvergedCharging.yaml (the path exists verbatim, sharing Create's own
+// ChargingDataRequest/ChargingDataResponse schemas). Reports real consumed usage via
+// multipleUnitUsage[0].usedUnitContainer[0]: MultipleUnitUsage's one mandatory field is
+// ratingGroup (confirmed from the same YAML's `required:` block, same discipline as Create's own
+// comment); UsedUnitContainer's one mandatory field is localSequenceNumber (confirmed
+// independently), populated here with the real UR-SEQN this Usage Report carried (TS 29.244's own
+// per-URR report counter -- this build has no separate CHF-facing usage-report sequence concept
+// of its own, and reusing it is a real, traceable value rather than an arbitrary counter).
+//
+// Disclosed, pre-existing interaction NOT fixed by this stage: perform_n40_charging_data_release
+// still hardcodes invocationSequenceNumber=2 rather than sharing this session's real counter -- if
+// both an Update and a Release are sent for the same ChargingDataRef, TS 32.291's real "strictly
+// increasing per invocation" requirement could be violated. Release predates this stage and
+// touching it was out of Stage 3's approved scope; flagged here for a later cleanup rather than
+// silently left unnoticed.
+bool perform_n40_charging_data_update(sbi_core::http2::Client& chf_client,
+                                      sbi_core::OAuth2Client& chf_oauth,
+                                      const std::string& smf_instance_id, const std::string& supi,
+                                      const std::string& charging_data_ref,
+                                      std::int64_t invocation_sequence_number,
+                                      std::int64_t rating_group, std::int64_t local_sequence_number,
+                                      std::uint64_t used_total_volume_octets) {
+    auto token = chf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::warn("smf: could not obtain a token for CHF, skipping Nchf_ConvergedCharging_"
+                    "Update for ChargingDataRef={}: {}",
+                    charging_data_ref, token.error());
+        return false;
+    }
+
+    sbi_gen::NFIdentification nf_id{};
+    nf_id.nFName = smf_instance_id;
+    nf_id.nFIPv4Address = "127.0.0.1";
+    nf_id.nodeFunctionality.value = sbi_gen::NodeFunctionality::SMF;
+
+    sbi_gen::UsedUnitContainer used_unit{};
+    used_unit.localSequenceNumber = local_sequence_number;
+    used_unit.totalVolume = static_cast<std::int64_t>(used_total_volume_octets);
+
+    sbi_gen::MultipleUnitUsage unit_usage{};
+    unit_usage.ratingGroup = rating_group;
+    unit_usage.usedUnitContainer = std::vector<sbi_gen::UsedUnitContainer>{used_unit};
+
+    sbi_gen::ChargingDataRequest chf_req{};
+    chf_req.nfConsumerIdentification = nf_id;
+    chf_req.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
+    chf_req.invocationSequenceNumber = invocation_sequence_number;
+    chf_req.subscriberIdentifier = supi;
+    chf_req.multipleUnitUsage = std::vector<sbi_gen::MultipleUnitUsage>{unit_usage};
+
+    sbi_core::http2::ClientRequest chf_http_req;
+    chf_http_req.method = "POST";
+    chf_http_req.url = std::string(kChfBase) + "/nchf-convergedcharging/v3/chargingdata/" +
+                       charging_data_ref + "/update";
+    chf_http_req.headers.emplace("content-type", "application/json");
+    chf_http_req.headers.emplace("authorization", "Bearer " + *token);
+    chf_http_req.body = json(chf_req).dump();
+
+    auto chf_resp = chf_client.send(chf_http_req);
+    if (!chf_resp.has_value()) {
+        spdlog::warn("smf: could not reach CHF for Nchf_ConvergedCharging_Update, "
+                    "ChargingDataRef={}: {}",
+                    charging_data_ref, chf_resp.error());
+        return false;
+    }
+    if (chf_resp->status != 200) {
+        // ADR-0050 Stage 4 (not yet built) is what makes this a real 200 -- CHF has no Update
+        // handler yet, so a non-200 here (404, most likely) is the expected, disclosed state until
+        // that stage lands, not a bug in this stage's own request.
+        spdlog::warn("smf: CHF Nchf_ConvergedCharging_Update returned status {} for "
+                    "ChargingDataRef={} (expected until ADR-0050 Stage 4 implements CHF's Update "
+                    "endpoint)",
+                    chf_resp->status, charging_data_ref);
+        return false;
+    }
+    spdlog::info("smf: Nchf_ConvergedCharging_Update succeeded for ChargingDataRef={}, reported {} "
+                "octets used",
+                charging_data_ref, used_total_volume_octets);
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -692,31 +824,12 @@ int main() {
 
     // ADR-0049 (quota-consumption-tracking turn), Stage 0: SMF's one persistent, bidirectional
     // PFCP peer -- replaces the old per-call ephemeral sockets so UPF can reach SMF directly for
-    // an unsolicited Sx Session Report Request. This turn's handler is architecture-proof only: it
-    // acknowledges with a schema-valid Cause=RequestAccepted and does not yet parse the real Usage
-    // Report content or call Nchf_ConvergedCharging_Update (Stage 3's job). It also doesn't yet
-    // look up the session's real UP-side SEID for the response header (no per-session PFCP state
-    // store exists yet) -- echoes the request's own SEID instead, a disclosed simplification to
-    // revisit once a later stage needs real per-session state here.
+    // an unsolicited Sx Session Report Request. Handler installed further down (ADR-0050 Stage 3),
+    // once its own dependencies (a dedicated CHF client, CpSeidSessionStore) exist -- pfcp_peer
+    // itself must be constructed first regardless, since the handler needs to capture it by
+    // reference (see PfcpPeer's own two-phase-construction comment for why this can't be a
+    // constructor parameter).
     smf::PfcpPeer pfcp_peer;
-    pfcp_peer.set_session_report_handler(
-        [&pfcp_peer](const pfcp_core::Header& header, const std::vector<std::uint8_t>&,
-                    const boost::asio::ip::udp::endpoint& sender) {
-            spdlog::info("smf: received real Sx Session Report Request from {} (seq={})",
-                        sender.address().to_string(), header.sequence_number);
-            std::vector<std::uint8_t> ack_ies;
-            pfcp_core::encode_ie(ack_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
-                                 pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
-            pfcp_core::Header ack_header;
-            ack_header.has_seid = true;
-            ack_header.seid = header.seid;
-            ack_header.message_type = pfcp_core::MessageType::SessionReportResponse;
-            ack_header.sequence_number = header.sequence_number;
-            auto ack_pdu =
-                pfcp_core::encode_header(ack_header, static_cast<std::uint16_t>(ack_ies.size()));
-            ack_pdu.insert(ack_pdu.end(), ack_ies.begin(), ack_ies.end());
-            pfcp_peer.send_fire_and_forget(sender, ack_pdu);
-        });
 
     // SMF's own client identity + token source for calling PCF -- separate http2::Client/
     // OAuth2Client from run_nrf_lifecycle's (which runs on its own thread; this one is only ever
@@ -764,6 +877,115 @@ int main() {
                                      "nchf-convergedcharging",
                                      "CHF");
 
+    // ADR-0050 Stage 3: a SEPARATE, dedicated CHF client for the Session Report handler below --
+    // that handler runs on PfcpPeer's own receive thread, not the HTTP/2 server's ioc thread that
+    // `chf_client` above is only safe to touch from (same one-client-per-thread discipline this
+    // file's own comments already document for pcf_client/amf_client/chf_client, and the same
+    // reasoning Stage 0's ADR text already used for AMF's own NGAP-thread AUSF client).
+    sbi_core::http2::TlsConfig chf_report_client_tls{
+        .cert_path = CERTS_DIR "/smf/cert.pem",
+        .key_path = CERTS_DIR "/smf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client chf_report_client(std::move(chf_report_client_tls));
+    sbi_core::OAuth2Client chf_report_oauth(chf_report_client,
+                                            std::string(kNrfBase) + "/oauth2/token",
+                                            smf_instance_id,
+                                            "nchf-convergedcharging",
+                                            "CHF");
+
+    // ADR-0050 Stage 3: resolves a real Session Report Request's header SEID back to the session
+    // it belongs to -- populated by CreateSMContext's handler, read here.
+    CpSeidSessionStore cp_seid_sessions;
+
+    // ADR-0050 Stage 3: the real handler. Decodes the real Usage Report content (Stage 0's handler
+    // only acked unconditionally without parsing it), looks the session up, and calls a real
+    // Nchf_ConvergedCharging_Update. Still acks the Sx Session Report Request unconditionally
+    // afterward, regardless of whether CHF's Update call itself succeeded -- these are different
+    // protocol layers (PFCP vs. SBI/N40), and a CHF outage shouldn't leave UPF's own report
+    // unacknowledged.
+    pfcp_peer.set_session_report_handler(
+        [&pfcp_peer, &cp_seid_sessions, &chf_report_client, &chf_report_oauth, &smf_instance_id](
+            const pfcp_core::Header& header, const std::vector<std::uint8_t>& ie_bytes,
+            const boost::asio::ip::udp::endpoint& sender) {
+            spdlog::info("smf: received real Sx Session Report Request from {} (seq={})",
+                        sender.address().to_string(), header.sequence_number);
+
+            const auto ies = pfcp_core::decode_ies(ie_bytes);
+            const auto* report_type_ie =
+                ies.has_value()
+                    ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::ReportType))
+                    : nullptr;
+            const auto* usage_report_ie =
+                ies.has_value() ? pfcp_core::find_ie(
+                                       *ies, static_cast<std::uint16_t>(pfcp_core::IeType::UsageReport))
+                                : nullptr;
+            if (report_type_ie == nullptr || !pfcp_core::decode_report_type_has_usage_report(
+                                                  report_type_ie->value) ||
+                usage_report_ie == nullptr) {
+                spdlog::warn("smf: Sx Session Report Request from {} has no real Usage Report "
+                            "content, acking without a CHF Update call",
+                            sender.address().to_string());
+            } else {
+                const auto usage_ies = pfcp_core::decode_ies(usage_report_ie->value);
+                const auto* urr_id_ie =
+                    usage_ies.has_value()
+                        ? pfcp_core::find_ie(*usage_ies,
+                                             static_cast<std::uint16_t>(pfcp_core::IeType::UrrId))
+                        : nullptr;
+                const auto* ur_seqn_ie =
+                    usage_ies.has_value()
+                        ? pfcp_core::find_ie(*usage_ies,
+                                             static_cast<std::uint16_t>(pfcp_core::IeType::UrSeqn))
+                        : nullptr;
+                const auto* volume_ie = usage_ies.has_value()
+                                            ? pfcp_core::find_ie(*usage_ies,
+                                                                 static_cast<std::uint16_t>(
+                                                                     pfcp_core::IeType::VolumeMeasurement))
+                                            : nullptr;
+                const auto ur_seqn =
+                    ur_seqn_ie != nullptr ? pfcp_core::decode_ur_seqn(ur_seqn_ie->value) : std::nullopt;
+                const auto used_volume =
+                    volume_ie != nullptr ? pfcp_core::decode_volume_total(volume_ie->value) : std::nullopt;
+                // URR ID itself is decoded (urr_id_ie) only to confirm the report is well-formed --
+                // this build's Update call reports usage against the session's one fixed rating
+                // group (kDefaultRatingGroup, same simplification Create already carries), not a
+                // per-URR-ID rating group lookup that doesn't exist in this codebase.
+                if (urr_id_ie == nullptr || !ur_seqn.has_value() || !used_volume.has_value()) {
+                    spdlog::warn("smf: Sx Session Report Request from {} has a malformed Usage "
+                                "Report, acking without a CHF Update call",
+                                sender.address().to_string());
+                } else if (const auto session =
+                               cp_seid_sessions.get_and_advance_invocation_seq(header.seid);
+                           !session.has_value()) {
+                    spdlog::warn("smf: Sx Session Report Request references unknown SEID {:#x}, "
+                                "acking without a CHF Update call",
+                                header.seid);
+                } else {
+                    const auto& [info, invocation_seq] = *session;
+                    perform_n40_charging_data_update(chf_report_client, chf_report_oauth,
+                                                     smf_instance_id, info.supi,
+                                                     info.charging_data_ref, invocation_seq,
+                                                     kDefaultRatingGroup,
+                                                     static_cast<std::int64_t>(*ur_seqn),
+                                                     *used_volume);
+                }
+            }
+
+            std::vector<std::uint8_t> ack_ies;
+            pfcp_core::encode_ie(ack_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                                 pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+            pfcp_core::Header ack_header;
+            ack_header.has_seid = true;
+            ack_header.seid = header.seid;
+            ack_header.message_type = pfcp_core::MessageType::SessionReportResponse;
+            ack_header.sequence_number = header.sequence_number;
+            auto ack_pdu =
+                pfcp_core::encode_header(ack_header, static_cast<std::uint16_t>(ack_ies.size()));
+            ack_pdu.insert(ack_pdu.end(), ack_ies.begin(), ack_ies.end());
+            pfcp_peer.send_fire_and_forget(sender, ack_pdu);
+        });
+
     smf::SmContextStore sm_contexts;
     UpfEndpointStore upf_endpoint_store;
 
@@ -800,7 +1022,7 @@ int main() {
         [&verifier, &sm_contexts, &create_counter, &pcf_client, &pcf_oauth,
          &pcf_sm_policy_create_counter, &amf_client, &amf_oauth, &upf_endpoint_store,
          &n1n2_transfer_counter, &chf_client, &chf_oauth, &chf_charging_data_create_counter,
-         &smf_instance_id, &pfcp_peer](const sbi_core::http2::Request& req) {
+         &smf_instance_id, &pfcp_peer, &cp_seid_sessions](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -905,12 +1127,14 @@ int main() {
             // N4 Session Establishment Request below, not a separate follow-up call. Best-effort:
             // failure is logged, not fatal to CreateSMContext's own 201 response.
             std::optional<std::uint64_t> granted_total_volume_octets;
+            std::string charging_data_ref;
             if (const auto charging_result = perform_n40_charging_data_create(
                     chf_client, chf_oauth, smf_instance_id, *body->supi,
                     static_cast<std::uint8_t>(*body->pduSessionId));
                 charging_result.has_value()) {
                 chf_charging_data_create_counter->Add(1);
                 granted_total_volume_octets = charging_result->granted_total_volume_octets;
+                charging_data_ref = charging_result->charging_data_ref;
                 if (auto stored = sm_contexts.get(sm_context_ref); stored.has_value()) {
                     (*stored)["chargingDataRef"] = charging_result->charging_data_ref;
                     sm_contexts.update(sm_context_ref, *stored);
@@ -926,9 +1150,17 @@ int main() {
             // on (no UPF discovered yet) shouldn't also block CreateSMContext's own already-real
             // PCF/AMF/CHF work.
             if (const auto upf_ip = upf_endpoint_store.get(); upf_ip.has_value()) {
-                perform_n4_session_establishment(pfcp_peer, *upf_ip,
-                                                 static_cast<std::uint8_t>(*body->pduSessionId),
-                                                 granted_total_volume_octets);
+                const auto cp_seid = perform_n4_session_establishment(
+                    pfcp_peer, *upf_ip, static_cast<std::uint8_t>(*body->pduSessionId),
+                    granted_total_volume_octets);
+                // ADR-0050 Stage 3: only register a session for later Usage Report handling if a
+                // real URR was actually provisioned above -- a session with no granted quota can
+                // never produce a Session Report Request in the first place (UPF only counts/
+                // reports against TEIDs a Create URR was registered for, see nfs/upf/src/main.cpp).
+                if (cp_seid.has_value() && granted_total_volume_octets.has_value() &&
+                    !charging_data_ref.empty()) {
+                    cp_seid_sessions.put(*cp_seid, CpSeidSessionInfo{*body->supi, charging_data_ref});
+                }
             } else {
                 spdlog::warn("smf: no UPF Sx Association established yet, skipping N4 Session "
                             "Establishment for pduSessionId {}",

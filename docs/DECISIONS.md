@@ -3800,3 +3800,67 @@ regressions, up from Stage 1's 137/137.
 that receives it -- the exact real capability ADR-0048's rating engine was missing. SMF's handler
 still only architecture-proof-acks (Stage 0's disclosed scope); it does not yet parse the real
 Usage Report content or call `Nchf_ConvergedCharging_Update` -- that is Stage 3's job next.
+
+### Stage 3 (2026-08-10): SMF parses the real Usage Report and calls Nchf_ConvergedCharging_Update
+
+**Real spec path confirmed before writing any code.** The vendored
+`specs/5G_APIs-REL-19/TS32291_Nchf_ConvergedCharging.yaml` has a real
+`POST /chargingdata/{ChargingDataRef}/update` path (verbatim, sharing Create's own
+`ChargingDataRequest`/`ChargingDataResponse` schemas), and `MultipleUnitUsage.usedUnitContainer`
+(→`UsedUnitContainer.localSequenceNumber`/`totalVolume`) is the real, schema-correct place to
+report consumed usage back -- confirmed by reading the YAML directly, not assumed from the Create
+side's shape.
+
+**SMF's handler now genuinely decodes the report it receives.** Stage 0's handler only
+acknowledged unconditionally; it now decodes `ReportType` (confirms the USAR bit), finds the
+`UsageReport` grouped IE, and decodes `UrrId`/`UrSeqn`/`UsageReportTrigger`/`VolumeMeasurement`
+from inside it -- all real `pfcp_core` decoders Stage 0/2 already added for exactly this. The Sx
+Session Report Response is still sent unconditionally afterward, regardless of whether the
+resulting CHF call succeeds -- PFCP acknowledgment and the SBI/N40 call are different protocol
+layers, and a CHF outage must not leave UPF's own report unacknowledged.
+
+**New `CpSeidSessionStore`: resolving a report's SEID back to a session.** A Session Report
+Request's header SEID is the same `cp_seid` `perform_n4_session_establishment` generated and sent
+as the CP F-SEID at Session Establishment (UPF's Stage 2 code echoes it back verbatim, per TS
+29.244's addressing rule this file already relies on elsewhere). `perform_n4_session_establishment`
+now returns that `cp_seid` on success (was plain `bool`) so `CreateSMContext`'s handler can register
+it, alongside the real SUPI and `ChargingDataRef`, in a new mutex-guarded `CpSeidSessionStore` --
+written on the ioc thread, read on `PfcpPeer`'s own receive thread (same cross-thread-store
+reasoning as `nfs/upf/src/main.cpp`'s `TeidSessionStore`, Stage 2). The store also tracks a real,
+per-session `invocationSequenceNumber` counter for TS 32.291's "strictly increasing per invocation"
+requirement (Create used `1`; Update calls get `2`, `3`, ...). **Disclosed, pre-existing gap NOT
+fixed by this stage:** `perform_n40_charging_data_release` still hardcodes
+`invocationSequenceNumber=2` rather than sharing this counter -- if both an Update and a Release
+land on the same `ChargingDataRef`, the real strictly-increasing requirement could be violated.
+Release predates this stage; fixing it was out of Stage 3's approved scope, flagged here rather
+than silently left unnoticed.
+
+**A dedicated CHF client for `PfcpPeer`'s own thread.** The Session Report handler runs on
+`PfcpPeer`'s receive thread, not the HTTP/2 server's `ioc` thread that the route handlers'
+`chf_client` is only safe to touch from (this file's own established one-client-per-thread
+discipline, same reasoning Stage 0's own ADR text used for AMF's NGAP-thread AUSF client). A
+second, dedicated `chf_report_client`/`chf_report_oauth` pair was added rather than sharing the
+existing one.
+
+**New `perform_n40_charging_data_update`.** Same shape as `_create`/`_release`: builds a real
+`ChargingDataRequest` with one `MultipleUnitUsage` (the session's fixed `kDefaultRatingGroup`,
+same simplification Create already carries -- no real per-service rating-group mapping exists in
+this codebase) carrying one `UsedUnitContainer` (`localSequenceNumber` = the real UR-SEQN this
+report carried, `totalVolume` = the real consumed octets), POSTs it to CHF, and logs the real
+outcome. A non-200 (expected: CHF has no Update handler yet, Stage 4's job) is logged as an
+explicitly-expected, disclosed state, not misreported as a bug in this stage's own request.
+
+**Live-verified end to end.** Same small-seeded-grant setup as Stage 2 (1,000 real octets), same
+25-packet real GTP-U burst. `smf`'s log: `received real Sx Session Report Request ... (seq=1)`
+immediately followed by `CHF Nchf_ConvergedCharging_Update returned status 404 for
+ChargingDataRef=chg-1 (expected until ADR-0050 Stage 4 implements CHF's Update endpoint)`, then the
+same pair for `(seq=2)` -- both real Usage Reports (VOLTH and VOLQU) were genuinely decoded, both
+resolved to the real session via `CpSeidSessionStore`, both produced a real HTTP/2 POST that
+genuinely reached CHF (confirmed: CHF's own generic server returned a real, unregistered-route 404,
+not a connection failure) with no crash, deadlock, or interference with the rest of SMF's request
+handling. 140/140 tests pass, zero regressions.
+
+**Consequence:** SMF now genuinely closes the loop from "UPF measured real usage" to "CHF was told
+about it" -- the request is real, spec-correct, and reaches CHF; CHF just doesn't yet have anything
+to say back. Stage 4 (CHF implements the real Update endpoint: applies the reported usage, issues a
+follow-on grant) is next.
