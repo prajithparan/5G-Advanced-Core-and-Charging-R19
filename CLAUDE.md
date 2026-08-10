@@ -99,17 +99,23 @@ lab-grade scope — see ADR-0009 in `docs/DECISIONS.md`).
 - SID-aligned BSS layer mapping 3GPP charging events onto TM Forum SID
   entities (Product, Service, Resource, Customer, Party, Agreement,
   ProductOffering, ProductPrice, AppliedCustomerBillingRate, CustomerBill,
-  BalanceTopUp), exposed via TMF620/622/632/633/635/637/638/639/651/654/
-  666/676/678/727. (Extended 2026-08-10 from the original 620/622/632/635/
-  637/666/676/678/727: `docs/CHARGING_MAPPING.md`'s research found Service,
-  Resource, Agreement, and BalanceTopUp each have a real TM-Forum-designated
-  home API that wasn't in the original list -- TMF633/638 (Service Catalog/
-  Inventory, mirroring the existing Product Catalog=620/Inventory=637 split),
-  TMF639 (Resource Inventory), TMF651 (Agreement), TMF654 (Prepay Balance) --
-  added rather than leaving those 4 SID entities without a home API. Also
-  note: TMF727 is Service Usage Management, not Product Offering
-  Qualification as an earlier reference implied -- that's TMF679, not
-  currently in scope.)
+  BalanceTopUp, Event), exposed via TMF620/622/632/633/635/637/638/639/651/
+  654/666/676/678/688/727. (Extended 2026-08-10 from the original 620/622/
+  632/635/637/666/676/678/727: `docs/CHARGING_MAPPING.md`'s research found
+  Service, Resource, Agreement, and BalanceTopUp each have a real
+  TM-Forum-designated home API that wasn't in the original list -- TMF633/638
+  (Service Catalog/Inventory, mirroring the existing Product Catalog=620/
+  Inventory=637 split), TMF639 (Resource Inventory), TMF651 (Agreement),
+  TMF654 (Prepay Balance) -- added rather than leaving those 4 SID entities
+  without a home API. Also note: TMF727 is Service Usage Management, not
+  Product Offering Qualification as an earlier reference implied -- that's
+  TMF679, not currently in scope. Extended again same day: `Event` (named in
+  PROMPT.md's fuller SID list but dropped from this file's condensed one) has
+  a real home, TMF688 Event Management -- added, asked and approved, same as
+  the first four. `CustomerOrder` and `Policy` remain named in PROMPT.md but
+  not here; `Policy`'s real TMF723 API is confirmed by name/number but no
+  public source for its field list was found (flagged, not resolved) --
+  neither added without being asked first.)
 - Deliverable before any mapping code: `docs/CHARGING_MAPPING.md` — an
   explicit, reviewable table of 3GPP CDR field -> SID entity -> TMF API
   resource. Ambiguous mappings are marked TODO and asked about, never
