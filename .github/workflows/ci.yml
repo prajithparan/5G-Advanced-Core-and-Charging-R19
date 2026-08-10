@@ -36,10 +36,19 @@ jobs:
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Install Ninja
-        run: sudo apt-get update -qq && sudo apt-get install -y ninja-build
+        run: sudo apt-get update -qq && sudo apt-get install -y ninja-build libsctp-dev libbpf-dev libcap-dev clang-18
 
       - name: Install sbi-codegen Python deps
         run: pip install -r tools/sbi-codegen/requirements.txt
+
+      - name: Cache asn1c toolchain (libs/ngap-generated needs it, ADR-0030/ADR-0031)
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/build-tools/asn1c
+          key: asn1c-${{ runner.os }}-${{ hashFiles('scripts/setup-asn1c.sh', 'scripts/patches/asn1c-aligned-per.patch') }}
+
+      - name: Build asn1c toolchain (idempotent -- no-ops if the cache above already has it)
+        run: ./scripts/setup-asn1c.sh
 
       - name: Configure
         run: >
@@ -78,10 +87,19 @@ jobs:
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Install Ninja
-        run: sudo apt-get update -qq && sudo apt-get install -y ninja-build
+        run: sudo apt-get update -qq && sudo apt-get install -y ninja-build libsctp-dev libbpf-dev libcap-dev clang-18
 
       - name: Install sbi-codegen Python deps
         run: pip install -r tools/sbi-codegen/requirements.txt
+
+      - name: Cache asn1c toolchain (libs/ngap-generated needs it, ADR-0030/ADR-0031)
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/build-tools/asn1c
+          key: asn1c-${{ runner.os }}-${{ hashFiles('scripts/setup-asn1c.sh', 'scripts/patches/asn1c-aligned-per.patch') }}
+
+      - name: Build asn1c toolchain (idempotent -- no-ops if the cache above already has it)
+        run: ./scripts/setup-asn1c.sh
 
       - name: Configure (ASan+UBSan)
         if: matrix.sanitizer == 'asan-ubsan'
@@ -112,7 +130,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install clang tooling
-        run: sudo apt-get update -qq && sudo apt-get install -y clang-format-18 clang-tidy-18 ninja-build
+        run: sudo apt-get update -qq && sudo apt-get install -y clang-format-18 clang-tidy-18 ninja-build libsctp-dev libbpf-dev libcap-dev clang-18
 
       - name: clang-format check
         run: |
@@ -133,6 +151,15 @@ jobs:
 
       - name: Install sbi-codegen Python deps
         run: pip install -r tools/sbi-codegen/requirements.txt
+
+      - name: Cache asn1c toolchain (libs/ngap-generated needs it, ADR-0030/ADR-0031)
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/build-tools/asn1c
+          key: asn1c-${{ runner.os }}-${{ hashFiles('scripts/setup-asn1c.sh', 'scripts/patches/asn1c-aligned-per.patch') }}
+
+      - name: Build asn1c toolchain (idempotent -- no-ops if the cache above already has it)
+        run: ./scripts/setup-asn1c.sh
 
       - name: Configure (for compile_commands.json)
         run: >
