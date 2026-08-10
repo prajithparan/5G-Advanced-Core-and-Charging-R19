@@ -1,17 +1,18 @@
 // nfs/chf: CHF (Charging Function), Nchf_ConvergedCharging service (TS 32.291).
 // Source: specs/5G_APIs-REL-19/TS32291_Nchf_ConvergedCharging.yaml
 // (commit bca84b60a37773133bcae97e5c6c0d10a93b47b6). Phase 4's first NF (CLAUDE.md's charging
-// domain), approved scope for this turn:
+// domain).
 //
-// Nchf_ConvergedCharging_Create only -- POST /chargingdata. Real request parsing, real
-// ChargingDataRef allocation, a schema-valid ChargingDataResponse.
+// Scope, in two approved stages:
+// - Stage 0/1 (ADR-0044): Nchf_ConvergedCharging_Create -- POST /chargingdata. Real request
+//   parsing, real ChargingDataRef allocation, a schema-valid ChargingDataResponse. Also builds and
+//   logs a TM Forum SID Individual for the subscriber (docs/CHARGING_MAPPING.md, ADR-0045).
+// - This turn (ADR-0046): Nchf_ConvergedCharging_Release -- POST /chargingdata/{ChargingDataRef}/
+//   release. Validates the ref is a real, still-active one (404 if not), returns 204 per spec.
 //
 // Deliberately deferred, not dropped (separate approved future turns): Update
-// (POST /chargingdata/{ChargingDataRef}/update) and Release
-// (POST /chargingdata/{ChargingDataRef}/release), the chargingNotification callback,
-// Nchf_OfflineOnlyCharging, Nchf_SpendingLimitControl, and the TM Forum SID/BSS mapping layer
-// (docs/CHARGING_MAPPING.md, required by CLAUDE.md before any mapping code -- not needed for this
-// turn's pure-3GPP-side scope). See docs/DECISIONS.md ADR-0044.
+// (POST /chargingdata/{ChargingDataRef}/update), the chargingNotification callback,
+// Nchf_OfflineOnlyCharging, Nchf_SpendingLimitControl. See docs/DECISIONS.md ADR-0044/ADR-0046.
 //
 // Disclosed simplifications, stated up front:
 // - No real rating/quota engine. multipleUnitInformation is never populated (no online/quota
@@ -25,7 +26,7 @@
 //   and no normative TS 32.291 prose is vendored in this repo to check -- echoing the request's
 //   value is the least-invented choice (no independent CHF-side sequencing semantics assumed) and
 //   disclosed here rather than picked silently.
-// - No persistence across restarts (in-memory ChargingDataRefAllocator only) -- same disclosed
+// - No persistence across restarts (in-memory ChargingDataStore only) -- same disclosed
 //   simplification as every other NF's store so far.
 
 #include "bss_sid/party.hpp"
@@ -191,11 +192,13 @@ int main() {
 
     sbi_core::jwt::Verifier verifier(CERTS_DIR "/nrf-jwt/public.pem", kNrfInstanceId);
 
-    chf::ChargingDataRefAllocator ref_allocator;
+    chf::ChargingDataStore charging_data_store;
 
     auto meter = sbi_core::get_meter("chf");
     auto create_counter = meter->CreateUInt64Counter(
         "chf_charging_data_create_total", "Total Nchf_ConvergedCharging_Create calls");
+    auto release_counter = meter->CreateUInt64Counter(
+        "chf_charging_data_release_total", "Total Nchf_ConvergedCharging_Release calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -206,7 +209,7 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/chargingdata",
-        [&verifier, &ref_allocator, &create_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &charging_data_store, &create_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -216,7 +219,7 @@ int main() {
                 return err;
             }
 
-            const auto ref = ref_allocator.allocate();
+            const auto ref = charging_data_store.create();
 
             // docs/CHARGING_MAPPING.md's resolved mapping: build the TM Forum SID record for the
             // subscriber this charging event is for. Logged, not yet persisted or exposed via a
@@ -243,6 +246,36 @@ int main() {
             resp.headers.emplace("location", std::string(kApiRoot) + "/chargingdata/" + ref);
             json j = response;
             resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kApiRoot) + "/chargingdata/{ChargingDataRef}/release",
+        [&verifier, &charging_data_store, &release_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            // Real spec shape (requestBody required: true, schema ChargingDataRequest) -- parsed
+            // for validation/mandatory-field-checking parity with Create, even though this
+            // build's Release doesn't otherwise use its content (no rating/quota state exists to
+            // reconcile against a final usage report -- same disclosed gap as Create's own
+            // "no real rating engine" simplification).
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::ChargingDataRequest>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+
+            const auto ref = req.path_params.at("ChargingDataRef");
+            if (!charging_data_store.release(ref)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No active charging data resource " + ref);
+            }
+            release_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 204;
             return resp;
         });
 

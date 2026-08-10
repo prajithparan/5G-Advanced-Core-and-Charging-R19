@@ -538,16 +538,20 @@ bool perform_n4_session_establishment(const std::string& upf_ip, std::uint8_t pd
 // content. invocationSequenceNumber is always 1: this is the first (and, this stage, only)
 // charging data invocation SMF ever sends for a given PDU session -- see chf's own file header for
 // why the response doesn't get independently sequenced either. Best-effort: see file header.
-bool perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
-                                      sbi_core::OAuth2Client& chf_oauth,
-                                      const std::string& smf_instance_id, const std::string& supi,
-                                      std::uint8_t pdu_session_id) {
+// Returns the allocated ChargingDataRef (parsed from CHF's `location` header, same extraction
+// pattern already used for PCF's smPolicyId above) on success, so ReleaseSMContext's handler
+// (ADR-0046) can later call Nchf_ConvergedCharging_Release against the right resource.
+std::optional<std::string> perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
+                                                             sbi_core::OAuth2Client& chf_oauth,
+                                                             const std::string& smf_instance_id,
+                                                             const std::string& supi,
+                                                             std::uint8_t pdu_session_id) {
     auto token = chf_oauth.get_bearer_token();
     if (!token.has_value()) {
         spdlog::warn("smf: could not obtain a token for CHF, skipping Nchf_ConvergedCharging_"
                     "Create for pduSessionId {}: {}",
                     pdu_session_id, token.error());
-        return false;
+        return std::nullopt;
     }
 
     sbi_gen::NFIdentification nf_id{};
@@ -573,15 +577,85 @@ bool perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
         spdlog::warn("smf: could not reach CHF for Nchf_ConvergedCharging_Create, pduSessionId "
                     "{}: {}",
                     pdu_session_id, chf_resp.error());
-        return false;
+        return std::nullopt;
     }
     if (chf_resp->status != 201) {
         spdlog::warn("smf: CHF Nchf_ConvergedCharging_Create returned unexpected status {} for "
                     "pduSessionId {}",
                     chf_resp->status, pdu_session_id);
+        return std::nullopt;
+    }
+    std::string charging_data_ref;
+    if (const auto location_it = chf_resp->headers.find("location");
+        location_it != chf_resp->headers.end()) {
+        const auto& location = location_it->second;
+        charging_data_ref = location.substr(location.find_last_of('/') + 1);
+    }
+    if (charging_data_ref.empty()) {
+        spdlog::warn("smf: CHF Nchf_ConvergedCharging_Create succeeded but returned no usable "
+                    "location header for pduSessionId {}, Release will not be possible for this "
+                    "session",
+                    pdu_session_id);
+        return std::nullopt;
+    }
+    spdlog::info("smf: Nchf_ConvergedCharging_Create succeeded for pduSessionId {}, "
+                "ChargingDataRef={}",
+                pdu_session_id, charging_data_ref);
+    return charging_data_ref;
+}
+
+// Real Nchf_ConvergedCharging_Release (TS 32.291, N40, ADR-0046), SMF's side.
+// POST /chargingdata/{ChargingDataRef}/release, same real spec shape as Create's request body
+// (ChargingDataRequest) -- sent with the same minimal 3-mandatory-fields-plus-subscriberIdentifier
+// content as Create, since there's no richer charging information collected between Create and
+// Release in this build either. Best-effort: matches DeleteSMPolicy's discipline in
+// ReleaseSMContext's handler -- local session release must not get stuck on CHF being unreachable.
+bool perform_n40_charging_data_release(sbi_core::http2::Client& chf_client,
+                                       sbi_core::OAuth2Client& chf_oauth,
+                                       const std::string& smf_instance_id, const std::string& supi,
+                                       const std::string& charging_data_ref) {
+    auto token = chf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::warn("smf: could not obtain a token for CHF, skipping Nchf_ConvergedCharging_"
+                    "Release for ChargingDataRef={}: {}",
+                    charging_data_ref, token.error());
         return false;
     }
-    spdlog::info("smf: Nchf_ConvergedCharging_Create succeeded for pduSessionId {}", pdu_session_id);
+
+    sbi_gen::NFIdentification nf_id{};
+    nf_id.nFName = smf_instance_id;
+    nf_id.nFIPv4Address = "127.0.0.1";
+    nf_id.nodeFunctionality.value = sbi_gen::NodeFunctionality::SMF;
+
+    sbi_gen::ChargingDataRequest chf_req{};
+    chf_req.nfConsumerIdentification = nf_id;
+    chf_req.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
+    chf_req.invocationSequenceNumber = 2; // 1 was Create's, see perform_n40_charging_data_create
+    chf_req.subscriberIdentifier = supi;
+
+    sbi_core::http2::ClientRequest chf_http_req;
+    chf_http_req.method = "POST";
+    chf_http_req.url = std::string(kChfBase) + "/nchf-convergedcharging/v3/chargingdata/" +
+                       charging_data_ref + "/release";
+    chf_http_req.headers.emplace("content-type", "application/json");
+    chf_http_req.headers.emplace("authorization", "Bearer " + *token);
+    chf_http_req.body = json(chf_req).dump();
+
+    auto chf_resp = chf_client.send(chf_http_req);
+    if (!chf_resp.has_value()) {
+        spdlog::warn("smf: could not reach CHF for Nchf_ConvergedCharging_Release, "
+                    "ChargingDataRef={}: {}",
+                    charging_data_ref, chf_resp.error());
+        return false;
+    }
+    if (chf_resp->status != 204) {
+        spdlog::warn("smf: CHF Nchf_ConvergedCharging_Release returned unexpected status {} for "
+                    "ChargingDataRef={}",
+                    chf_resp->status, charging_data_ref);
+        return false;
+    }
+    spdlog::info("smf: Nchf_ConvergedCharging_Release succeeded for ChargingDataRef={}",
+                charging_data_ref);
     return true;
 }
 
@@ -671,6 +745,9 @@ int main() {
     auto chf_charging_data_create_counter = meter->CreateUInt64Counter(
         "smf_chf_charging_data_create_total",
         "Total successful (best-effort) Nchf_ConvergedCharging_Create calls to CHF");
+    auto chf_charging_data_release_counter = meter->CreateUInt64Counter(
+        "smf_chf_charging_data_release_total",
+        "Total successful (best-effort) Nchf_ConvergedCharging_Release calls to CHF");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -771,10 +848,12 @@ int main() {
             }
             // Not exposed in SmContextCreatedData -- TS29502 has no field for it (matches
             // n2SmInfo's own unpopulated state, see file header); kept internally so
-            // ReleaseSMContext can tear the association down again.
+            // ReleaseSMContext can tear the association down again. `supi` is stored here too
+            // (ADR-0046) so ReleaseSMContext can populate Nchf_ConvergedCharging_Release's
+            // subscriberIdentifier without re-deriving it from anywhere else.
             sm_contexts.update(
                 sm_context_ref,
-                json{{"smPolicyId", sm_policy_id}, {"policy", json(decision)}});
+                json{{"smPolicyId", sm_policy_id}, {"policy", json(decision)}, {"supi", *body->supi}});
             pcf_sm_policy_create_counter->Add(1);
 
             // ADR-0042: real N4 Session Establishment with UPF, using the Sx Association Stage 2
@@ -791,11 +870,21 @@ int main() {
                             *body->pduSessionId);
             }
 
-            // N40, ADR-0044: real Nchf_ConvergedCharging_Create, same best-effort discipline as
-            // the N4 call directly above (see perform_n40_charging_data_create's own comment).
-            if (perform_n40_charging_data_create(chf_client, chf_oauth, smf_instance_id, *body->supi,
-                                                 static_cast<std::uint8_t>(*body->pduSessionId))) {
+            // N40, ADR-0044/ADR-0046: real Nchf_ConvergedCharging_Create, same best-effort
+            // discipline as the N4 call directly above (see perform_n40_charging_data_create's own
+            // comment). The returned ChargingDataRef is merged into the already-stored sm context
+            // (read-modify-write, not a plain update -- SmContextStore::update replaces the whole
+            // entry, and smPolicyId/policy were already written above) so ReleaseSMContext can
+            // later call Nchf_ConvergedCharging_Release against the right resource.
+            if (const auto charging_data_ref = perform_n40_charging_data_create(
+                    chf_client, chf_oauth, smf_instance_id, *body->supi,
+                    static_cast<std::uint8_t>(*body->pduSessionId));
+                charging_data_ref.has_value()) {
                 chf_charging_data_create_counter->Add(1);
+                if (auto stored = sm_contexts.get(sm_context_ref); stored.has_value()) {
+                    (*stored)["chargingDataRef"] = *charging_data_ref;
+                    sm_contexts.update(sm_context_ref, *stored);
+                }
             }
 
             // ADR-0038: the real TS 23.502 §4.3.2.2.1 step 11 -- SMF decodes the UE's actual PDU
@@ -987,7 +1076,8 @@ int main() {
         "POST",
         std::string(kApiRoot) + "/sm-contexts/{smContextRef}/release",
         [&verifier, &sm_contexts, &release_counter, &pcf_client, &pcf_oauth,
-         &pcf_sm_policy_delete_counter](const sbi_core::http2::Request& req) {
+         &pcf_sm_policy_delete_counter, &chf_client, &chf_oauth, &chf_charging_data_release_counter,
+         &smf_instance_id](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -1036,6 +1126,22 @@ int main() {
                                 sm_policy_id);
                         }
                     }
+                }
+            }
+
+            // Best-effort Nchf_ConvergedCharging_Release (ADR-0046) -- same discipline as
+            // DeleteSMPolicy directly above: local release must not block on CHF being
+            // unreachable. Needs both chargingDataRef (from Create's response, ADR-0044) and supi
+            // (stored alongside smPolicyId above) -- if either is missing (e.g. Create's own N40
+            // call never succeeded for this session), there's nothing valid to release, skipped
+            // rather than sent with a fabricated ref.
+            if (stored->contains("chargingDataRef") && stored->contains("supi")) {
+                const auto charging_data_ref = (*stored)["chargingDataRef"].get<std::string>();
+                const auto supi = (*stored)["supi"].get<std::string>();
+                if (!charging_data_ref.empty() &&
+                    perform_n40_charging_data_release(chf_client, chf_oauth, smf_instance_id, supi,
+                                                       charging_data_ref)) {
+                    chf_charging_data_release_counter->Add(1);
                 }
             }
 

@@ -3,26 +3,32 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 
 // Private to nfs/chf -- not shared with any other NF, per CLAUDE.md's "no NF includes another
 // NF's private headers" rule.
 //
-// This turn only implements Nchf_ConvergedCharging_Create (see nfs/chf/src/main.cpp's file
-// header for the approved scope) -- Create doesn't need to read anything back (unlike
-// nfs/pcf/src/stores.hpp's AmPolicyStore, which backs a real GET). So this is just a
-// mutex-protected ChargingDataRef allocator for now, not a full resource store; a future
-// Update/Release turn will extend this to actually hold each resource's last
-// `ChargingDataResponse` (needed then to keep chargingId consistent across calls), same shape as
-// nfs/pcf/src/stores.hpp's precedent.
+// Now backs both Create and Release (ADR-0044/ADR-0046). Still not a full resource store in the
+// nfs/pcf/src/stores.hpp sense (AmPolicyStore holds the actual resource JSON for a real GET) --
+// Create doesn't read anything back, and Release only needs to know whether a ref is still active
+// (to return 404 for an unknown/already-released one) and to stop tracking it, not what its
+// content was. A future Update turn (ADR-0044's own deferred scope) would need to start holding
+// real resource JSON, same shape as nfs/pcf/src/stores.hpp's precedent.
 
 namespace chf {
 
-class ChargingDataRefAllocator {
+class ChargingDataStore {
 public:
-    std::string allocate();
+    // Allocates a new ChargingDataRef and marks it active.
+    std::string create();
+
+    // Returns false (and leaves state unchanged) if ref isn't currently active -- an unknown or
+    // already-released ChargingDataRef, per TS 32.291's real 404 case for Update/Release.
+    bool release(const std::string& ref);
 
 private:
     std::mutex mutex_;
+    std::unordered_set<std::string> active_refs_;
     std::uint64_t next_id_ = 1;
 };
 
