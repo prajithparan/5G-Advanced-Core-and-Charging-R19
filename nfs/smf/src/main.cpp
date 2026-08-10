@@ -111,6 +111,11 @@ constexpr const char* kSelfBase = "https://127.0.0.1:7779";
 constexpr const char* kPcfBase = "https://127.0.0.1:7783";
 constexpr const char* kAmfBase = "https://127.0.0.1:7778";
 constexpr const char* kChfBase = "https://127.0.0.1:7784";
+// No real service-to-rating-group mapping exists in this codebase (that's TS 32.298/32.299
+// charging-characteristics configuration, not modeled here) -- every PDU session's usage is
+// charged under this one fixed rating group, disclosed here and in ADR-0048, same category of
+// simplification as PCF's own fixed-default policy (ADR-0028).
+constexpr std::int64_t kDefaultRatingGroup = 1;
 constexpr const char* kApiRoot = "/nsmf-pdusession/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
@@ -564,6 +569,14 @@ std::optional<std::string> perform_n40_charging_data_create(sbi_core::http2::Cli
     chf_req.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
     chf_req.invocationSequenceNumber = 1;
     chf_req.subscriberIdentifier = supi;
+    // ADR-0048: a real online-charging quota request. ratingGroup is TS 32.291's one mandatory
+    // field on MultipleUnitUsage (confirmed directly against the vendored YAML's `required:`
+    // block); requestedUnit is deliberately omitted -- this build has no real traffic-volume
+    // estimator to request against, so CHF grants a full quota from its own rate-plan lookup
+    // rather than SMF requesting a specific amount (see nfs/chf/src/main.cpp's own comment).
+    sbi_gen::MultipleUnitUsage unit_usage{};
+    unit_usage.ratingGroup = kDefaultRatingGroup;
+    chf_req.multipleUnitUsage = std::vector<sbi_gen::MultipleUnitUsage>{unit_usage};
 
     sbi_core::http2::ClientRequest chf_http_req;
     chf_http_req.method = "POST";

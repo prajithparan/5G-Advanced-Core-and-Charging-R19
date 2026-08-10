@@ -735,7 +735,24 @@ downloading and parsing TM Forum's own TMF620 v4.1.0 swagger JSON.
 **Disclosed gaps**: real TMF620 `PATCH` (update) and the `/listener/*` event-notification callbacks
 are not implemented (Create/Get/List/Delete is enough to prove product/tariff data is configurable,
 per the approved scope); no OAuth2 layer (mTLS-only, disclosed -- no NRF-issued token source exists
-for a non-3GPP component); in-memory only, no persistence across restarts; **CHF does not yet
-consult this catalog** -- `Nchf_ConvergedCharging_Create` still returns an empty grant; wiring CHF
-to actually rate against real catalog data is a real rating engine, a distinct, larger, not-yet-
-approved scope. All disclosed in `bss/product-catalog/src/main.cpp`'s own header and ADR-0047.
+for a non-3GPP component); in-memory only, no persistence across restarts. All disclosed in
+`bss/product-catalog/src/main.cpp`'s own header and ADR-0047.
+
+## Real rating engine: CHF consults the catalog (ADR-0048)
+
+`Nchf_ConvergedCharging_Create` no longer always returns an empty grant -- CHF is now a real HTTP
+client of `bss/product-catalog`, converting real seeded catalog data into a real `GrantedUnit`.
+
+| Procedure | TS clause / TMF resource | Test |
+|---|---|---|
+| `MultipleUnitUsage.ratingGroup` (mandatory field, confirmed via the real YAML's `required:` block) sent by SMF | TS 32.291 | `smf` now sends a real `multipleUnitUsage` entry on every `Nchf_ConvergedCharging_Create` call (`nfs/smf/src/main.cpp`) |
+| CHF's real catalog-derived `GrantedUnit` | TS 32.291 `GrantedUnit`/`MultipleUnitInformation`, realized from TMF620 `ProductOfferingPrice.unitOfMeasure` | Real end-to-end: a real `ProductOfferingPrice` ("10GB Monthly Data", $25/month) and `ProductOffering` ("5G Standard Plan") were seeded via real mTLS `curl` calls; a real `nr-gnb`/`nr-ue` PDU Session Establishment then triggered SMF -> CHF -> product-catalog -> a real grant. `chf`'s own log: `rating engine granted 10000000000 octets from ProductOffering '5G Standard Plan' / ProductOfferingPrice '10GB Monthly Data'` (10 GB × 10^9, correctly converted). Verified at the wire level too: a direct call to CHF's real endpoint returned `{"multipleUnitInformation":[{"grantedUnit":{"totalVolume":10000000000},"ratingGroup":1}]}` in the actual HTTP response body. New `chf_rating_grant_total` Prometheus counter confirmed via direct scrape (`1`). See ADR-0048 |
+
+**Disclosed gaps**: no real subscriber-to-product assignment (grants from whichever `Active`+
+`isSellable` offering is first in the catalog, no customer/subscription store exists); unit
+conversion only handles `"GB"`/`"MB"` → `totalVolume` (decimal, matching 3GPP's own octet-counting
+convention), anything else falls back to `serviceSpecificUnits` unconverted; no quota consumption
+tracking or re-authorization (grants once at session establishment, never checks usage against the
+grant); `kDefaultRatingGroup` is a single fixed value (no real service-to-rating-group mapping,
+that's TS 32.298/32.299 charging-characteristics configuration, out of scope). All disclosed in
+`nfs/chf/src/main.cpp`'s `build_rating_grant` comment and ADR-0048.

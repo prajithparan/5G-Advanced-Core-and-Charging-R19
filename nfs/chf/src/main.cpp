@@ -3,23 +3,31 @@
 // (commit bca84b60a37773133bcae97e5c6c0d10a93b47b6). Phase 4's first NF (CLAUDE.md's charging
 // domain).
 //
-// Scope, in two approved stages:
+// Scope, in three approved stages:
 // - Stage 0/1 (ADR-0044): Nchf_ConvergedCharging_Create -- POST /chargingdata. Real request
 //   parsing, real ChargingDataRef allocation, a schema-valid ChargingDataResponse. Also builds and
 //   logs a TM Forum SID Individual for the subscriber (docs/CHARGING_MAPPING.md, ADR-0045).
-// - This turn (ADR-0046): Nchf_ConvergedCharging_Release -- POST /chargingdata/{ChargingDataRef}/
+// - ADR-0046: Nchf_ConvergedCharging_Release -- POST /chargingdata/{ChargingDataRef}/
 //   release. Validates the ref is a real, still-active one (404 if not), returns 204 per spec.
+// - This turn (ADR-0048): a real rating engine. CHF is now a real HTTP client of
+//   bss/product-catalog (ADR-0047) -- when a request's multipleUnitUsage carries a ratingGroup,
+//   CHF fetches the first Active/isSellable ProductOffering's first referenced
+//   ProductOfferingPrice, converts its unitOfMeasure into a real GrantedUnit, and returns it in
+//   multipleUnitInformation. See build_rating_grant's own comment for the real conversion/
+//   simplification details.
 //
 // Deliberately deferred, not dropped (separate approved future turns): Update
 // (POST /chargingdata/{ChargingDataRef}/update), the chargingNotification callback,
-// Nchf_OfflineOnlyCharging, Nchf_SpendingLimitControl. See docs/DECISIONS.md ADR-0044/ADR-0046.
+// Nchf_OfflineOnlyCharging, Nchf_SpendingLimitControl, quota consumption tracking/re-
+// authorization. See docs/DECISIONS.md ADR-0044/ADR-0046/ADR-0048.
 //
 // Disclosed simplifications, stated up front:
-// - No real rating/quota engine. multipleUnitInformation is never populated (no online/quota
-//   charging decision, since there's no rate table or subscriber balance anywhere in this build --
-//   same category of gap as PCF's fixed-default policy, ADR-0028). This Create always succeeds
-//   with an empty grant, which is schema-valid (multipleUnitInformation is optional) but not a
-//   real charging decision.
+// - No real subscriber-to-product assignment: the rating engine grants from whichever
+//   ProductOffering happens to be first (Active+isSellable) in the catalog, not a real per-
+//   subscriber rate plan lookup (no customer/subscription store exists) -- same category of
+//   simplification as PCF's fixed-default policy, ADR-0028. If the catalog has no matching
+//   offering (e.g. nothing seeded yet), Create still succeeds with an empty grant, same as before
+//   this turn -- schema-valid, not a real charging decision, disclosed not hidden.
 // - ChargingDataResponse's invocationSequenceNumber is set by echoing the request's own value.
 //   TS32291_Nchf_ConvergedCharging.yaml carries no per-field description text distinguishing
 //   "echo the request's sequence" from "CHF assigns its own independent sequence" for this field,
@@ -30,6 +38,7 @@
 //   simplification as every other NF's store so far.
 
 #include "bss_sid/party.hpp"
+#include "bss_sid/product.hpp"
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -45,6 +54,7 @@
 #include <boost/asio/io_context.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <thread>
@@ -65,6 +75,8 @@ constexpr const char* kMetricsBindAddress = "0.0.0.0:9472";
 constexpr const char* kNfType = "CHF";
 constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kApiRoot = "/nchf-convergedcharging/v3";
+constexpr const char* kProductCatalogBase = "https://127.0.0.1:7785";
+constexpr const char* kProductCatalogApiRoot = "/tmf-api/productCatalogManagement/v4";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -87,6 +99,93 @@ std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::R
         return r;
     }
     return verifier.verify(value.substr(kPrefix.size()));
+}
+
+// Real rating engine (ADR-0048), CHF's side. Fetches the first Active/isSellable ProductOffering
+// from bss/product-catalog (ADR-0047), then its first referenced ProductOfferingPrice, and
+// converts that price's unitOfMeasure into a real GrantedUnit -- CHF's actual charging decision,
+// not a fabricated placeholder. No OAuth2 token needed: product-catalog is mTLS-only (ADR-0047),
+// same trust boundary the client cert already provides. Returns nullopt if the catalog is
+// unreachable or has no matching offering (schema-valid empty grant, same fallback this build has
+// always had, see file header).
+//
+// Unit conversion is real but deliberately narrow: TS 32.291's GrantedUnit has no generic "amount
+// + unit string" field the way TMF620's Quantity does -- totalVolume/uplinkVolume/downlinkVolume
+// are raw octet counts (TS 32.298's own CDR volume fields are octet-counted, confirmed by their
+// Uint64 typing with no separate unit field), time is raw seconds. Only "GB"/"MB" (decimal,
+// matching 3GPP's own octet-counting convention, not binary GiB/MiB) convert to totalVolume; any
+// other unit string falls back to serviceSpecificUnits carrying the raw amount unconverted --
+// disclosed as a real but narrow conversion, not a general unit-aware rating engine.
+std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& catalog_client) {
+    sbi_core::http2::ClientRequest offerings_req;
+    offerings_req.method = "GET";
+    offerings_req.url =
+        std::string(kProductCatalogBase) + kProductCatalogApiRoot + "/productOffering";
+    auto offerings_resp = catalog_client.send(offerings_req);
+    if (!offerings_resp.has_value() || offerings_resp->status != 200) {
+        spdlog::warn("chf: could not reach bss/product-catalog for rating, granting nothing");
+        return std::nullopt;
+    }
+
+    std::vector<bss_sid::ProductOffering> offerings;
+    try {
+        offerings = json::parse(offerings_resp->body).get<std::vector<bss_sid::ProductOffering>>();
+    } catch (const json::exception& e) {
+        spdlog::warn("chf: malformed ProductOffering list from product-catalog: {}", e.what());
+        return std::nullopt;
+    }
+
+    const auto offering_it = std::find_if(offerings.begin(), offerings.end(), [](const auto& o) {
+        return o.isSellable.value_or(false) && o.lifecycleStatus.value_or("") == "Active" &&
+               !o.productOfferingPrice.empty();
+    });
+    if (offering_it == offerings.end()) {
+        spdlog::info("chf: no Active/isSellable ProductOffering with a price found, granting "
+                    "nothing this call");
+        return std::nullopt;
+    }
+
+    sbi_core::http2::ClientRequest price_req;
+    price_req.method = "GET";
+    price_req.url = std::string(kProductCatalogBase) + kProductCatalogApiRoot +
+                    "/productOfferingPrice/" + offering_it->productOfferingPrice.front().id;
+    auto price_resp = catalog_client.send(price_req);
+    if (!price_resp.has_value() || price_resp->status != 200) {
+        spdlog::warn("chf: could not fetch ProductOfferingPrice {}, granting nothing",
+                    offering_it->productOfferingPrice.front().id);
+        return std::nullopt;
+    }
+
+    bss_sid::ProductOfferingPrice price;
+    try {
+        price = json::parse(price_resp->body).get<bss_sid::ProductOfferingPrice>();
+    } catch (const json::exception& e) {
+        spdlog::warn("chf: malformed ProductOfferingPrice from product-catalog: {}", e.what());
+        return std::nullopt;
+    }
+    if (!price.unitOfMeasure.has_value() || !price.unitOfMeasure->amount.has_value()) {
+        spdlog::info("chf: ProductOfferingPrice {} has no unitOfMeasure, granting nothing",
+                    *price.id);
+        return std::nullopt;
+    }
+
+    sbi_gen::GrantedUnit grant{};
+    const auto amount = *price.unitOfMeasure->amount;
+    const auto units = price.unitOfMeasure->units.value_or("");
+    if (units == "GB") {
+        grant.totalVolume = static_cast<std::uint64_t>(amount * 1'000'000'000.0);
+    } else if (units == "MB") {
+        grant.totalVolume = static_cast<std::uint64_t>(amount * 1'000'000.0);
+    } else {
+        grant.serviceSpecificUnits = static_cast<std::uint64_t>(amount);
+    }
+    spdlog::info("chf: rating engine granted {} from ProductOffering '{}' / ProductOfferingPrice "
+                "'{}'",
+                units == "GB" || units == "MB" ? std::to_string(*grant.totalVolume) + " octets"
+                                                : std::to_string(*grant.serviceSpecificUnits) +
+                                                      " service-specific units",
+                offering_it->name.value_or(""), price.name.value_or(""));
+    return grant;
 }
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as every other
@@ -194,11 +293,24 @@ int main() {
 
     chf::ChargingDataStore charging_data_store;
 
+    // CHF's own client to bss/product-catalog (ADR-0048) -- mTLS only, no OAuth2 (product-catalog
+    // has no NRF-issued token source, see ADR-0047). Only ever touched from route handlers, which
+    // all run on ioc's single thread -- same "second client safe on the shared ioc thread" pattern
+    // ADR-0027 established.
+    sbi_core::http2::TlsConfig catalog_client_tls{
+        .cert_path = CERTS_DIR "/chf/cert.pem",
+        .key_path = CERTS_DIR "/chf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client catalog_client(std::move(catalog_client_tls));
+
     auto meter = sbi_core::get_meter("chf");
     auto create_counter = meter->CreateUInt64Counter(
         "chf_charging_data_create_total", "Total Nchf_ConvergedCharging_Create calls");
     auto release_counter = meter->CreateUInt64Counter(
         "chf_charging_data_release_total", "Total Nchf_ConvergedCharging_Release calls");
+    auto grant_counter = meter->CreateUInt64Counter(
+        "chf_rating_grant_total", "Total real GrantedUnit rating decisions issued");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -209,7 +321,8 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/chargingdata",
-        [&verifier, &charging_data_store, &create_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &charging_data_store, &create_counter, &catalog_client,
+         &grant_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -238,6 +351,25 @@ int main() {
             // See file header for why this echoes the request's value rather than assigning an
             // independent CHF-side sequence.
             response.invocationSequenceNumber = body->invocationSequenceNumber;
+
+            // ADR-0048: the real rating engine. Only runs if the request actually asked for units
+            // (a real MultipleUnitUsage entry, mandatory ratingGroup) -- SMF's own call always
+            // sends exactly one (see nfs/smf/src/main.cpp), but this handler doesn't assume that,
+            // it reads what's actually there.
+            if (body->multipleUnitUsage.has_value()) {
+                std::vector<sbi_gen::MultipleUnitInformation> granted;
+                for (const auto& usage : *body->multipleUnitUsage) {
+                    sbi_gen::MultipleUnitInformation info{};
+                    info.ratingGroup = usage.ratingGroup;
+                    info.grantedUnit = build_rating_grant(catalog_client);
+                    if (info.grantedUnit.has_value()) {
+                        grant_counter->Add(1);
+                    }
+                    granted.push_back(info);
+                }
+                response.multipleUnitInformation = std::move(granted);
+            }
+
             create_counter->Add(1);
 
             sbi_core::http2::Response resp;
