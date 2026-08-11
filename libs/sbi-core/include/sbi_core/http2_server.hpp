@@ -38,6 +38,10 @@ struct Request {
     std::string path;
     std::multimap<std::string, std::string> headers;
     std::map<std::string, std::string> path_params;
+    // Real query-string parsing (added for bss/balance-management's AccumulatedBalance filter,
+    // TMF654) -- percent-decoded per RFC 3986; a repeated key (?a=1&a=2) keeps every value, since
+    // this is a multimap, matching headers' own convention above.
+    std::multimap<std::string, std::string> query_params;
     std::string body;
 };
 

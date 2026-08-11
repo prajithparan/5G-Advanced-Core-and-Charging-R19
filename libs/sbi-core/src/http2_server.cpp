@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstring>
 #include <sstream>
 #include <stdexcept>
@@ -55,6 +56,52 @@ std::vector<std::string> split_path(const std::string& path) {
         }
     }
     return segments;
+}
+
+// RFC 3986 percent-decoding, plus the query-string convention of '+' meaning a literal space
+// (RFC 1866/application/x-www-form-urlencoded, universally followed by real HTTP clients for
+// query strings even though RFC 3986 itself doesn't require it). A malformed "%" escape (not
+// followed by two real hex digits) is passed through literally rather than throwing -- a
+// malformed query string should degrade to an unmatched/odd value, not crash request parsing.
+std::string percent_decode(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '%' && i + 2 < value.size() &&
+            std::isxdigit(static_cast<unsigned char>(value[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(value[i + 2]))) {
+            const std::string hex = value.substr(i + 1, 2);
+            out += static_cast<char>(std::stoi(hex, nullptr, 16));
+            i += 2;
+        } else if (value[i] == '+') {
+            out += ' ';
+        } else {
+            out += value[i];
+        }
+    }
+    return out;
+}
+
+std::multimap<std::string, std::string> parse_query_string(const std::string& full_path) {
+    std::multimap<std::string, std::string> out;
+    const auto qpos = full_path.find('?');
+    if (qpos == std::string::npos) {
+        return out;
+    }
+    std::stringstream ss(full_path.substr(qpos + 1));
+    std::string pair;
+    while (std::getline(ss, pair, '&')) {
+        if (pair.empty()) {
+            continue;
+        }
+        const auto eq = pair.find('=');
+        if (eq == std::string::npos) {
+            out.emplace(percent_decode(pair), std::string{});
+        } else {
+            out.emplace(percent_decode(pair.substr(0, eq)), percent_decode(pair.substr(eq + 1)));
+        }
+    }
+    return out;
 }
 
 struct Route {
@@ -236,6 +283,7 @@ private:
         req.path = ctx.path;
         req.headers = ctx.headers;
         req.body = ctx.body;
+        req.query_params = parse_query_string(ctx.path);
 
         const auto path_only = ctx.path.substr(0, ctx.path.find('?'));
         const auto segments = split_path(path_only);

@@ -7,6 +7,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 add_library(bss_sid STATIC
     src/party.cpp
     src/product.cpp
+    src/balance.cpp
 )
 
 target_include_directories(bss_sid PUBLIC

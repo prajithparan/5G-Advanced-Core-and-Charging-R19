@@ -348,7 +348,17 @@ Balance   -- realized as a TMF654 Bucket, see SID mapping below; fields renamed 
                                                         shared quota (E10) is the SAME mechanism as
                                                         a CONSUMER's single balance, not a special
                                                         case -- Bucket.partyAccount, real TMF654 field
-  balance_type               enum { MAIN, BONUS, PROMOTIONAL }   -- Bucket.usageType, real TMF654 field
+  usage_type                  enum { monetary, voice, data, sms, other }   -- Bucket.usageType, real
+                                  TMF654 field -- **correction, 2026-08-11**: this document originally
+                                  guessed this enum was `{MAIN, BONUS, PROMOTIONAL}`; re-checking the
+                                  real TMF654 swagger directly (`UsageType` definition) found the actual
+                                  enum is `{monetary, voice, data, sms, other}` -- it says WHAT KIND of
+                                  quantity a bucket tracks, not which "pool" (main/bonus/promotional) it
+                                  belongs to. TMF654 has no fixed enum for that distinction at all --
+                                  multi-balance (main/bonus/promotional) is modeled as **separate Bucket
+                                  resources**, distinguished by `name`/`description` (e.g. "Main Balance"
+                                  vs "Promotional Bonus"), same as real telco balance-management practice.
+                                  Flagged and fixed here rather than silently carried forward into P4.3.
   currency                   char(3)
   remaining_value             numeric(18,6)   -- Bucket.remainingValue, real TMF654 field
   reserved_value               numeric(18,6)   -- Bucket.reservedValue, real TMF654 field (online-
