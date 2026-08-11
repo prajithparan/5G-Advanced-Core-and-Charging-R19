@@ -27,8 +27,22 @@
 //   distinction as a real Trigger in the request body either -- a real, disclosed gap on the SMF
 //   side, not fixed by this stage).
 //
-// Deliberately deferred, not dropped (separate approved future turns): the chargingNotification
-// callback, Nchf_OfflineOnlyCharging, Nchf_SpendingLimitControl. See docs/DECISIONS.md
+// - P4.2 (CHARGING_PROMPT.md), starting this turn: Nchf_OfflineOnlyCharging and
+//   Nchf_SpendingLimitControl, real 3GPP-defined sibling services under this same CHF binary
+//   (TS 32.291 / TS 29.594). Real, disclosed rename that came with this: adding
+//   TS32291_Nchf_OfflineOnlyCharging.yaml to the sbi-codegen pilot set collided its own
+//   `ChargingDataRequest`/`ChargingDataResponse`/`MultipleUnitUsage`/`UsedUnitContainer`/
+//   `NFIdentification`/`NodeFunctionality` schema names with ConvergedCharging's own (two real,
+//   independent 3GPP services that happen to reuse the same type names for different shapes) --
+//   sbi-codegen's existing collision-disambiguation (ADR-0010) suffixed BOTH sides with their
+//   source service name, so every reference in this file and nfs/smf/src/main.cpp changed from
+//   e.g. `sbi_gen::ChargingDataRequest` to `sbi_gen::ChargingDataRequest_Nchf_ConvergedCharging`.
+//   Mechanical, verified (full rebuild + 146/146 tests, including the real SMF<->CHF integration
+//   test), not a functional change.
+//
+// Deliberately still deferred, not dropped: the Nchf_ConvergedCharging chargingNotification
+// callback (real trigger condition -- e.g. server-initiated reauthorization -- doesn't exist yet;
+// see docs/DECISIONS.md for whichever ADR documents this stage). See docs/DECISIONS.md
 // ADR-0044/ADR-0046/ADR-0048/ADR-0050.
 //
 // Disclosed simplifications, stated up front:
@@ -340,7 +354,8 @@ int main() {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             sbi_core::http2::Response err;
-            auto body = sbi_core::http2::parse_json_body<sbi_gen::ChargingDataRequest>(req, err);
+            auto body = sbi_core::http2::parse_json_body<
+                sbi_gen::ChargingDataRequest_Nchf_ConvergedCharging>(req, err);
             if (!body.has_value()) {
                 return err;
             }
@@ -360,7 +375,7 @@ int main() {
                              nlohmann::json(individual).dump());
             }
 
-            sbi_gen::ChargingDataResponse response{};
+            sbi_gen::ChargingDataResponse_Nchf_ConvergedCharging response{};
             response.invocationTimeStamp =
                 sbi_core::format_rfc3339(std::chrono::system_clock::now());
             // See file header for why this echoes the request's value rather than assigning an
@@ -405,7 +420,8 @@ int main() {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             sbi_core::http2::Response err;
-            auto body = sbi_core::http2::parse_json_body<sbi_gen::ChargingDataRequest>(req, err);
+            auto body = sbi_core::http2::parse_json_body<
+                sbi_gen::ChargingDataRequest_Nchf_ConvergedCharging>(req, err);
             if (!body.has_value()) {
                 return err;
             }
@@ -436,7 +452,7 @@ int main() {
                 }
             }
 
-            sbi_gen::ChargingDataResponse response{};
+            sbi_gen::ChargingDataResponse_Nchf_ConvergedCharging response{};
             response.invocationTimeStamp =
                 sbi_core::format_rfc3339(std::chrono::system_clock::now());
             response.invocationSequenceNumber = body->invocationSequenceNumber;
@@ -483,7 +499,8 @@ int main() {
             // reconcile against a final usage report -- same disclosed gap as Create's own
             // "no real rating engine" simplification).
             sbi_core::http2::Response err;
-            auto body = sbi_core::http2::parse_json_body<sbi_gen::ChargingDataRequest>(req, err);
+            auto body = sbi_core::http2::parse_json_body<
+                sbi_gen::ChargingDataRequest_Nchf_ConvergedCharging>(req, err);
             if (!body.has_value()) {
                 return err;
             }

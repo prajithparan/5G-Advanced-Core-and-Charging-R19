@@ -4605,3 +4605,92 @@ verification path for all of them going forward, not a one-by-one manual `docker
 image every time. `pcf` was the one representative, real, end-to-end proof that the fix pattern is
 correct; the rest is disclosed as "fixed identically, not independently re-run," not "confirmed
 identically."
+
+---
+
+## ADR-0055: P4.2 kickoff -- Nchf_OfflineOnlyCharging/Nchf_SpendingLimitControl codegen wiring, and a real schema-name collision found and fixed
+
+**Date:** 2026-08-11
+**Status:** Accepted.
+
+**Context:** P4.1's gate (ADR-0053) closed; CHARGING_PROMPT.md's P4.2 ("CHF core") is next.
+Checked what's already real in `nfs/chf/src/main.cpp` before drafting a procedure list (per
+CHARGING_PROMPT.md's own "procedure list for approval first" instruction), rather than assuming:
+`Nchf_ConvergedCharging` Create/Update/Release already exist (ADR-0044/0046/0048/0050/0051), with
+a real product-catalog-backed rating engine. Genuinely missing: `Nchf_ConvergedCharging` Notify,
+all of `Nchf_SpendingLimitControl` (TS 29.594), all of `Nchf_OfflineOnlyCharging` (TS 32.291), and
+N28/N41/N42 wiring.
+
+**Scope correction on N28**: `Nchf_SpendingLimitControl`'s real schema
+(`specs/5G_APIs-REL-19/TS29594_Nchf_SpendingLimitControl.yaml`, checked directly) has CHF as the
+**server** (`POST /subscriptions`, real `SpendingLimitContext` body: supi/gpsi/policyCounterIds/
+notifUri/expiry/supportedFeatures/notifId; `PUT`/`DELETE /subscriptions/{id}`) -- PCF subscribes
+to CHF, not the reverse. CHF's only client-side role for this service is the real callback
+mechanism confirmed in the YAML itself: POSTing to `{notifUri}/notify`
+(`statusNotification`, body `SpendingLimitStatus`) and `{notifUri}/terminate`
+(`subscriptionTermination`, body `SubscriptionTerminationInfo`). This narrows "N28 wiring" to
+hosting a real subscription resource plus a real callback sender, not building an Npcf_* client.
+
+**`Nchf_OfflineOnlyCharging`** (`TS32291_Nchf_OfflineOnlyCharging.yaml`, checked directly): real
+basePath `/nchf-offlineonlycharging/v1`, three operations mirroring ConvergedCharging's own shape
+almost exactly -- `POST /offlinechargingdata` (Create), `POST
+/offlinechargingdata/{OfflineChargingDataRef}/update` (Update), `POST .../release` (Release).
+
+**`Nchf_ConvergedCharging` Notify**: confirmed via the same YAML's `callbacks` block on
+`POST /chargingdata` -- CHF, as client, POSTs `ChargingNotifyRequest` to the `notifyUri` the
+original `ChargingDataRequest` supplied (`chargingNotification` callback), response
+`ChargingNotifyResponse`. No dedicated CHF-hosted path; a client-role callback like
+SpendingLimitControl's.
+
+**Nnrf_AccessToken finding** (CHARGING_PROMPT.md Section A explicitly asks for this before P4.2
+code): for domestic (single-PLMN) N28/N41/N42 traffic, this project's own already-uniform,
+non-negotiable convention (CLAUDE.md: "OAuth2 tokens from NRF" on 100% of SBI traffic) already
+answers this -- no new decision needed, PCF/AMF already attach NRF-issued bearer tokens to every
+outbound call, same as everywhere else in this codebase. For the **inter-PLMN/roaming** case
+specifically (N41/N42 across a PLMN boundary), this repo has no vendored TS 33.501 primary text to
+confirm whether NRF-issued tokens apply across the boundary or whether it's purely SEPP/N32's own
+security context -- **not confirmed, not guessed**. Deferred: roaming settlement is P4.11's scope,
+not P4.2's, so this doesn't block P4.2.
+
+**N41/N42 (AMF) wiring, real blocker disclosed**: CHF's server side already accepts a
+`ChargingDataRequest` from any `nodeFunctionality` generically (already true before this ADR) --
+but AMF has no real UE Registration procedure in this codebase to genuinely *trigger* a charging
+call from (no NGAP/NAS stack exists yet; a full plan for that is drafted separately and not
+started, independent of this charging work). Proving N41/N42 "for real" the same way N40 was
+proven (a real SMF call, live-verified) is blocked on that separate, much larger prerequisite --
+not fabricated here as a fake trigger.
+
+### Codegen wiring, and a real schema-name collision found and fixed
+
+Added `TS32291_Nchf_OfflineOnlyCharging.yaml` and `TS29594_Nchf_SpendingLimitControl.yaml` to
+`libs/sbi-generated/CMakeLists.txt`'s pilot file list (both external refs,
+`TS29571_CommonData.yaml` and `TS29512_Npcf_SMPolicyControl.yaml`, already present -- no new
+dependency files needed).
+
+**Real, found-not-assumed regression**: `Nchf_OfflineOnlyCharging`'s schema independently defines
+its own `ChargingDataRequest`/`ChargingDataResponse`/`MultipleUnitUsage`/`UsedUnitContainer`/
+`NFIdentification`/`NodeFunctionality` types (genuinely different shapes than ConvergedCharging's
+own, same names -- two real, independent 3GPP services that happen to reuse type names). sbi-codegen's
+existing collision-disambiguation (ADR-0010) correctly suffixed **both** sides with their source
+service name once the collision existed, which retroactively renamed the previously-unsuffixed
+`sbi_gen::ChargingDataRequest`/`ChargingDataResponse`/etc. that `nfs/chf/src/main.cpp` **and**
+`nfs/smf/src/main.cpp` already referenced directly -- confirmed by a real, full project rebuild
+that failed with genuine "is not a member of sbi_gen" compiler errors in both files, not
+speculated. Fixed by updating every call site in both files to the new
+`_Nchf_ConvergedCharging`-suffixed names (`ChargingDataRequest_Nchf_ConvergedCharging`,
+`ChargingDataResponse_Nchf_ConvergedCharging`, `MultipleUnitUsage_Nchf_ConvergedCharging`,
+`UsedUnitContainer_Nchf_ConvergedCharging`, `NFIdentification_Nchf_ConvergedCharging`,
+`NodeFunctionality_Nchf_ConvergedCharging`) -- a systematic check against every type name that
+collided (not just the ones the first compile error happened to surface) confirmed these six were
+the complete set actually referenced by name in either file.
+
+**Verified**: full project rebuild succeeds; full `ctest` suite 146/146 passes, including the real
+`test_smf_pdu_session.cpp` integration test that exercises these exact renamed types over live
+HTTP between real SMF and CHF processes -- not just a compile-time check. `clang-format` reapplied
+and reverified clean after the rename (identifier length changes shifted line wrapping).
+
+**Consequence:** codegen infrastructure for P4.2's remaining real work
+(`Nchf_OfflineOnlyCharging` Create/Update/Release, `Nchf_SpendingLimitControl` Subscribe/Update/
+Unsubscribe + notify/terminate callbacks, `Nchf_ConvergedCharging` Notify callback) is now in
+place and building cleanly; the actual route implementations are this same P4.2 turn's next step,
+not yet written as of this ADR entry.

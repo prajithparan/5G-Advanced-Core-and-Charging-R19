@@ -57,6 +57,13 @@
 // call in this file, before and after, uses a hardcoded base URL). Best-effort/non-fatal, same
 // discipline as the N4 Session Establishment call right above it in CreateSMContext's handler --
 // no real billing/quota dependency exists yet for a charging-data failure to correctly block on.
+//
+// P4.2 rename (see nfs/chf/src/main.cpp's own file header for the full explanation): every
+// `sbi_gen::ChargingDataRequest`/`ChargingDataResponse`/`MultipleUnitUsage`/`UsedUnitContainer`/
+// `NFIdentification`/`NodeFunctionality` reference in this file is now suffixed
+// `_Nchf_ConvergedCharging` -- a real sbi-codegen schema-name collision with the newly-added
+// Nchf_OfflineOnlyCharging service, not a functional change. Verified via full rebuild + 146/146
+// tests, including this file's own real integration test (test_smf_pdu_session.cpp).
 
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
@@ -689,12 +696,12 @@ perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
         return std::nullopt;
     }
 
-    sbi_gen::NFIdentification nf_id{};
+    sbi_gen::NFIdentification_Nchf_ConvergedCharging nf_id{};
     nf_id.nFName = smf_instance_id;
     nf_id.nFIPv4Address = "127.0.0.1";
-    nf_id.nodeFunctionality.value = sbi_gen::NodeFunctionality::SMF;
+    nf_id.nodeFunctionality.value = sbi_gen::NodeFunctionality_Nchf_ConvergedCharging::SMF;
 
-    sbi_gen::ChargingDataRequest chf_req{};
+    sbi_gen::ChargingDataRequest_Nchf_ConvergedCharging chf_req{};
     chf_req.nfConsumerIdentification = nf_id;
     chf_req.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
     chf_req.invocationSequenceNumber = 1;
@@ -704,9 +711,10 @@ perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
     // block); requestedUnit is deliberately omitted -- this build has no real traffic-volume
     // estimator to request against, so CHF grants a full quota from its own rate-plan lookup
     // rather than SMF requesting a specific amount (see nfs/chf/src/main.cpp's own comment).
-    sbi_gen::MultipleUnitUsage unit_usage{};
+    sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging unit_usage{};
     unit_usage.ratingGroup = kDefaultRatingGroup;
-    chf_req.multipleUnitUsage = std::vector<sbi_gen::MultipleUnitUsage>{unit_usage};
+    chf_req.multipleUnitUsage =
+        std::vector<sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging>{unit_usage};
 
     sbi_core::http2::ClientRequest chf_http_req;
     chf_http_req.method = "POST";
@@ -749,7 +757,8 @@ perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
     // nothing" fallback ADR-0048 already established for a catalog with no matching offering).
     std::optional<std::uint64_t> granted_total_volume_octets;
     try {
-        const auto resp_body = json::parse(chf_resp->body).get<sbi_gen::ChargingDataResponse>();
+        const auto resp_body =
+            json::parse(chf_resp->body).get<sbi_gen::ChargingDataResponse_Nchf_ConvergedCharging>();
         if (resp_body.multipleUnitInformation.has_value() &&
             !resp_body.multipleUnitInformation->empty() &&
             (*resp_body.multipleUnitInformation)[0].grantedUnit.has_value() &&
@@ -800,12 +809,12 @@ bool perform_n40_charging_data_release(sbi_core::http2::Client& chf_client,
         return false;
     }
 
-    sbi_gen::NFIdentification nf_id{};
+    sbi_gen::NFIdentification_Nchf_ConvergedCharging nf_id{};
     nf_id.nFName = smf_instance_id;
     nf_id.nFIPv4Address = "127.0.0.1";
-    nf_id.nodeFunctionality.value = sbi_gen::NodeFunctionality::SMF;
+    nf_id.nodeFunctionality.value = sbi_gen::NodeFunctionality_Nchf_ConvergedCharging::SMF;
 
-    sbi_gen::ChargingDataRequest chf_req{};
+    sbi_gen::ChargingDataRequest_Nchf_ConvergedCharging chf_req{};
     chf_req.nfConsumerIdentification = nf_id;
     chf_req.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
     chf_req.invocationSequenceNumber = invocation_sequence_number;
@@ -881,25 +890,27 @@ perform_n40_charging_data_update(sbi_core::http2::Client& chf_client,
         return std::nullopt;
     }
 
-    sbi_gen::NFIdentification nf_id{};
+    sbi_gen::NFIdentification_Nchf_ConvergedCharging nf_id{};
     nf_id.nFName = smf_instance_id;
     nf_id.nFIPv4Address = "127.0.0.1";
-    nf_id.nodeFunctionality.value = sbi_gen::NodeFunctionality::SMF;
+    nf_id.nodeFunctionality.value = sbi_gen::NodeFunctionality_Nchf_ConvergedCharging::SMF;
 
-    sbi_gen::UsedUnitContainer used_unit{};
+    sbi_gen::UsedUnitContainer_Nchf_ConvergedCharging used_unit{};
     used_unit.localSequenceNumber = local_sequence_number;
     used_unit.totalVolume = static_cast<std::int64_t>(used_total_volume_octets);
 
-    sbi_gen::MultipleUnitUsage unit_usage{};
+    sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging unit_usage{};
     unit_usage.ratingGroup = rating_group;
-    unit_usage.usedUnitContainer = std::vector<sbi_gen::UsedUnitContainer>{used_unit};
+    unit_usage.usedUnitContainer =
+        std::vector<sbi_gen::UsedUnitContainer_Nchf_ConvergedCharging>{used_unit};
 
-    sbi_gen::ChargingDataRequest chf_req{};
+    sbi_gen::ChargingDataRequest_Nchf_ConvergedCharging chf_req{};
     chf_req.nfConsumerIdentification = nf_id;
     chf_req.invocationTimeStamp = sbi_core::format_rfc3339(std::chrono::system_clock::now());
     chf_req.invocationSequenceNumber = invocation_sequence_number;
     chf_req.subscriberIdentifier = supi;
-    chf_req.multipleUnitUsage = std::vector<sbi_gen::MultipleUnitUsage>{unit_usage};
+    chf_req.multipleUnitUsage =
+        std::vector<sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging>{unit_usage};
 
     sbi_core::http2::ClientRequest chf_http_req;
     chf_http_req.method = "POST";
@@ -930,7 +941,8 @@ perform_n40_charging_data_update(sbi_core::http2::Client& chf_client,
     // re-authorized quota to push to UPF this call.
     std::optional<std::uint64_t> granted_total_volume_octets;
     try {
-        const auto resp_body = json::parse(chf_resp->body).get<sbi_gen::ChargingDataResponse>();
+        const auto resp_body =
+            json::parse(chf_resp->body).get<sbi_gen::ChargingDataResponse_Nchf_ConvergedCharging>();
         if (resp_body.multipleUnitInformation.has_value() &&
             !resp_body.multipleUnitInformation->empty() &&
             (*resp_body.multipleUnitInformation)[0].grantedUnit.has_value() &&

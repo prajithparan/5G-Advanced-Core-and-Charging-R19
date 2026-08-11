@@ -30,6 +30,8 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29507_Npcf_AMPolicyControl.yaml
     TS29512_Npcf_SMPolicyControl.yaml
     TS32291_Nchf_ConvergedCharging.yaml
+    TS32291_Nchf_OfflineOnlyCharging.yaml
+    TS29594_Nchf_SpendingLimitControl.yaml
     TS29571_CommonData.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
@@ -46,6 +48,8 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29507_Npcf_AMPolicyControl.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29512_Npcf_SMPolicyControl.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS32291_Nchf_ConvergedCharging.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS32291_Nchf_OfflineOnlyCharging.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29594_Nchf_SpendingLimitControl.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29571_CommonData.yaml
 )
 
