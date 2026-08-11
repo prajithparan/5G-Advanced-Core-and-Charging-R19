@@ -15,6 +15,7 @@
     "tl-expected",
     "jwt-cpp",
     "libpqxx",
+    "redis-plus-plus",
     {
       "name": "curl",
       "features": [

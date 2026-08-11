@@ -4744,3 +4744,55 @@ still unbuilt; N41/N42 (AMF) wiring remains blocked on the separate NGAP/NAS pre
 automated integration test exists for CHF specifically (this NF's own established pattern so far
 is real manual live-verification recorded in its ADRs, not an automated suite -- followed here,
 not newly introduced).
+
+### Follow-up, same session: real Redis/Valkey persistence for CHF's stores (E3)
+
+CHARGING_PROMPT.md's entity E3 (Session Establishment) explicitly requires charging sessions to
+be "idempotent and recoverable across restarts and network partitions"; `docs/DATA_MODEL.md`'s
+own E3 persistence assignment is Redis/Valkey. CHF's three stores (`ChargingDataStore`,
+`OfflineChargingDataStore`, `SpendingLimitSubscriptionStore`, all in `nfs/chf/src/stores.hpp`/
+`.cpp`) were in-memory-only until this follow-up -- real gap against E3's own explicit
+requirement, closed here.
+
+**Dependency**: `redis-plus-plus` (Apache-2.0) + transitively `hiredis` (BSD-3-Clause), both
+OSI-approved (P1-compliant), added to `vcpkg.json`. Checked upfront this time (learned from
+ADR-0054's `libpq`/`bison` surprise) whether this would repeat that Dockerfile blast-radius
+problem: neither port's own `vcpkg.json`/`portfile.cmake` names any external system build tool
+requirement (no `find_program`/`REQUIRED` calls, confirmed by reading both files directly) --
+installed cleanly in ~14s with no Dockerfile changes needed.
+
+**Design**: one shared `std::shared_ptr<sw::redis::Redis>` across all three stores. Confirmed by
+reading `sw::redis::Redis`'s own header (not assumed) that it manages an internal connection pool
+and is genuinely thread-safe for concurrent use -- a real difference from `bss/product-catalog`'s
+`libpqxx::connection`, which has no built-in pooling and needed the mutex-per-store pattern
+ADR-0054 used. `ChargingDataStore`/`OfflineChargingDataStore` use a Redis `SET` for active-ref
+tracking (`SADD`/`SREM`/`SISMEMBER`) plus an atomic `INCR` counter for ID generation --
+**a genuine improvement over the old in-memory counter, not just a persistence bolt-on**: the old
+`next_id_` was per-process and would have both collided across multiple CHF replicas and reset to
+1 on every restart, neither of which Redis's atomic counter does.
+`SpendingLimitSubscriptionStore` stores each subscription's real `SpendingLimitContext` as a JSON
+string value (real resource store, not just an active marker, since `PUT` needs the previous
+content). Connection string via `CHF_REDIS_URL` env var (same never-hardcode-credentials
+discipline as `PRODUCT_CATALOG_DATABASE_URL`, ADR-0054), with a real `PING` at startup for
+fail-fast behavior matching every other NF's real dependency check (confirmed the pool connects
+lazily on first command otherwise, not eagerly at construction, by reading `ConnectionPoolOptions`
+directly -- not assumed).
+
+**Live-verified for real, including actual restart-survival** (the entire point of this change):
+started real `nrf` + `chf` processes against a real `valkey/valkey:8-alpine` container (the
+OSI-approved fork, per ADR-0053's own compliance table -- not the SSPL-relicensed Redis image),
+created a real ConvergedCharging session (`chg-1`) and a real SpendingLimitControl subscription
+(`sub-1`), confirmed both directly via `valkey-cli` (independent of CHF's own serialization,
+same cross-process-independent-re-derivation discipline as ADR-0054) -- then **killed the CHF
+process entirely and started a fresh one**, and confirmed: (1) `Update` on `chg-1` returns 200,
+not 404 -- the session survived; (2) `PUT` on `sub-1` returns 200 with the real previous content
+correctly updated-in-place -- the subscription survived; (3) a new `Create` call afterward
+allocated `chg-2`, not `chg-1` again -- the atomic ID counter itself survived and continued
+correctly, not just individual records. Full rebuild + `clang-format` clean + 146/146 `ctest`
+(unaffected, since no ctest-registered test spawns CHF) both before and after.
+
+**Still disclosed, real limitation carried forward**: `ChargingDataStore`/
+`OfflineChargingDataStore` only persist active-ref *existence*, not real session content (same
+shape the in-memory version already had) -- recovering actual charging state (not just whether a
+ref exists) after a restart would need a real resource store here too, same category of future
+work as `SpendingLimitSubscriptionStore` already demonstrates the pattern for.

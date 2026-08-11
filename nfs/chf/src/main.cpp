@@ -70,8 +70,14 @@
 //   and no normative TS 32.291 prose is vendored in this repo to check -- echoing the request's
 //   value is the least-invented choice (no independent CHF-side sequencing semantics assumed) and
 //   disclosed here rather than picked silently.
-// - No persistence across restarts (in-memory ChargingDataStore only) -- same disclosed
-//   simplification as every other NF's store so far.
+// - Real Redis/Valkey persistence, extended this turn (see stores.hpp's own header comment for
+//   the full rationale -- CHARGING_PROMPT.md entity E3's explicit "recoverable across restarts"
+//   requirement, docs/DATA_MODEL.md's own persistence assignment). Was in-memory-only before.
+//   Real, disclosed limitation carried forward from the in-memory version: no genuine session
+//   *content* is stored for ChargingDataStore/OfflineChargingDataStore (Redis SET membership
+//   only tracks whether a ref is active, same shape as before) -- a future turn that needs to
+//   recover a session's actual charging state (not just its existence) after a restart would need
+//   to store more than a bare active-ref marker, same gap the in-memory version already had.
 
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
@@ -90,6 +96,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <memory>
 #include <optional>
 #include <thread>
 
@@ -124,6 +132,17 @@ constexpr const char* kProductCatalogApiRoot = "/tmf-api/productCatalogManagemen
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
+
+// Redis/Valkey connection string for CHF's stores (E3 persistence, see stores.hpp) -- same
+// getenv-based-config precedent bss/product-catalog's PRODUCT_CATALOG_DATABASE_URL already
+// established (ADR-0054) for exactly this "never hardcode a connection string" reason. Default
+// matches this project's lab/dev convention.
+std::string chf_redis_conninfo() {
+    if (const char* env = std::getenv("CHF_REDIS_URL")) {
+        return env;
+    }
+    return "tcp://127.0.0.1:6379";
+}
 
 // Same pattern as every other NF's check_bearer -- see nfs/nrf/src/main.cpp's comment for why a
 // missing Authorization header is not itself a 401 (bootstrap security alternative:
@@ -370,9 +389,22 @@ int main() {
 
     sbi_core::jwt::Verifier verifier(CERTS_DIR "/nrf-jwt/public.pem", kNrfInstanceId);
 
-    chf::ChargingDataStore charging_data_store;
-    chf::OfflineChargingDataStore offline_charging_data_store;
-    chf::SpendingLimitSubscriptionStore spending_limit_store;
+    // Real Redis/Valkey persistence for CHF's stores (E3's "recoverable across restarts" -- see
+    // stores.hpp's own header comment). One shared client: sw::redis::Redis pools connections
+    // internally and is genuinely thread-safe, confirmed by reading its own header, not the
+    // per-store single-connection-behind-a-mutex pattern bss/product-catalog uses for libpqxx
+    // (ADR-0054), since libpqxx::connection has no such built-in pooling.
+    auto redis = std::make_shared<sw::redis::Redis>(chf_redis_conninfo());
+    // sw::redis::Redis's connection pool connects lazily on first command (confirmed: pool size
+    // defaults to 1, no eager-connect option used here) -- a real PING here, not assumed
+    // connectivity, gives the same fail-fast-at-startup behavior every other NF's real dependency
+    // check already has (e.g. bss/product-catalog's libpqxx::connection, which throws immediately
+    // in its own constructor if unreachable).
+    redis->ping();
+    spdlog::info("chf: connected to Redis/Valkey");
+    chf::ChargingDataStore charging_data_store(redis);
+    chf::OfflineChargingDataStore offline_charging_data_store(redis);
+    chf::SpendingLimitSubscriptionStore spending_limit_store(redis);
 
     // CHF's own client to bss/product-catalog (ADR-0048) -- mTLS only, no OAuth2 (product-catalog
     // has no NRF-issued token source, see ADR-0047). Only ever touched from route handlers, which

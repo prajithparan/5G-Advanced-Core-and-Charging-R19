@@ -1,28 +1,36 @@
 #pragma once
 
 #include <cstdint>
-#include <mutex>
 #include <optional>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
+#include <sw/redis++/redis++.h>
 
 #include "TS29594_Nchf_SpendingLimitControl.hpp"
 
 // Private to nfs/chf -- not shared with any other NF, per CLAUDE.md's "no NF includes another
 // NF's private headers" rule.
 //
-// Now backs both Create and Release (ADR-0044/ADR-0046). Still not a full resource store in the
-// nfs/pcf/src/stores.hpp sense (AmPolicyStore holds the actual resource JSON for a real GET) --
-// Create doesn't read anything back, and Release only needs to know whether a ref is still active
-// (to return 404 for an unknown/already-released one) and to stop tracking it, not what its
-// content was. A future Update turn (ADR-0044's own deferred scope) would need to start holding
-// real resource JSON, same shape as nfs/pcf/src/stores.hpp's precedent.
+// Real Redis/Valkey persistence (redis-plus-plus), replacing this file's earlier in-memory-only
+// stores -- CHARGING_PROMPT.md's entity E3 (Session Establishment) explicitly requires charging
+// sessions to be "idempotent and recoverable across restarts and network partitions", and
+// docs/DATA_MODEL.md's own E3 persistence assignment is Redis/Valkey for exactly this reason.
+// `sw::redis::Redis` manages its own internal connection pool and IS genuinely thread-safe for
+// concurrent use (confirmed by reading its own header, not assumed) -- unlike
+// bss/product-catalog's single-pqxx-connection-behind-a-mutex pattern (ADR-0054), no mutex is
+// needed here.
+//
+// Real, disclosed limitation: ID generation uses Redis INCR (atomic, survives restart, safe
+// across multiple CHF instances sharing the same Redis) instead of the earlier process-local
+// counter -- a genuine improvement, not just a persistence bolt-on, since the old counter would
+// have collided across CHF replicas or reset to 1 on every restart.
 
 namespace chf {
 
 class ChargingDataStore {
 public:
+    explicit ChargingDataStore(std::shared_ptr<sw::redis::Redis> redis)
+        : redis_(std::move(redis)) {}
+
     // Allocates a new ChargingDataRef and marks it active.
     std::string create();
 
@@ -36,36 +44,38 @@ public:
     bool is_active(const std::string& ref);
 
 private:
-    std::mutex mutex_;
-    std::unordered_set<std::string> active_refs_;
-    std::uint64_t next_id_ = 1;
+    std::shared_ptr<sw::redis::Redis> redis_;
 };
 
 // P4.2 (ADR-0055): Nchf_OfflineOnlyCharging's own OfflineChargingDataRef resource collection --
 // a genuinely separate 3GPP resource from ChargingDataRef above (different service,
 // /offlinechargingdata not /chargingdata), not reused, even though the tracking shape is
-// identical (active-ref-set, same as ChargingDataStore -- no rating engine involved here, per
-// TS32291_Nchf_OfflineOnlyCharging.yaml's own ChargingDataResponse schema carrying no
-// multipleUnitInformation/grantedUnit field at all).
+// identical -- no rating engine involved here, per TS32291_Nchf_OfflineOnlyCharging.yaml's own
+// ChargingDataResponse schema carrying no multipleUnitInformation/grantedUnit field at all.
 class OfflineChargingDataStore {
 public:
+    explicit OfflineChargingDataStore(std::shared_ptr<sw::redis::Redis> redis)
+        : redis_(std::move(redis)) {}
+
     std::string create();
     bool release(const std::string& ref);
     bool is_active(const std::string& ref);
 
 private:
-    std::mutex mutex_;
-    std::unordered_set<std::string> active_refs_;
-    std::uint64_t next_id_ = 1;
+    std::shared_ptr<sw::redis::Redis> redis_;
 };
 
 // P4.2 (ADR-0055): Nchf_SpendingLimitControl's subscriptionId resource collection (TS 29.594).
 // Unlike ChargingDataStore/OfflineChargingDataStore above, this is a real resource store (holds
-// the actual SpendingLimitContext, not just an active-ref marker) -- PUT /subscriptions/{id} is a
-// real update-in-place that needs the previous context, and building each SpendingLimitStatus
-// response (Subscribe/Update) needs the subscription's own policyCounterIds to enumerate.
+// the actual SpendingLimitContext as a JSON string value, not just an active-ref marker) -- PUT
+// /subscriptions/{id} is a real update-in-place that needs the previous context, and building
+// each SpendingLimitStatus response (Subscribe/Update) needs the subscription's own
+// policyCounterIds to enumerate.
 class SpendingLimitSubscriptionStore {
 public:
+    explicit SpendingLimitSubscriptionStore(std::shared_ptr<sw::redis::Redis> redis)
+        : redis_(std::move(redis)) {}
+
     // Server-assigned subscriptionId, matching every other resource-creation convention in this
     // codebase (see e.g. bss/product-catalog/src/store.hpp).
     std::string create(sbi_gen::SpendingLimitContext context);
@@ -79,9 +89,7 @@ public:
     std::optional<sbi_gen::SpendingLimitContext> get(const std::string& id);
 
 private:
-    std::mutex mutex_;
-    std::unordered_map<std::string, sbi_gen::SpendingLimitContext> subscriptions_;
-    std::uint64_t next_id_ = 1;
+    std::shared_ptr<sw::redis::Redis> redis_;
 };
 
 } // namespace chf
