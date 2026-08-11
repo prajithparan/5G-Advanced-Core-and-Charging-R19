@@ -5507,3 +5507,63 @@ jsonb and the FK chain). 158/158 total tests pass, `clang-format-18` clean.
   `organizationParentRelationship`/`organizationChildRelationship`, or a `Subscriber` referencing a
   nonexistent `Individual`/`Account` beyond the database's own FK constraints) -- real but
   deliberately out of scope for a schema-and-store-library turn.
+
+### E5 (Rating Function) -- complete, net-new, wired into CHF's real rating engine
+
+Re-fetched the real TMF678 swagger directly (`tmforum-apis/TMF678_CustomerBill`, real repo/branch
+found via GitHub search after the first two guessed repo/branch names both 404'd -- the org's
+actual naming convention isn't always `TMF<n>_<FullOfficialName>`/`master`, disclosed rather than
+silently retried without noting the mismatch). New `libs/bss-sid/include/bss_sid/rating.hpp`/`.cpp`:
+the full real `AppliedCustomerBillingRate` field set (E5's own SID mapping, `docs/DATA_MODEL.md`)
+plus its real sub-types `BillRef`, `BillingAccountRef`, `AppliedBillingTaxRate`,
+`AppliedBillingRateCharacteristic`.
+
+**Real, disclosed correction to `docs/DATA_MODEL.md`'s own earlier E5 note**: that document named a
+field `appliedBillingRateType`; the real swagger confirms the actual field is simply `type` (a
+string enum: `appliedBillingCharge`/`appliedBillingCredit`/`appliedPenaltyCharge`) --
+`appliedBillingRateType` does not exist in the real spec. Corrected in `rating.hpp`'s own header,
+not silently carried forward.
+
+**Real, second bug found and fixed during this pass (unrelated to E5 itself)**: `ProductOfferingPrice
+.version` -- a real TMF620 field this project's own earlier field-extraction output explicitly
+listed (`version: string`) -- was never actually added to the `ProductOfferingPrice` struct,
+serializer, `schema.sql`, or `store.cpp` during E2's own "no compromise" pass; found only because
+E5's `tariff_version` field needed it. Fixed across all four files (already-pushed E2 commits
+`cd2d3be`/history now updated in this same turn) -- a concrete reminder that a "no compromise"
+audit is itself not infallible, live-verification is what actually catches gaps like this one, not
+the audit pass alone.
+
+**New: CHF's first real PostgreSQL connection** (`nfs/chf/schema.postgres.sql`,
+`src/rating_decision_store.hpp`/`.cpp`) -- previously Redis/Valkey (E3) and ClickHouse (E4) only.
+`rating_decision` combines this project's own project-internal audit fields (principle 1:
+`input_snapshot`, `tariff_version` pinning; principle 2: `rule_fired_id`) with the real TMF678
+fields the decision is realized as (`acbr_type`/`acbr_is_billed`/`acbr_tax_excluded`/
+`acbr_tax_included`) on the same row -- same "project-internal wrapper around a real TM Forum
+resource" pattern as E6's `Bucket`. **Disclosed simplification**: `acbr_tax_excluded` and
+`acbr_tax_included` both currently equal the raw rated amount -- no real tax-computation subsystem
+exists yet (`AppliedBillingTaxRate` is modeled, not populated from any real rate table). Disclosed
+gap: `input_snapshot` does not capture balance-at-decision-time (would need an extra
+bss/balance-management call on every rating decision, not added this pass).
+
+**Same graceful-degradation design principle as `CdrWriter` (ADR-0058)**: `RatingDecisionStore`'s
+constructor catches a connection failure internally (never throws, never crashes CHF), and
+`record()` is best-effort -- an audit-write failure is logged and swallowed, never blocking the
+real charging response. `build_rating_grant` (`RatingResult`) extended to also return
+`tariffId`/`tariffVersion`/`offeringName`/`priceName` so the new `write_rating_decision` helper
+(shared between the Create and Update `Nchf_ConvergedCharging` handlers, same pattern as
+`write_converged_charging_cdr`) can build a real audit row without a second lookup.
+
+**Live-verified for real, full chain**: real `nrf` + `product-catalog` (real Postgres) +
+`balance-management` (real Postgres) + `chf` (real Redis, real Postgres for E5) -- created a real
+`ProductOfferingPrice` (`version="1.0"`, confirming the just-fixed field round-trips) and
+`ProductOffering`, funded a real subscriber bucket with a real `$50` `TopupBalance`, then drove a
+real `Nchf_ConvergedCharging` Create call: a real 5GB grant was issued, a real `$20` was reserved
+(bucket independently confirmed at `$30` remaining / `$20` reserved via direct `psql`), and a real
+`rating_decision` row was written -- independently confirmed via direct `psql` query showing
+`tariff_id=1`, `tariff_version=1.0`, `rating_group=100`, `rated_amount=20.0`, `currency=USD`,
+`rule_fired_id=1`, `acbr_type=appliedBillingCharge`, and a real `input_snapshot` jsonb
+(`chargingDataRef`, `offeringName`, `priceName`, `reserved=true`, `timestamp`). Negative path also
+live-verified: CHF started successfully against an intentionally-wrong PostgreSQL credential (real
+`FATAL: password authentication failed` from the server), logged the warning, and continued
+running normally for the full test duration -- no crash, matching `CdrWriter`'s own already-proven
+degradation behavior. 158/158 tests pass, `clang-format-18` clean.

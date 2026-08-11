@@ -109,6 +109,7 @@ template <typename Row> bss_sid::ProductOfferingPrice row_to_price(const Row& ro
     v.lastUpdate = row["last_update"].template as<std::optional<std::string>>();
     v.priceType = row["price_type"].template as<std::optional<std::string>>();
     v.percentage = row["percentage"].template as<std::optional<double>>();
+    v.version = row["version"].template as<std::optional<std::string>>();
     v.price =
         parse_optional<bss_sid::Money>(row["price"].template as<std::optional<std::string>>());
     v.recurringChargePeriodLength =
@@ -281,12 +282,12 @@ std::string ProductOfferingPriceStore::create(bss_sid::ProductOfferingPrice pric
     txn.exec(
         "INSERT INTO product_offering_price "
         "(id, href, name, description, lifecycle_status, last_update, price_type, percentage, "
-        "price, recurring_charge_period_length, recurring_charge_period_type, unit_of_measure, "
-        "prod_spec_char_value_use, bundled_pop_relationship, constraint_ref, place, "
-        "pop_relationship, pricing_logic_algorithm, product_offering_term, tax, valid_from, "
-        "valid_to) "
-        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb,"
-        "$15::jsonb,$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb,$20::jsonb,$21,$22)",
+        "version, price, recurring_charge_period_length, recurring_charge_period_type, "
+        "unit_of_measure, prod_spec_char_value_use, bundled_pop_relationship, constraint_ref, "
+        "place, pop_relationship, pricing_logic_algorithm, product_offering_term, tax, "
+        "valid_from, valid_to) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13::jsonb,$14::jsonb,$15::jsonb,"
+        "$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb,$20::jsonb,$21::jsonb,$22,$23)",
         pqxx::params{id,
                      price.href,
                      price.name,
@@ -295,6 +296,7 @@ std::string ProductOfferingPriceStore::create(bss_sid::ProductOfferingPrice pric
                      price.lastUpdate,
                      price.priceType,
                      price.percentage,
+                     price.version,
                      dump_optional(price.price),
                      price.recurringChargePeriodLength,
                      price.recurringChargePeriodType,

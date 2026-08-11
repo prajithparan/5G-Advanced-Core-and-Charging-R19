@@ -27,7 +27,11 @@ set_target_properties(clickhouse_cpp PROPERTIES
 )
 target_link_libraries(clickhouse_cpp INTERFACE absl::int128 cityhash lz4::lz4 zstd::libzstd)
 
-add_executable(chf src/main.cpp src/stores.cpp src/cdr.cpp src/diameter_server.cpp)
-target_link_libraries(chf PRIVATE sbi_core sbi_generated bss_sid redis++::redis++_static clickhouse_cpp diameter_core)
+# libpqxx (P4.5/ADR-0060: E5 RatingDecision audit table, docs/DATA_MODEL.md's PostgreSQL
+# assignment) -- CHF's first real PostgreSQL connection.
+find_package(libpqxx CONFIG REQUIRED)
+
+add_executable(chf src/main.cpp src/stores.cpp src/cdr.cpp src/diameter_server.cpp src/rating_decision_store.cpp)
+target_link_libraries(chf PRIVATE sbi_core sbi_generated bss_sid redis++::redis++_static clickhouse_cpp diameter_core libpqxx::pqxx)
 # See nfs/hello-nf/CMakeLists.txt for why this is a compile-time absolute path.
 target_compile_definitions(chf PRIVATE CERTS_DIR="${CMAKE_SOURCE_DIR}/certs")

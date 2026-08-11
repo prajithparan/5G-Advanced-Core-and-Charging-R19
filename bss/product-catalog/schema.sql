@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS product_offering_price (
     last_update                     TEXT,
     price_type                      TEXT,
     percentage                      DOUBLE PRECISION,
+    version                         TEXT,
     price                           JSONB,
     recurring_charge_period_length  INTEGER,
     recurring_charge_period_type    TEXT,

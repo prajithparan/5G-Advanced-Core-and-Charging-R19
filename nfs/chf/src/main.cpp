@@ -117,9 +117,11 @@
 #include "bss_sid/balance.hpp"
 #include "bss_sid/party.hpp"
 #include "bss_sid/product.hpp"
+#include "bss_sid/rating.hpp"
 #include "cdr.hpp"
 #include "diameter_core/header.hpp"
 #include "diameter_server.hpp"
+#include "rating_decision_store.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -186,6 +188,16 @@ clickhouse::ClientOptions chf_clickhouse_options() {
                                    ? std::getenv("CHF_CLICKHOUSE_DATABASE")
                                    : "default");
     return options;
+}
+
+// P4.5/ADR-0060 (E5, RatingDecision): CHF's first real PostgreSQL connection string -- same
+// never-hardcode-credentials, getenv-based-config precedent as chf_redis_conninfo/
+// chf_clickhouse_options above, and bss/product-catalog's PRODUCT_CATALOG_DATABASE_URL (ADR-0054).
+std::string chf_rating_postgres_conninfo() {
+    if (const char* env = std::getenv("CHF_RATING_DATABASE_URL")) {
+        return env;
+    }
+    return "postgresql://postgres@127.0.0.1:5432/chf_rating";
 }
 
 // Same pattern as every other NF's check_bearer -- see nfs/nrf/src/main.cpp's comment for why a
@@ -263,9 +275,16 @@ build_spending_limit_status(const sbi_gen::SpendingLimitContext& context) {
 // this project invented a split for. `cost` is nullopt when the matched price has no `price`
 // field set (a real, valid TMF620 state -- not every price is monetary), in which case no real
 // balance reservation is attempted for this grant (same as before this ADR).
+// P4.5/ADR-0060 (E5): tariffId/tariffVersion/offeringName/priceName added so callers can write a
+// real RatingDecision audit row (principle 2: "every charge is explainable") without a second
+// lookup -- empty when no offering/price was matched (nothing was rated, nothing to audit).
 struct RatingResult {
     std::optional<sbi_gen::GrantedUnit> grant;
     std::optional<bss_sid::Money> cost;
+    std::optional<std::string> tariffId;
+    std::optional<std::string> tariffVersion;
+    std::optional<std::string> offeringName;
+    std::optional<std::string> priceName;
 };
 
 RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client) {
@@ -338,7 +357,7 @@ RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client) {
                      : std::to_string(*grant.serviceSpecificUnits) + " service-specific units",
                  offering_it->name.value_or(""),
                  price.name.value_or(""));
-    return {grant, price.price};
+    return {grant, price.price, price.id, price.version, offering_it->name, price.name};
 }
 
 // P4.3 (ADR-0057): CHF as a real HTTP client of bss/balance-management (ADR-0056) -- reserves
@@ -521,6 +540,42 @@ void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
     }
 }
 
+// P4.5/ADR-0060 (E5): writes one real RatingDecision audit row per MultipleUnitUsage entry that
+// was actually rated (rating.tariffId has a value) -- an unmatched offering/price is not a
+// "decision" worth auditing (nothing was explained because nothing was rated). Shared between the
+// Create and Update route handlers, same pattern as write_converged_charging_cdr above.
+void write_rating_decision(chf::RatingDecisionStore& rating_decision_store,
+                           const std::string& ref,
+                           const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
+                           const RatingResult& rating,
+                           bool reserved) {
+    if (!rating.tariffId.has_value()) {
+        return;
+    }
+    chf::RatingDecisionRecord decision{};
+    decision.tariffId = *rating.tariffId;
+    decision.tariffVersion = rating.tariffVersion;
+    decision.ratingGroup = static_cast<std::int64_t>(usage.ratingGroup);
+    // Real, disclosed gap (schema.postgres.sql's own header): balance-at-decision-time is not
+    // captured here -- would need an extra bss/balance-management call on every rating decision,
+    // not added this pass.
+    decision.inputSnapshot = {
+        {"chargingDataRef", ref},
+        {"ratingGroup", usage.ratingGroup},
+        {"offeringName", rating.offeringName.value_or("")},
+        {"priceName", rating.priceName.value_or("")},
+        {"reserved", reserved},
+        {"timestamp", sbi_core::format_rfc3339(std::chrono::system_clock::now())},
+    };
+    if (reserved && rating.cost.has_value()) {
+        decision.ratedAmount = rating.cost->value;
+        decision.currency = rating.cost->unit;
+    }
+    decision.ruleFiredId = *rating.tariffId;
+    decision.acbrType = "appliedBillingCharge";
+    rating_decision_store.record(decision);
+}
+
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as every other
 // NF's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019).
 void run_nrf_lifecycle(const std::string& chf_instance_id) {
@@ -651,6 +706,16 @@ int main() {
         spdlog::warn("chf: ClickHouse unavailable, CDF/CDR generation disabled for this process");
     }
 
+    // P4.5/ADR-0060 (E5): real RatingDecision audit table -- see rating_decision_store.hpp's own
+    // header for the same graceful-degradation design principle CdrWriter already established
+    // (ADR-0058): a PostgreSQL outage must never crash or block real-time charging.
+    chf::RatingDecisionStore rating_decision_store(chf_rating_postgres_conninfo());
+    if (rating_decision_store.is_connected()) {
+        spdlog::info("chf: connected to PostgreSQL (RatingDecision audit, E5)");
+    } else {
+        spdlog::warn("chf: PostgreSQL unavailable, RatingDecision audit disabled for this process");
+    }
+
     // P4.5/ADR-0059 Stage 2: real Diameter server (CER/CEA capability exchange only -- Stage 3
     // adds real CCR/CCA Gy handling on the same listener, per the ADR's staged plan).
     chf::DiameterServer diameter_server(kDiameterPort, kDiameterOriginHost, kDiameterOriginRealm);
@@ -719,7 +784,8 @@ int main() {
          &balance_client,
          &grant_counter,
          &reserve_rejected_counter,
-         &cdr_writer](const sbi_core::http2::Request& req) {
+         &cdr_writer,
+         &rating_decision_store](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -794,6 +860,7 @@ int main() {
                         usage,
                         rating,
                         reserved);
+                    write_rating_decision(rating_decision_store, ref, usage, rating, reserved);
                     granted.push_back(info);
                 }
                 response.multipleUnitInformation = std::move(granted);
@@ -820,7 +887,8 @@ int main() {
          &balance_client,
          &grant_counter,
          &reserve_rejected_counter,
-         &cdr_writer](const sbi_core::http2::Request& req) {
+         &cdr_writer,
+         &rating_decision_store](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -904,6 +972,7 @@ int main() {
                         usage,
                         rating,
                         reserved);
+                    write_rating_decision(rating_decision_store, ref, usage, rating, reserved);
                     granted.push_back(info);
                 }
                 response.multipleUnitInformation = std::move(granted);

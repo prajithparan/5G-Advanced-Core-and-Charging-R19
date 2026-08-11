@@ -393,6 +393,12 @@ struct ProductOfferingPrice {
     std::optional<std::string> lastUpdate;
     std::optional<std::string> priceType;
     std::optional<double> percentage;
+    std::optional<std::string> version; // real TMF620 field, present on ProductOfferingPrice
+                                        // too (not just ProductOffering/ProductSpecification) --
+                                        // genuinely missed in this file's first E2 enrichment
+                                        // pass (docs/DECISIONS.md ADR-0060), found and fixed
+                                        // while wiring E5's tariff_version, not silently carried
+                                        // forward.
     std::optional<Money> price;
     std::optional<int> recurringChargePeriodLength;
     std::optional<std::string> recurringChargePeriodType;

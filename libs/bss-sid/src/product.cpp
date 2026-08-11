@@ -545,6 +545,7 @@ void to_json(nlohmann::json& j, const ProductOfferingPrice& v) {
     put_optional(j, "lastUpdate", v.lastUpdate);
     put_optional(j, "priceType", v.priceType);
     put_optional(j, "percentage", v.percentage);
+    put_optional(j, "version", v.version);
     put_optional(j, "price", v.price);
     put_optional(j, "recurringChargePeriodLength", v.recurringChargePeriodLength);
     put_optional(j, "recurringChargePeriodType", v.recurringChargePeriodType);
@@ -569,6 +570,7 @@ void from_json(const nlohmann::json& j, ProductOfferingPrice& v) {
     get_optional(j, "lastUpdate", v.lastUpdate);
     get_optional(j, "priceType", v.priceType);
     get_optional(j, "percentage", v.percentage);
+    get_optional(j, "version", v.version);
     get_optional(j, "price", v.price);
     get_optional(j, "recurringChargePeriodLength", v.recurringChargePeriodLength);
     get_optional(j, "recurringChargePeriodType", v.recurringChargePeriodType);
