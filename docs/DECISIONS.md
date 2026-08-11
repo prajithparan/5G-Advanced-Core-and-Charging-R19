@@ -5177,8 +5177,7 @@ fix.
 ## ADR-0059: P4.5 kickoff -- protocol translator layer architecture, real Diameter reference material, staged plan
 
 **Date:** 2026-08-11
-**Status:** Accepted (Stage 1 only implemented by this ADR; Stages 2-5 disclosed as a staged plan,
-not yet built).
+**Status:** Accepted (Stages 1-2 implemented; Stages 3-5 disclosed as a staged plan, not yet built).
 
 **Context:** CHARGING_PROMPT.md's P4.5 asks for a legacy-protocol translator layer -- Diameter
 Ro/Rf/Gy (TS 32.299), Sy (TS 29.219), CAP/CAMEL (TS 29.078), and MAP -- all normalizing to the same
@@ -5268,7 +5267,7 @@ already sets for PFCP. freeDiameter is not linked, not a build dependency -- ref
    same "evaluated with evidence, not guessed" discipline used for every other major dependency
    decision in this project.
 
-### Disclosed, NOT done by this ADR
+### Disclosed, NOT done by this ADR (Stage 1's own scope)
 
 - No network transport, no CER/CEA, no CCR/CCA, no CHF wiring at all yet -- Stage 1 is the wire
   codec only, unit-tested in isolation. The single-code-path proof test CHARGING_PROMPT.md asks for
@@ -5277,3 +5276,44 @@ already sets for PFCP. freeDiameter is not linked, not a build dependency -- ref
   Diameter effort -- not a small remaining item.
 - No decoder fuzzing yet (Stage 3's own deliverable, once there is a decoder consuming
   untrusted/network input rather than just this ADR's own round-trip unit tests).
+
+### Update, same day: Stage 2 implemented -- real CER/CEA over real TCP, live-verified
+
+CHF now runs a real Diameter server (`nfs/chf/src/diameter_server.hpp`/`.cpp`): a dedicated accept
+thread binds `0.0.0.0:3868` (`diameter_core::kDiameterTcpPort`, RFC 6733's real IANA-assigned port)
+using plain TCP (matching `pfcp_core`'s own UDP-not-SCTP precedent -- Boost.Asio has no native SCTP
+support, and TCP is a fully spec-conformant Diameter transport option, not a simplification), with
+one further dedicated thread per accepted connection (same "blocking I/O gets its own thread"
+discipline as SMF's `PfcpPeer`/`run_nrf_lifecycle`, ADR-0006/ADR-0019/ADR-0039).
+
+A real CER is decoded; a real CEA is built and sent back with `Result-Code` (`DIAMETER_SUCCESS`=
+2001 on success, `DIAMETER_MISSING_AVP`=5005 if the peer's CER lacks mandatory `Origin-Host`/
+`Origin-Realm` -- both real values confirmed directly from freeDiameter's own vendored
+`include/libfdproto.h` `#define`s, not guessed), `Origin-Host`/`Origin-Realm` (this project's own
+disclosed lab-internal Diameter identity, `chf.5gc-r19.local`/`5gc-r19.local` -- no real registered
+DNS realm, matching the same per-NF-name convention already used for TLS cert CNs), `Host-IP-Address`
+(a new AVP data type this Stage adds to `diameter_core`: RFC 6733's Address derived type, 2-octet
+AddressType + raw address bytes -- disclosed as established/standard protocol knowledge, not
+cross-checked against vendored spec text the way the header/AVP TLV layout was, since the vendored
+`dict_base_proto.c` registers Host-IP-Address as type "Address" by name but the byte-level format
+itself lives in freeDiameter's own unvendored type-validation code), `Vendor-Id` (0 -- disclosed, no
+real IANA enterprise number assigned to this project), `Product-Name`, and `Auth-Application-Id`=4
+(RFC 4006's own real, quoted-verbatim-in-`dict_dcca.c` requirement: "The Auth-Application-Id MUST be
+set to the value 4, indicating the Diameter credit-control application").
+
+**Live-verified, both paths**, using a real, separately-compiled TCP client
+(`diameter_core`-linked, independent of CHF's own process) against a running CHF:
+- **Positive path**: real CER sent with real Origin-Host/Origin-Realm/Host-IP-Address/Vendor-Id/
+  Product-Name/Auth-Application-Id AVPs -> real CEA received and independently decoded ->
+  Result-Code=2001, Origin-Host/Origin-Realm/Host-IP-Address/Product-Name/Auth-Application-Id all
+  correct, Hop-by-Hop/End-to-End identifiers correctly echoed from the request (real spec
+  requirement, not assumed) -- confirmed both from the client's own decode and from CHF's own log
+  (`chf: real CER received from Origin-Host=... ` / `chf: real CEA sent (DIAMETER_SUCCESS)`).
+- **Negative path**: a real CER with no AVPs at all -> CHF correctly detects the missing mandatory
+  `Origin-Host`/`Origin-Realm` and returns Result-Code=5005 (`DIAMETER_MISSING_AVP`), confirmed
+  independently by the test client's own decode and CHF's own log.
+
+Stage 2's scope is deliberately narrow: the connection is closed after CEA (real or error) --
+keeping it open and dispatching real CCR/CCA is Stage 3's own explicit deliverable, not started by
+this update. 158/158 tests pass (10 new Stage 1 tests + 2 new Stage 2 `Address` codec tests),
+`clang-format-18` clean.

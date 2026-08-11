@@ -46,12 +46,23 @@ constexpr std::uint32_t kSupportedVendorId = 265;           // dict_base_proto.c
 constexpr std::uint32_t kInbandSecurityId = 299;            // dict_base_proto.c:817
 } // namespace Avp
 
+// Real Result-Code enumerated values -- include/libfdproto.h (the #define macros
+// dict_base_proto.c's own real DIAMETER_SUCCESS/DIAMETER_MISSING_AVP enum registrations use).
+namespace ResultCode {
+constexpr std::int32_t kDiameterSuccess = 2001;    // libfdproto.h:1854
+constexpr std::int32_t kDiameterMissingAvp = 5005; // libfdproto.h:1876
+} // namespace ResultCode
+
 // RFC 4006 Diameter Credit-Control (DCC) AVP codes -- dict_dcca.c. This is the base DCC
 // application (Auth-Application-Id 4); 3GPP's own Ro/Rf/Gy AVPs (TS 32.299) are a further
 // extension on top of these, vendored separately at
 // simulators/reference/freeDiameter/extensions/dict_dcca_3gpp/dict_dcca_3gpp.c and not yet
 // consumed by this Stage 1 codec (Stage 3's own deliverable, per ADR-0059).
 namespace Dcc {
+// RFC 4006 §1 (quoted verbatim in dict_dcca.c:1257-1258): "The Auth-Application-Id MUST be set to
+// the value 4, indicating the Diameter credit-control application."
+constexpr std::uint32_t kApplicationId = 4;
+
 constexpr std::uint32_t kCcRequestNumber = 415;               // dict_dcca.c:182
 constexpr std::uint32_t kCcRequestType = 416;                 // dict_dcca.c:207
 constexpr std::uint32_t kCcServiceSpecificUnits = 417;        // dict_dcca.c:230

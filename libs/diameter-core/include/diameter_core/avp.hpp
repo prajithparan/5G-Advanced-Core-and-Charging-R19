@@ -48,6 +48,20 @@ std::optional<std::uint32_t> decode_unsigned32(const std::vector<std::uint8_t>& 
 std::optional<std::int32_t> decode_integer32(const std::vector<std::uint8_t>& data);
 std::optional<std::uint64_t> decode_unsigned64(const std::vector<std::uint8_t>& data);
 
+// Address (RFC 6733 §4.3.1 derived type -- used by e.g. Host-IP-Address): a 2-octet AddressType
+// (IANA "Address Family Numbers" registry -- 1=IPv4, 2=IPv6, the only two this project emits or
+// expects) followed by the address itself in network byte order (4 octets for IPv4, 16 for IPv6).
+// Disclosed, same class of caveat as header.hpp's: this exact byte layout is established, standard
+// Diameter protocol knowledge, not cross-checked against any vendored spec text or vendored
+// freeDiameter source (the vendored dict_base_proto.c registers Host-IP-Address as type "Address"
+// by name but does not itself carry the wire-format bytes -- that lives in freeDiameter's own type
+// validation code, which was not vendored).
+constexpr std::uint16_t kAddressFamilyIpv4 = 1;
+constexpr std::uint16_t kAddressFamilyIpv6 = 2;
+
+std::vector<std::uint8_t> encode_address_ipv4(std::uint32_t ipv4_host_order);
+std::optional<std::uint32_t> decode_address_ipv4(const std::vector<std::uint8_t>& data);
+
 // Decodes every top-level AVP in `bytes` (an AVP region, e.g. header.hpp's own avps_length bytes,
 // or a Grouped AVP's own data). Does not recurse into Grouped AVPs -- callers that know a
 // particular AVP is Grouped call decode_avps again on its own `data`. Returns std::nullopt if any

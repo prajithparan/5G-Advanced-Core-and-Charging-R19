@@ -185,3 +185,20 @@ TEST(DiameterAvp, EmptyBufferDecodesToZeroAvps) {
     ASSERT_TRUE(decoded.has_value());
     EXPECT_TRUE(decoded->empty());
 }
+
+TEST(DiameterAvp, AddressIpv4RoundTrips) {
+    const std::uint32_t ipv4 = (127u << 24) | (0u << 16) | (0u << 8) | 1u; // 127.0.0.1
+    const auto data = diameter_core::encode_address_ipv4(ipv4);
+    ASSERT_EQ(data.size(), 6u);
+    EXPECT_EQ(data[0], 0x00);
+    EXPECT_EQ(data[1], 0x01); // AddressType 1 = IPv4
+
+    const auto decoded = diameter_core::decode_address_ipv4(data);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, ipv4);
+}
+
+TEST(DiameterAvp, AddressIpv4RejectsWrongFamily) {
+    std::vector<std::uint8_t> data = {0x00, 0x02, 0, 0, 0, 0}; // AddressType 2 = IPv6
+    EXPECT_FALSE(diameter_core::decode_address_ipv4(data).has_value());
+}

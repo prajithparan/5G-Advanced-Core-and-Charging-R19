@@ -27,7 +27,7 @@ set_target_properties(clickhouse_cpp PROPERTIES
 )
 target_link_libraries(clickhouse_cpp INTERFACE absl::int128 cityhash lz4::lz4 zstd::libzstd)
 
-add_executable(chf src/main.cpp src/stores.cpp src/cdr.cpp)
-target_link_libraries(chf PRIVATE sbi_core sbi_generated bss_sid redis++::redis++_static clickhouse_cpp)
+add_executable(chf src/main.cpp src/stores.cpp src/cdr.cpp src/diameter_server.cpp)
+target_link_libraries(chf PRIVATE sbi_core sbi_generated bss_sid redis++::redis++_static clickhouse_cpp diameter_core)
 # See nfs/hello-nf/CMakeLists.txt for why this is a compile-time absolute path.
 target_compile_definitions(chf PRIVATE CERTS_DIR="${CMAKE_SOURCE_DIR}/certs")

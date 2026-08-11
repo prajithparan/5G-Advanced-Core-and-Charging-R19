@@ -118,6 +118,8 @@
 #include "bss_sid/party.hpp"
 #include "bss_sid/product.hpp"
 #include "cdr.hpp"
+#include "diameter_core/header.hpp"
+#include "diameter_server.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -129,6 +131,13 @@ using nlohmann::json;
 #endif
 
 constexpr unsigned short kPort = 7784;
+// P4.5/ADR-0059 Stage 2: real Diameter (Gy) listener, real IANA-assigned port (RFC 6733 §2.1,
+// diameter_core::kDiameterTcpPort). Lab-internal identity, disclosed -- no real registered DNS
+// realm/enterprise number, matching the same per-NF naming convention already used for TLS cert
+// CNs (scripts/gen-lab-pki.sh).
+constexpr unsigned short kDiameterPort = diameter_core::kDiameterTcpPort;
+constexpr const char* kDiameterOriginHost = "chf.5gc-r19.local";
+constexpr const char* kDiameterOriginRealm = "5gc-r19.local";
 constexpr const char* kMetricsBindAddress = "0.0.0.0:9472";
 constexpr const char* kNfType = "CHF";
 constexpr const char* kNrfBase = "https://127.0.0.1:7777";
@@ -641,6 +650,11 @@ int main() {
     } else {
         spdlog::warn("chf: ClickHouse unavailable, CDF/CDR generation disabled for this process");
     }
+
+    // P4.5/ADR-0059 Stage 2: real Diameter server (CER/CEA capability exchange only -- Stage 3
+    // adds real CCR/CCA Gy handling on the same listener, per the ADR's staged plan).
+    chf::DiameterServer diameter_server(kDiameterPort, kDiameterOriginHost, kDiameterOriginRealm);
+    spdlog::info("chf: Diameter (Gy) listening on tcp://0.0.0.0:{}", kDiameterPort);
 
     // CHF's own client to bss/product-catalog (ADR-0048) -- mTLS only, no OAuth2 (product-catalog
     // has no NRF-issued token source, see ADR-0047). Only ever touched from route handlers, which

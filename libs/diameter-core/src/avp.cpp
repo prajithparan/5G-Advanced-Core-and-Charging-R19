@@ -104,6 +104,25 @@ std::optional<std::uint64_t> decode_unsigned64(const std::vector<std::uint8_t>& 
     return (hi << 32) | lo;
 }
 
+std::vector<std::uint8_t> encode_address_ipv4(std::uint32_t ipv4_host_order) {
+    std::vector<std::uint8_t> out;
+    out.push_back(static_cast<std::uint8_t>((kAddressFamilyIpv4 >> 8) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>(kAddressFamilyIpv4 & 0xFF));
+    put_u32(out, ipv4_host_order);
+    return out;
+}
+
+std::optional<std::uint32_t> decode_address_ipv4(const std::vector<std::uint8_t>& data) {
+    if (data.size() != 6) {
+        return std::nullopt;
+    }
+    const std::uint16_t family = (static_cast<std::uint16_t>(data[0]) << 8) | data[1];
+    if (family != kAddressFamilyIpv4) {
+        return std::nullopt;
+    }
+    return get_u32(data, 2);
+}
+
 std::optional<std::vector<Avp>> decode_avps(const std::vector<std::uint8_t>& bytes) {
     std::vector<Avp> avps;
     std::size_t offset = 0;
