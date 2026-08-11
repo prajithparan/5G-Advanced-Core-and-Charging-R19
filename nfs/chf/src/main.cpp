@@ -117,6 +117,7 @@
 #include "bss_sid/balance.hpp"
 #include "bss_sid/party.hpp"
 #include "bss_sid/product.hpp"
+#include "cdr.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -156,6 +157,26 @@ std::string chf_redis_conninfo() {
         return env;
     }
     return "tcp://127.0.0.1:6379";
+}
+
+// P4.4/ADR-0058: real ClickHouse connection options for CdrWriter -- same never-hardcode-
+// credentials, getenv-based-config precedent as chf_redis_conninfo above. Defaults match this
+// project's lab/dev convention (a real ClickHouse instance's default user has no password).
+clickhouse::ClientOptions chf_clickhouse_options() {
+    clickhouse::ClientOptions options;
+    options.SetHost(std::getenv("CHF_CLICKHOUSE_HOST") ? std::getenv("CHF_CLICKHOUSE_HOST")
+                                                       : "127.0.0.1");
+    options.SetPort(std::getenv("CHF_CLICKHOUSE_PORT")
+                        ? static_cast<std::uint16_t>(std::stoi(std::getenv("CHF_CLICKHOUSE_PORT")))
+                        : 9000);
+    options.SetUser(std::getenv("CHF_CLICKHOUSE_USER") ? std::getenv("CHF_CLICKHOUSE_USER")
+                                                       : "default");
+    options.SetPassword(
+        std::getenv("CHF_CLICKHOUSE_PASSWORD") ? std::getenv("CHF_CLICKHOUSE_PASSWORD") : "");
+    options.SetDefaultDatabase(std::getenv("CHF_CLICKHOUSE_DATABASE")
+                                   ? std::getenv("CHF_CLICKHOUSE_DATABASE")
+                                   : "default");
+    return options;
 }
 
 // Same pattern as every other NF's check_bearer -- see nfs/nrf/src/main.cpp's comment for why a
@@ -443,6 +464,54 @@ void finalize_subscriber_balance(sbi_core::http2::Client& balance_client,
     }
 }
 
+// P4.4/ADR-0058: writes one real CDR row (chf::CdrRecord, see cdr.hpp) per MultipleUnitUsage
+// entry -- every field here is either a real TS 32.291 value already flowing through this
+// handler, or a real ADR-0057 rating-engine output (grant/cost), not fabricated. Shared between
+// the Create and Update route handlers below to avoid duplicating this construction twice.
+void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
+                                  const std::string& ref,
+                                  const std::string& operation,
+                                  const std::string& supi,
+                                  const std::string& node_functionality,
+                                  std::int64_t invocation_sequence_number,
+                                  const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
+                                  const RatingResult& rating,
+                                  bool reserved) {
+    chf::CdrRecord cdr{};
+    cdr.charging_data_ref = ref;
+    cdr.invocation_sequence_number = invocation_sequence_number;
+    cdr.service_type = "ConvergedCharging";
+    cdr.operation = operation;
+    cdr.subscriber_identifier = supi;
+    cdr.nf_consumer_node_functionality = node_functionality;
+    cdr.rating_group = static_cast<std::int64_t>(usage.ratingGroup);
+    if (reserved && rating.grant.has_value()) {
+        cdr.granted_total_volume = rating.grant->totalVolume;
+        cdr.granted_service_specific_units = rating.grant->serviceSpecificUnits;
+    }
+    if (usage.usedUnitContainer.has_value() && !usage.usedUnitContainer->empty()) {
+        cdr.used_total_volume = usage.usedUnitContainer->front().totalVolume;
+    }
+    if (reserved && rating.cost.has_value()) {
+        cdr.reserved_cost = rating.cost->value;
+        cdr.reserved_cost_currency = rating.cost->unit;
+    }
+    cdr.invocation_time_stamp =
+        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    try {
+        cdr_writer.write(cdr);
+    } catch (const std::exception& e) {
+        // Real, disclosed gap: a ClickHouse write failure does not block or fail the real
+        // charging response CHF already committed to (the balance reservation above already
+        // happened) -- CDR generation is best-effort in this build, matching this project's
+        // existing "no real distributed-transaction guarantee across CHF's several real
+        // dependencies" disclosure (see finalize_subscriber_balance's own comment for the
+        // balance-management analogue).
+        spdlog::warn(
+            "chf: CDR write to ClickHouse failed for ChargingDataRef={}: {}", ref, e.what());
+    }
+}
+
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as every other
 // NF's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019).
 void run_nrf_lifecycle(const std::string& chf_instance_id) {
@@ -563,6 +632,16 @@ int main() {
     chf::OfflineChargingDataStore offline_charging_data_store(redis);
     chf::SpendingLimitSubscriptionStore spending_limit_store(redis);
 
+    // P4.4/ADR-0058: real CDF (CDR generation, TS 32.240/32.296) -- see cdr.hpp's own header for
+    // the full disclosure of what this real CDR record is (and is not: not a conformant TS 32.298
+    // CDR, that spec isn't vendored -- schema.clickhouse.sql explains why).
+    chf::CdrWriter cdr_writer(chf_clickhouse_options());
+    if (cdr_writer.is_connected()) {
+        spdlog::info("chf: connected to ClickHouse (CDF)");
+    } else {
+        spdlog::warn("chf: ClickHouse unavailable, CDF/CDR generation disabled for this process");
+    }
+
     // CHF's own client to bss/product-catalog (ADR-0048) -- mTLS only, no OAuth2 (product-catalog
     // has no NRF-issued token source, see ADR-0047). Only ever touched from route handlers, which
     // all run on ioc's single thread -- same "second client safe on the shared ioc thread" pattern
@@ -625,7 +704,8 @@ int main() {
          &catalog_client,
          &balance_client,
          &grant_counter,
-         &reserve_rejected_counter](const sbi_core::http2::Request& req) {
+         &reserve_rejected_counter,
+         &cdr_writer](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -690,6 +770,16 @@ int main() {
                         info.grantedUnit = rating.grant;
                         grant_counter->Add(1);
                     }
+                    write_converged_charging_cdr(
+                        cdr_writer,
+                        ref,
+                        "Create",
+                        supi,
+                        body->nfConsumerIdentification.nodeFunctionality.value,
+                        body->invocationSequenceNumber,
+                        usage,
+                        rating,
+                        reserved);
                     granted.push_back(info);
                 }
                 response.multipleUnitInformation = std::move(granted);
@@ -715,7 +805,8 @@ int main() {
          &catalog_client,
          &balance_client,
          &grant_counter,
-         &reserve_rejected_counter](const sbi_core::http2::Request& req) {
+         &reserve_rejected_counter,
+         &cdr_writer](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -789,9 +880,44 @@ int main() {
                         info.grantedUnit = rating.grant;
                         grant_counter->Add(1);
                     }
+                    write_converged_charging_cdr(
+                        cdr_writer,
+                        ref,
+                        "Update",
+                        supi,
+                        body->nfConsumerIdentification.nodeFunctionality.value,
+                        body->invocationSequenceNumber,
+                        usage,
+                        rating,
+                        reserved);
                     granted.push_back(info);
                 }
                 response.multipleUnitInformation = std::move(granted);
+            }
+
+            // CHARGING_PROMPT.md's own explicit P4.4 requirement: real gap detection. Checked on
+            // every Update (not just Release) so a missing invocationSequenceNumber is surfaced
+            // as close to real time as this build's synchronous request handling allows, not only
+            // discovered at session end.
+            try {
+                const auto gaps = cdr_writer.detect_gaps(ref);
+                if (!gaps.empty()) {
+                    std::string gap_list;
+                    for (const auto& gap : gaps) {
+                        if (!gap_list.empty()) {
+                            gap_list += ", ";
+                        }
+                        gap_list += std::to_string(gap);
+                    }
+                    spdlog::warn("chf: CDR sequence gap detected for ChargingDataRef={} -- missing "
+                                 "invocationSequenceNumber(s): {}",
+                                 ref,
+                                 gap_list);
+                }
+            } catch (const std::exception& e) {
+                spdlog::warn("chf: CDR gap-detection query failed for ChargingDataRef={}: {}",
+                             ref,
+                             e.what());
             }
 
             update_counter->Add(1);
@@ -807,7 +933,7 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/chargingdata/{ChargingDataRef}/release",
-        [&verifier, &charging_data_store, &release_counter, &balance_client](
+        [&verifier, &charging_data_store, &release_counter, &balance_client, &cdr_writer](
             const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -837,6 +963,31 @@ int main() {
                 finalize_subscriber_balance(
                     balance_client, *supi, reserved_total, "Nchf_ConvergedCharging_Release " + ref);
             }
+
+            // P4.4/ADR-0058: a real, final CDR row for this session -- reserved_cost here is the
+            // session's TOTAL committed cost (finalize_subscriber_balance's own real amount), not
+            // a per-rating-group figure the way Create/Update's rows are.
+            try {
+                chf::CdrRecord cdr{};
+                cdr.charging_data_ref = ref;
+                cdr.invocation_sequence_number = body->invocationSequenceNumber;
+                cdr.service_type = "ConvergedCharging";
+                cdr.operation = "Release";
+                cdr.subscriber_identifier = supi.value_or("");
+                cdr.nf_consumer_node_functionality =
+                    body->nfConsumerIdentification.nodeFunctionality.value;
+                if (reserved_total > 0.0) {
+                    cdr.reserved_cost = reserved_total;
+                }
+                cdr.invocation_time_stamp =
+                    std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                cdr_writer.write(cdr);
+            } catch (const std::exception& e) {
+                spdlog::warn("chf: CDR write to ClickHouse failed for ChargingDataRef={}: {}",
+                             ref,
+                             e.what());
+            }
+
             release_counter->Add(1);
 
             sbi_core::http2::Response resp;

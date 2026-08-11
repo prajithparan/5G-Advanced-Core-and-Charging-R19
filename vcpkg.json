@@ -16,6 +16,7 @@
     "jwt-cpp",
     "libpqxx",
     "redis-plus-plus",
+    "clickhouse-cpp",
     {
       "name": "curl",
       "features": [
