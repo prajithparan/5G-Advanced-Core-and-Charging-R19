@@ -5177,7 +5177,7 @@ fix.
 ## ADR-0059: P4.5 kickoff -- protocol translator layer architecture, real Diameter reference material, staged plan
 
 **Date:** 2026-08-11
-**Status:** Accepted (Stages 1-2 implemented; Stages 3-5 disclosed as a staged plan, not yet built).
+**Status:** Accepted (Stages 1-3 implemented; Stages 4-5 disclosed as a staged plan, not yet built).
 
 **Context:** CHARGING_PROMPT.md's P4.5 asks for a legacy-protocol translator layer -- Diameter
 Ro/Rf/Gy (TS 32.299), Sy (TS 29.219), CAP/CAMEL (TS 29.078), and MAP -- all normalizing to the same
@@ -5248,12 +5248,20 @@ already sets for PFCP. freeDiameter is not linked, not a build dependency -- ref
 2. **Stage 2 (not yet built): CER/CEA capability-exchange handshake over real TCP**, a real Diameter
    peer connection -- CHF acting as a Diameter server (real deployments run PGW/SMF-equivalent
    clients against a CHF-equivalent Gy server).
-3. **Stage 3 (not yet built): CCR-I/U/T -> normalize -> the SAME internal path
+3. **Stage 3 (implemented, see the update below): CCR-I/U/T -> normalize -> the SAME internal path
    `Nchf_ConvergedCharging`'s handlers already use -> CCA**, the actual single-code-path proof
    CHARGING_PROMPT.md's P4.5 explicitly asks for (a test charging an identical usage event via Gy
-   and via Nchf, asserting an identical rated result). Uses `extensions/dict_dcca_3gpp/`'s real
-   3GPP AVPs where CHF's real fields need them. Decoder fuzzing (libFuzzer, matching this project's
-   existing PFCP fuzzing convention) and per-protocol TPS spike protection (P15) land here too.
+   and via Nchf, asserting an identical rated result). Real, disclosed scope narrowing versus this
+   original plan: RFC 4006's own base DCC AVPs (`dict_dcca.c`) turned out sufficient for CHF's real
+   fields (Rating-Group, Subscription-Id, CC-Total-Octets/CC-Service-Specific-Units) -- Stage 3 did
+   NOT end up needing `extensions/dict_dcca_3gpp/`'s 3GPP Ro/Rf/Gy-specific AVPs (Service-
+   Information/PS-Information), since this project's own CDR/rating shape (TS 32.291-derived, not a
+   direct Ro/Rf/Gy AVP mirror) doesn't have a field that maps to them yet -- left vendored for a
+   later stage that does. **Real correction to this ADR's own original text**: decoder fuzzing was
+   described above as "matching this project's existing PFCP fuzzing convention" -- there is no such
+   convention; a repo-wide check (`grep -rl LLVMFuzzerTestOneInput`) found zero existing libFuzzer
+   targets anywhere in this codebase. Both decoder fuzzing and per-protocol TPS spike protection
+   (P15) remain real, disclosed gaps, deferred to a later stage, not delivered by Stage 3.
 4. **Stage 4 (not yet built): Rf (offline charging) and Sy (spending limit)** -- the same
    normalize-to-shared-path pattern applied to CHF's already-real `Nchf_OfflineOnlyCharging`/
    `Nchf_SpendingLimitControl` handlers (ADR-0055).
@@ -5317,6 +5325,123 @@ Stage 2's scope is deliberately narrow: the connection is closed after CEA (real
 keeping it open and dispatching real CCR/CCA is Stage 3's own explicit deliverable, not started by
 this update. 158/158 tests pass (10 new Stage 1 tests + 2 new Stage 2 `Address` codec tests),
 `clang-format-18` clean.
+
+### Update, same day: Stage 3 implemented -- real CCR-I/U/T, single-code-path, live-verified
+
+**New shared module, `nfs/chf/src/charging_engine.hpp`/`.cpp` (namespace `chf::`)**: the rating/
+reservation/CDR/audit logic (`RatingResult`, `build_rating_grant`, `reserve_subscriber_balance`,
+`finalize_subscriber_balance`, `write_converged_charging_cdr`, `write_rating_decision`,
+`charge_one_usage`) extracted out of `main.cpp`'s anonymous namespace, where it was previously
+HTTP-handler-only. `Nchf_ConvergedCharging`'s real Create/Update handlers now call
+`chf::charge_one_usage`/`chf::finalize_subscriber_balance` from this shared module instead of local
+copies -- a behavior-preserving refactor, verified by a full rebuild + 158/158 tests before any
+Diameter-side code was added, and committed separately (`63c4ed6`) from the Diameter wiring itself
+so the refactor's own correctness isn't entangled with new protocol code.
+
+**`diameter_server.cpp`'s per-connection loop now stays open after CER/CEA** and decodes real CCR
+(RFC 4006 command-code 272): `Session-Id`, `CC-Request-Type`, `CC-Request-Number` (all mandatory),
+an optional `Subscription-Id` (Grouped: `Subscription-Id-Type`=450/`Subscription-Id-Data`=444, only
+`END_USER_IMSI`=1 consumed -- mapped onto this project's own `imsi-<digits>` SUPI convention), and
+0+ `Multiple-Services-Credit-Control` groups (Grouped: `Rating-Group`=432, optional
+`Used-Service-Unit`=446 -> `CC-Total-Octets`=421). New dictionary constants added to
+`libs/diameter-core/include/diameter_core/dictionary.hpp`, each citing its real vendored source
+line: `Subscription-Id-Data`=444, `Subscription-Id-Type`=450 (`dict_dcca.c:754`/`:774`), the real
+`Subscription-Id-Type` enum (`END_USER_E164`=0/`END_USER_IMSI`=1/`END_USER_SIP_URI`=2/
+`END_USER_NAI`=3, `dict_dcca.c:772-775`), and four RFC 4006 §9.9 extended `Result-Code` values
+registered by `dict_dcca.c` against the base enumerated type (not in the base-protocol
+`libfdproto.h`): `END_USER_SERVICE_DENIED`=4010, `CREDIT_LIMIT_REACHED`=4012, `USER_UNKNOWN`=5030,
+`RATING_FAILED`=5031 -- plus two real base-protocol codes this Stage's own error paths needed,
+`DIAMETER_UNKNOWN_SESSION_ID`=5002 and `DIAMETER_UNABLE_TO_COMPLY`=5012 (`libfdproto.h:1873`/
+`:1883`).
+
+**CC-Request-Type dispatch, mapping onto the exact real HTTP shape**:
+- **INITIAL_REQUEST(1)**: `charging_data_store.create(supi)` allocates a real `ChargingDataRef`,
+  recorded in a connection-scoped `Session-Id -> ChargingDataRef` map (a real Diameter peer may
+  multiplex many concurrent Gy sessions over one long-lived transport connection, RFC 6733's own
+  expected deployment shape). Each `Multiple-Services-Credit-Control` calls
+  `chf::charge_one_usage` -- **the single, literal shared function** `Nchf_ConvergedCharging`'s own
+  HTTP Create handler calls, not a second implementation that happens to look similar.
+- **UPDATE_REQUEST(2)**: same `charge_one_usage` call per MSCC, `Used-Service-Unit`'s
+  `CC-Total-Octets` mapped onto a real
+  `sbi_gen::UsedUnitContainer_Nchf_ConvergedCharging.totalVolume` (disclosed, real mapping choice:
+  `localSequenceNumber`, TS 32.291's own per-container sequence field, has no RFC 4006 equivalent,
+  so `CC-Request-Number` -- Diameter's own real per-session monotonic counter -- fills that slot,
+  not fabricated as a separate value). An unknown `Session-Id` returns `Result-Code`=5002
+  (`DIAMETER_UNKNOWN_SESSION_ID`).
+- **TERMINATION_REQUEST(3)**: mirrors the HTTP Release handler's own real logic exactly (not routed
+  through `charge_one_usage`, since RFC 4006's own CCR-T reports final usage but requests no new
+  units, same reasoning the HTTP Release handler already has for not calling the rating engine):
+  `chf::finalize_subscriber_balance` on the session's real reserved total, then one final `CdrRecord`
+  row, matching `main.cpp`'s inline Release-handler CDR shape.
+- **EVENT_REQUEST(4) or anything else**: real, disclosed gap -- Event-based (sessionless) credit-
+  control has no HTTP-path analogue to share a code path with, so it returns `Result-Code`=5012
+  (`DIAMETER_UNABLE_TO_COMPLY`) rather than being given a fabricated implementation. Any Diameter
+  command other than CCR (DWR/DPR included) closes the connection with a warning, same disclosed-
+  gap pattern Stage 2 already used for "first message not CER".
+
+**Real concurrency-model change, found and fixed, not just wired around**: `CdrWriter` and
+`RatingDecisionStore` were both previously safe only because CHF's single HTTP `io_context` thread
+was their only real caller (each class's own header already disclosed this precisely). Diameter's
+own dedicated per-connection threads now share the SAME `CdrWriter`/`RatingDecisionStore` instances
+`main()` passes to both the HTTP server and `DiameterServer` -- a real new concurrent-access path,
+not a hypothetical one. Both gained a real `std::mutex` (`cdr.hpp`/`rating_decision_store.hpp`,
+locked in `cdr.cpp`/`rating_decision_store.cpp`), same "one shared connection/client, one mutex"
+discipline this project's other single-connection stores already use (e.g. bss/product-catalog's
+libpqxx-backed stores, ADR-0054). `ChargingDataStore` needed no change (Redis/Valkey's own
+connection pool was already confirmed thread-safe, ADR-0055). Each Diameter connection thread
+builds its OWN dedicated product-catalog/balance-management `http2::Client` pair (constructed
+inside `handle_connection`, torn down when the connection closes) rather than reusing the HTTP route
+handlers' `catalog_client`/`balance_client` -- `sbi_core::http2::Client`'s own documented "one
+instance per thread" contract (libcurl's real per-easy-handle single-thread requirement) would
+otherwise be violated by two threads sharing one `Client`.
+
+**Live-verified, full real stack, not a unit-test-only claim**: real `redis:7-alpine` and
+`postgres:16-alpine` Docker containers, real `bss/product-catalog` and `bss/balance-management`
+processes (real PostgreSQL, schemas applied from this repo's own `schema.sql` files), real `chf`
+(ClickHouse deliberately left disconnected to also exercise `CdrWriter`'s existing graceful-
+degradation path under Stage 3's new concurrent caller -- confirmed CHF logs "CDR write skipped"
+and keeps serving both protocols normally, no crash).
+
+- **Single-code-path proof** (CHARGING_PROMPT.md's own explicit Stage 3 ask): one real
+  `ProductOffering`/`ProductOfferingPrice` seeded via HTTP (2 GB / $10, `ratingGroup`=42). A real
+  `Nchf_ConvergedCharging` HTTP Create for SUPI `imsi-...001` returned `grantedUnit.totalVolume=
+  2000000000`; a real Diameter CCR-Initial (built by a real, separately-compiled test client,
+  `diameter_core`-linked, independent of CHF's own process) for a different SUPI `imsi-...002`
+  with the same `ratingGroup`=42 returned CCA `Granted-Service-Unit.CC-Total-Octets=2000000000` --
+  **byte-identical grant across both protocols**, both buckets debited the identical real $10
+  (independently confirmed via `GET .../bucket`: both `remainingValue=90`/`reservedValue=10` after
+  their first charge), and the `rating_decision` audit table (queried directly via `psql`) shows
+  identical `tariff_id`/`rating_group`/`rated_amount`/`currency` rows for both the HTTP- and
+  Diameter-originated charges -- proving `charge_one_usage` is genuinely the same code path, not
+  just producing coincidentally-matching output.
+- **Full CCR-I/U/T lifecycle, real arithmetic checked end-to-end**: a second real Diameter run sent
+  Initial -> Update -> Termination on one real Session-Id/connection. Initial and Update each
+  reserved $10 (Result-Code=2001 both times); Termination correctly finalized the session's own real
+  $20 total (not the unrelated $10 already reserved by the single-CCR run above) -- bucket ended at
+  `remainingValue=70`/`reservedValue=10` (the $10 left over from the single-CCR run, never
+  released), matching hand-computed expected arithmetic exactly. Only 2 `rating_decision` rows were
+  written for the 3 CCRs (Initial + Update, none for Termination) -- confirming Termination correctly
+  does NOT call `charge_one_usage`, same real behavior as the HTTP Release handler.
+
+Full rebuild + 158/158 tests pass (no new automated test in this update -- the single-code-path
+proof is a real, manual, multi-process live verification, same category as Stage 2's own live-
+verified CER/CEA and ADR-0060's E2/E5/E6/E7's own standalone-test-program verifications, not
+something CI's current Postgres-only service-container setup can run unattended yet), `clang-
+format-18` clean.
+
+### Disclosed, NOT done by Stage 3
+
+- Decoder fuzzing (libFuzzer) for the new CCR/AVP decode path -- this project's first fuzz target
+  would be genuinely new work, not an existing convention (see this ADR's own corrected text
+  above). Not built this Stage.
+- Per-protocol TPS spike protection (P15) on the Diameter listener -- not built this Stage.
+- `extensions/dict_dcca_3gpp/`'s real 3GPP Ro/Rf/Gy AVPs (Service-Information/PS-Information) --
+  not consumed; CHF's own fields didn't need them this Stage (see the scope-narrowing note above).
+- No automated integration test exercises the live-verified CCR-I/U/T path in `ctest`/CI -- the
+  proof above was run manually against real Docker-provisioned dependencies, matching this
+  project's existing manual-verification precedent for multi-process flows CI cannot yet host.
+- Stage 4 (Rf/Sy normalize-to-shared-path) and Stage 5 (CAP/CAMEL/MAP) remain not started, per this
+  ADR's original staged plan.
 
 ## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
 

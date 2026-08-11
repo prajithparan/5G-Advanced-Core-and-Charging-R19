@@ -49,8 +49,17 @@ constexpr std::uint32_t kInbandSecurityId = 299;            // dict_base_proto.c
 // Real Result-Code enumerated values -- include/libfdproto.h (the #define macros
 // dict_base_proto.c's own real DIAMETER_SUCCESS/DIAMETER_MISSING_AVP enum registrations use).
 namespace ResultCode {
-constexpr std::int32_t kDiameterSuccess = 2001;    // libfdproto.h:1854
-constexpr std::int32_t kDiameterMissingAvp = 5005; // libfdproto.h:1876
+constexpr std::int32_t kDiameterSuccess = 2001;          // libfdproto.h:1854
+constexpr std::int32_t kDiameterUnknownSessionId = 5002; // libfdproto.h:1873
+constexpr std::int32_t kDiameterMissingAvp = 5005;       // libfdproto.h:1876
+constexpr std::int32_t kDiameterUnableToComply = 5012;   // libfdproto.h:1883
+// RFC 4006 §9.9 extended result codes, registered by dict_dcca.c against the base Result-Code
+// enumerated type -- extensions/dict_dcca/dict_dcca.c:85-104 (not in libfdproto.h, which only
+// carries the base-protocol values; DCC's own extension registers these at dictionary load time).
+constexpr std::int32_t kDiameterEndUserServiceDenied = 4010; // dict_dcca.c:85
+constexpr std::int32_t kDiameterCreditLimitReached = 4012;   // dict_dcca.c:95
+constexpr std::int32_t kDiameterUserUnknown = 5030;          // dict_dcca.c:100
+constexpr std::int32_t kDiameterRatingFailed = 5031;         // dict_dcca.c:105
 } // namespace ResultCode
 
 // RFC 4006 Diameter Credit-Control (DCC) AVP codes -- dict_dcca.c. This is the base DCC
@@ -76,6 +85,8 @@ constexpr std::uint32_t kMultipleServicesCreditControl = 456; // dict_dcca.c:121
 constexpr std::uint32_t kServiceContextId = 461;              // dict_dcca.c:694
 constexpr std::uint32_t kUsedServiceUnit = 446;               // dict_dcca.c:1187 (Grouped)
 constexpr std::uint32_t kValidityTime = 448;                  // dict_dcca.c:906
+constexpr std::uint32_t kSubscriptionIdData = 444;            // dict_dcca.c:754 (UTF8String)
+constexpr std::uint32_t kSubscriptionIdType = 450;            // dict_dcca.c:774 (Enumerated)
 
 // CC-Request-Type real enumerated values (RFC 4006 §8.7).
 namespace CcRequestType {
@@ -84,6 +95,17 @@ constexpr std::int32_t kUpdate = 2;
 constexpr std::int32_t kTermination = 3;
 constexpr std::int32_t kEvent = 4;
 } // namespace CcRequestType
+
+// Subscription-Id-Type real enumerated values -- dict_dcca.c:772-775. Only END_USER_IMSI is
+// consumed by this project's own CCR decoder (chf's real SUPI convention is IMSI-based, see
+// nfs/udm/src/main.cpp's seeded subscribers) -- the other three are real, cited values, not
+// invented, even though unused today.
+namespace SubscriptionIdType {
+constexpr std::int32_t kEndUserE164 = 0;
+constexpr std::int32_t kEndUserImsi = 1;
+constexpr std::int32_t kEndUserSipUri = 2;
+constexpr std::int32_t kEndUserNai = 3;
+} // namespace SubscriptionIdType
 } // namespace Dcc
 
 } // namespace diameter_core::dictionary

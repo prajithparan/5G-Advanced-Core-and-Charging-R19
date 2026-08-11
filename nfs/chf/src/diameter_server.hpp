@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sbi_core/tls_config.hpp"
+
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 
@@ -7,6 +9,9 @@
 #include <cstdint>
 #include <string>
 #include <thread>
+#include <unordered_map>
+
+#include "charging_engine.hpp"
 
 // Private to nfs/chf -- not shared with any other NF, per CLAUDE.md's "no NF includes another NF's
 // private headers" rule.
@@ -21,10 +26,18 @@
 // number of long-lived peer connections, not per-request connections -- thread-per-connection is
 // the right shape here, unlike per-request HTTP/2 handling).
 //
-// This Stage handles ONLY the Capabilities-Exchange (CER/CEA) handshake -- it accepts the
-// connection, answers CER with a real CEA, and then closes. Stage 3 (ADR-0059) extends the
-// per-connection loop to keep the connection open and dispatch CCR/CCA (the real Gy application
-// logic, normalized into the same path Nchf_ConvergedCharging's own handlers already use).
+// P4.5/ADR-0060 Stage 3: the per-connection loop now stays open after CER/CEA and dispatches real
+// CCR-I/U/T (RFC 4006), calling the exact same chf::charge_one_usage/chf::finalize_subscriber_
+// balance functions Nchf_ConvergedCharging's own HTTP Create/Update/Release handlers use
+// (charging_engine.hpp) -- the single-code-path property CHARGING_PROMPT.md's P4.5 explicitly
+// requires. Each connection thread builds its OWN dedicated product-catalog/balance-management
+// http2::Client pair (sbi_core::http2::Client's own documented "one Client instance per thread"
+// contract, libcurl's own real per-easy-handle single-thread requirement) -- NOT the HTTP route
+// handlers' catalog_client/balance_client, which are confined to CHF's single io_context thread.
+// The shared ChargingDataStore/CdrWriter/RatingDecisionStore ARE passed in and reused (Redis's own
+// real connection pool is documented thread-safe already, ADR-0055; CdrWriter/RatingDecisionStore
+// gained a real mutex this Stage specifically because this new concurrent caller now exists, see
+// their own header comments).
 
 namespace chf {
 
@@ -32,7 +45,23 @@ class DiameterServer {
 public:
     // Binds 0.0.0.0:port and starts the accept thread immediately. origin_host/origin_realm are
     // this CHF's own real Diameter identity (echoed in every CEA's Origin-Host/Origin-Realm AVPs).
-    DiameterServer(std::uint16_t port, std::string origin_host, std::string origin_realm);
+    // client_tls is the mTLS config used to build a fresh, dedicated product-catalog/balance-
+    // management http2::Client pair per Diameter connection thread (same CERTS_DIR "/chf/..."
+    // identity the HTTP route handlers' own clients already use, ADR-0047/ADR-0056). The
+    // charging_data_store/cdr_writer/rating_decision_store references and counters are the SAME
+    // instances main() passes to the HTTP server -- real shared state, not a Diameter-only copy.
+    DiameterServer(std::uint16_t port,
+                   std::string origin_host,
+                   std::string origin_realm,
+                   sbi_core::http2::TlsConfig client_tls,
+                   ChargingDataStore& charging_data_store,
+                   CdrWriter& cdr_writer,
+                   RatingDecisionStore& rating_decision_store,
+                   opentelemetry::metrics::Counter<std::uint64_t>* grant_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* ccr_update_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* ccr_termination_counter);
     ~DiameterServer();
 
     DiameterServer(const DiameterServer&) = delete;
@@ -46,6 +75,15 @@ private:
     boost::asio::ip::tcp::acceptor acceptor_;
     std::string origin_host_;
     std::string origin_realm_;
+    sbi_core::http2::TlsConfig client_tls_;
+    ChargingDataStore& charging_data_store_;
+    CdrWriter& cdr_writer_;
+    RatingDecisionStore& rating_decision_store_;
+    opentelemetry::metrics::Counter<std::uint64_t>* grant_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* ccr_update_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* ccr_termination_counter_;
     std::thread accept_thread_;
     std::atomic<bool> stop_{false};
 };

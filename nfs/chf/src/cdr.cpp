@@ -45,6 +45,7 @@ void CdrWriter::write(const CdrRecord& record) {
         return;
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
     clickhouse::Block block;
 
     auto ref_col = std::make_shared<clickhouse::ColumnString>();
@@ -100,6 +101,7 @@ std::vector<std::int64_t> CdrWriter::detect_gaps(const std::string& charging_dat
         return {};
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
     std::set<std::int64_t> seen;
     clickhouse::Query query(
         "SELECT DISTINCT invocation_sequence_number FROM cdr "

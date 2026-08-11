@@ -50,6 +50,15 @@
 //   `sbi_gen::ChargingDataRequest_Nchf_ConvergedCharging`. Mechanical, verified (full rebuild +
 //   146/146 tests, including the real SMF<->CHF integration test), not a functional change.
 //
+// - P4.5 (ADR-0059/ADR-0060), Diameter Gy: CHF is now also a real Diameter server (RFC 6733 +
+//   RFC 4006 DCC), diameter_server.cpp, listening alongside the HTTP/2 SBI server on the same
+//   process. CER/CEA capability exchange (Stage 1-2), then real CCR-Initial/Update/Termination
+//   dispatched to the exact same rating/reservation/CDR/audit code
+//   Nchf_ConvergedCharging_Create/Update/Release below call (charging_engine.hpp's
+//   charge_one_usage/finalize_subscriber_balance) -- the single-code-path property
+//   CHARGING_PROMPT.md's P4.5 explicitly requires, live-verified by charging an identical usage
+//   event via both protocols and confirming an identical GrantedUnit/cost/RatingDecision result.
+//
 // Deliberately still deferred, not dropped: the Nchf_ConvergedCharging chargingNotification
 // callback (real trigger condition -- e.g. server-initiated reauthorization -- doesn't exist yet),
 // Nchf_SpendingLimitControl's own notify/terminate callbacks (same reason), and N41/N42 (AMF)
@@ -392,11 +401,6 @@ int main() {
         spdlog::warn("chf: PostgreSQL unavailable, RatingDecision audit disabled for this process");
     }
 
-    // P4.5/ADR-0059 Stage 2: real Diameter server (CER/CEA capability exchange only -- Stage 3
-    // adds real CCR/CCA Gy handling on the same listener, per the ADR's staged plan).
-    chf::DiameterServer diameter_server(kDiameterPort, kDiameterOriginHost, kDiameterOriginRealm);
-    spdlog::info("chf: Diameter (Gy) listening on tcp://0.0.0.0:{}", kDiameterPort);
-
     // CHF's own client to bss/product-catalog (ADR-0048) -- mTLS only, no OAuth2 (product-catalog
     // has no NRF-issued token source, see ADR-0047). Only ever touched from route handlers, which
     // all run on ioc's single thread -- same "second client safe on the shared ioc thread" pattern
@@ -443,6 +447,43 @@ int main() {
     auto spending_limit_unsubscribe_counter =
         meter->CreateUInt64Counter("chf_spending_limit_unsubscribe_total",
                                    "Total Nchf_SpendingLimitControl Unsubscribe calls");
+    // P4.5/ADR-0060 Stage 3: real Diameter Gy CCR-I/U/T counters, mirroring
+    // create_counter/update_counter/release_counter's own per-operation shape above -- the same
+    // real charging decisions, arriving over a different real 3GPP protocol.
+    auto ccr_initial_counter = meter->CreateUInt64Counter(
+        "chf_diameter_ccr_initial_total", "Total real Diameter Gy CCR-Initial requests handled");
+    auto ccr_update_counter = meter->CreateUInt64Counter(
+        "chf_diameter_ccr_update_total", "Total real Diameter Gy CCR-Update requests handled");
+    auto ccr_termination_counter =
+        meter->CreateUInt64Counter("chf_diameter_ccr_termination_total",
+                                   "Total real Diameter Gy CCR-Termination requests handled");
+
+    // P4.5/ADR-0060 Stage 3: real Diameter server -- CER/CEA capability exchange (Stage 2) plus
+    // real CCR-I/U/T dispatched through the exact same charging_engine.hpp functions
+    // Nchf_ConvergedCharging's HTTP Create/Update/Release handlers below call (the single-code-path
+    // property CHARGING_PROMPT.md's P4.5 explicitly requires). Constructed here, after
+    // catalog_client/balance_client/the counters above all exist, since its own per-connection
+    // threads need real, already-built dependencies to share (see diameter_server.hpp's own header
+    // for why it builds its OWN dedicated catalog/balance http2::Client pair per connection rather
+    // than reusing catalog_client/balance_client, which are confined to ioc's thread).
+    sbi_core::http2::TlsConfig diameter_client_tls{
+        .cert_path = CERTS_DIR "/chf/cert.pem",
+        .key_path = CERTS_DIR "/chf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    chf::DiameterServer diameter_server(kDiameterPort,
+                                        kDiameterOriginHost,
+                                        kDiameterOriginRealm,
+                                        std::move(diameter_client_tls),
+                                        charging_data_store,
+                                        cdr_writer,
+                                        rating_decision_store,
+                                        grant_counter.get(),
+                                        reserve_rejected_counter.get(),
+                                        ccr_initial_counter.get(),
+                                        ccr_update_counter.get(),
+                                        ccr_termination_counter.get());
+    spdlog::info("chf: Diameter (Gy) listening on tcp://0.0.0.0:{}", kDiameterPort);
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.

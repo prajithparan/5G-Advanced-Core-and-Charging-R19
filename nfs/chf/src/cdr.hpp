@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <ctime>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -56,14 +57,15 @@ class CdrWriter {
 public:
     explicit CdrWriter(const clickhouse::ClientOptions& options);
 
-    // Real INSERT into ClickHouse's `cdr` table (schema: ../schema.clickhouse.sql). Real,
-    // disclosed limitation: `clickhouse::Client` is not documented as thread-safe for concurrent
-    // use from multiple threads the way `sw::redis::Redis` is (confirmed by reading redis-plus-
-    // plus's own header, ADR-0055) -- CHF's route handlers all run on the server's single
-    // io_context thread (the same "single-threaded server, safe without a mutex" reasoning this
-    // codebase already relies on elsewhere), so this is safe in this build's actual concurrency
-    // model, but is NOT safe to share across multiple threads without adding a mutex first if
-    // that model ever changes.
+    // Real INSERT into ClickHouse's `cdr` table (schema: ../schema.clickhouse.sql).
+    // `clickhouse::Client` is not documented as thread-safe for concurrent use from multiple
+    // threads the way `sw::redis::Redis` is (confirmed by reading redis-plus-plus's own header,
+    // ADR-0055). Real concurrency change, P4.5/ADR-0060 Stage 3: this class was only ever called
+    // from CHF's single HTTP io_context thread until the real Diameter Gy CCR path
+    // (diameter_server.cpp, its own dedicated per-connection thread) started sharing the same
+    // CdrWriter instance -- `mutex_` below serializes both callers, same "one shared
+    // connection/client, one mutex" discipline this project's other single-connection stores
+    // already use (e.g. bss/product-catalog's libpqxx-backed stores, ADR-0054).
     void write(const CdrRecord& record);
 
     // Real gap detection (CHARGING_PROMPT.md's own explicit P4.4 requirement): queries every
@@ -80,6 +82,7 @@ public:
     bool is_connected() const { return client_ != nullptr; }
 
 private:
+    std::mutex mutex_;
     // nullptr if construction failed to connect -- see this file's own header for why that's a
     // real, deliberate degraded state, not an error CdrWriter itself surfaces to its caller.
     std::unique_ptr<clickhouse::Client> client_;

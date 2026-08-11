@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <pqxx/pqxx>
 #include <string>
@@ -41,12 +42,17 @@ public:
 
     // Real INSERT into `rating_decision` (best-effort -- a write failure is logged and swallowed,
     // never propagated to the caller, same "does not block the real charging response" discipline
-    // CdrWriter::write already established).
+    // CdrWriter::write already established). `pqxx::connection` is single-connection, not
+    // thread-safe for concurrent use -- P4.5/ADR-0060 Stage 3: `mutex_` below serializes callers
+    // now that the real Diameter Gy CCR path (diameter_server.cpp, its own dedicated
+    // per-connection thread) shares this same instance with CHF's HTTP io_context thread, same
+    // real concurrency-model change disclosed on CdrWriter::write.
     void record(const RatingDecisionRecord& decision);
 
     bool is_connected() const { return client_ != nullptr; }
 
 private:
+    std::mutex mutex_;
     std::unique_ptr<pqxx::connection> client_;
 };
 

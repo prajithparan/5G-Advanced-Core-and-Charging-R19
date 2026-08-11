@@ -22,6 +22,7 @@ void RatingDecisionStore::record(const RatingDecisionRecord& decision) {
         return;
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
     try {
         pqxx::work txn(*client_);
         const auto id = txn.exec("SELECT nextval('rating_decision_id_seq')::text AS id")

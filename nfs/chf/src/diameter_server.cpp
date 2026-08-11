@@ -67,8 +67,7 @@ std::vector<std::uint8_t> build_cea(const Header& request_header,
     encode_avp(avps_bytes, product_name_avp);
 
     // Auth-Application-Id=4: real RFC 4006 Diameter Credit-Control Application ID -- the only
-    // application this CHF's Diameter server will ever accept (Stage 3's Gy CCR/CCA), advertised
-    // here so a real peer's own CER/CEA capability negotiation can see it.
+    // application this CHF's Diameter server accepts (real CCR/CCA, RFC 4006).
     Avp auth_app_id_avp;
     auth_app_id_avp.code = dictionary::Avp::kAuthApplicationId;
     auth_app_id_avp.flags = AvpFlag::kMandatory;
@@ -87,13 +86,237 @@ std::vector<std::uint8_t> build_cea(const Header& request_header,
     return message;
 }
 
+// P4.5/ADR-0060 Stage 3: real CCR decode (RFC 4006). Only the fields this project's charging
+// engine (charging_engine.hpp) actually consumes are extracted -- Session-Id, CC-Request-Type,
+// CC-Request-Number (all mandatory per dict_dcca.c:1360-1367), an optional Subscription-Id (0+,
+// dict_dcca.c:1374 RULE_OPTIONAL) used to build a SUPI when its Subscription-Id-Type is
+// END_USER_IMSI, and 0+ Multiple-Services-Credit-Control groups, each carrying a Rating-Group and
+// an optional Used-Service-Unit -> CC-Total-Octets (the "volume already consumed" figure
+// TS 32.291's own usedUnitContainer[].totalVolume carries on the 5G/HTTP side).
+struct DecodedMscc {
+    std::uint32_t rating_group = 0;
+    std::optional<std::uint64_t> used_total_octets;
+};
+
+struct DecodedCcr {
+    std::string session_id;
+    std::int32_t cc_request_type = 0;
+    std::uint32_t cc_request_number = 0;
+    std::string supi; // "" if no Subscription-Id (or none of Subscription-Id-Type END_USER_IMSI)
+    std::vector<DecodedMscc> mscc;
+};
+
+std::optional<DecodedCcr> decode_ccr(const std::vector<Avp>& avps) {
+    const auto* session_id_avp = find_avp(avps, dictionary::Avp::kSessionId);
+    const auto* cc_request_type_avp = find_avp(avps, dictionary::Dcc::kCcRequestType);
+    const auto* cc_request_number_avp = find_avp(avps, dictionary::Dcc::kCcRequestNumber);
+    if (session_id_avp == nullptr || cc_request_type_avp == nullptr ||
+        cc_request_number_avp == nullptr) {
+        return std::nullopt;
+    }
+    const auto session_id = decode_octet_string(session_id_avp->data);
+    const auto cc_request_type = decode_integer32(cc_request_type_avp->data);
+    const auto cc_request_number = decode_unsigned32(cc_request_number_avp->data);
+    if (!session_id.has_value() || !cc_request_type.has_value() || !cc_request_number.has_value()) {
+        return std::nullopt;
+    }
+
+    DecodedCcr out;
+    out.session_id = *session_id;
+    out.cc_request_type = *cc_request_type;
+    out.cc_request_number = *cc_request_number;
+
+    // Subscription-Id (Grouped, 0+ per dict_dcca.c:1374) -- first END_USER_IMSI instance wins,
+    // mapped onto this project's own real "imsi-<digits>" SUPI convention (already used
+    // throughout, e.g. nfs/udm/src/main.cpp's seeded subscribers).
+    for (const auto& avp : avps) {
+        if (avp.code != dictionary::Dcc::kSubscriptionId) {
+            continue;
+        }
+        const auto sub_avps = decode_avps(avp.data);
+        if (!sub_avps.has_value()) {
+            continue;
+        }
+        const auto* type_avp = find_avp(*sub_avps, dictionary::Dcc::kSubscriptionIdType);
+        const auto* data_avp = find_avp(*sub_avps, dictionary::Dcc::kSubscriptionIdData);
+        if (type_avp == nullptr || data_avp == nullptr) {
+            continue;
+        }
+        const auto type = decode_integer32(type_avp->data);
+        const auto data = decode_octet_string(data_avp->data);
+        if (!type.has_value() || !data.has_value()) {
+            continue;
+        }
+        if (*type == dictionary::Dcc::SubscriptionIdType::kEndUserImsi) {
+            out.supi = "imsi-" + *data;
+            break;
+        }
+    }
+
+    // Multiple-Services-Credit-Control (Grouped, 0+ per dict_dcca.c:1227/1374).
+    for (const auto& avp : avps) {
+        if (avp.code != dictionary::Dcc::kMultipleServicesCreditControl) {
+            continue;
+        }
+        const auto mscc_avps = decode_avps(avp.data);
+        if (!mscc_avps.has_value()) {
+            continue;
+        }
+        DecodedMscc mscc;
+        if (const auto* rg_avp = find_avp(*mscc_avps, dictionary::Dcc::kRatingGroup);
+            rg_avp != nullptr) {
+            if (const auto rg = decode_unsigned32(rg_avp->data); rg.has_value()) {
+                mscc.rating_group = *rg;
+            }
+        }
+        if (const auto* usu_avp = find_avp(*mscc_avps, dictionary::Dcc::kUsedServiceUnit);
+            usu_avp != nullptr) {
+            const auto usu_avps = decode_avps(usu_avp->data);
+            if (usu_avps.has_value()) {
+                if (const auto* octets_avp = find_avp(*usu_avps, dictionary::Dcc::kCcTotalOctets);
+                    octets_avp != nullptr) {
+                    mscc.used_total_octets = decode_unsigned64(octets_avp->data);
+                }
+            }
+        }
+        out.mscc.push_back(mscc);
+    }
+
+    return out;
+}
+
+// P4.5/ADR-0060 Stage 3: real CCA encode. `granted_per_group` carries one (Rating-Group, optional
+// GrantedUnit) pair per input Multiple-Services-Credit-Control -- a GrantedUnit only becomes a
+// real Granted-Service-Unit AVP when charge_one_usage actually granted+reserved something (empty
+// otherwise, mirroring the HTTP path's own "grantedUnit omitted when nothing was rated/reserved"
+// shape, MultipleUnitInformation in main.cpp's Create/Update handlers).
+std::vector<std::uint8_t>
+build_cca(const Header& request_header,
+          const std::string& origin_host,
+          const std::string& origin_realm,
+          const std::string& session_id,
+          std::int32_t cc_request_type,
+          std::uint32_t cc_request_number,
+          std::int32_t result_code,
+          const std::vector<std::pair<std::uint32_t, std::optional<sbi_gen::GrantedUnit>>>&
+              granted_per_group) {
+    std::vector<std::uint8_t> avps_bytes;
+
+    Avp session_id_avp;
+    session_id_avp.code = dictionary::Avp::kSessionId;
+    session_id_avp.flags = AvpFlag::kMandatory;
+    session_id_avp.data = encode_octet_string(session_id);
+    encode_avp(avps_bytes, session_id_avp);
+
+    Avp result_code_avp;
+    result_code_avp.code = dictionary::Avp::kResultCode;
+    result_code_avp.flags = AvpFlag::kMandatory;
+    result_code_avp.data = encode_integer32(result_code);
+    encode_avp(avps_bytes, result_code_avp);
+
+    Avp origin_host_avp;
+    origin_host_avp.code = dictionary::Avp::kOriginHost;
+    origin_host_avp.flags = AvpFlag::kMandatory;
+    origin_host_avp.data = encode_octet_string(origin_host);
+    encode_avp(avps_bytes, origin_host_avp);
+
+    Avp origin_realm_avp;
+    origin_realm_avp.code = dictionary::Avp::kOriginRealm;
+    origin_realm_avp.flags = AvpFlag::kMandatory;
+    origin_realm_avp.data = encode_octet_string(origin_realm);
+    encode_avp(avps_bytes, origin_realm_avp);
+
+    Avp cc_request_type_avp;
+    cc_request_type_avp.code = dictionary::Dcc::kCcRequestType;
+    cc_request_type_avp.flags = AvpFlag::kMandatory;
+    cc_request_type_avp.data = encode_integer32(cc_request_type);
+    encode_avp(avps_bytes, cc_request_type_avp);
+
+    Avp cc_request_number_avp;
+    cc_request_number_avp.code = dictionary::Dcc::kCcRequestNumber;
+    cc_request_number_avp.flags = AvpFlag::kMandatory;
+    cc_request_number_avp.data = encode_unsigned32(cc_request_number);
+    encode_avp(avps_bytes, cc_request_number_avp);
+
+    for (const auto& [rating_group, grant] : granted_per_group) {
+        std::vector<std::uint8_t> mscc_bytes;
+
+        Avp rg_avp;
+        rg_avp.code = dictionary::Dcc::kRatingGroup;
+        rg_avp.flags = AvpFlag::kMandatory;
+        rg_avp.data = encode_unsigned32(rating_group);
+        encode_avp(mscc_bytes, rg_avp);
+
+        if (grant.has_value()) {
+            std::vector<std::uint8_t> gsu_bytes;
+            // Same real, narrow unit-conversion choice charging_engine.cpp's build_rating_grant
+            // already made: a totalVolume grant maps to CC-Total-Octets, otherwise
+            // serviceSpecificUnits maps to CC-Service-Specific-Units.
+            if (grant->totalVolume.has_value()) {
+                Avp octets_avp;
+                octets_avp.code = dictionary::Dcc::kCcTotalOctets;
+                octets_avp.flags = AvpFlag::kMandatory;
+                octets_avp.data =
+                    encode_unsigned64(static_cast<std::uint64_t>(*grant->totalVolume));
+                encode_avp(gsu_bytes, octets_avp);
+            } else if (grant->serviceSpecificUnits.has_value()) {
+                Avp units_avp;
+                units_avp.code = dictionary::Dcc::kCcServiceSpecificUnits;
+                units_avp.flags = AvpFlag::kMandatory;
+                units_avp.data =
+                    encode_unsigned64(static_cast<std::uint64_t>(*grant->serviceSpecificUnits));
+                encode_avp(gsu_bytes, units_avp);
+            }
+            if (!gsu_bytes.empty()) {
+                Avp gsu_avp;
+                gsu_avp.code = dictionary::Dcc::kGrantedServiceUnit;
+                gsu_avp.flags = AvpFlag::kMandatory;
+                gsu_avp.data = gsu_bytes;
+                encode_avp(mscc_bytes, gsu_avp);
+            }
+        }
+
+        Avp mscc_avp;
+        mscc_avp.code = dictionary::Dcc::kMultipleServicesCreditControl;
+        mscc_avp.flags = AvpFlag::kMandatory;
+        mscc_avp.data = mscc_bytes;
+        encode_avp(avps_bytes, mscc_avp);
+    }
+
+    Header answer_header;
+    answer_header.flags = 0; // R bit cleared: this is an Answer, not a Request
+    answer_header.command_code = dictionary::Command::kCreditControl;
+    answer_header.application_id = request_header.application_id;
+    answer_header.hop_by_hop_id = request_header.hop_by_hop_id; // real spec: echoed from request
+    answer_header.end_to_end_id = request_header.end_to_end_id; // real spec: echoed from request
+
+    auto message = encode_header(answer_header, static_cast<std::uint32_t>(avps_bytes.size()));
+    message.insert(message.end(), avps_bytes.begin(), avps_bytes.end());
+    return message;
+}
+
 } // namespace
 
-DiameterServer::DiameterServer(std::uint16_t port,
-                               std::string origin_host,
-                               std::string origin_realm)
+DiameterServer::DiameterServer(
+    std::uint16_t port,
+    std::string origin_host,
+    std::string origin_realm,
+    sbi_core::http2::TlsConfig client_tls,
+    ChargingDataStore& charging_data_store,
+    CdrWriter& cdr_writer,
+    RatingDecisionStore& rating_decision_store,
+    opentelemetry::metrics::Counter<std::uint64_t>* grant_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* ccr_update_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* ccr_termination_counter)
     : ioc_(), acceptor_(ioc_, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), port)),
-      origin_host_(std::move(origin_host)), origin_realm_(std::move(origin_realm)) {
+      origin_host_(std::move(origin_host)), origin_realm_(std::move(origin_realm)),
+      client_tls_(std::move(client_tls)), charging_data_store_(charging_data_store),
+      cdr_writer_(cdr_writer), rating_decision_store_(rating_decision_store),
+      grant_counter_(grant_counter), reserve_rejected_counter_(reserve_rejected_counter),
+      ccr_initial_counter_(ccr_initial_counter), ccr_update_counter_(ccr_update_counter),
+      ccr_termination_counter_(ccr_termination_counter) {
     accept_thread_ = std::thread(&DiameterServer::accept_loop, this);
 }
 
@@ -154,12 +377,9 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
 
     if (header->command_code != dictionary::Command::kCapabilitiesExchange ||
         (header->flags & CommandFlag::kRequest) == 0) {
-        // Stage 2 scope (ADR-0059): only the CER/CEA handshake is handled. Anything else (real
-        // CCR, or a peer that skips CER entirely) gets the connection closed -- Stage 3 replaces
-        // this branch with the real CCR/CCA dispatch loop.
         spdlog::warn(
             "chf: Diameter peer's first message was not a CER (command_code={}, flags={:#x}) -- "
-            "closing connection (Stage 2 only handles capability exchange, ADR-0059)",
+            "closing connection",
             header->command_code,
             header->flags);
         return;
@@ -191,8 +411,289 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
         spdlog::warn("chf: failed to send CEA: {}", ec.message());
         return;
     }
-    spdlog::info("chf: real CEA sent (DIAMETER_SUCCESS) -- Stage 2 (ADR-0059) closes the "
-                 "connection here; Stage 3 keeps it open for CCR/CCA");
+    spdlog::info("chf: real CEA sent (DIAMETER_SUCCESS) -- connection stays open for real CCR/CCA "
+                 "(P4.5/ADR-0060 Stage 3)");
+
+    // P4.5/ADR-0060 Stage 3: CHF as a real HTTP client of bss/product-catalog and
+    // bss/balance-management, dedicated to THIS connection's own thread -- see
+    // diameter_server.hpp's own header for why this can't reuse main()'s HTTP-route-handler
+    // catalog_client/balance_client (sbi_core::http2::Client's real "one instance per thread"
+    // contract).
+    sbi_core::http2::Client catalog_client(client_tls_);
+    sbi_core::http2::Client balance_client(client_tls_);
+
+    // Real Diameter Session-Id -> this project's own ChargingDataRef, scoped to this connection
+    // (a real Diameter peer may multiplex many concurrent Gy sessions over one long-lived
+    // transport connection, RFC 6733's own expected deployment shape) -- populated on CCR-Initial,
+    // consulted on CCR-Update/CCR-Termination, erased on CCR-Termination. No cross-connection
+    // sharing: a real peer reconnect starts fresh sessions, same as a real OCS would see.
+    std::unordered_map<std::string, std::string> session_to_ref;
+
+    while (!stop_) {
+        std::vector<std::uint8_t> next_header_bytes(20);
+        boost::asio::read(socket, boost::asio::buffer(next_header_bytes), ec);
+        if (ec) {
+            spdlog::info("chf: Diameter peer disconnected: {}", ec.message());
+            return;
+        }
+
+        std::size_t next_offset = 0;
+        std::uint32_t next_avps_length = 0;
+        const auto next_header = decode_header(next_header_bytes, next_offset, next_avps_length);
+        if (!next_header.has_value()) {
+            spdlog::warn("chf: Diameter peer sent a malformed message header, closing connection");
+            return;
+        }
+
+        std::vector<std::uint8_t> next_avps_bytes(next_avps_length);
+        if (next_avps_length > 0) {
+            boost::asio::read(socket, boost::asio::buffer(next_avps_bytes), ec);
+            if (ec) {
+                spdlog::warn("chf: Diameter connection closed before AVPs arrived: {}",
+                             ec.message());
+                return;
+            }
+        }
+
+        if (next_header->command_code != dictionary::Command::kCreditControl ||
+            (next_header->flags & CommandFlag::kRequest) == 0) {
+            // Stage 3 scope (ADR-0060): only real CCR-I/U/T is handled -- DWR/DPR and any other
+            // real Diameter command close the connection with a warning, same disclosed-gap
+            // pattern Stage 2 already used for "first message not CER".
+            spdlog::warn("chf: Diameter peer sent an unsupported message (command_code={}, "
+                         "flags={:#x}) -- closing connection (only real CCR is handled)",
+                         next_header->command_code,
+                         next_header->flags);
+            return;
+        }
+
+        const auto next_avps = decode_avps(next_avps_bytes);
+        if (!next_avps.has_value()) {
+            spdlog::warn("chf: Diameter CCR had malformed AVPs, closing connection");
+            return;
+        }
+
+        const auto ccr = decode_ccr(*next_avps);
+        if (!ccr.has_value()) {
+            spdlog::warn("chf: Diameter CCR missing a mandatory AVP (Session-Id/CC-Request-Type/"
+                         "CC-Request-Number)");
+            // Best-effort echo: a real Session-Id may still be present even if CC-Request-Type/
+            // Number are not (or vice versa) -- send back whatever can be recovered rather than
+            // nothing, same "answer every request" real Diameter peer expectation the loop's other
+            // error paths follow.
+            std::string best_effort_session_id;
+            if (const auto* sid = find_avp(*next_avps, dictionary::Avp::kSessionId);
+                sid != nullptr) {
+                best_effort_session_id = decode_octet_string(sid->data).value_or("");
+            }
+            const auto cca = build_cca(*next_header,
+                                       origin_host_,
+                                       origin_realm_,
+                                       best_effort_session_id,
+                                       0,
+                                       0,
+                                       dictionary::ResultCode::kDiameterMissingAvp,
+                                       {});
+            boost::asio::write(socket, boost::asio::buffer(cca), ec);
+            continue;
+        }
+
+        spdlog::info("chf: real CCR received (Session-Id={}, CC-Request-Type={}, "
+                     "CC-Request-Number={}, SUPI={})",
+                     ccr->session_id,
+                     ccr->cc_request_type,
+                     ccr->cc_request_number,
+                     ccr->supi.empty() ? "?" : ccr->supi);
+
+        if (ccr->cc_request_type == dictionary::Dcc::CcRequestType::kInitial) {
+            const auto ref = charging_data_store_.create(ccr->supi);
+            session_to_ref[ccr->session_id] = ref;
+            if (ccr_initial_counter_ != nullptr) {
+                ccr_initial_counter_->Add(1);
+            }
+
+            std::vector<std::pair<std::uint32_t, std::optional<sbi_gen::GrantedUnit>>> granted;
+            for (const auto& mscc : ccr->mscc) {
+                sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging usage{};
+                usage.ratingGroup = mscc.rating_group;
+                // The single, shared code path -- identical to Nchf_ConvergedCharging's own HTTP
+                // Create handler (main.cpp), per CHARGING_PROMPT.md's explicit P4.5 requirement.
+                const auto charged =
+                    chf::charge_one_usage(catalog_client,
+                                          balance_client,
+                                          cdr_writer_,
+                                          rating_decision_store_,
+                                          charging_data_store_,
+                                          grant_counter_,
+                                          reserve_rejected_counter_,
+                                          ref,
+                                          "Create",
+                                          ccr->supi,
+                                          "Diameter-Gy",
+                                          static_cast<std::int64_t>(ccr->cc_request_number),
+                                          usage);
+                granted.emplace_back(mscc.rating_group,
+                                     charged.reserved ? charged.rating.grant : std::nullopt);
+            }
+            const auto cca = build_cca(*next_header,
+                                       origin_host_,
+                                       origin_realm_,
+                                       ccr->session_id,
+                                       ccr->cc_request_type,
+                                       ccr->cc_request_number,
+                                       dictionary::ResultCode::kDiameterSuccess,
+                                       granted);
+            boost::asio::write(socket, boost::asio::buffer(cca), ec);
+        } else if (ccr->cc_request_type == dictionary::Dcc::CcRequestType::kUpdate) {
+            const auto it = session_to_ref.find(ccr->session_id);
+            if (it == session_to_ref.end()) {
+                spdlog::warn("chf: Diameter CCR-Update for unknown Session-Id={}", ccr->session_id);
+                const auto cca = build_cca(*next_header,
+                                           origin_host_,
+                                           origin_realm_,
+                                           ccr->session_id,
+                                           ccr->cc_request_type,
+                                           ccr->cc_request_number,
+                                           dictionary::ResultCode::kDiameterUnknownSessionId,
+                                           {});
+                boost::asio::write(socket, boost::asio::buffer(cca), ec);
+                continue;
+            }
+            const auto& ref = it->second;
+            const auto supi = charging_data_store_.get_supi(ref).value_or(ccr->supi);
+            if (ccr_update_counter_ != nullptr) {
+                ccr_update_counter_->Add(1);
+            }
+
+            std::vector<std::pair<std::uint32_t, std::optional<sbi_gen::GrantedUnit>>> granted;
+            for (const auto& mscc : ccr->mscc) {
+                sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging usage{};
+                usage.ratingGroup = mscc.rating_group;
+                if (mscc.used_total_octets.has_value()) {
+                    sbi_gen::UsedUnitContainer_Nchf_ConvergedCharging used{};
+                    used.totalVolume = static_cast<std::int64_t>(*mscc.used_total_octets);
+                    // Real, disclosed mapping: RFC 4006 has no per-container sequence-number AVP
+                    // equivalent to TS 32.291's localSequenceNumber -- CC-Request-Number (this
+                    // session's own real Diameter monotonic counter) is the closest real
+                    // available value, not fabricated.
+                    used.localSequenceNumber = static_cast<std::int64_t>(ccr->cc_request_number);
+                    usage.usedUnitContainer =
+                        std::vector<sbi_gen::UsedUnitContainer_Nchf_ConvergedCharging>{used};
+                }
+                const auto charged =
+                    chf::charge_one_usage(catalog_client,
+                                          balance_client,
+                                          cdr_writer_,
+                                          rating_decision_store_,
+                                          charging_data_store_,
+                                          grant_counter_,
+                                          reserve_rejected_counter_,
+                                          ref,
+                                          "Update",
+                                          supi,
+                                          "Diameter-Gy",
+                                          static_cast<std::int64_t>(ccr->cc_request_number),
+                                          usage);
+                granted.emplace_back(mscc.rating_group,
+                                     charged.reserved ? charged.rating.grant : std::nullopt);
+            }
+            const auto cca = build_cca(*next_header,
+                                       origin_host_,
+                                       origin_realm_,
+                                       ccr->session_id,
+                                       ccr->cc_request_type,
+                                       ccr->cc_request_number,
+                                       dictionary::ResultCode::kDiameterSuccess,
+                                       granted);
+            boost::asio::write(socket, boost::asio::buffer(cca), ec);
+        } else if (ccr->cc_request_type == dictionary::Dcc::CcRequestType::kTermination) {
+            const auto it = session_to_ref.find(ccr->session_id);
+            if (it == session_to_ref.end()) {
+                spdlog::warn("chf: Diameter CCR-Termination for unknown Session-Id={}",
+                             ccr->session_id);
+                const auto cca = build_cca(*next_header,
+                                           origin_host_,
+                                           origin_realm_,
+                                           ccr->session_id,
+                                           ccr->cc_request_type,
+                                           ccr->cc_request_number,
+                                           dictionary::ResultCode::kDiameterUnknownSessionId,
+                                           {});
+                boost::asio::write(socket, boost::asio::buffer(cca), ec);
+                continue;
+            }
+            const auto ref = it->second;
+
+            // Mirrors Nchf_ConvergedCharging_Release's own real logic (main.cpp) exactly: finalize
+            // (real permanent debit + unreserve) the session's full reserved total, release the
+            // ref, then a single final CDR row -- not a per-rating-group charge_one_usage call,
+            // same real reasoning as the HTTP Release handler (RFC 4006's own CCR-T reports final
+            // usage but does not request new units, so there is no new grant to rate).
+            const auto supi = charging_data_store_.get_supi(ref);
+            const auto reserved_total = charging_data_store_.get_reserved_total(ref);
+            charging_data_store_.release(ref);
+            if (supi.has_value() && !supi->empty()) {
+                chf::finalize_subscriber_balance(
+                    balance_client, *supi, reserved_total, "Diameter-Gy CCR-Termination " + ref);
+            }
+            try {
+                chf::CdrRecord cdr{};
+                cdr.charging_data_ref = ref;
+                cdr.invocation_sequence_number = static_cast<std::int64_t>(ccr->cc_request_number);
+                cdr.service_type = "ConvergedCharging";
+                cdr.operation = "Release";
+                cdr.subscriber_identifier = supi.value_or("");
+                cdr.nf_consumer_node_functionality = "Diameter-Gy";
+                if (reserved_total > 0.0) {
+                    cdr.reserved_cost = reserved_total;
+                }
+                cdr.invocation_time_stamp =
+                    std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                cdr_writer_.write(cdr);
+            } catch (const std::exception& e) {
+                spdlog::warn("chf: CDR write to ClickHouse failed for ChargingDataRef={}: {}",
+                             ref,
+                             e.what());
+            }
+            session_to_ref.erase(it);
+            if (ccr_termination_counter_ != nullptr) {
+                ccr_termination_counter_->Add(1);
+            }
+
+            const auto cca = build_cca(*next_header,
+                                       origin_host_,
+                                       origin_realm_,
+                                       ccr->session_id,
+                                       ccr->cc_request_type,
+                                       ccr->cc_request_number,
+                                       dictionary::ResultCode::kDiameterSuccess,
+                                       {});
+            boost::asio::write(socket, boost::asio::buffer(cca), ec);
+        } else {
+            // CC-Request-Type EVENT_REQUEST (4) or any other value: real, disclosed gap -- this
+            // Stage's scope (task-tracked, ADR-0060) is CCR-I/U/T only, mirroring
+            // Nchf_ConvergedCharging's own Create/Update/Release shape. Event-based (one-shot,
+            // sessionless) credit-control has no HTTP-path analogue in this codebase to share a
+            // code path with, so it is not implemented here rather than given a fabricated one.
+            spdlog::warn("chf: Diameter CCR with unsupported CC-Request-Type={} (only "
+                         "INITIAL/UPDATE/TERMINATION are handled, ADR-0060 Stage 3)",
+                         ccr->cc_request_type);
+            const auto cca = build_cca(*next_header,
+                                       origin_host_,
+                                       origin_realm_,
+                                       ccr->session_id,
+                                       ccr->cc_request_type,
+                                       ccr->cc_request_number,
+                                       dictionary::ResultCode::kDiameterUnableToComply,
+                                       {});
+            boost::asio::write(socket, boost::asio::buffer(cca), ec);
+        }
+
+        if (ec) {
+            spdlog::warn("chf: failed to send CCA: {}", ec.message());
+            return;
+        }
+    }
 }
 
 } // namespace chf
