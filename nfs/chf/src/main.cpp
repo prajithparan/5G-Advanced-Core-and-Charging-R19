@@ -119,6 +119,7 @@
 #include "bss_sid/product.hpp"
 #include "bss_sid/rating.hpp"
 #include "cdr.hpp"
+#include "charging_engine.hpp"
 #include "diameter_core/header.hpp"
 #include "diameter_server.hpp"
 #include "rating_decision_store.hpp"
@@ -150,11 +151,9 @@ constexpr const char* kOfflineApiRoot = "/nchf-offlineonlycharging/v1";
 // Real basePath confirmed directly from TS29594_Nchf_SpendingLimitControl.yaml's own `servers`
 // block (ADR-0055) -- P4.2.
 constexpr const char* kSpendingLimitApiRoot = "/nchf-spendinglimitcontrol/v1";
-constexpr const char* kProductCatalogBase = "https://127.0.0.1:7785";
-constexpr const char* kProductCatalogApiRoot = "/tmf-api/productCatalogManagement/v4";
-// P4.3 (ADR-0056/0057): CHF's real client to bss/balance-management (ABMF).
-constexpr const char* kBalanceManagementBase = "https://127.0.0.1:7786";
-constexpr const char* kBalanceManagementApiRoot = "/tmf-api/prepayBalanceManagement/v4";
+// P4.5/ADR-0060 (Stage 3): kProductCatalogBase/kProductCatalogApiRoot/kBalanceManagementBase/
+// kBalanceManagementApiRoot now live in charging_engine.hpp (chf:: namespace) -- shared with
+// diameter_server.cpp, not duplicated here.
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -220,22 +219,6 @@ std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::R
     return verifier.verify(value.substr(kPrefix.size()));
 }
 
-// Real rating engine (ADR-0048), CHF's side. Fetches the first Active/isSellable ProductOffering
-// from bss/product-catalog (ADR-0047), then its first referenced ProductOfferingPrice, and
-// converts that price's unitOfMeasure into a real GrantedUnit -- CHF's actual charging decision,
-// not a fabricated placeholder. No OAuth2 token needed: product-catalog is mTLS-only (ADR-0047),
-// same trust boundary the client cert already provides. Returns nullopt if the catalog is
-// unreachable or has no matching offering (schema-valid empty grant, same fallback this build has
-// always had, see file header).
-//
-// Unit conversion is real but deliberately narrow: TS 32.291's GrantedUnit has no generic "amount
-// + unit string" field the way TMF620's Quantity does -- totalVolume/uplinkVolume/downlinkVolume
-// are raw octet counts (TS 32.298's own CDR volume fields are octet-counted, confirmed by their
-// Uint64 typing with no separate unit field), time is raw seconds. Only "GB"/"MB" (decimal,
-// matching 3GPP's own octet-counting convention, not binary GiB/MiB) convert to totalVolume; any
-// other unit string falls back to serviceSpecificUnits carrying the raw amount unconverted --
-// disclosed as a real but narrow conversion, not a general unit-aware rating engine.
-
 // Nchf_SpendingLimitControl (TS 29.594, P4.2/ADR-0055): builds the real SpendingLimitStatus both
 // Subscribe (201) and Update (200) return, per the real confirmed schema. `statusInfos` is a
 // map<policyCounterId, PolicyCounterInfo> -- the generated type falls back to opaque
@@ -267,313 +250,6 @@ build_spending_limit_status(const sbi_gen::SpendingLimitContext& context) {
     }
     status.statusInfos = status_infos;
     return status;
-}
-
-// P4.3 (ADR-0057): a rating decision is now a real (GrantedUnit, cost) pair -- the quantity of
-// service granted (e.g. 5GB) AND its real monetary cost (e.g. $20), confirmed as two genuinely
-// separate real TMF620 fields on ProductOfferingPrice (`unitOfMeasure` vs `price`), not something
-// this project invented a split for. `cost` is nullopt when the matched price has no `price`
-// field set (a real, valid TMF620 state -- not every price is monetary), in which case no real
-// balance reservation is attempted for this grant (same as before this ADR).
-// P4.5/ADR-0060 (E5): tariffId/tariffVersion/offeringName/priceName added so callers can write a
-// real RatingDecision audit row (principle 2: "every charge is explainable") without a second
-// lookup -- empty when no offering/price was matched (nothing was rated, nothing to audit).
-struct RatingResult {
-    std::optional<sbi_gen::GrantedUnit> grant;
-    std::optional<bss_sid::Money> cost;
-    std::optional<std::string> tariffId;
-    std::optional<std::string> tariffVersion;
-    std::optional<std::string> offeringName;
-    std::optional<std::string> priceName;
-};
-
-RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client) {
-    sbi_core::http2::ClientRequest offerings_req;
-    offerings_req.method = "GET";
-    offerings_req.url =
-        std::string(kProductCatalogBase) + kProductCatalogApiRoot + "/productOffering";
-    auto offerings_resp = catalog_client.send(offerings_req);
-    if (!offerings_resp.has_value() || offerings_resp->status != 200) {
-        spdlog::warn("chf: could not reach bss/product-catalog for rating, granting nothing");
-        return {};
-    }
-
-    std::vector<bss_sid::ProductOffering> offerings;
-    try {
-        offerings = json::parse(offerings_resp->body).get<std::vector<bss_sid::ProductOffering>>();
-    } catch (const json::exception& e) {
-        spdlog::warn("chf: malformed ProductOffering list from product-catalog: {}", e.what());
-        return {};
-    }
-
-    const auto offering_it = std::find_if(offerings.begin(), offerings.end(), [](const auto& o) {
-        return o.isSellable.value_or(false) && o.lifecycleStatus.value_or("") == "Active" &&
-               !o.productOfferingPrice.empty();
-    });
-    if (offering_it == offerings.end()) {
-        spdlog::info("chf: no Active/isSellable ProductOffering with a price found, granting "
-                     "nothing this call");
-        return {};
-    }
-
-    sbi_core::http2::ClientRequest price_req;
-    price_req.method = "GET";
-    price_req.url = std::string(kProductCatalogBase) + kProductCatalogApiRoot +
-                    "/productOfferingPrice/" + offering_it->productOfferingPrice.front().id;
-    auto price_resp = catalog_client.send(price_req);
-    if (!price_resp.has_value() || price_resp->status != 200) {
-        spdlog::warn("chf: could not fetch ProductOfferingPrice {}, granting nothing",
-                     offering_it->productOfferingPrice.front().id);
-        return {};
-    }
-
-    bss_sid::ProductOfferingPrice price;
-    try {
-        price = json::parse(price_resp->body).get<bss_sid::ProductOfferingPrice>();
-    } catch (const json::exception& e) {
-        spdlog::warn("chf: malformed ProductOfferingPrice from product-catalog: {}", e.what());
-        return {};
-    }
-    if (!price.unitOfMeasure.has_value() || !price.unitOfMeasure->amount.has_value()) {
-        spdlog::info("chf: ProductOfferingPrice {} has no unitOfMeasure, granting nothing",
-                     *price.id);
-        return {};
-    }
-
-    sbi_gen::GrantedUnit grant{};
-    const auto amount = *price.unitOfMeasure->amount;
-    const auto units = price.unitOfMeasure->units.value_or("");
-    if (units == "GB") {
-        grant.totalVolume = static_cast<std::uint64_t>(amount * 1'000'000'000.0);
-    } else if (units == "MB") {
-        grant.totalVolume = static_cast<std::uint64_t>(amount * 1'000'000.0);
-    } else {
-        grant.serviceSpecificUnits = static_cast<std::uint64_t>(amount);
-    }
-    spdlog::info("chf: rating engine granted {} from ProductOffering '{}' / ProductOfferingPrice "
-                 "'{}'",
-                 units == "GB" || units == "MB"
-                     ? std::to_string(*grant.totalVolume) + " octets"
-                     : std::to_string(*grant.serviceSpecificUnits) + " service-specific units",
-                 offering_it->name.value_or(""),
-                 price.name.value_or(""));
-    return {grant, price.price, price.id, price.version, offering_it->name, price.name};
-}
-
-// P4.3 (ADR-0057): CHF as a real HTTP client of bss/balance-management (ADR-0056) -- reserves
-// `cost` against the real per-subscriber Bucket keyed by SUPI (this project's own disclosed
-// convention: no real customer-to-bucket provisioning system exists, see
-// bss/balance-management's own file header). Returns false if the reservation was rejected
-// (insufficient balance, or no bucket exists yet for this SUPI -- same real business outcome
-// either way) -- callers must not grant units when this returns false, the real prepaid-
-// enforcement point this ADR closes (ADR-0048/0050's own disclosed "no balance/wallet deduction"
-// gap).
-bool reserve_subscriber_balance(sbi_core::http2::Client& balance_client,
-                                const std::string& supi,
-                                const bss_sid::Money& cost,
-                                const std::string& description) {
-    if (!cost.value.has_value() || *cost.value <= 0.0) {
-        // A real, valid TMF620 state (price with no monetary value, or a zero-cost promotional
-        // price) -- nothing to reserve, not a failure.
-        return true;
-    }
-
-    bss_sid::ReserveBalance reserve_req{};
-    bss_sid::Quantity amount{};
-    amount.amount = *cost.value;
-    amount.units = cost.unit;
-    reserve_req.amount = amount;
-    bss_sid::BucketRef bucket{};
-    bucket.id = supi;
-    reserve_req.bucket = bucket;
-    reserve_req.description = description;
-    reserve_req.usageType = "monetary";
-
-    sbi_core::http2::ClientRequest req;
-    req.method = "POST";
-    req.url = std::string(kBalanceManagementBase) + kBalanceManagementApiRoot + "/reserveBalance";
-    req.headers.emplace("content-type", "application/json");
-    req.body = json(reserve_req).dump();
-
-    auto resp = balance_client.send(req);
-    if (!resp.has_value() || resp->status != 201) {
-        spdlog::warn("chf: reserveBalance call to bss/balance-management failed (SUPI={})", supi);
-        return false;
-    }
-    try {
-        const auto result = json::parse(resp->body).get<bss_sid::ReserveBalance>();
-        return result.status.value_or("") == "completed";
-    } catch (const json::exception& e) {
-        spdlog::warn("chf: malformed ReserveBalance response: {}", e.what());
-        return false;
-    }
-}
-
-// P4.3 (ADR-0057): Release-time finalization -- converts everything reserved for this session
-// (ChargingDataStore::get_reserved_total) into a real, permanent debit. Disclosed simplification:
-// this finalizes the FULL reserved total, not a proportional amount based on SMF's actually-
-// reported usage (usedUnitContainer) -- a real per-usage proportional refund is deferred, not
-// fabricated as more sophisticated than it is (see this file's own header).
-//
-// Real bug found and fixed via live verification, not caught by unit-level reasoning alone:
-// bss/balance-management's `ReserveBalance` (positive amount) moves money remainingValue ->
-// reservedValue; `AdjustBalance` only ever touches remainingValue directly and its own atomic
-// floor check (`remaining_value + amount >= 0`) has no visibility into reservedValue at all.
-// Neither operation alone can "commit" a reservation (decrease reservedValue permanently WITHOUT
-// crediting remainingValue back first) -- TMF654's own modeled resource set (this project's
-// scope, see bss_sid/balance.hpp) has no dedicated "commit" action. The correct way to compose
-// the two real primitives into a net "commit" is ORDER-DEPENDENT: unreserve FIRST (ReserveBalance,
-// negative amount -- returns the money to remainingValue, always succeeds since exactly this much
-// is known to be reserved), THEN debit (AdjustBalance, negative amount -- now succeeds, since the
-// money is back in remainingValue) -- net effect: reservedValue permanently decreases by the full
-// amount, remainingValue is unchanged (temporarily credited then immediately re-debited the same
-// amount). Doing this in the OPPOSITE order (debit before unreserve, this function's first,
-// buggy version) makes the debit's own atomic floor check fail (the money is still sitting in
-// reservedValue, not yet in remainingValue), so only the unreserve half succeeds -- silently
-// refunding the entire reservation instead of committing it. Caught by this ADR's own real
-// end-to-end live verification (a real $50 topup, $40 total reserved across Create+Update, then
-// Release incorrectly returned the bucket to $50/$0 instead of the correct $10/$0) -- exactly the
-// kind of bug this project's "live-verify over self-consistency" discipline exists to catch.
-void finalize_subscriber_balance(sbi_core::http2::Client& balance_client,
-                                 const std::string& supi,
-                                 double total_reserved,
-                                 const std::string& description) {
-    if (total_reserved <= 0.0) {
-        return;
-    }
-
-    bss_sid::BucketRef bucket{};
-    bucket.id = supi;
-
-    bss_sid::ReserveBalance unreserve_req{};
-    bss_sid::Quantity unreserve_amount{};
-    unreserve_amount.amount = -total_reserved;
-    unreserve_req.amount = unreserve_amount;
-    unreserve_req.bucket = bucket;
-    unreserve_req.description = description + " (unreserve before commit)";
-    unreserve_req.usageType = "monetary";
-
-    sbi_core::http2::ClientRequest unreserve_http_req;
-    unreserve_http_req.method = "POST";
-    unreserve_http_req.url =
-        std::string(kBalanceManagementBase) + kBalanceManagementApiRoot + "/reserveBalance";
-    unreserve_http_req.headers.emplace("content-type", "application/json");
-    unreserve_http_req.body = json(unreserve_req).dump();
-    auto unreserve_resp = balance_client.send(unreserve_http_req);
-    if (!unreserve_resp.has_value() || unreserve_resp->status != 201) {
-        spdlog::warn("chf: finalize unreserve call failed (SUPI={})", supi);
-        return;
-    }
-
-    bss_sid::AdjustBalance adjust_req{};
-    bss_sid::Quantity debit{};
-    debit.amount = -total_reserved;
-    adjust_req.amount = debit;
-    adjust_req.bucket = bucket;
-    adjust_req.adjustType = "oneTime";
-    adjust_req.description = description + " (commit)";
-    adjust_req.usageType = "monetary";
-
-    sbi_core::http2::ClientRequest adjust_http_req;
-    adjust_http_req.method = "POST";
-    adjust_http_req.url =
-        std::string(kBalanceManagementBase) + kBalanceManagementApiRoot + "/adjustBalance";
-    adjust_http_req.headers.emplace("content-type", "application/json");
-    adjust_http_req.body = json(adjust_req).dump();
-    auto adjust_resp = balance_client.send(adjust_http_req);
-    if (!adjust_resp.has_value() || adjust_resp->status != 201) {
-        // Real, disclosed gap: the unreserve above already succeeded, so if this commit debit
-        // fails (e.g. balance-management becomes unreachable mid-finalize), the money is left
-        // sitting back in remainingValue, uncommitted -- not a lost-money bug (the ledger still
-        // has both real action records to reconcile from), but not a fully atomic two-call
-        // sequence either. A real distributed-transaction/outbox mechanism would close this;
-        // not built here, disclosed rather than silently assumed safe.
-        spdlog::warn("chf: finalize commit AdjustBalance call failed (SUPI={})", supi);
-    }
-}
-
-// P4.4/ADR-0058: writes one real CDR row (chf::CdrRecord, see cdr.hpp) per MultipleUnitUsage
-// entry -- every field here is either a real TS 32.291 value already flowing through this
-// handler, or a real ADR-0057 rating-engine output (grant/cost), not fabricated. Shared between
-// the Create and Update route handlers below to avoid duplicating this construction twice.
-void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
-                                  const std::string& ref,
-                                  const std::string& operation,
-                                  const std::string& supi,
-                                  const std::string& node_functionality,
-                                  std::int64_t invocation_sequence_number,
-                                  const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
-                                  const RatingResult& rating,
-                                  bool reserved) {
-    chf::CdrRecord cdr{};
-    cdr.charging_data_ref = ref;
-    cdr.invocation_sequence_number = invocation_sequence_number;
-    cdr.service_type = "ConvergedCharging";
-    cdr.operation = operation;
-    cdr.subscriber_identifier = supi;
-    cdr.nf_consumer_node_functionality = node_functionality;
-    cdr.rating_group = static_cast<std::int64_t>(usage.ratingGroup);
-    if (reserved && rating.grant.has_value()) {
-        cdr.granted_total_volume = rating.grant->totalVolume;
-        cdr.granted_service_specific_units = rating.grant->serviceSpecificUnits;
-    }
-    if (usage.usedUnitContainer.has_value() && !usage.usedUnitContainer->empty()) {
-        cdr.used_total_volume = usage.usedUnitContainer->front().totalVolume;
-    }
-    if (reserved && rating.cost.has_value()) {
-        cdr.reserved_cost = rating.cost->value;
-        cdr.reserved_cost_currency = rating.cost->unit;
-    }
-    cdr.invocation_time_stamp =
-        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    try {
-        cdr_writer.write(cdr);
-    } catch (const std::exception& e) {
-        // Real, disclosed gap: a ClickHouse write failure does not block or fail the real
-        // charging response CHF already committed to (the balance reservation above already
-        // happened) -- CDR generation is best-effort in this build, matching this project's
-        // existing "no real distributed-transaction guarantee across CHF's several real
-        // dependencies" disclosure (see finalize_subscriber_balance's own comment for the
-        // balance-management analogue).
-        spdlog::warn(
-            "chf: CDR write to ClickHouse failed for ChargingDataRef={}: {}", ref, e.what());
-    }
-}
-
-// P4.5/ADR-0060 (E5): writes one real RatingDecision audit row per MultipleUnitUsage entry that
-// was actually rated (rating.tariffId has a value) -- an unmatched offering/price is not a
-// "decision" worth auditing (nothing was explained because nothing was rated). Shared between the
-// Create and Update route handlers, same pattern as write_converged_charging_cdr above.
-void write_rating_decision(chf::RatingDecisionStore& rating_decision_store,
-                           const std::string& ref,
-                           const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
-                           const RatingResult& rating,
-                           bool reserved) {
-    if (!rating.tariffId.has_value()) {
-        return;
-    }
-    chf::RatingDecisionRecord decision{};
-    decision.tariffId = *rating.tariffId;
-    decision.tariffVersion = rating.tariffVersion;
-    decision.ratingGroup = static_cast<std::int64_t>(usage.ratingGroup);
-    // Real, disclosed gap (schema.postgres.sql's own header): balance-at-decision-time is not
-    // captured here -- would need an extra bss/balance-management call on every rating decision,
-    // not added this pass.
-    decision.inputSnapshot = {
-        {"chargingDataRef", ref},
-        {"ratingGroup", usage.ratingGroup},
-        {"offeringName", rating.offeringName.value_or("")},
-        {"priceName", rating.priceName.value_or("")},
-        {"reserved", reserved},
-        {"timestamp", sbi_core::format_rfc3339(std::chrono::system_clock::now())},
-    };
-    if (reserved && rating.cost.has_value()) {
-        decision.ratedAmount = rating.cost->value;
-        decision.currency = rating.cost->unit;
-    }
-    decision.ruleFiredId = *rating.tariffId;
-    decision.acbrType = "appliedBillingCharge";
-    rating_decision_store.record(decision);
 }
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as every other
@@ -832,35 +508,23 @@ int main() {
                 for (const auto& usage : *body->multipleUnitUsage) {
                     sbi_gen::MultipleUnitInformation info{};
                     info.ratingGroup = usage.ratingGroup;
-                    const auto rating = build_rating_grant(catalog_client);
-                    bool reserved = true;
-                    if (rating.cost.has_value() && !supi.empty()) {
-                        reserved =
-                            reserve_subscriber_balance(balance_client,
-                                                       supi,
-                                                       *rating.cost,
-                                                       "Nchf_ConvergedCharging_Create " + ref);
-                        if (reserved) {
-                            charging_data_store.add_reserved(ref, *rating.cost->value);
-                        } else {
-                            reserve_rejected_counter->Add(1);
-                        }
-                    }
-                    if (reserved && rating.grant.has_value()) {
-                        info.grantedUnit = rating.grant;
-                        grant_counter->Add(1);
-                    }
-                    write_converged_charging_cdr(
+                    const auto charged = chf::charge_one_usage(
+                        catalog_client,
+                        balance_client,
                         cdr_writer,
+                        rating_decision_store,
+                        charging_data_store,
+                        grant_counter.get(),
+                        reserve_rejected_counter.get(),
                         ref,
                         "Create",
                         supi,
                         body->nfConsumerIdentification.nodeFunctionality.value,
                         body->invocationSequenceNumber,
-                        usage,
-                        rating,
-                        reserved);
-                    write_rating_decision(rating_decision_store, ref, usage, rating, reserved);
+                        usage);
+                    if (charged.reserved && charged.rating.grant.has_value()) {
+                        info.grantedUnit = charged.rating.grant;
+                    }
                     granted.push_back(info);
                 }
                 response.multipleUnitInformation = std::move(granted);
@@ -944,35 +608,23 @@ int main() {
                 for (const auto& usage : *body->multipleUnitUsage) {
                     sbi_gen::MultipleUnitInformation info{};
                     info.ratingGroup = usage.ratingGroup;
-                    const auto rating = build_rating_grant(catalog_client);
-                    bool reserved = true;
-                    if (rating.cost.has_value() && !supi.empty()) {
-                        reserved =
-                            reserve_subscriber_balance(balance_client,
-                                                       supi,
-                                                       *rating.cost,
-                                                       "Nchf_ConvergedCharging_Update " + ref);
-                        if (reserved) {
-                            charging_data_store.add_reserved(ref, *rating.cost->value);
-                        } else {
-                            reserve_rejected_counter->Add(1);
-                        }
-                    }
-                    if (reserved && rating.grant.has_value()) {
-                        info.grantedUnit = rating.grant;
-                        grant_counter->Add(1);
-                    }
-                    write_converged_charging_cdr(
+                    const auto charged = chf::charge_one_usage(
+                        catalog_client,
+                        balance_client,
                         cdr_writer,
+                        rating_decision_store,
+                        charging_data_store,
+                        grant_counter.get(),
+                        reserve_rejected_counter.get(),
                         ref,
                         "Update",
                         supi,
                         body->nfConsumerIdentification.nodeFunctionality.value,
                         body->invocationSequenceNumber,
-                        usage,
-                        rating,
-                        reserved);
-                    write_rating_decision(rating_decision_store, ref, usage, rating, reserved);
+                        usage);
+                    if (charged.reserved && charged.rating.grant.has_value()) {
+                        info.grantedUnit = charged.rating.grant;
+                    }
                     granted.push_back(info);
                 }
                 response.multipleUnitInformation = std::move(granted);
@@ -1043,7 +695,7 @@ int main() {
                     404, "Not Found", "No active charging data resource " + ref);
             }
             if (supi.has_value() && !supi->empty()) {
-                finalize_subscriber_balance(
+                chf::finalize_subscriber_balance(
                     balance_client, *supi, reserved_total, "Nchf_ConvergedCharging_Release " + ref);
             }
 
