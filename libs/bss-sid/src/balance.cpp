@@ -92,21 +92,6 @@ void from_json(const nlohmann::json& j, BucketRef& v) {
     get_optional(j, "name", v.name);
 }
 
-void to_json(nlohmann::json& j, const RelatedParty& v) {
-    j = nlohmann::json::object();
-    j["id"] = v.id;
-    put_optional(j, "href", v.href);
-    put_optional(j, "name", v.name);
-    put_optional(j, "role", v.role);
-}
-
-void from_json(const nlohmann::json& j, RelatedParty& v) {
-    j.at("id").get_to(v.id);
-    get_optional(j, "href", v.href);
-    get_optional(j, "name", v.name);
-    get_optional(j, "role", v.role);
-}
-
 void to_json(nlohmann::json& j, const Bucket& v) {
     j = nlohmann::json::object();
     put_optional(j, "id", v.id);

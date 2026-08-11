@@ -63,6 +63,8 @@ template <typename Row> bss_sid::ProductOffering row_to_offering(const Row& row)
     v.name = row["name"].template as<std::optional<std::string>>();
     v.description = row["description"].template as<std::optional<std::string>>();
     v.lifecycleStatus = row["lifecycle_status"].template as<std::optional<std::string>>();
+    v.lastUpdate = row["last_update"].template as<std::optional<std::string>>();
+    v.statusReason = row["status_reason"].template as<std::optional<std::string>>();
     v.isBundle = row["is_bundle"].template as<std::optional<bool>>();
     v.isSellable = row["is_sellable"].template as<std::optional<bool>>();
     v.version = row["version"].template as<std::optional<std::string>>();
@@ -87,6 +89,13 @@ template <typename Row> bss_sid::ProductOffering row_to_offering(const Row& row)
     v.agreement = parse_array<bss_sid::AgreementRef>(row["agreement"].template as<std::string>());
     v.bundledProductOffering = parse_array<bss_sid::BundledProductOffering>(
         row["bundled_product_offering"].template as<std::string>());
+    v.attachment =
+        parse_array<bss_sid::AttachmentRefOrValue>(row["attachment"].template as<std::string>());
+    v.place = parse_array<bss_sid::PlaceRef>(row["place"].template as<std::string>());
+    v.productOfferingRelationship = parse_array<bss_sid::ProductOfferingRelationship>(
+        row["product_offering_relationship"].template as<std::string>());
+    v.productOfferingTerm = parse_array<bss_sid::ProductOfferingTerm>(
+        row["product_offering_term"].template as<std::string>());
     return v;
 }
 
@@ -97,7 +106,9 @@ template <typename Row> bss_sid::ProductOfferingPrice row_to_price(const Row& ro
     v.name = row["name"].template as<std::optional<std::string>>();
     v.description = row["description"].template as<std::optional<std::string>>();
     v.lifecycleStatus = row["lifecycle_status"].template as<std::optional<std::string>>();
+    v.lastUpdate = row["last_update"].template as<std::optional<std::string>>();
     v.priceType = row["price_type"].template as<std::optional<std::string>>();
+    v.percentage = row["percentage"].template as<std::optional<double>>();
     v.price =
         parse_optional<bss_sid::Money>(row["price"].template as<std::optional<std::string>>());
     v.recurringChargePeriodLength =
@@ -108,6 +119,18 @@ template <typename Row> bss_sid::ProductOfferingPrice row_to_price(const Row& ro
         row["unit_of_measure"].template as<std::optional<std::string>>());
     v.prodSpecCharValueUse = parse_array<bss_sid::ProductSpecificationCharacteristicValueUse>(
         row["prod_spec_char_value_use"].template as<std::string>());
+    v.bundledPopRelationship = parse_array<bss_sid::BundledProductOfferingPriceRelationship>(
+        row["bundled_pop_relationship"].template as<std::string>());
+    v.constraint =
+        parse_array<bss_sid::ConstraintRef>(row["constraint_ref"].template as<std::string>());
+    v.place = parse_array<bss_sid::PlaceRef>(row["place"].template as<std::string>());
+    v.popRelationship = parse_array<bss_sid::ProductOfferingPriceRelationship>(
+        row["pop_relationship"].template as<std::string>());
+    v.pricingLogicAlgorithm = parse_array<bss_sid::PricingLogicAlgorithm>(
+        row["pricing_logic_algorithm"].template as<std::string>());
+    v.productOfferingTerm = parse_array<bss_sid::ProductOfferingTerm>(
+        row["product_offering_term"].template as<std::string>());
+    v.tax = parse_array<bss_sid::TaxItem>(row["tax"].template as<std::string>());
     v.validFor = time_period_from(row["valid_from"].template as<std::optional<std::string>>(),
                                   row["valid_to"].template as<std::optional<std::string>>());
     return v;
@@ -121,11 +144,35 @@ template <typename Row> bss_sid::ProductSpecification row_to_spec(const Row& row
     v.description = row["description"].template as<std::optional<std::string>>();
     v.isBundle = row["is_bundle"].template as<std::optional<bool>>();
     v.lifecycleStatus = row["lifecycle_status"].template as<std::optional<std::string>>();
+    v.lastUpdate = row["last_update"].template as<std::optional<std::string>>();
     v.name = row["name"].template as<std::optional<std::string>>();
     v.productNumber = row["product_number"].template as<std::optional<std::string>>();
     v.version = row["version"].template as<std::optional<std::string>>();
     v.productSpecCharacteristic = parse_array<bss_sid::ProductSpecificationCharacteristic>(
         row["product_spec_characteristic"].template as<std::string>());
+    v.attachment =
+        parse_array<bss_sid::AttachmentRefOrValue>(row["attachment"].template as<std::string>());
+    v.bundledProductSpecification = parse_array<bss_sid::BundledProductSpecification>(
+        row["bundled_product_specification"].template as<std::string>());
+    v.productSpecificationRelationship = parse_array<bss_sid::ProductSpecificationRelationship>(
+        row["product_specification_relationship"].template as<std::string>());
+    v.relatedParty =
+        parse_array<bss_sid::RelatedParty>(row["related_party"].template as<std::string>());
+    v.resourceSpecification = parse_array<bss_sid::ResourceSpecificationRef>(
+        row["resource_specification"].template as<std::string>());
+    v.serviceSpecification = parse_array<bss_sid::ServiceSpecificationRef>(
+        row["service_specification"].template as<std::string>());
+    // Not routed through the generic parse_optional<T>() helper: T=nlohmann::json creates a real
+    // overload-resolution ambiguity between std::optional's own converting constructor and
+    // nlohmann::json's own templated operator ValueType() -- both real, valid conversions for this
+    // one specific T, harmless (json::parse's result already IS the value, so either resolution
+    // gives the same result) but a compiler warning worth silencing at the one real call site
+    // rather than complicating the shared helper for every other T that doesn't have this
+    // ambiguity.
+    if (const auto raw = row["target_product_schema"].template as<std::optional<std::string>>();
+        raw.has_value()) {
+        v.targetProductSchema = nlohmann::json::parse(*raw);
+    }
     v.validFor = time_period_from(row["valid_from"].template as<std::optional<std::string>>(),
                                   row["valid_to"].template as<std::optional<std::string>>());
     return v;
@@ -148,17 +195,21 @@ std::string ProductOfferingStore::create(bss_sid::ProductOffering offering) {
     offering.href = resource_url_ + "/" + id;
     txn.exec(
         "INSERT INTO product_offering "
-        "(id, href, name, description, lifecycle_status, is_bundle, is_sellable, version, "
-        "valid_from, valid_to, product_offering_price, category, channel, market_segment, "
-        "prod_spec_char_value_use, product_specification, resource_candidate, service_candidate, "
-        "service_level_agreement, agreement, bundled_product_offering) "
-        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,"
-        "$15::jsonb,$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb,$20::jsonb,$21::jsonb)",
+        "(id, href, name, description, lifecycle_status, last_update, status_reason, is_bundle, "
+        "is_sellable, version, valid_from, valid_to, product_offering_price, category, channel, "
+        "market_segment, prod_spec_char_value_use, product_specification, resource_candidate, "
+        "service_candidate, service_level_agreement, agreement, bundled_product_offering, "
+        "attachment, place, product_offering_relationship, product_offering_term) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15::jsonb,"
+        "$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb,$20::jsonb,$21::jsonb,$22::jsonb,$23::jsonb,"
+        "$24::jsonb,$25::jsonb,$26::jsonb,$27::jsonb)",
         pqxx::params{id,
                      offering.href,
                      offering.name,
                      offering.description,
                      offering.lifecycleStatus,
+                     offering.lastUpdate,
+                     offering.statusReason,
                      offering.isBundle,
                      offering.isSellable,
                      offering.version,
@@ -174,7 +225,11 @@ std::string ProductOfferingStore::create(bss_sid::ProductOffering offering) {
                      dump_optional(offering.serviceCandidate),
                      dump_optional(offering.serviceLevelAgreement),
                      dump_array(offering.agreement),
-                     dump_array(offering.bundledProductOffering)});
+                     dump_array(offering.bundledProductOffering),
+                     dump_array(offering.attachment),
+                     dump_array(offering.place),
+                     dump_array(offering.productOfferingRelationship),
+                     dump_array(offering.productOfferingTerm)});
     txn.commit();
     return id;
 }
@@ -223,24 +278,37 @@ std::string ProductOfferingPriceStore::create(bss_sid::ProductOfferingPrice pric
                         .as<std::string>();
     price.id = id;
     price.href = resource_url_ + "/" + id;
-    txn.exec("INSERT INTO product_offering_price "
-             "(id, href, name, description, lifecycle_status, price_type, price, "
-             "recurring_charge_period_length, recurring_charge_period_type, unit_of_measure, "
-             "prod_spec_char_value_use, valid_from, valid_to) "
-             "VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10::jsonb,$11::jsonb,$12,$13)",
-             pqxx::params{id,
-                          price.href,
-                          price.name,
-                          price.description,
-                          price.lifecycleStatus,
-                          price.priceType,
-                          dump_optional(price.price),
-                          price.recurringChargePeriodLength,
-                          price.recurringChargePeriodType,
-                          dump_optional(price.unitOfMeasure),
-                          dump_array(price.prodSpecCharValueUse),
-                          valid_from_of(price.validFor),
-                          valid_to_of(price.validFor)});
+    txn.exec(
+        "INSERT INTO product_offering_price "
+        "(id, href, name, description, lifecycle_status, last_update, price_type, percentage, "
+        "price, recurring_charge_period_length, recurring_charge_period_type, unit_of_measure, "
+        "prod_spec_char_value_use, bundled_pop_relationship, constraint_ref, place, "
+        "pop_relationship, pricing_logic_algorithm, product_offering_term, tax, valid_from, "
+        "valid_to) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb,"
+        "$15::jsonb,$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb,$20::jsonb,$21,$22)",
+        pqxx::params{id,
+                     price.href,
+                     price.name,
+                     price.description,
+                     price.lifecycleStatus,
+                     price.lastUpdate,
+                     price.priceType,
+                     price.percentage,
+                     dump_optional(price.price),
+                     price.recurringChargePeriodLength,
+                     price.recurringChargePeriodType,
+                     dump_optional(price.unitOfMeasure),
+                     dump_array(price.prodSpecCharValueUse),
+                     dump_array(price.bundledPopRelationship),
+                     dump_array(price.constraint),
+                     dump_array(price.place),
+                     dump_array(price.popRelationship),
+                     dump_array(price.pricingLogicAlgorithm),
+                     dump_array(price.productOfferingTerm),
+                     dump_array(price.tax),
+                     valid_from_of(price.validFor),
+                     valid_to_of(price.validFor)});
     txn.commit();
     return id;
 }
@@ -292,19 +360,31 @@ std::string ProductSpecificationStore::create(bss_sid::ProductSpecification spec
     spec.id = id;
     spec.href = resource_url_ + "/" + id;
     txn.exec("INSERT INTO product_specification "
-             "(id, href, brand, description, is_bundle, lifecycle_status, name, product_number, "
-             "version, product_spec_characteristic, valid_from, valid_to) "
-             "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)",
+             "(id, href, brand, description, is_bundle, lifecycle_status, last_update, name, "
+             "product_number, version, product_spec_characteristic, attachment, "
+             "bundled_product_specification, product_specification_relationship, related_party, "
+             "resource_specification, service_specification, target_product_schema, valid_from, "
+             "valid_to) "
+             "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,"
+             "$15::jsonb,$16::jsonb,$17::jsonb,$18::jsonb,$19,$20)",
              pqxx::params{id,
                           spec.href,
                           spec.brand,
                           spec.description,
                           spec.isBundle,
                           spec.lifecycleStatus,
+                          spec.lastUpdate,
                           spec.name,
                           spec.productNumber,
                           spec.version,
                           dump_array(spec.productSpecCharacteristic),
+                          dump_array(spec.attachment),
+                          dump_array(spec.bundledProductSpecification),
+                          dump_array(spec.productSpecificationRelationship),
+                          dump_array(spec.relatedParty),
+                          dump_array(spec.resourceSpecification),
+                          dump_array(spec.serviceSpecification),
+                          dump_optional(spec.targetProductSchema),
                           valid_from_of(spec.validFor),
                           valid_to_of(spec.validFor)});
     txn.commit();

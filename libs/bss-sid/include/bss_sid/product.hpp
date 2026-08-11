@@ -22,16 +22,24 @@
 // dynamic configuration forms), productSpecification, resourceCandidate, serviceCandidate,
 // serviceLevelAgreement, agreement, bundledProductOffering.
 //
-// Still NOT modeled, disclosed rather than silently dropped: `place`, `attachment`, `statusReason`,
-// `productOfferingRelationship`, `productOfferingTerm` on ProductOffering;
-// `bundledPopRelationship`, `constraint`, `place`, `popRelationship`, `pricingLogicAlgorithm`,
-// `productOfferingTerm`, `tax` on ProductOfferingPrice; `attachment`,
-// `bundledProductSpecification`, `productSpecificationRelationship`, `relatedParty`,
-// `resourceSpecification`, `serviceSpecification`, `targetProductSchema` on ProductSpecification;
-// `productSpecCharRelationship` on ProductSpecificationCharacteristic -- every one a real TMF620
-// field, just not modeled here yet, per CLAUDE.md's "no speculative abstraction" rule. Every Ref
-// type below also omits TMF620's `@baseType`/`@schemaLocation`/`@type`/
-// `@referredType` polymorphism markers, matching the existing ProductOfferingPriceRef precedent.
+// Extended again 2026-08-11 (user directive: "no compromise on data model") to the full, real
+// top-level field set of ProductOffering/ProductOfferingPrice/ProductSpecification, re-confirmed
+// by re-fetching the same real TMF620 v4.1.0 swagger directly (not recalled from the file's own
+// earlier comment, in case the earlier pass had missed something -- it had: `percentage` on
+// ProductOfferingPrice was not previously disclosed as missing at all). Newly modeled:
+// `attachment`, `lastUpdate`, `place`, `productOfferingRelationship`, `productOfferingTerm`,
+// `statusReason` on ProductOffering; `bundledPopRelationship`, `constraint`, `lastUpdate`,
+// `percentage`, `place`, `popRelationship`, `pricingLogicAlgorithm`, `productOfferingTerm`, `tax`
+// on ProductOfferingPrice; `attachment`, `bundledProductSpecification`, `lastUpdate`,
+// `productSpecificationRelationship`, `relatedParty`, `resourceSpecification`,
+// `serviceSpecification`, `targetProductSchema` on ProductSpecification. Still NOT modeled:
+// `productSpecCharRelationship` on ProductSpecificationCharacteristic (a real, further-nested
+// TMF620 field describing relationships *between* characteristics, e.g. "dependent on"/"exclusive
+// with" -- genuinely deferred, not silently dropped, since nothing in this project's real use case
+// yet needs cross-characteristic constraints). Every Ref/Value type below also omits TMF620's
+// `@baseType`/`@schemaLocation`/`@type`/`@referredType` polymorphism markers, matching the existing
+// ProductOfferingPriceRef precedent -- these are real fields but pure JSON-LD-style type
+// discriminators with no business meaning this project's own (de)serialization needs.
 
 namespace bss_sid {
 
@@ -57,6 +65,15 @@ struct Quantity {
 };
 void to_json(nlohmann::json& j, const Quantity& v);
 void from_json(const nlohmann::json& j, Quantity& v);
+
+// Real TMF620 Duration -- "a time interval in a given unit of time" (the real spec's own
+// description). Used by ProductOfferingTerm.duration.
+struct Duration {
+    std::optional<int> amount;
+    std::optional<std::string> units;
+};
+void to_json(nlohmann::json& j, const Duration& v);
+void from_json(const nlohmann::json& j, Duration& v);
 
 // Real TMF620 Ref shapes -- id/href/name(/version), each confirmed individually against the real
 // swagger's `definitions` (not assumed identical to each other, even though several happen to share
@@ -119,6 +136,162 @@ struct ServiceCandidateRef {
 };
 void to_json(nlohmann::json& j, const ServiceCandidateRef& v);
 void from_json(const nlohmann::json& j, ServiceCandidateRef& v);
+
+// Real TMF620 AttachmentRefOrValue -- used by
+// ProductOffering.attachment/ProductSpecification.attachment.
+struct AttachmentRefOrValue {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> attachmentType;
+    std::optional<std::string> content;
+    std::optional<std::string> description;
+    std::optional<std::string> mimeType;
+    std::optional<std::string> name;
+    std::optional<std::string> url;
+    std::optional<Quantity> size;
+    std::optional<TimePeriod> validFor;
+};
+void to_json(nlohmann::json& j, const AttachmentRefOrValue& v);
+void from_json(const nlohmann::json& j, AttachmentRefOrValue& v);
+
+struct PlaceRef {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> name;
+};
+void to_json(nlohmann::json& j, const PlaceRef& v);
+void from_json(const nlohmann::json& j, PlaceRef& v);
+
+// Real TMF620 ProductOfferingRelationship -- a relationship to ANOTHER ProductOffering (e.g.
+// "requires"/"excludes"), distinct from BundledProductOffering (which is bundle membership).
+struct ProductOfferingRelationship {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> name;
+    std::optional<std::string> relationshipType;
+    std::optional<std::string> role;
+    std::optional<TimePeriod> validFor;
+};
+void to_json(nlohmann::json& j, const ProductOfferingRelationship& v);
+void from_json(const nlohmann::json& j, ProductOfferingRelationship& v);
+
+// Real TMF620 ProductOfferingTerm -- commitment terms (e.g. "24-month contract"). Also a real
+// field on ProductOfferingPrice, not just ProductOffering.
+struct ProductOfferingTerm {
+    std::optional<std::string> description;
+    std::optional<std::string> name;
+    std::optional<Duration> duration;
+    std::optional<TimePeriod> validFor;
+};
+void to_json(nlohmann::json& j, const ProductOfferingTerm& v);
+void from_json(const nlohmann::json& j, ProductOfferingTerm& v);
+
+struct BundledProductOfferingPriceRelationship {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> name;
+};
+void to_json(nlohmann::json& j, const BundledProductOfferingPriceRelationship& v);
+void from_json(const nlohmann::json& j, BundledProductOfferingPriceRelationship& v);
+
+struct ConstraintRef {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> name;
+    std::optional<std::string> version;
+};
+void to_json(nlohmann::json& j, const ConstraintRef& v);
+void from_json(const nlohmann::json& j, ConstraintRef& v);
+
+struct ProductOfferingPriceRelationship {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> name;
+    std::optional<std::string> relationshipType;
+    std::optional<std::string> role;
+};
+void to_json(nlohmann::json& j, const ProductOfferingPriceRelationship& v);
+void from_json(const nlohmann::json& j, ProductOfferingPriceRelationship& v);
+
+// Real TMF620 PricingLogicAlgorithm -- a reference to an external rating algorithm (`plaSpecId`)
+// this price delegates to, for pricing too complex for the declarative price/unitOfMeasure fields
+// alone. This project's own rating engine (nfs/chf) does not yet consume this field -- modeled for
+// real schema completeness, not yet wired into a decision path.
+struct PricingLogicAlgorithm {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> description;
+    std::optional<std::string> name;
+    std::optional<std::string> plaSpecId;
+    std::optional<TimePeriod> validFor;
+};
+void to_json(nlohmann::json& j, const PricingLogicAlgorithm& v);
+void from_json(const nlohmann::json& j, PricingLogicAlgorithm& v);
+
+struct TaxItem {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> taxCategory;
+    std::optional<double> taxRate;
+    std::optional<Money> taxAmount;
+};
+void to_json(nlohmann::json& j, const TaxItem& v);
+void from_json(const nlohmann::json& j, TaxItem& v);
+
+struct BundledProductSpecification {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> lifecycleStatus;
+    std::optional<std::string> name;
+};
+void to_json(nlohmann::json& j, const BundledProductSpecification& v);
+void from_json(const nlohmann::json& j, BundledProductSpecification& v);
+
+struct ProductSpecificationRelationship {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> name;
+    std::optional<std::string> relationshipType;
+    std::optional<TimePeriod> validFor;
+};
+void to_json(nlohmann::json& j, const ProductSpecificationRelationship& v);
+void from_json(const nlohmann::json& j, ProductSpecificationRelationship& v);
+
+// Real TMF620 RelatedParty -- generic party-to-party reference (e.g. the manufacturer/owner of a
+// ProductSpecification). Distinct from bss_sid::Bucket's own RelatedParty in balance.hpp (same
+// real TMF shape, independently confirmed, redefined per-file rather than shared across TMF620/654
+// since each TMF Open API's swagger defines its own copy of this common type).
+struct RelatedParty {
+    std::string id; // real TMF620/654 spec: id is `required`, unlike most Ref shapes in this file
+    std::optional<std::string> href;
+    std::optional<std::string> name;
+    std::optional<std::string> role;
+};
+void to_json(nlohmann::json& j, const RelatedParty& v);
+void from_json(const nlohmann::json& j, RelatedParty& v);
+
+struct ResourceSpecificationRef {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> name;
+    std::optional<std::string> version;
+};
+void to_json(nlohmann::json& j, const ResourceSpecificationRef& v);
+void from_json(const nlohmann::json& j, ResourceSpecificationRef& v);
+
+struct ServiceSpecificationRef {
+    std::optional<std::string> id;
+    std::optional<std::string> href;
+    std::optional<std::string> name;
+    std::optional<std::string> version;
+};
+void to_json(nlohmann::json& j, const ServiceSpecificationRef& v);
+void from_json(const nlohmann::json& j, ServiceSpecificationRef& v);
+
+// Real TMF620 TargetProductSchema -- real spec has only the two polymorphism markers themselves as
+// its "content" (`@type`/`@schemaLocation`); modeled as an opaque JSON passthrough rather than an
+// empty placeholder struct, since a real value here (when present) is exactly those two fields.
+using TargetProductSchema = nlohmann::json;
 
 // Real TMF620 field: also carries `targetProductSchema`, unlike the other Refs above -- confirmed,
 // not an inconsistency in this file.
@@ -217,12 +390,21 @@ struct ProductOfferingPrice {
     std::optional<std::string> name;
     std::optional<std::string> description;
     std::optional<std::string> lifecycleStatus;
+    std::optional<std::string> lastUpdate;
     std::optional<std::string> priceType;
+    std::optional<double> percentage;
     std::optional<Money> price;
     std::optional<int> recurringChargePeriodLength;
     std::optional<std::string> recurringChargePeriodType;
     std::optional<Quantity> unitOfMeasure;
     std::vector<ProductSpecificationCharacteristicValueUse> prodSpecCharValueUse;
+    std::vector<BundledProductOfferingPriceRelationship> bundledPopRelationship;
+    std::vector<ConstraintRef> constraint;
+    std::vector<PlaceRef> place;
+    std::vector<ProductOfferingPriceRelationship> popRelationship;
+    std::vector<PricingLogicAlgorithm> pricingLogicAlgorithm;
+    std::vector<ProductOfferingTerm> productOfferingTerm;
+    std::vector<TaxItem> tax;
     std::optional<TimePeriod> validFor;
 };
 void to_json(nlohmann::json& j, const ProductOfferingPrice& v);
@@ -234,6 +416,8 @@ struct ProductOffering {
     std::optional<std::string> name;
     std::optional<std::string> description;
     std::optional<std::string> lifecycleStatus;
+    std::optional<std::string> lastUpdate;
+    std::optional<std::string> statusReason;
     std::optional<bool> isBundle;
     std::optional<bool> isSellable;
     std::optional<std::string> version;
@@ -248,6 +432,10 @@ struct ProductOffering {
     std::optional<SLARef> serviceLevelAgreement;
     std::vector<AgreementRef> agreement;
     std::vector<BundledProductOffering> bundledProductOffering;
+    std::vector<AttachmentRefOrValue> attachment;
+    std::vector<PlaceRef> place;
+    std::vector<ProductOfferingRelationship> productOfferingRelationship;
+    std::vector<ProductOfferingTerm> productOfferingTerm;
     std::optional<TimePeriod> validFor;
 };
 void to_json(nlohmann::json& j, const ProductOffering& v);
@@ -264,10 +452,18 @@ struct ProductSpecification {
     std::optional<std::string> description;
     std::optional<bool> isBundle;
     std::optional<std::string> lifecycleStatus;
+    std::optional<std::string> lastUpdate;
     std::optional<std::string> name;
     std::optional<std::string> productNumber;
     std::optional<std::string> version;
     std::vector<ProductSpecificationCharacteristic> productSpecCharacteristic;
+    std::vector<AttachmentRefOrValue> attachment;
+    std::vector<BundledProductSpecification> bundledProductSpecification;
+    std::vector<ProductSpecificationRelationship> productSpecificationRelationship;
+    std::vector<RelatedParty> relatedParty;
+    std::vector<ResourceSpecificationRef> resourceSpecification;
+    std::vector<ServiceSpecificationRef> serviceSpecification;
+    std::optional<TargetProductSchema> targetProductSchema;
     std::optional<TimePeriod> validFor;
 };
 void to_json(nlohmann::json& j, const ProductSpecification& v);

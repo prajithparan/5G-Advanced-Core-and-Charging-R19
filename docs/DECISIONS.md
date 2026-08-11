@@ -5317,3 +5317,77 @@ Stage 2's scope is deliberately narrow: the connection is closed after CEA (real
 keeping it open and dispatching real CCR/CCA is Stage 3's own explicit deliverable, not started by
 this update. 158/158 tests pass (10 new Stage 1 tests + 2 new Stage 2 `Address` codec tests),
 `clang-format-18` clean.
+
+## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
+
+**Date:** 2026-08-11
+**Status:** In progress -- E2 (this entry) complete; E6/E1/E10/E5/E8/E7 tracked as follow-on entries
+in this same ADR as each completes.
+
+**Context:** User review of the existing `schema.sql` files (product-catalog, balance-management)
+found them "very primitive" and asked for a real comparison against TM Forum SID/Open API data
+models, followed by an explicit **"no compromise on data model"** directive: model the full real
+field set per entity (still every field grounded in a real, cited spec source -- never invented),
+not the project's earlier "only what's needed" minimalism (e.g. `party.hpp`'s own prior disclosure:
+"Deliberately NOT the full TMF632 Individual schema... only what docs/CHARGING_MAPPING.md's mapping
+table actually maps is modeled here"). Scope, per the user's explicit choice among three offered
+options: both enrich the two already-persisted entities (E2 product-catalog, E6
+balance-management) AND stand up the five entities `docs/DATA_MODEL.md` already designed (P4.1,
+real TMF field citations already confirmed there) but that have no `schema.sql` at all yet -- E1
+(Subscriber), E5 (RatingDecision), E7 (Roaming/Interconnect), E8 (AuditRecord), E10 (Account).
+
+### Real evidence gathered before any code change
+
+Re-fetched the real, current TM Forum swagger specs directly (not recalled from this project's own
+prior comments, in case an earlier pass had missed something -- it had, see below):
+`tmforum-apis/TMF620_ProductCatalog` (`TMF620-ProductCatalog-v4.1.0.swagger.json`) and
+`tmforum-apis/TMF654_PrepayBalanceManagement` (`TMF654-PrepayBalance-v4.0.0.swagger.json`), diffed
+field-by-field against the existing `bss_sid` structs and `schema.sql` columns. Two real, concrete
+findings drove the scope: (1) TMF620's `ProductOfferingPrice.percentage` field had never been
+disclosed as missing at all in the prior pass -- a genuine gap in the gap-disclosure itself, not
+just the model; (2) TMF654's `Bucket.logicalResource`/`Bucket.relatedParty` are real fields already
+modeled in `bss_sid::Bucket` (the C++ struct) but **silently dropped on every write** -- `schema.sql`
+had no columns for them at all, a real, live data-loss bug, not a documented gap.
+
+### E2 (Product Catalog, TMF620) -- complete
+
+Added every remaining real top-level field to `ProductOffering`/`ProductOfferingPrice`/
+`ProductSpecification` (`libs/bss-sid/include/bss_sid/product.hpp`), their `to_json`/`from_json`
+(`product.cpp`), `schema.sql`'s three tables, and `bss/product-catalog/src/store.cpp`'s read/write
+paths: `attachment`, `lastUpdate`, `place`, `productOfferingRelationship`, `productOfferingTerm`,
+`statusReason` on `ProductOffering`; `bundledPopRelationship`, `constraint`, `lastUpdate`,
+`percentage`, `place`, `popRelationship`, `pricingLogicAlgorithm`, `productOfferingTerm`, `tax` on
+`ProductOfferingPrice`; `attachment`, `bundledProductSpecification`, `lastUpdate`,
+`productSpecificationRelationship`, `relatedParty`, `resourceSpecification`,
+`serviceSpecification`, `targetProductSchema` on `ProductSpecification`. New supporting real TMF620
+types added: `Duration`, `AttachmentRefOrValue`, `PlaceRef`, `ProductOfferingRelationship`,
+`ProductOfferingTerm`, `BundledProductOfferingPriceRelationship`, `ConstraintRef`,
+`ProductOfferingPriceRelationship`, `PricingLogicAlgorithm`, `TaxItem`,
+`BundledProductSpecification`, `ProductSpecificationRelationship`, `RelatedParty`,
+`ResourceSpecificationRef`, `ServiceSpecificationRef`, `TargetProductSchema` (modeled as an opaque
+`nlohmann::json` passthrough -- the real spec's own "content" for this type is just its two
+polymorphism markers). Still not modeled, disclosed: `productSpecCharRelationship` on
+`ProductSpecificationCharacteristic` (a real, further-nested field for relationships *between*
+characteristics -- genuinely deferred, nothing in this project's real use case needs it yet).
+
+**Real bug found and fixed during this pass**: `RelatedParty` was independently defined twice
+(once newly in `product.hpp`, once pre-existing in `balance.hpp`, identical real shape from two
+different TMF Open APIs that happen to share it) -- a real C++ redefinition compile error, not a
+data bug. Fixed by keeping the one in `product.hpp` (the base header `balance.hpp` already
+includes) and removing `balance.hpp`'s own copy plus its duplicate `to_json`/`from_json` in
+`balance.cpp`. Also found and fixed: `RelatedParty.id` is `required` per both TMF620's and
+TMF654's real swagger (`"required": ["@referredType", "id"]`) -- initially modeled as
+`optional<string>` by mistake when transcribing the new type, corrected to a plain `std::string`
+matching every other `id`-required Ref type in this file before either serializer was written
+against it.
+
+**Live-verified for real**: a real, standalone TCP-linked test program (built against the actual
+`product_catalog_store`/`bss_sid` static libraries, not a mock) created a `ProductOffering`/
+`ProductOfferingPrice`/`ProductSpecification` populating every new field, against a real, freshly
+started PostgreSQL 16 container with this ADR's own `schema.sql` applied -- every new field
+(`lastUpdate`, `statusReason`, `attachment`, `place`, `productOfferingRelationship`,
+`productOfferingTerm.duration`, `percentage`, `tax`, `pricingLogicAlgorithm`, `relatedParty`,
+`resourceSpecification`) round-tripped correctly, independently confirmed via a direct `psql`
+query against the real table (not just the test program's own read-back). The three pre-existing
+`ProductCatalogPostgresTest` integration tests also re-run clean against the enriched schema (no
+regression). 158/158 total tests pass, `clang-format-18` clean.

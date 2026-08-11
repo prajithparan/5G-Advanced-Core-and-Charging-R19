@@ -76,15 +76,6 @@ struct BucketRef {
 void to_json(nlohmann::json& j, const BucketRef& v);
 void from_json(const nlohmann::json& j, BucketRef& v);
 
-struct RelatedParty {
-    std::string id;
-    std::optional<std::string> href;
-    std::optional<std::string> name;
-    std::optional<std::string> role;
-};
-void to_json(nlohmann::json& j, const RelatedParty& v);
-void from_json(const nlohmann::json& j, RelatedParty& v);
-
 // Real TMF654 Bucket -- the balance resource itself. Real confirmed fields: id, href,
 // confirmationDate, description, isShared, name, remainingValueName, requestedDate,
 // logicalResource, partyAccount, product, relatedParty, remainingValue, reservedValue, status,
