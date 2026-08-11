@@ -92,6 +92,34 @@ void from_json(const nlohmann::json& j, BucketRef& v) {
     get_optional(j, "name", v.name);
 }
 
+void to_json(nlohmann::json& j, const PaymentMethodRef& v) {
+    j = nlohmann::json::object();
+    j["id"] = v.id;
+    put_optional(j, "href", v.href);
+    put_optional(j, "name", v.name);
+}
+
+void from_json(const nlohmann::json& j, PaymentMethodRef& v) {
+    j.at("id").get_to(v.id);
+    get_optional(j, "href", v.href);
+    get_optional(j, "name", v.name);
+}
+
+void to_json(nlohmann::json& j, const RelatedTopupBalance& v) {
+    j = nlohmann::json::object();
+    j["id"] = v.id;
+    put_optional(j, "href", v.href);
+    put_optional(j, "name", v.name);
+    put_optional(j, "role", v.role);
+}
+
+void from_json(const nlohmann::json& j, RelatedTopupBalance& v) {
+    j.at("id").get_to(v.id);
+    get_optional(j, "href", v.href);
+    get_optional(j, "name", v.name);
+    get_optional(j, "role", v.role);
+}
+
 void to_json(nlohmann::json& j, const Bucket& v) {
     j = nlohmann::json::object();
     put_optional(j, "id", v.id);
@@ -102,9 +130,9 @@ void to_json(nlohmann::json& j, const Bucket& v) {
     put_optional(j, "name", v.name);
     put_optional(j, "remainingValueName", v.remainingValueName);
     put_optional(j, "requestedDate", v.requestedDate);
-    put_optional(j, "logicalResource", v.logicalResource);
+    put_array(j, "logicalResource", v.logicalResource);
     put_optional(j, "partyAccount", v.partyAccount);
-    put_optional(j, "product", v.product);
+    put_array(j, "product", v.product);
     put_array(j, "relatedParty", v.relatedParty);
     put_optional(j, "remainingValue", v.remainingValue);
     put_optional(j, "reservedValue", v.reservedValue);
@@ -122,9 +150,9 @@ void from_json(const nlohmann::json& j, Bucket& v) {
     get_optional(j, "name", v.name);
     get_optional(j, "remainingValueName", v.remainingValueName);
     get_optional(j, "requestedDate", v.requestedDate);
-    get_optional(j, "logicalResource", v.logicalResource);
+    get_array(j, "logicalResource", v.logicalResource);
     get_optional(j, "partyAccount", v.partyAccount);
-    get_optional(j, "product", v.product);
+    get_array(j, "product", v.product);
     get_array(j, "relatedParty", v.relatedParty);
     get_optional(j, "remainingValue", v.remainingValue);
     get_optional(j, "reservedValue", v.reservedValue);
@@ -142,7 +170,7 @@ void to_json(nlohmann::json& j, const AccumulatedBalance& v) {
     put_array(j, "bucket", v.bucket);
     put_optional(j, "logicalResource", v.logicalResource);
     put_optional(j, "partyAccount", v.partyAccount);
-    put_optional(j, "product", v.product);
+    put_array(j, "product", v.product);
     put_array(j, "relatedParty", v.relatedParty);
     put_optional(j, "totalBalance", v.totalBalance);
 }
@@ -155,7 +183,7 @@ void from_json(const nlohmann::json& j, AccumulatedBalance& v) {
     get_array(j, "bucket", v.bucket);
     get_optional(j, "logicalResource", v.logicalResource);
     get_optional(j, "partyAccount", v.partyAccount);
-    get_optional(j, "product", v.product);
+    get_array(j, "product", v.product);
     get_array(j, "relatedParty", v.relatedParty);
     get_optional(j, "totalBalance", v.totalBalance);
 }
@@ -166,14 +194,25 @@ void to_json(nlohmann::json& j, const TopupBalance& v) {
     put_optional(j, "href", v.href);
     put_optional(j, "confirmationDate", v.confirmationDate);
     put_optional(j, "description", v.description);
+    put_optional(j, "isAutoTopup", v.isAutoTopup);
+    put_optional(j, "numberOfPeriods", v.numberOfPeriods);
     put_optional(j, "reason", v.reason);
     put_optional(j, "requestedDate", v.requestedDate);
+    put_optional(j, "voucher", v.voucher);
     put_optional(j, "amount", v.amount);
+    put_optional(j, "balanceTopup", v.balanceTopup);
     put_optional(j, "bucket", v.bucket);
+    put_optional(j, "channel", v.channel);
+    put_array(j, "logicalResource", v.logicalResource);
     put_optional(j, "partyAccount", v.partyAccount);
-    put_optional(j, "product", v.product);
+    put_optional(j, "paymentMethod", v.paymentMethod);
+    put_array(j, "product", v.product);
+    put_optional(j, "recurringPeriod", v.recurringPeriod);
+    put_array(j, "relatedParty", v.relatedParty);
+    put_optional(j, "requestor", v.requestor);
     put_optional(j, "status", v.status);
     put_optional(j, "usageType", v.usageType);
+    put_optional(j, "validFor", v.validFor);
 }
 
 void from_json(const nlohmann::json& j, TopupBalance& v) {
@@ -181,14 +220,25 @@ void from_json(const nlohmann::json& j, TopupBalance& v) {
     get_optional(j, "href", v.href);
     get_optional(j, "confirmationDate", v.confirmationDate);
     get_optional(j, "description", v.description);
+    get_optional(j, "isAutoTopup", v.isAutoTopup);
+    get_optional(j, "numberOfPeriods", v.numberOfPeriods);
     get_optional(j, "reason", v.reason);
     get_optional(j, "requestedDate", v.requestedDate);
+    get_optional(j, "voucher", v.voucher);
     get_optional(j, "amount", v.amount);
+    get_optional(j, "balanceTopup", v.balanceTopup);
     get_optional(j, "bucket", v.bucket);
+    get_optional(j, "channel", v.channel);
+    get_array(j, "logicalResource", v.logicalResource);
     get_optional(j, "partyAccount", v.partyAccount);
-    get_optional(j, "product", v.product);
+    get_optional(j, "paymentMethod", v.paymentMethod);
+    get_array(j, "product", v.product);
+    get_optional(j, "recurringPeriod", v.recurringPeriod);
+    get_array(j, "relatedParty", v.relatedParty);
+    get_optional(j, "requestor", v.requestor);
     get_optional(j, "status", v.status);
     get_optional(j, "usageType", v.usageType);
+    get_optional(j, "validFor", v.validFor);
 }
 
 void to_json(nlohmann::json& j, const AdjustBalance& v) {
@@ -202,10 +252,15 @@ void to_json(nlohmann::json& j, const AdjustBalance& v) {
     put_optional(j, "adjustType", v.adjustType);
     put_optional(j, "amount", v.amount);
     put_optional(j, "bucket", v.bucket);
+    put_optional(j, "channel", v.channel);
+    put_array(j, "logicalResource", v.logicalResource);
     put_optional(j, "partyAccount", v.partyAccount);
-    put_optional(j, "product", v.product);
+    put_array(j, "product", v.product);
+    put_array(j, "relatedParty", v.relatedParty);
+    put_optional(j, "requestor", v.requestor);
     put_optional(j, "status", v.status);
     put_optional(j, "usageType", v.usageType);
+    put_optional(j, "validFor", v.validFor);
 }
 
 void from_json(const nlohmann::json& j, AdjustBalance& v) {
@@ -218,10 +273,15 @@ void from_json(const nlohmann::json& j, AdjustBalance& v) {
     get_optional(j, "adjustType", v.adjustType);
     get_optional(j, "amount", v.amount);
     get_optional(j, "bucket", v.bucket);
+    get_optional(j, "channel", v.channel);
+    get_array(j, "logicalResource", v.logicalResource);
     get_optional(j, "partyAccount", v.partyAccount);
-    get_optional(j, "product", v.product);
+    get_array(j, "product", v.product);
+    get_array(j, "relatedParty", v.relatedParty);
+    get_optional(j, "requestor", v.requestor);
     get_optional(j, "status", v.status);
     get_optional(j, "usageType", v.usageType);
+    get_optional(j, "validFor", v.validFor);
 }
 
 void to_json(nlohmann::json& j, const ReserveBalance& v) {
@@ -234,10 +294,15 @@ void to_json(nlohmann::json& j, const ReserveBalance& v) {
     put_optional(j, "requestedDate", v.requestedDate);
     put_optional(j, "amount", v.amount);
     put_optional(j, "bucket", v.bucket);
+    put_optional(j, "channel", v.channel);
+    put_array(j, "logicalResource", v.logicalResource);
     put_optional(j, "partyAccount", v.partyAccount);
-    put_optional(j, "product", v.product);
+    put_array(j, "product", v.product);
+    put_array(j, "relatedParty", v.relatedParty);
+    put_optional(j, "requestor", v.requestor);
     put_optional(j, "status", v.status);
     put_optional(j, "usageType", v.usageType);
+    put_optional(j, "validFor", v.validFor);
 }
 
 void from_json(const nlohmann::json& j, ReserveBalance& v) {
@@ -249,10 +314,15 @@ void from_json(const nlohmann::json& j, ReserveBalance& v) {
     get_optional(j, "requestedDate", v.requestedDate);
     get_optional(j, "amount", v.amount);
     get_optional(j, "bucket", v.bucket);
+    get_optional(j, "channel", v.channel);
+    get_array(j, "logicalResource", v.logicalResource);
     get_optional(j, "partyAccount", v.partyAccount);
-    get_optional(j, "product", v.product);
+    get_array(j, "product", v.product);
+    get_array(j, "relatedParty", v.relatedParty);
+    get_optional(j, "requestor", v.requestor);
     get_optional(j, "status", v.status);
     get_optional(j, "usageType", v.usageType);
+    get_optional(j, "validFor", v.validFor);
 }
 
 } // namespace bss_sid

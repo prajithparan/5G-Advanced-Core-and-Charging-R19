@@ -14,6 +14,19 @@
 -- real throughput numbers justify it (nothing benchmarked yet, ADR-0049's own standing
 -- disclosure) -- not adding speculative complexity now for a correctness property PostgreSQL
 -- alone already provides.
+--
+-- Extended 2026-08-11 (user directive: "no compromise on data model", docs/DECISIONS.md ADR-0060):
+-- full real TMF654 field fidelity, re-confirmed by re-fetching the real swagger directly. Real,
+-- concrete bug found and fixed by this pass: `product` is `array<ProductRef>` in the real spec on
+-- EVERY one of these resources (Bucket, TopupBalance, AdjustBalance, ReserveBalance), not a single
+-- ref -- the old `product_id`/`product_name` scalar column pair could only ever represent one
+-- product, silently wrong for the real multi-product case. Replaced with a `product` jsonb array
+-- column, matching this project's own established convention for array fields (see
+-- bss/product-catalog/schema.sql). Also fixes a real, live data-loss bug: `Bucket.logicalResource`/
+-- `Bucket.relatedParty` were already modeled in `bss_sid::Bucket` (the C++ struct) but had NO
+-- columns at all -- silently dropped on every write. New jsonb columns for the previously-missing
+-- real fields: `logical_resource`, `related_party`, `channel`, `payment_method`, `requestor`,
+-- `balance_topup`.
 
 CREATE SEQUENCE IF NOT EXISTS bucket_id_seq;
 CREATE SEQUENCE IF NOT EXISTS topup_balance_id_seq;
@@ -33,8 +46,9 @@ CREATE TABLE IF NOT EXISTS bucket (
     requested_date         TEXT,
     party_account_id       TEXT,
     party_account_name     TEXT,
-    product_id             TEXT,
-    product_name           TEXT,
+    product                JSONB NOT NULL DEFAULT '[]',
+    logical_resource       JSONB NOT NULL DEFAULT '[]',
+    related_party          JSONB NOT NULL DEFAULT '[]',
     remaining_value_unit   TEXT,
     remaining_value        NUMERIC(18, 6) NOT NULL DEFAULT 0,
     reserved_value_unit    TEXT,
@@ -52,53 +66,77 @@ CREATE TABLE IF NOT EXISTS bucket (
 -- "every rating decision emits an audit record sufficient to reconstruct the charge".
 
 CREATE TABLE IF NOT EXISTS topup_balance (
-    id                 TEXT PRIMARY KEY,
-    href               TEXT,
-    confirmation_date  TEXT,
-    description        TEXT,
-    reason             TEXT,
-    requested_date     TEXT,
-    bucket_id          TEXT NOT NULL,
-    amount             NUMERIC(18, 6) NOT NULL,
-    amount_units       TEXT,
-    party_account_id   TEXT,
-    product_id         TEXT,
-    status             TEXT NOT NULL,
-    usage_type         TEXT,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                  TEXT PRIMARY KEY,
+    href                TEXT,
+    confirmation_date   TEXT,
+    description         TEXT,
+    is_auto_topup       BOOLEAN,
+    number_of_periods   INTEGER,
+    reason              TEXT,
+    requested_date      TEXT,
+    voucher             TEXT,
+    bucket_id           TEXT NOT NULL,
+    amount              NUMERIC(18, 6) NOT NULL,
+    amount_units        TEXT,
+    balance_topup       JSONB,
+    channel             JSONB,
+    logical_resource    JSONB NOT NULL DEFAULT '[]',
+    party_account_id    TEXT,
+    payment_method      JSONB,
+    product              JSONB NOT NULL DEFAULT '[]',
+    recurring_period    TEXT,
+    related_party       JSONB NOT NULL DEFAULT '[]',
+    requestor           JSONB,
+    status              TEXT NOT NULL,
+    usage_type          TEXT,
+    valid_from          TEXT,
+    valid_to            TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS adjust_balance (
-    id                 TEXT PRIMARY KEY,
-    href               TEXT,
-    confirmation_date  TEXT,
-    description        TEXT,
-    reason             TEXT,
-    requested_date     TEXT,
-    adjust_type        TEXT,
-    bucket_id          TEXT NOT NULL,
-    amount             NUMERIC(18, 6) NOT NULL,
-    amount_units       TEXT,
-    party_account_id   TEXT,
-    product_id         TEXT,
-    status             TEXT NOT NULL,
-    usage_type         TEXT,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                  TEXT PRIMARY KEY,
+    href                TEXT,
+    confirmation_date   TEXT,
+    description         TEXT,
+    reason              TEXT,
+    requested_date      TEXT,
+    adjust_type         TEXT,
+    bucket_id           TEXT NOT NULL,
+    amount              NUMERIC(18, 6) NOT NULL,
+    amount_units        TEXT,
+    channel             JSONB,
+    logical_resource    JSONB NOT NULL DEFAULT '[]',
+    party_account_id    TEXT,
+    product              JSONB NOT NULL DEFAULT '[]',
+    related_party       JSONB NOT NULL DEFAULT '[]',
+    requestor           JSONB,
+    status              TEXT NOT NULL,
+    usage_type          TEXT,
+    valid_from          TEXT,
+    valid_to            TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS reserve_balance (
-    id                 TEXT PRIMARY KEY,
-    href               TEXT,
-    confirmation_date  TEXT,
-    description        TEXT,
-    reason             TEXT,
-    requested_date     TEXT,
-    bucket_id          TEXT NOT NULL,
-    amount             NUMERIC(18, 6) NOT NULL,
-    amount_units       TEXT,
-    party_account_id   TEXT,
-    product_id         TEXT,
-    status             TEXT NOT NULL,
-    usage_type         TEXT,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                  TEXT PRIMARY KEY,
+    href                TEXT,
+    confirmation_date   TEXT,
+    description         TEXT,
+    reason              TEXT,
+    requested_date      TEXT,
+    bucket_id           TEXT NOT NULL,
+    amount              NUMERIC(18, 6) NOT NULL,
+    amount_units        TEXT,
+    channel             JSONB,
+    logical_resource    JSONB NOT NULL DEFAULT '[]',
+    party_account_id    TEXT,
+    product              JSONB NOT NULL DEFAULT '[]',
+    related_party       JSONB NOT NULL DEFAULT '[]',
+    requestor           JSONB,
+    status              TEXT NOT NULL,
+    usage_type          TEXT,
+    valid_from          TEXT,
+    valid_to            TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );

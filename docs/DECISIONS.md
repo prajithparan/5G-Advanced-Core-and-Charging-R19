@@ -5391,3 +5391,45 @@ started PostgreSQL 16 container with this ADR's own `schema.sql` applied -- ever
 query against the real table (not just the test program's own read-back). The three pre-existing
 `ProductCatalogPostgresTest` integration tests also re-run clean against the enriched schema (no
 regression). 158/158 total tests pass, `clang-format-18` clean.
+
+### E6 (Balance Management, TMF654) -- complete
+
+Re-fetched the real, current TMF654 v4.0.0 swagger directly and diffed it field-by-field against
+`bss_sid::Bucket`/`AccumulatedBalance`/`TopupBalance`/`AdjustBalance`/`ReserveBalance`
+(`libs/bss-sid/include/bss_sid/balance.hpp`) and `bss/balance-management/schema.sql`.
+
+**Real, concrete bug found (not just a gap) by this pass**: `product` is `array<ProductRef>` in
+the real spec on every one of these five resources -- previously modeled everywhere as
+`optional<ProductRef>` (single ref). A bucket or action referencing more than one product would
+have silently kept only one. Fixed by changing every `product` field to `std::vector<ProductRef>`
+and replacing `schema.sql`'s old `product_id`/`product_name` scalar column pair with a `product
+jsonb` array column (matching this project's own established array-field convention, e.g.
+product-catalog's schema). Second real, concrete finding: `Bucket.logicalResource` is also
+`array<LogicalResourceRef>` (previously `optional`, also wrong) -- but `AccumulatedBalance
+.logicalResource` really is a single ref, confirmed individually rather than assumed symmetric
+with `Bucket`'s own field.
+
+**Real, live data-loss bug fixed**: `Bucket.logicalResource`/`Bucket.relatedParty` were already
+modeled in the C++ struct (via ADR-0056) but `schema.sql` had no columns for them at all -- every
+write silently dropped both fields. New `logical_resource`/`related_party` jsonb columns fix this.
+
+Newly modeled (real fields, not previously in this file at all): `channel`, `paymentMethod`,
+`requestor`, `recurringPeriod`, `balanceTopup`, `isAutoTopup`, `numberOfPeriods`, `voucher`,
+`validFor` on `TopupBalance`; `channel`, `logicalResource`, `relatedParty`, `requestor`, `validFor`
+on `AdjustBalance`/`ReserveBalance`. New supporting real TMF654 types: `PaymentMethodRef`,
+`RelatedTopupBalance`. `RelatedParty` itself is reused from `product.hpp` (see E2's own bug entry
+above), not redefined here.
+
+**Live-verified for real**: a real, standalone test program (linked against the actual
+`balance_management_store`/`bss_sid` static libraries) against a fresh PostgreSQL 16 container with
+this ADR's own `schema.sql` applied -- a `TopupBalance` populating every new field (two-element
+`product` array, `logicalResource`, `relatedParty`, `requestor`, `balanceTopup`,
+`isAutoTopup`/`numberOfPeriods`/`voucher`, `channel`/`paymentMethod`/`recurringPeriod`)
+round-tripped correctly, independently confirmed via direct `psql` query -- including the real
+two-element `product` array on both the `topup_balance` row and the `bucket` row it created.
+`AdjustBalance`/`ReserveBalance`'s new fields (`channel`, `requestor`, `relatedParty`) also
+verified. The real financial arithmetic this schema exists to get right was re-checked after the
+change: $100 topup, $10 debit, $5 reserve -> $85 remaining / $5 reserved, confirmed directly in
+PostgreSQL, unchanged by this ADR (the atomic `UPDATE ... WHERE` floor-check statements themselves
+were not touched, only new columns added around them). 158/158 total tests pass,
+`clang-format-18` clean.

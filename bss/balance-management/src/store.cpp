@@ -20,16 +20,56 @@ party_account_name_of(const std::optional<bss_sid::PartyAccountRef>& ref) {
     return (ref.has_value() && ref->name.has_value()) ? ref->name : std::nullopt;
 }
 
-std::optional<std::string> product_id_of(const std::optional<bss_sid::ProductRef>& ref) {
-    return ref.has_value() ? std::optional<std::string>(ref->id) : std::nullopt;
-}
-
 double amount_value_of(const std::optional<bss_sid::Quantity>& q) {
     return (q.has_value() && q->amount.has_value()) ? *q->amount : 0.0;
 }
 
 std::optional<std::string> amount_units_of(const std::optional<bss_sid::Quantity>& q) {
     return (q.has_value() && q->units.has_value()) ? q->units : std::nullopt;
+}
+
+std::optional<std::string> valid_from_of(const std::optional<bss_sid::TimePeriod>& vf) {
+    return vf.has_value() ? vf->startDateTime : std::nullopt;
+}
+
+std::optional<std::string> valid_to_of(const std::optional<bss_sid::TimePeriod>& vf) {
+    return vf.has_value() ? vf->endDateTime : std::nullopt;
+}
+
+std::optional<bss_sid::TimePeriod> time_period_from(const std::optional<std::string>& from,
+                                                    const std::optional<std::string>& to) {
+    if (!from.has_value() && !to.has_value()) {
+        return std::nullopt;
+    }
+    bss_sid::TimePeriod tp;
+    tp.startDateTime = from;
+    tp.endDateTime = to;
+    return tp;
+}
+
+template <typename T> std::string dump_array(const std::vector<T>& v) {
+    return json(v).dump();
+}
+
+template <typename T> std::vector<T> parse_array(const std::string& s) {
+    if (s.empty()) {
+        return {};
+    }
+    return json::parse(s).get<std::vector<T>>();
+}
+
+template <typename T> std::optional<std::string> dump_optional(const std::optional<T>& v) {
+    if (!v.has_value()) {
+        return std::nullopt;
+    }
+    return json(*v).dump();
+}
+
+template <typename T> std::optional<T> parse_optional(const std::optional<std::string>& s) {
+    if (!s.has_value()) {
+        return std::nullopt;
+    }
+    return json::parse(*s).get<T>();
 }
 
 // Templated (not `const pqxx::row&`) because libpqxx 8.x's `pqxx::result::operator[]`/`front()`
@@ -55,13 +95,11 @@ template <typename Row> bss_sid::Bucket row_to_bucket(const Row& row) {
         ref.name = row["party_account_name"].template as<std::optional<std::string>>();
         v.partyAccount = ref;
     }
-    if (const auto id = row["product_id"].template as<std::optional<std::string>>();
-        id.has_value()) {
-        bss_sid::ProductRef ref{};
-        ref.id = *id;
-        ref.name = row["product_name"].template as<std::optional<std::string>>();
-        v.product = ref;
-    }
+    v.product = parse_array<bss_sid::ProductRef>(row["product"].template as<std::string>());
+    v.logicalResource = parse_array<bss_sid::LogicalResourceRef>(
+        row["logical_resource"].template as<std::string>());
+    v.relatedParty =
+        parse_array<bss_sid::RelatedParty>(row["related_party"].template as<std::string>());
 
     bss_sid::Money remaining{};
     remaining.unit = row["remaining_value_unit"].template as<std::optional<std::string>>();
@@ -165,15 +203,14 @@ MutationResult<bss_sid::TopupBalance> BalanceStore::topup(bss_sid::TopupBalance 
     if (upd.affected_rows() == 0) {
         // Real, disclosed interpretation (see store.hpp): a topup referencing a not-yet-existing
         // bucket creates it, since the real TMF654 API has no POST /bucket at all.
-        txn.exec("INSERT INTO bucket (id, href, party_account_id, party_account_name, product_id, "
-                 "product_name, remaining_value_unit, remaining_value, usage_type, status) "
-                 "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active')",
+        txn.exec("INSERT INTO bucket (id, href, party_account_id, party_account_name, product, "
+                 "remaining_value_unit, remaining_value, usage_type, status) "
+                 "VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,'active')",
                  pqxx::params{bucket_id,
                               resource_base_url_ + "/bucket/" + bucket_id,
                               party_account_id_of(request.partyAccount),
                               party_account_name_of(request.partyAccount),
-                              product_id_of(request.product),
-                              std::optional<std::string>{std::nullopt},
+                              dump_array(request.product),
                               amount_units,
                               amount,
                               request.usageType.value_or("monetary")});
@@ -187,22 +224,38 @@ MutationResult<bss_sid::TopupBalance> BalanceStore::topup(bss_sid::TopupBalance 
     request.status = "completed";
 
     txn.exec(
-        "INSERT INTO topup_balance (id, href, confirmation_date, description, reason, "
-        "requested_date, bucket_id, amount, amount_units, party_account_id, product_id, status, "
-        "usage_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+        "INSERT INTO topup_balance (id, href, confirmation_date, description, is_auto_topup, "
+        "number_of_periods, reason, requested_date, voucher, bucket_id, amount, amount_units, "
+        "balance_topup, channel, logical_resource, party_account_id, payment_method, product, "
+        "recurring_period, related_party, requestor, status, usage_type, valid_from, valid_to) "
+        "VALUES "
+        "($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15::jsonb,$16,$17::jsonb,"
+        "$18::jsonb,$19,$20::jsonb,$21::jsonb,$22,$23,$24,$25)",
         pqxx::params{topup_id,
                      *request.href,
                      request.confirmationDate,
                      request.description,
+                     request.isAutoTopup,
+                     request.numberOfPeriods,
                      request.reason,
                      request.requestedDate,
+                     request.voucher,
                      bucket_id,
                      amount,
                      amount_units,
+                     dump_optional(request.balanceTopup),
+                     dump_optional(request.channel),
+                     dump_array(request.logicalResource),
                      party_account_id_of(request.partyAccount),
-                     product_id_of(request.product),
+                     dump_optional(request.paymentMethod),
+                     dump_array(request.product),
+                     request.recurringPeriod,
+                     dump_array(request.relatedParty),
+                     dump_optional(request.requestor),
                      *request.status,
-                     request.usageType});
+                     request.usageType,
+                     valid_from_of(request.validFor),
+                     valid_to_of(request.validFor)});
 
     txn.commit();
     return {request, true};
@@ -220,7 +273,11 @@ std::optional<bss_sid::TopupBalance> BalanceStore::get_topup(const std::string& 
     v.id = row["id"].as<std::optional<std::string>>();
     v.href = row["href"].as<std::optional<std::string>>();
     v.description = row["description"].as<std::optional<std::string>>();
+    v.isAutoTopup = row["is_auto_topup"].as<std::optional<bool>>();
+    v.numberOfPeriods = row["number_of_periods"].as<std::optional<int>>();
     v.reason = row["reason"].as<std::optional<std::string>>();
+    v.requestedDate = row["requested_date"].as<std::optional<std::string>>();
+    v.voucher = row["voucher"].as<std::optional<std::string>>();
     bss_sid::BucketRef bucket_ref{};
     bucket_ref.id = row["bucket_id"].as<std::string>();
     v.bucket = bucket_ref;
@@ -228,8 +285,23 @@ std::optional<bss_sid::TopupBalance> BalanceStore::get_topup(const std::string& 
     amount.amount = row["amount"].as<double>();
     amount.units = row["amount_units"].as<std::optional<std::string>>();
     v.amount = amount;
+    v.balanceTopup = parse_optional<bss_sid::RelatedTopupBalance>(
+        row["balance_topup"].as<std::optional<std::string>>());
+    v.channel =
+        parse_optional<bss_sid::ChannelRef>(row["channel"].as<std::optional<std::string>>());
+    v.logicalResource =
+        parse_array<bss_sid::LogicalResourceRef>(row["logical_resource"].as<std::string>());
+    v.paymentMethod = parse_optional<bss_sid::PaymentMethodRef>(
+        row["payment_method"].as<std::optional<std::string>>());
+    v.product = parse_array<bss_sid::ProductRef>(row["product"].as<std::string>());
+    v.recurringPeriod = row["recurring_period"].as<std::optional<std::string>>();
+    v.relatedParty = parse_array<bss_sid::RelatedParty>(row["related_party"].as<std::string>());
+    v.requestor =
+        parse_optional<bss_sid::RelatedParty>(row["requestor"].as<std::optional<std::string>>());
     v.status = row["status"].as<std::optional<std::string>>();
     v.usageType = row["usage_type"].as<std::optional<std::string>>();
+    v.validFor = time_period_from(row["valid_from"].as<std::optional<std::string>>(),
+                                  row["valid_to"].as<std::optional<std::string>>());
     return v;
 }
 
@@ -259,24 +331,33 @@ MutationResult<bss_sid::AdjustBalance> BalanceStore::adjust(bss_sid::AdjustBalan
     request.href = resource_base_url_ + "/adjustBalance/" + adjust_id;
     request.status = succeeded ? "completed" : "failed";
 
-    txn.exec(
-        "INSERT INTO adjust_balance (id, href, confirmation_date, description, reason, "
-        "requested_date, adjust_type, bucket_id, amount, amount_units, party_account_id, "
-        "product_id, status, usage_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
-        pqxx::params{adjust_id,
-                     *request.href,
-                     request.confirmationDate,
-                     request.description,
-                     request.reason,
-                     request.requestedDate,
-                     request.adjustType,
-                     bucket_id,
-                     amount,
-                     amount_units,
-                     party_account_id_of(request.partyAccount),
-                     product_id_of(request.product),
-                     *request.status,
-                     request.usageType});
+    txn.exec("INSERT INTO adjust_balance (id, href, confirmation_date, description, reason, "
+             "requested_date, adjust_type, bucket_id, amount, amount_units, channel, "
+             "logical_resource, party_account_id, product, related_party, requestor, status, "
+             "usage_type, valid_from, valid_to) "
+             "VALUES "
+             "($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14::jsonb,$15::jsonb,"
+             "$16::jsonb,$17,$18,$19,$20)",
+             pqxx::params{adjust_id,
+                          *request.href,
+                          request.confirmationDate,
+                          request.description,
+                          request.reason,
+                          request.requestedDate,
+                          request.adjustType,
+                          bucket_id,
+                          amount,
+                          amount_units,
+                          dump_optional(request.channel),
+                          dump_array(request.logicalResource),
+                          party_account_id_of(request.partyAccount),
+                          dump_array(request.product),
+                          dump_array(request.relatedParty),
+                          dump_optional(request.requestor),
+                          *request.status,
+                          request.usageType,
+                          valid_from_of(request.validFor),
+                          valid_to_of(request.validFor)});
 
     txn.commit();
     return {request, succeeded};
@@ -303,8 +384,18 @@ std::optional<bss_sid::AdjustBalance> BalanceStore::get_adjust(const std::string
     amount.amount = row["amount"].as<double>();
     amount.units = row["amount_units"].as<std::optional<std::string>>();
     v.amount = amount;
+    v.channel =
+        parse_optional<bss_sid::ChannelRef>(row["channel"].as<std::optional<std::string>>());
+    v.logicalResource =
+        parse_array<bss_sid::LogicalResourceRef>(row["logical_resource"].as<std::string>());
+    v.product = parse_array<bss_sid::ProductRef>(row["product"].as<std::string>());
+    v.relatedParty = parse_array<bss_sid::RelatedParty>(row["related_party"].as<std::string>());
+    v.requestor =
+        parse_optional<bss_sid::RelatedParty>(row["requestor"].as<std::optional<std::string>>());
     v.status = row["status"].as<std::optional<std::string>>();
     v.usageType = row["usage_type"].as<std::optional<std::string>>();
+    v.validFor = time_period_from(row["valid_from"].as<std::optional<std::string>>(),
+                                  row["valid_to"].as<std::optional<std::string>>());
     return v;
 }
 
@@ -345,8 +436,12 @@ MutationResult<bss_sid::ReserveBalance> BalanceStore::reserve(bss_sid::ReserveBa
 
     txn.exec(
         "INSERT INTO reserve_balance (id, href, confirmation_date, description, reason, "
-        "requested_date, bucket_id, amount, amount_units, party_account_id, product_id, status, "
-        "usage_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+        "requested_date, bucket_id, amount, amount_units, channel, logical_resource, "
+        "party_account_id, product, related_party, requestor, status, usage_type, valid_from, "
+        "valid_to) "
+        "VALUES "
+        "($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13::jsonb,$14::jsonb,$15::jsonb,"
+        "$16,$17,$18,$19)",
         pqxx::params{reserve_id,
                      *request.href,
                      request.confirmationDate,
@@ -356,10 +451,16 @@ MutationResult<bss_sid::ReserveBalance> BalanceStore::reserve(bss_sid::ReserveBa
                      bucket_id,
                      amount,
                      amount_units,
+                     dump_optional(request.channel),
+                     dump_array(request.logicalResource),
                      party_account_id_of(request.partyAccount),
-                     product_id_of(request.product),
+                     dump_array(request.product),
+                     dump_array(request.relatedParty),
+                     dump_optional(request.requestor),
                      *request.status,
-                     request.usageType});
+                     request.usageType,
+                     valid_from_of(request.validFor),
+                     valid_to_of(request.validFor)});
 
     txn.commit();
     return {request, succeeded};
@@ -385,8 +486,18 @@ std::optional<bss_sid::ReserveBalance> BalanceStore::get_reserve(const std::stri
     amount.amount = row["amount"].as<double>();
     amount.units = row["amount_units"].as<std::optional<std::string>>();
     v.amount = amount;
+    v.channel =
+        parse_optional<bss_sid::ChannelRef>(row["channel"].as<std::optional<std::string>>());
+    v.logicalResource =
+        parse_array<bss_sid::LogicalResourceRef>(row["logical_resource"].as<std::string>());
+    v.product = parse_array<bss_sid::ProductRef>(row["product"].as<std::string>());
+    v.relatedParty = parse_array<bss_sid::RelatedParty>(row["related_party"].as<std::string>());
+    v.requestor =
+        parse_optional<bss_sid::RelatedParty>(row["requestor"].as<std::optional<std::string>>());
     v.status = row["status"].as<std::optional<std::string>>();
     v.usageType = row["usage_type"].as<std::optional<std::string>>();
+    v.validFor = time_period_from(row["valid_from"].as<std::optional<std::string>>(),
+                                  row["valid_to"].as<std::optional<std::string>>());
     return v;
 }
 
