@@ -8,6 +8,22 @@ namespace {
 
 using nlohmann::json;
 
+// P4.5/ADR-0060 (E8, Security): real audit trail, same transaction as the mutation it records --
+// see bss/product-catalog's own schema.sql header for the full "local per-service table" real
+// architectural disclosure this project's service-per-database topology forces.
+void write_audit_record(pqxx::work& txn,
+                        const std::string& entity_type,
+                        const std::string& entity_id,
+                        const std::string& action,
+                        const std::optional<std::string>& after_snapshot) {
+    const auto id = txn.exec("SELECT nextval('audit_record_id_seq')::text AS id")
+                        .one_row()["id"]
+                        .as<std::string>();
+    txn.exec("INSERT INTO audit_record (id, entity_type, entity_id, action, actor, "
+             "after_snapshot) VALUES ($1,$2,$3,$4,'bss/balance-management',$5::jsonb)",
+             pqxx::params{id, entity_type, entity_id, action, after_snapshot});
+}
+
 // std::optional, not a bare std::string defaulting to "" -- so libpqxx binds a real SQL NULL for
 // an absent ref/name rather than an empty string, which would otherwise round-trip back out as a
 // visible (but meaningless) `"name":""` in every response.
@@ -257,6 +273,7 @@ MutationResult<bss_sid::TopupBalance> BalanceStore::topup(bss_sid::TopupBalance 
                      valid_from_of(request.validFor),
                      valid_to_of(request.validFor)});
 
+    write_audit_record(txn, "TOPUP_BALANCE", topup_id, "balance.topup", json(request).dump());
     txn.commit();
     return {request, true};
 }
@@ -359,6 +376,7 @@ MutationResult<bss_sid::AdjustBalance> BalanceStore::adjust(bss_sid::AdjustBalan
                           valid_from_of(request.validFor),
                           valid_to_of(request.validFor)});
 
+    write_audit_record(txn, "ADJUST_BALANCE", adjust_id, "balance.adjust", json(request).dump());
     txn.commit();
     return {request, succeeded};
 }
@@ -462,6 +480,7 @@ MutationResult<bss_sid::ReserveBalance> BalanceStore::reserve(bss_sid::ReserveBa
                      valid_from_of(request.validFor),
                      valid_to_of(request.validFor)});
 
+    write_audit_record(txn, "RESERVE_BALANCE", reserve_id, "balance.reserve", json(request).dump());
     txn.commit();
     return {request, succeeded};
 }

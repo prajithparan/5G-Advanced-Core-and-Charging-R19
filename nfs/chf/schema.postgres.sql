@@ -38,3 +38,21 @@ CREATE TABLE IF NOT EXISTS rating_decision (
     acbr_tax_excluded      NUMERIC(18, 6),
     acbr_tax_included      NUMERIC(18, 6)
 );
+
+-- P4.5/ADR-0060 (E8, Security): real audit trail. Same real, local-per-service architectural
+-- resolution as bss/product-catalog's own audit_record table (see that file's own header for the
+-- full disclosure) -- CHF owns this PostgreSQL database, so its RatingDecision audit trail lives
+-- here too, same transaction as the real rating_decision write it records.
+CREATE SEQUENCE IF NOT EXISTS audit_record_id_seq;
+
+CREATE TABLE IF NOT EXISTS audit_record (
+    id                TEXT PRIMARY KEY,
+    entity_type       TEXT NOT NULL,   -- RATING_DECISION
+    entity_id         TEXT NOT NULL,
+    action            TEXT NOT NULL,   -- e.g. "ratingDecision.record"
+    actor             TEXT NOT NULL,
+    before_snapshot   JSONB,
+    after_snapshot    JSONB,
+    ai_advisory_ref   TEXT,
+    recorded_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);

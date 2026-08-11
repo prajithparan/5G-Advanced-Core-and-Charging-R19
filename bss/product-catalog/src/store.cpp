@@ -8,6 +8,24 @@ namespace {
 
 using nlohmann::json;
 
+// P4.5/ADR-0060 (E8, Security): real audit trail, written in the SAME transaction as the mutation
+// it records (schema.sql's own header explains why this is a local, per-service table rather than
+// one shared cross-service table). `actor` is a fixed service-name string -- this project has no
+// human-operator identity/auth path for BSS mutations yet (disclosed, same gap noted in
+// schema.sql).
+void write_audit_record(pqxx::work& txn,
+                        const std::string& entity_type,
+                        const std::string& entity_id,
+                        const std::string& action,
+                        const std::optional<std::string>& after_snapshot) {
+    const auto id = txn.exec("SELECT nextval('audit_record_id_seq')::text AS id")
+                        .one_row()["id"]
+                        .as<std::string>();
+    txn.exec("INSERT INTO audit_record (id, entity_type, entity_id, action, actor, "
+             "after_snapshot) VALUES ($1,$2,$3,$4,'bss/product-catalog',$5::jsonb)",
+             pqxx::params{id, entity_type, entity_id, action, after_snapshot});
+}
+
 std::optional<std::string> valid_from_of(const std::optional<bss_sid::TimePeriod>& vf) {
     return vf.has_value() ? vf->startDateTime : std::nullopt;
 }
@@ -231,6 +249,8 @@ std::string ProductOfferingStore::create(bss_sid::ProductOffering offering) {
                      dump_array(offering.place),
                      dump_array(offering.productOfferingRelationship),
                      dump_array(offering.productOfferingTerm)});
+    write_audit_record(
+        txn, "PRODUCT_OFFERING", id, "productOffering.create", json(offering).dump());
     txn.commit();
     return id;
 }
@@ -261,8 +281,12 @@ bool ProductOfferingStore::remove(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(conn_);
     const auto result = txn.exec("DELETE FROM product_offering WHERE id = $1", pqxx::params{id});
+    const bool removed = result.affected_rows() > 0;
+    if (removed) {
+        write_audit_record(txn, "PRODUCT_OFFERING", id, "productOffering.remove", std::nullopt);
+    }
     txn.commit();
-    return result.affected_rows() > 0;
+    return removed;
 }
 
 // --- ProductOfferingPriceStore ---
@@ -311,6 +335,8 @@ std::string ProductOfferingPriceStore::create(bss_sid::ProductOfferingPrice pric
                      dump_array(price.tax),
                      valid_from_of(price.validFor),
                      valid_to_of(price.validFor)});
+    write_audit_record(
+        txn, "PRODUCT_OFFERING_PRICE", id, "productOfferingPrice.create", json(price).dump());
     txn.commit();
     return id;
 }
@@ -343,8 +369,13 @@ bool ProductOfferingPriceStore::remove(const std::string& id) {
     pqxx::work txn(conn_);
     const auto result =
         txn.exec("DELETE FROM product_offering_price WHERE id = $1", pqxx::params{id});
+    const bool removed = result.affected_rows() > 0;
+    if (removed) {
+        write_audit_record(
+            txn, "PRODUCT_OFFERING_PRICE", id, "productOfferingPrice.remove", std::nullopt);
+    }
     txn.commit();
-    return result.affected_rows() > 0;
+    return removed;
 }
 
 // --- ProductSpecificationStore ---
@@ -389,6 +420,8 @@ std::string ProductSpecificationStore::create(bss_sid::ProductSpecification spec
                           dump_optional(spec.targetProductSchema),
                           valid_from_of(spec.validFor),
                           valid_to_of(spec.validFor)});
+    write_audit_record(
+        txn, "PRODUCT_SPECIFICATION", id, "productSpecification.create", json(spec).dump());
     txn.commit();
     return id;
 }
@@ -421,8 +454,13 @@ bool ProductSpecificationStore::remove(const std::string& id) {
     pqxx::work txn(conn_);
     const auto result =
         txn.exec("DELETE FROM product_specification WHERE id = $1", pqxx::params{id});
+    const bool removed = result.affected_rows() > 0;
+    if (removed) {
+        write_audit_record(
+            txn, "PRODUCT_SPECIFICATION", id, "productSpecification.remove", std::nullopt);
+    }
     txn.commit();
-    return result.affected_rows() > 0;
+    return removed;
 }
 
 } // namespace product_catalog

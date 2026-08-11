@@ -5567,3 +5567,46 @@ live-verified: CHF started successfully against an intentionally-wrong PostgreSQ
 `FATAL: password authentication failed` from the server), logged the warning, and continued
 running normally for the full test duration -- no crash, matching `CdrWriter`'s own already-proven
 degradation behavior. 158/158 tests pass, `clang-format-18` clean.
+
+### E8 (Security, AuditRecord) -- complete, wired into E2/E5/E6's real mutations
+
+**Real architectural resolution `docs/DATA_MODEL.md`'s own E8 sketch left open**: that document
+describes one conceptual `AuditRecord` table, with an explicit consistency requirement ("treat
+`AuditRecord` writes as part of the same transaction... as the mutation itself"). This project's
+own topology -- product-catalog, balance-management, and CHF each already own a **separate**
+PostgreSQL database (not a shared one) -- makes genuine same-transaction atomicity with a mutation
+possible only via a **local** `audit_record` table in that same database, not one physically
+shared cross-service table (which would need a real distributed-transaction/outbox mechanism this
+project doesn't have). Resolved: each of the three services gets its own `audit_record` table,
+identical shape, each row written inside the exact same `pqxx::work` transaction as the real
+mutation it records. A cross-service unified audit view is real future work, disclosed, not built.
+
+**Wired into every real mutation this ADR's own E2/E5/E6 work touches**: `ProductOffering`/
+`ProductOfferingPrice`/`ProductSpecification`'s `create()` and `remove()` (product-catalog);
+`TopupBalance`/`AdjustBalance`/`ReserveBalance` (balance-management -- `Bucket` itself has no
+direct create path, per TMF654's own real "no `POST /bucket`" constraint already disclosed in
+E6); `RatingDecisionStore::record()` (CHF, E5). `actor` is a fixed service-name string in every
+case (`bss/product-catalog`, `bss/balance-management`, `chf`) -- this project has no
+human-operator identity/auth path for BSS mutations yet, disclosed rather than fabricated.
+
+**Live-verified for real, full chain**: real `nrf` + `product-catalog` + `balance-management` +
+`chf`, each with a fresh, real, separate PostgreSQL database with this ADR's own `audit_record`
+table applied. Created a real `ProductOfferingPrice`/`ProductOffering`/`ProductSpecification`
+(three real `create()` audit rows confirmed via direct `psql`), deleted the `ProductSpecification`
+(a real `remove()` audit row confirmed), funded a real `$50` bucket and drove a real
+`Nchf_ConvergedCharging` Create call -- independently confirmed via direct `psql`: a real
+`TOPUP_BALANCE`/`balance.topup` row and a real `RESERVE_BALANCE`/`balance.reserve` row in
+`balance_mgmt`'s own `audit_record`, and a real `RATING_DECISION`/`ratingDecision.record` row
+(with a real `after_snapshot` jsonb matching the actual rating decision) in `chf_rating`'s own
+`audit_record`, all three tables populated in the same real end-to-end run. 158/158 tests pass.
+
+### Disclosed, NOT done by E8's own section
+
+- No audit wiring into `bss/subscriber-management` (E1/E10's stores) or a future E7 roaming
+  service -- E1/E10 explicitly deferred its own HTTP service (and therefore has no live mutation
+  endpoint to wire yet); E7 doesn't exist yet either (this ADR's own next, not-yet-built section).
+- No `before_snapshot` population anywhere (`after_snapshot` only) -- a real `UPDATE`-style
+  mutation with a genuine before/after diff doesn't exist yet in any of these three services'
+  current real mutation set (all current mutations are creates, a delete, or an append-only
+  ledger action); the column exists for when one does.
+- No cross-service unified audit view/aggregation pipeline -- disclosed above, real future work.

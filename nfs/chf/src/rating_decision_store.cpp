@@ -47,6 +47,18 @@ void RatingDecisionStore::record(const RatingDecisionRecord& decision) {
                               decision.ruleFiredId,
                               decision.acbrType,
                               decision.ratedAmount});
+
+        // P4.5/ADR-0060 (E8, Security): real audit trail, same transaction as the mutation it
+        // records -- same "local per-service table" architectural disclosure as
+        // bss/product-catalog's own schema.sql header.
+        const auto audit_id = txn.exec("SELECT nextval('audit_record_id_seq')::text AS id")
+                                  .one_row()["id"]
+                                  .as<std::string>();
+        txn.exec("INSERT INTO audit_record (id, entity_type, entity_id, action, actor, "
+                 "after_snapshot) VALUES ($1,'RATING_DECISION',$2,'ratingDecision.record',"
+                 "'chf',$3::jsonb)",
+                 pqxx::params{audit_id, id, decision.inputSnapshot.dump()});
+
         txn.commit();
     } catch (const std::exception& e) {
         // Best-effort, same discipline as CdrWriter::write -- a rating-decision audit-write

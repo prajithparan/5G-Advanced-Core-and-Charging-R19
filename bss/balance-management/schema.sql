@@ -140,3 +140,22 @@ CREATE TABLE IF NOT EXISTS reserve_balance (
     valid_to            TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- P4.5/ADR-0060 (E8, Security): real audit trail, docs/DATA_MODEL.md's own explicit requirement
+-- ("full audit trail on every balance... mutation"). Same real, local-per-service architectural
+-- resolution as bss/product-catalog's own audit_record table (see that file's own header for the
+-- full disclosure) -- balance-management owns its own database, so its audit trail lives here,
+-- same transaction as the real balance mutation it records.
+CREATE SEQUENCE IF NOT EXISTS audit_record_id_seq;
+
+CREATE TABLE IF NOT EXISTS audit_record (
+    id                TEXT PRIMARY KEY,
+    entity_type       TEXT NOT NULL,   -- BUCKET, TOPUP_BALANCE, ADJUST_BALANCE, RESERVE_BALANCE
+    entity_id         TEXT NOT NULL,
+    action            TEXT NOT NULL,   -- e.g. "balance.topup", "balance.adjust", "balance.reserve"
+    actor             TEXT NOT NULL,
+    before_snapshot   JSONB,
+    after_snapshot    JSONB,
+    ai_advisory_ref   TEXT,
+    recorded_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -112,3 +112,29 @@ CREATE TABLE IF NOT EXISTS product_specification (
     created_at                          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- P4.5/ADR-0060 (E8, Security): real audit trail, docs/DATA_MODEL.md's own explicit requirement
+-- ("full audit trail on every balance or tariff mutation... treat AuditRecord writes as part of
+-- the same transaction... as the mutation itself"). Real architectural resolution this project's
+-- own service-per-database topology forces (not fully spelled out in DATA_MODEL.md's original
+-- sketch, which described one conceptual AuditRecord without addressing this): product-catalog,
+-- balance-management, and CHF each already own a SEPARATE PostgreSQL database -- true same-
+-- transaction atomicity with a mutation is only possible with a LOCAL audit_record table in that
+-- same database, not one shared cross-service table (which would require a real distributed
+-- transaction/outbox mechanism this project doesn't have). Each service gets its own
+-- `audit_record` table, identical shape, wired into that service's own real mutations in its own
+-- transactions. A cross-service unified audit VIEW (aggregating all three) is real future work,
+-- disclosed, not built here.
+CREATE SEQUENCE IF NOT EXISTS audit_record_id_seq;
+
+CREATE TABLE IF NOT EXISTS audit_record (
+    id                TEXT PRIMARY KEY,
+    entity_type       TEXT NOT NULL,   -- e.g. PRODUCT_OFFERING, PRODUCT_OFFERING_PRICE, PRODUCT_SPECIFICATION
+    entity_id         TEXT NOT NULL,
+    action            TEXT NOT NULL,   -- e.g. "productOffering.create", "productOffering.remove"
+    actor             TEXT NOT NULL,   -- NF instance id / service name; no human-operator path exists yet
+    before_snapshot   JSONB,
+    after_snapshot    JSONB,
+    ai_advisory_ref   TEXT,            -- nullable; not populated until P4.8 (AI layer)
+    recorded_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
