@@ -13,6 +13,24 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Real PostgreSQL for tests/integration/test_product_catalog_postgres.cpp (ADR-0054) -- without
+    # this, that test's SetUp() finds no reachable Postgres and calls GTEST_SKIP() (a real,
+    # disclosed local-dev fallback, not a CI behavior); this service makes CI actually exercise the
+    # real DB path instead of skipping it.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: product_catalog
+          POSTGRES_PASSWORD: product_catalog
+          POSTGRES_DB: product_catalog
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -36,7 +54,12 @@ jobs:
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Install Ninja
-        run: sudo apt-get update -qq && sudo apt-get install -y ninja-build libsctp-dev libbpf-dev libcap-dev clang-18
+        # bison/flex: needed to build vcpkg's libpq port from source (ADR-0054 added libpqxx,
+        # transitively libpq) -- real gap hit locally first (this sandbox had neither and no sudo
+        # password to self-install), fixed here so CI doesn't hit the same wall.
+        # postgresql-client: psql, used below to apply schema.sql to the postgres service before
+        # running ctest.
+        run: sudo apt-get update -qq && sudo apt-get install -y ninja-build libsctp-dev libbpf-dev libcap-dev clang-18 bison flex postgresql-client
 
       - name: Install sbi-codegen Python deps
         run: pip install -r tools/sbi-codegen/requirements.txt
@@ -67,11 +90,19 @@ jobs:
         # prior manual sessions, masking that CI's own from-scratch checkout never got them).
         run: ./scripts/gen-lab-pki.sh nrf hello-nf amf smf udm udr ausf pcf chf upf product-catalog
 
+      - name: Apply product-catalog PostgreSQL schema (ADR-0054)
+        run: PGPASSWORD=product_catalog psql -h localhost -U product_catalog -d product_catalog -f bss/product-catalog/schema.sql
+
       - name: Test
         # --timeout 120: defense in depth. A single spawned-NF-process crash/hang (real one hit
         # here: missing certs killed AMF on startup, which left ctest waiting its full default
         # timeout instead of failing fast, then every later test failed too from port contention
         # with the still-running orphaned processes) should fail in ~2 minutes, not 25.
+        # TEST_POSTGRES_URL: points test_product_catalog_postgres.cpp at the real service above
+        # instead of its local-dev default, so CI exercises the real DB path (ADR-0054) instead of
+        # GTEST_SKIP()-ing it.
+        env:
+          TEST_POSTGRES_URL: postgresql://product_catalog:product_catalog@localhost:5432/product_catalog
         run: ctest --test-dir build --output-on-failure --timeout 120
 
   sanitize:
@@ -79,6 +110,21 @@ jobs:
     strategy:
       matrix:
         sanitizer: [asan-ubsan, tsan]
+    # See the build job's identical services block comment (ADR-0054).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: product_catalog
+          POSTGRES_PASSWORD: product_catalog
+          POSTGRES_DB: product_catalog
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -96,7 +142,12 @@ jobs:
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Install Ninja
-        run: sudo apt-get update -qq && sudo apt-get install -y ninja-build libsctp-dev libbpf-dev libcap-dev clang-18
+        # bison/flex: needed to build vcpkg's libpq port from source (ADR-0054 added libpqxx,
+        # transitively libpq) -- real gap hit locally first (this sandbox had neither and no sudo
+        # password to self-install), fixed here so CI doesn't hit the same wall.
+        # postgresql-client: psql, used below to apply schema.sql to the postgres service before
+        # running ctest.
+        run: sudo apt-get update -qq && sudo apt-get install -y ninja-build libsctp-dev libbpf-dev libcap-dev clang-18 bison flex postgresql-client
 
       - name: Install sbi-codegen Python deps
         run: pip install -r tools/sbi-codegen/requirements.txt
@@ -135,11 +186,19 @@ jobs:
         # prior manual sessions, masking that CI's own from-scratch checkout never got them).
         run: ./scripts/gen-lab-pki.sh nrf hello-nf amf smf udm udr ausf pcf chf upf product-catalog
 
+      - name: Apply product-catalog PostgreSQL schema (ADR-0054)
+        run: PGPASSWORD=product_catalog psql -h localhost -U product_catalog -d product_catalog -f bss/product-catalog/schema.sql
+
       - name: Test
         # --timeout 120: defense in depth. A single spawned-NF-process crash/hang (real one hit
         # here: missing certs killed AMF on startup, which left ctest waiting its full default
         # timeout instead of failing fast, then every later test failed too from port contention
         # with the still-running orphaned processes) should fail in ~2 minutes, not 25.
+        # TEST_POSTGRES_URL: points test_product_catalog_postgres.cpp at the real service above
+        # instead of its local-dev default, so CI exercises the real DB path (ADR-0054) instead of
+        # GTEST_SKIP()-ing it.
+        env:
+          TEST_POSTGRES_URL: postgresql://product_catalog:product_catalog@localhost:5432/product_catalog
         run: ctest --test-dir build --output-on-failure --timeout 120
 
   lint:
@@ -148,7 +207,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install clang tooling
-        run: sudo apt-get update -qq && sudo apt-get install -y clang-format-18 clang-tidy-18 ninja-build libsctp-dev libbpf-dev libcap-dev clang-18
+        # bison/flex: see the build/sanitize jobs' "Install Ninja" step comment -- same libpq
+        # (ADR-0054) build-from-source requirement applies here too, since Configure below runs
+        # for the whole project including bss/product-catalog.
+        run: sudo apt-get update -qq && sudo apt-get install -y clang-format-18 clang-tidy-18 ninja-build libsctp-dev libbpf-dev libcap-dev clang-18 bison flex
 
       - name: clang-format check
         run: |

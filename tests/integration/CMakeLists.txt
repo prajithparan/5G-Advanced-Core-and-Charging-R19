@@ -9,8 +9,9 @@ add_executable(integration_tests
     test_udr_context_data.cpp
     test_ausf_ue_authentication.cpp
     test_pcf_policy_control.cpp
+    test_product_catalog_postgres.cpp
 )
-target_link_libraries(integration_tests PRIVATE sbi_core sbi_generated aka_crypto GTest::gtest GTest::gtest_main)
+target_link_libraries(integration_tests PRIVATE sbi_core sbi_generated aka_crypto product_catalog_store GTest::gtest GTest::gtest_main)
 add_dependencies(integration_tests nrf amf smf udm udr ausf pcf hello-nf)
 target_compile_definitions(integration_tests PRIVATE
     NRF_PATH="$<TARGET_FILE:nrf>"

@@ -4,9 +4,19 @@
 
 FROM ubuntu:24.04 AS builder
 
+# bison/flex: vcpkg builds libpq from source (libpqxx, ADR-0054 -- bss/product-catalog's real
+# PostgreSQL persistence) -- and since vcpkg.json is one shared manifest, `vcpkg install` pulls in
+# every dependency for ANY target's configure step, not just the one being built here. Real
+# regression this project hit and fixed: every Dockerfile broke on this the moment libpqxx was
+# added, not just product-catalog's own.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build git curl zip unzip tar pkg-config \
-    python3 python3-pip python3-venv ca-certificates \
+    python3 python3-pip python3-venv ca-certificates bison flex patch \
+    # libsctp-dev/libbpf-dev/libcap-dev/clang-18: libs/ngap-core (SCTP) and nfs/upf
+    # (eBPF/XDP datapath) require these at CMake configure time -- same real,
+    # pre-existing gap as the asn1c one above, matching the fix
+    # .github/workflows/ci.yml already needed for the identical reason.
+    libsctp-dev libbpf-dev libcap-dev clang-18 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/codegen-venv && /opt/codegen-venv/bin/pip install jinja2 pyyaml
@@ -18,6 +28,13 @@ RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \
 
 WORKDIR /build
 COPY . .
+
+# asn1c: libs/ngap-generated needs this real toolchain at configure time (ADR-0030/
+# ADR-0031) -- pre-existing gap, independent of the libpqxx/bison fix above: this repo's
+# Dockerfiles never ran this step, so a from-scratch image build was already broken
+# before product-catalog/libpqxx existed. Found by actually running a real docker build,
+# not assumed.
+RUN ./scripts/setup-asn1c.sh
 
 RUN cmake -S . -B build -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \

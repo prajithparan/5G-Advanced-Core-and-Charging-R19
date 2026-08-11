@@ -1,71 +1,346 @@
 #include "store.hpp"
 
+#include <nlohmann/json.hpp>
+
 namespace product_catalog {
+
+namespace {
+
+using nlohmann::json;
+
+std::optional<std::string> valid_from_of(const std::optional<bss_sid::TimePeriod>& vf) {
+    return vf.has_value() ? vf->startDateTime : std::nullopt;
+}
+
+std::optional<std::string> valid_to_of(const std::optional<bss_sid::TimePeriod>& vf) {
+    return vf.has_value() ? vf->endDateTime : std::nullopt;
+}
+
+std::optional<bss_sid::TimePeriod> time_period_from(const std::optional<std::string>& from,
+                                                    const std::optional<std::string>& to) {
+    if (!from.has_value() && !to.has_value()) {
+        return std::nullopt;
+    }
+    bss_sid::TimePeriod tp;
+    tp.startDateTime = from;
+    tp.endDateTime = to;
+    return tp;
+}
+
+template <typename T> std::string dump_array(const std::vector<T>& v) {
+    return json(v).dump();
+}
+
+template <typename T> std::vector<T> parse_array(const std::string& s) {
+    if (s.empty()) {
+        return {};
+    }
+    return json::parse(s).get<std::vector<T>>();
+}
+
+template <typename T> std::optional<std::string> dump_optional(const std::optional<T>& v) {
+    if (!v.has_value()) {
+        return std::nullopt;
+    }
+    return json(*v).dump();
+}
+
+template <typename T> std::optional<T> parse_optional(const std::optional<std::string>& s) {
+    if (!s.has_value()) {
+        return std::nullopt;
+    }
+    return json::parse(*s).get<T>();
+}
+
+// Templated (not `const pqxx::row&`) because libpqxx 8.x's `pqxx::result::operator[]`/`front()`
+// return the lightweight `pqxx::row_ref` view type, while `result::one_row()` returns an owning
+// `pqxx::row` -- both support the same named-field `operator[]` access used below, so one template
+// serves both call sites without a copy.
+template <typename Row> bss_sid::ProductOffering row_to_offering(const Row& row) {
+    bss_sid::ProductOffering v;
+    v.id = row["id"].template as<std::optional<std::string>>();
+    v.href = row["href"].template as<std::optional<std::string>>();
+    v.name = row["name"].template as<std::optional<std::string>>();
+    v.description = row["description"].template as<std::optional<std::string>>();
+    v.lifecycleStatus = row["lifecycle_status"].template as<std::optional<std::string>>();
+    v.isBundle = row["is_bundle"].template as<std::optional<bool>>();
+    v.isSellable = row["is_sellable"].template as<std::optional<bool>>();
+    v.version = row["version"].template as<std::optional<std::string>>();
+    v.validFor = time_period_from(row["valid_from"].template as<std::optional<std::string>>(),
+                                  row["valid_to"].template as<std::optional<std::string>>());
+    v.productOfferingPrice = parse_array<bss_sid::ProductOfferingPriceRef>(
+        row["product_offering_price"].template as<std::string>());
+    v.category = parse_array<bss_sid::CategoryRef>(row["category"].template as<std::string>());
+    v.channel = parse_array<bss_sid::ChannelRef>(row["channel"].template as<std::string>());
+    v.marketSegment =
+        parse_array<bss_sid::MarketSegmentRef>(row["market_segment"].template as<std::string>());
+    v.prodSpecCharValueUse = parse_array<bss_sid::ProductSpecificationCharacteristicValueUse>(
+        row["prod_spec_char_value_use"].template as<std::string>());
+    v.productSpecification = parse_optional<bss_sid::ProductSpecificationRef>(
+        row["product_specification"].template as<std::optional<std::string>>());
+    v.resourceCandidate = parse_optional<bss_sid::ResourceCandidateRef>(
+        row["resource_candidate"].template as<std::optional<std::string>>());
+    v.serviceCandidate = parse_optional<bss_sid::ServiceCandidateRef>(
+        row["service_candidate"].template as<std::optional<std::string>>());
+    v.serviceLevelAgreement = parse_optional<bss_sid::SLARef>(
+        row["service_level_agreement"].template as<std::optional<std::string>>());
+    v.agreement = parse_array<bss_sid::AgreementRef>(row["agreement"].template as<std::string>());
+    v.bundledProductOffering = parse_array<bss_sid::BundledProductOffering>(
+        row["bundled_product_offering"].template as<std::string>());
+    return v;
+}
+
+template <typename Row> bss_sid::ProductOfferingPrice row_to_price(const Row& row) {
+    bss_sid::ProductOfferingPrice v;
+    v.id = row["id"].template as<std::optional<std::string>>();
+    v.href = row["href"].template as<std::optional<std::string>>();
+    v.name = row["name"].template as<std::optional<std::string>>();
+    v.description = row["description"].template as<std::optional<std::string>>();
+    v.lifecycleStatus = row["lifecycle_status"].template as<std::optional<std::string>>();
+    v.priceType = row["price_type"].template as<std::optional<std::string>>();
+    v.price =
+        parse_optional<bss_sid::Money>(row["price"].template as<std::optional<std::string>>());
+    v.recurringChargePeriodLength =
+        row["recurring_charge_period_length"].template as<std::optional<int>>();
+    v.recurringChargePeriodType =
+        row["recurring_charge_period_type"].template as<std::optional<std::string>>();
+    v.unitOfMeasure = parse_optional<bss_sid::Quantity>(
+        row["unit_of_measure"].template as<std::optional<std::string>>());
+    v.prodSpecCharValueUse = parse_array<bss_sid::ProductSpecificationCharacteristicValueUse>(
+        row["prod_spec_char_value_use"].template as<std::string>());
+    v.validFor = time_period_from(row["valid_from"].template as<std::optional<std::string>>(),
+                                  row["valid_to"].template as<std::optional<std::string>>());
+    return v;
+}
+
+template <typename Row> bss_sid::ProductSpecification row_to_spec(const Row& row) {
+    bss_sid::ProductSpecification v;
+    v.id = row["id"].template as<std::optional<std::string>>();
+    v.href = row["href"].template as<std::optional<std::string>>();
+    v.brand = row["brand"].template as<std::optional<std::string>>();
+    v.description = row["description"].template as<std::optional<std::string>>();
+    v.isBundle = row["is_bundle"].template as<std::optional<bool>>();
+    v.lifecycleStatus = row["lifecycle_status"].template as<std::optional<std::string>>();
+    v.name = row["name"].template as<std::optional<std::string>>();
+    v.productNumber = row["product_number"].template as<std::optional<std::string>>();
+    v.version = row["version"].template as<std::optional<std::string>>();
+    v.productSpecCharacteristic = parse_array<bss_sid::ProductSpecificationCharacteristic>(
+        row["product_spec_characteristic"].template as<std::string>());
+    v.validFor = time_period_from(row["valid_from"].template as<std::optional<std::string>>(),
+                                  row["valid_to"].template as<std::optional<std::string>>());
+    return v;
+}
+
+} // namespace
+
+// --- ProductOfferingStore ---
+
+ProductOfferingStore::ProductOfferingStore(std::string resource_url, const std::string& conninfo)
+    : resource_url_(std::move(resource_url)), conn_(conninfo) {}
 
 std::string ProductOfferingStore::create(bss_sid::ProductOffering offering) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto id = std::to_string(next_id_++);
+    pqxx::work txn(conn_);
+    const auto id = txn.exec("SELECT nextval('product_offering_id_seq')::text AS id")
+                        .one_row()["id"]
+                        .as<std::string>();
     offering.id = id;
     offering.href = resource_url_ + "/" + id;
-    offerings_.emplace(id, std::move(offering));
+    txn.exec(
+        "INSERT INTO product_offering "
+        "(id, href, name, description, lifecycle_status, is_bundle, is_sellable, version, "
+        "valid_from, valid_to, product_offering_price, category, channel, market_segment, "
+        "prod_spec_char_value_use, product_specification, resource_candidate, service_candidate, "
+        "service_level_agreement, agreement, bundled_product_offering) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,"
+        "$15::jsonb,$16::jsonb,$17::jsonb,$18::jsonb,$19::jsonb,$20::jsonb,$21::jsonb)",
+        pqxx::params{id,
+                     offering.href,
+                     offering.name,
+                     offering.description,
+                     offering.lifecycleStatus,
+                     offering.isBundle,
+                     offering.isSellable,
+                     offering.version,
+                     valid_from_of(offering.validFor),
+                     valid_to_of(offering.validFor),
+                     dump_array(offering.productOfferingPrice),
+                     dump_array(offering.category),
+                     dump_array(offering.channel),
+                     dump_array(offering.marketSegment),
+                     dump_array(offering.prodSpecCharValueUse),
+                     dump_optional(offering.productSpecification),
+                     dump_optional(offering.resourceCandidate),
+                     dump_optional(offering.serviceCandidate),
+                     dump_optional(offering.serviceLevelAgreement),
+                     dump_array(offering.agreement),
+                     dump_array(offering.bundledProductOffering)});
+    txn.commit();
     return id;
 }
 
 std::optional<bss_sid::ProductOffering> ProductOfferingStore::get(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = offerings_.find(id);
-    if (it == offerings_.end()) {
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT * FROM product_offering WHERE id = $1", pqxx::params{id});
+    if (result.empty()) {
         return std::nullopt;
     }
-    return it->second;
+    return row_to_offering(result.front());
 }
 
 std::vector<bss_sid::ProductOffering> ProductOfferingStore::list() {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<bss_sid::ProductOffering> result;
-    result.reserve(offerings_.size());
-    for (const auto& [id, offering] : offerings_) {
-        result.push_back(offering);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT * FROM product_offering ORDER BY id");
+    std::vector<bss_sid::ProductOffering> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(row_to_offering(row));
     }
-    return result;
+    return out;
 }
 
 bool ProductOfferingStore::remove(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return offerings_.erase(id) > 0;
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM product_offering WHERE id = $1", pqxx::params{id});
+    txn.commit();
+    return result.affected_rows() > 0;
 }
+
+// --- ProductOfferingPriceStore ---
+
+ProductOfferingPriceStore::ProductOfferingPriceStore(std::string resource_url,
+                                                     const std::string& conninfo)
+    : resource_url_(std::move(resource_url)), conn_(conninfo) {}
 
 std::string ProductOfferingPriceStore::create(bss_sid::ProductOfferingPrice price) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto id = std::to_string(next_id_++);
+    pqxx::work txn(conn_);
+    const auto id = txn.exec("SELECT nextval('product_offering_price_id_seq')::text AS id")
+                        .one_row()["id"]
+                        .as<std::string>();
     price.id = id;
     price.href = resource_url_ + "/" + id;
-    prices_.emplace(id, std::move(price));
+    txn.exec("INSERT INTO product_offering_price "
+             "(id, href, name, description, lifecycle_status, price_type, price, "
+             "recurring_charge_period_length, recurring_charge_period_type, unit_of_measure, "
+             "prod_spec_char_value_use, valid_from, valid_to) "
+             "VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10::jsonb,$11::jsonb,$12,$13)",
+             pqxx::params{id,
+                          price.href,
+                          price.name,
+                          price.description,
+                          price.lifecycleStatus,
+                          price.priceType,
+                          dump_optional(price.price),
+                          price.recurringChargePeriodLength,
+                          price.recurringChargePeriodType,
+                          dump_optional(price.unitOfMeasure),
+                          dump_array(price.prodSpecCharValueUse),
+                          valid_from_of(price.validFor),
+                          valid_to_of(price.validFor)});
+    txn.commit();
     return id;
 }
 
 std::optional<bss_sid::ProductOfferingPrice> ProductOfferingPriceStore::get(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = prices_.find(id);
-    if (it == prices_.end()) {
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT * FROM product_offering_price WHERE id = $1", pqxx::params{id});
+    if (result.empty()) {
         return std::nullopt;
     }
-    return it->second;
+    return row_to_price(result.front());
 }
 
 std::vector<bss_sid::ProductOfferingPrice> ProductOfferingPriceStore::list() {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<bss_sid::ProductOfferingPrice> result;
-    result.reserve(prices_.size());
-    for (const auto& [id, price] : prices_) {
-        result.push_back(price);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT * FROM product_offering_price ORDER BY id");
+    std::vector<bss_sid::ProductOfferingPrice> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(row_to_price(row));
     }
-    return result;
+    return out;
 }
 
 bool ProductOfferingPriceStore::remove(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return prices_.erase(id) > 0;
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM product_offering_price WHERE id = $1", pqxx::params{id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
+// --- ProductSpecificationStore ---
+
+ProductSpecificationStore::ProductSpecificationStore(std::string resource_url,
+                                                     const std::string& conninfo)
+    : resource_url_(std::move(resource_url)), conn_(conninfo) {}
+
+std::string ProductSpecificationStore::create(bss_sid::ProductSpecification spec) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto id = txn.exec("SELECT nextval('product_specification_id_seq')::text AS id")
+                        .one_row()["id"]
+                        .as<std::string>();
+    spec.id = id;
+    spec.href = resource_url_ + "/" + id;
+    txn.exec("INSERT INTO product_specification "
+             "(id, href, brand, description, is_bundle, lifecycle_status, name, product_number, "
+             "version, product_spec_characteristic, valid_from, valid_to) "
+             "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)",
+             pqxx::params{id,
+                          spec.href,
+                          spec.brand,
+                          spec.description,
+                          spec.isBundle,
+                          spec.lifecycleStatus,
+                          spec.name,
+                          spec.productNumber,
+                          spec.version,
+                          dump_array(spec.productSpecCharacteristic),
+                          valid_from_of(spec.validFor),
+                          valid_to_of(spec.validFor)});
+    txn.commit();
+    return id;
+}
+
+std::optional<bss_sid::ProductSpecification> ProductSpecificationStore::get(const std::string& id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT * FROM product_specification WHERE id = $1", pqxx::params{id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return row_to_spec(result.front());
+}
+
+std::vector<bss_sid::ProductSpecification> ProductSpecificationStore::list() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT * FROM product_specification ORDER BY id");
+    std::vector<bss_sid::ProductSpecification> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(row_to_spec(row));
+    }
+    return out;
+}
+
+bool ProductSpecificationStore::remove(const std::string& id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM product_specification WHERE id = $1", pqxx::params{id});
+    txn.commit();
+    return result.affected_rows() > 0;
 }
 
 } // namespace product_catalog

@@ -1,14 +1,13 @@
-# Multi-stage build for nfs/ausf. Mirrors deploy/docker/udr.Dockerfile -- see amf.Dockerfile's
-# header comment for why this image does NOT generate its own lab PKI at start (must share the
-# same root CA as nrf/amf/smf/udm/udr; see deploy/docker/docker-compose.yml's pki-init service).
+# Multi-stage build for bss/product-catalog. Mirrors deploy/docker/pcf.Dockerfile -- see
+# amf.Dockerfile's header comment for why this image does NOT generate its own lab PKI at start
+# (must share the same root CA as every other NF; see deploy/docker/docker-compose.yml's pki-init
+# service). Not a 3GPP NF (see bss/product-catalog/src/main.cpp's own header comment), but built
+# the same way as one for consistency with this repo's existing image convention.
 
 FROM ubuntu:24.04 AS builder
 
-# bison/flex: vcpkg builds libpq from source (libpqxx, ADR-0054 -- bss/product-catalog's real
-# PostgreSQL persistence) -- and since vcpkg.json is one shared manifest, `vcpkg install` pulls in
-# every dependency for ANY target's configure step, not just the one being built here. Real
-# regression this project hit and fixed: every Dockerfile broke on this the moment libpqxx was
-# added, not just product-catalog's own.
+# bison/flex: vcpkg builds libpq from source (libpqxx, ADR-0054 -- this service's own real
+# PostgreSQL persistence, the direct reason this image exists in this form).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build git curl zip unzip tar pkg-config \
     python3 python3-pip python3-venv ca-certificates bison flex patch \
@@ -39,7 +38,7 @@ RUN ./scripts/setup-asn1c.sh
 RUN cmake -S . -B build -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \
     -DCMAKE_BUILD_TYPE=Release -D5GC_BUILD_TESTS=OFF \
-    && cmake --build build --target ausf
+    && cmake --build build --target product-catalog
 
 FROM ubuntu:24.04 AS runtime
 
@@ -48,8 +47,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY --from=builder /build/build/nfs/ausf/ausf /build/ausf
+COPY --from=builder /build/build/bss/product-catalog/product-catalog /build/product-catalog
 
-EXPOSE 7782/tcp 9469/tcp
+EXPOSE 7785/tcp 9473/tcp
 
-ENTRYPOINT ["/build/ausf"]
+ENTRYPOINT ["/build/product-catalog"]
