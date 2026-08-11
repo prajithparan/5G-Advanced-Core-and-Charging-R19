@@ -4692,5 +4692,55 @@ and reverified clean after the rename (identifier length changes shifted line wr
 **Consequence:** codegen infrastructure for P4.2's remaining real work
 (`Nchf_OfflineOnlyCharging` Create/Update/Release, `Nchf_SpendingLimitControl` Subscribe/Update/
 Unsubscribe + notify/terminate callbacks, `Nchf_ConvergedCharging` Notify callback) is now in
-place and building cleanly; the actual route implementations are this same P4.2 turn's next step,
-not yet written as of this ADR entry.
+place and building cleanly.
+
+### Follow-up, same session: Nchf_OfflineOnlyCharging and Nchf_SpendingLimitControl implemented and live-verified
+
+**`Nchf_OfflineOnlyCharging`** (`nfs/chf/src/stores.hpp`/`.cpp`, new `OfflineChargingDataStore`;
+`nfs/chf/src/main.cpp`, new routes): real `POST /offlinechargingdata` (Create),
+`POST .../{OfflineChargingDataRef}/update` (Update), `POST .../{OfflineChargingDataRef}/release`
+(Release), real basePath `/nchf-offlineonlycharging/v1` confirmed directly from the YAML's own
+`servers` block. Deliberately does **not** call the rating engine (`build_rating_grant`) --
+confirmed directly against the real schema that `ChargingDataResponse_Nchf_OfflineOnlyCharging`
+carries no `multipleUnitInformation`/`grantedUnit` field at all, a genuine spec difference from
+ConvergedCharging, not an oversight. `OfflineChargingDataRef`s use their own `offchg-N` namespace,
+distinct from ConvergedCharging's `chg-N`.
+
+**`Nchf_SpendingLimitControl`** (`nfs/chf/src/stores.hpp`/`.cpp`, new
+`SpendingLimitSubscriptionStore` -- a real resource store, not just an active-ref set, since
+`PUT` needs the previous context; `nfs/chf/src/main.cpp`, new `build_spending_limit_status` +
+three routes): real `POST /subscriptions` (Subscribe, 201 + `Location`), `PUT
+/subscriptions/{subscriptionId}` (real update-in-place, 200), `DELETE
+/subscriptions/{subscriptionId}` (Unsubscribe, 204), real basePath `/nchf-spendinglimitcontrol/v1`.
+Both Subscribe and Update return a real `SpendingLimitStatus` built from the subscription's own
+`policyCounterIds`. Disclosed, real simplification: `currentStatus` is a fixed `"unknown"`
+placeholder for every policy counter -- no real policy-counter-monitoring engine exists in this
+codebase to report a genuine status from; the real spec text itself says these status values "are
+not specified... out of scope of 3GPP", so this is schema-conformant, not a guess at real
+semantics (same disclosure category as ADR-0028's PCF fixed-default policy). The real
+`statusNotification`/`subscriptionTermination` callbacks (CHF as client, confirmed directly from
+the YAML's `callbacks` block: POST to `{notifUri}/notify` and `{notifUri}/terminate`) are **not**
+implemented -- no real breach-detection engine exists yet to trigger them from; deferred, not
+dropped, same category as `Nchf_ConvergedCharging`'s own still-deferred `chargingNotification`.
+
+**Live-verified for real**, not just unit-level: started real `nrf` + `chf` processes, confirmed
+CHF registers with NRF, then over real mTLS HTTP/2:
+- OfflineOnlyCharging: Create (201, real `offchg-1` ref + Location), Update on the active ref
+  (200), Update on an unknown ref (404), Release (204), Release again (404, correctly no longer
+  active) -- and confirmed ConvergedCharging's own existing `/chargingdata` Create still works
+  correctly side-by-side in the same process (201, real `chg-1`, independent namespace).
+- SpendingLimitControl: Subscribe with two policy counters (201, real `SpendingLimitStatus` with
+  both `statusInfos` entries, real `Location: .../subscriptions/sub-1`), Update narrowing to one
+  policy counter and a new expiry (200, response correctly reflects only the updated counter),
+  Update on an unknown subscription id (404), Unsubscribe (204), Unsubscribe again (404).
+
+Full rebuild + `clang-format` clean + 146/146 `ctest` (including the real Postgres-backed
+`product-catalog` tests, run with a live container) after each change.
+
+**Still not done, disclosed**: `Nchf_ConvergedCharging` Notify callback; both services' notify/
+terminate callback-sending code; N28 is now correctly understood as "CHF hosts, PCF subscribes"
+(no PCF-client code needed for the subscription CRUD itself) but the callback-sending half is
+still unbuilt; N41/N42 (AMF) wiring remains blocked on the separate NGAP/NAS prerequisite; no
+automated integration test exists for CHF specifically (this NF's own established pattern so far
+is real manual live-verification recorded in its ADRs, not an automated suite -- followed here,
+not newly introduced).
