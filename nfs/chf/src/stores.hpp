@@ -31,8 +31,13 @@ public:
     explicit ChargingDataStore(std::shared_ptr<sw::redis::Redis> redis)
         : redis_(std::move(redis)) {}
 
-    // Allocates a new ChargingDataRef and marks it active.
-    std::string create();
+    // Allocates a new ChargingDataRef, marks it active, and records the real per-session content
+    // P4.3's real ABMF integration needs (nfs/chf/src/main.cpp's own header comment): which
+    // subscriber this session belongs to (a real per-SUPI Bucket in bss/balance-management, see
+    // ADR-0056/0057), and the running total already reserved against that bucket for this
+    // session. Extended from the earlier active-ref-only shape (ADR-0055) since Update/Release now
+    // need this real content, not just whether the ref exists.
+    std::string create(const std::string& supi);
 
     // Returns false (and leaves state unchanged) if ref isn't currently active -- an unknown or
     // already-released ChargingDataRef, per TS 32.291's real 404 case for Update/Release.
@@ -42,6 +47,15 @@ public:
     // ChargingDataRef) needs a non-destructive check -- unlike release(), Update must NOT remove
     // the ref just for asking whether it's still active.
     bool is_active(const std::string& ref);
+
+    std::optional<std::string> get_supi(const std::string& ref);
+
+    // Real atomic accumulator (Redis HINCRBYFLOAT -- no read-then-write race between concurrent
+    // Update calls on the same ref) tracking how much has been reserved (bss_sid ReserveBalance,
+    // ADR-0056) against this session's bucket so far. Release finalizes exactly this total as a
+    // real permanent debit (ADR-0057).
+    double add_reserved(const std::string& ref, double amount);
+    double get_reserved_total(const std::string& ref);
 
 private:
     std::shared_ptr<sw::redis::Redis> redis_;

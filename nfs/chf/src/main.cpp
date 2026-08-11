@@ -70,14 +70,24 @@
 //   and no normative TS 32.291 prose is vendored in this repo to check -- echoing the request's
 //   value is the least-invented choice (no independent CHF-side sequencing semantics assumed) and
 //   disclosed here rather than picked silently.
-// - Real Redis/Valkey persistence, extended this turn (see stores.hpp's own header comment for
-//   the full rationale -- CHARGING_PROMPT.md entity E3's explicit "recoverable across restarts"
-//   requirement, docs/DATA_MODEL.md's own persistence assignment). Was in-memory-only before.
-//   Real, disclosed limitation carried forward from the in-memory version: no genuine session
-//   *content* is stored for ChargingDataStore/OfflineChargingDataStore (Redis SET membership
-//   only tracks whether a ref is active, same shape as before) -- a future turn that needs to
-//   recover a session's actual charging state (not just its existence) after a restart would need
-//   to store more than a bare active-ref marker, same gap the in-memory version already had.
+// - Real Redis/Valkey persistence (CHARGING_PROMPT.md entity E3's "recoverable across restarts"
+//   requirement, docs/DATA_MODEL.md's own persistence assignment). `OfflineChargingDataStore`
+//   still only tracks active-ref existence (real, disclosed, unchanged gap: no genuine offline-
+//   session content is stored). `ChargingDataStore` now DOES hold real content (P4.3/ADR-0057):
+//   the session's SUPI and running reserved-balance total, both needed for the real ABMF
+//   integration below -- see stores.hpp's own header comment.
+// - P4.3 (ADR-0056/0057): CHF's rating engine now makes real Nchf-ConvergedCharging grants
+//   contingent on a real balance reservation against bss/balance-management (ADR-0056) --
+//   closing the "no balance/wallet deduction against what was already consumed" gap disclosed
+//   since ADR-0048/0050. Create/Update reserve the granted price's real monetary cost against a
+//   Bucket keyed by the request's SUPI (this project's own disclosed convention -- no real
+//   customer-to-bucket provisioning system exists); a grant is only included in the response if
+//   the reservation succeeds. Release finalizes the session's full reserved total as a real
+//   permanent debit and unreserves the same amount. Disclosed, real simplification: finalization
+//   is for the FULL session total, not proportional to SMF's actually-reported usage
+//   (usedUnitContainer) -- a real per-usage proportional refund is deferred, not fabricated as
+//   more sophisticated than it is. See build_rating_grant/reserve_subscriber_balance/
+//   finalize_subscriber_balance's own comments for the full reasoning.
 
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
@@ -104,6 +114,7 @@
 #include "TS29122_CommonData_grp.hpp"
 #include "TS29594_Nchf_SpendingLimitControl.hpp"
 #include "TS32291_Nchf_OfflineOnlyCharging.hpp"
+#include "bss_sid/balance.hpp"
 #include "bss_sid/party.hpp"
 #include "bss_sid/product.hpp"
 #include "stores.hpp"
@@ -129,6 +140,9 @@ constexpr const char* kOfflineApiRoot = "/nchf-offlineonlycharging/v1";
 constexpr const char* kSpendingLimitApiRoot = "/nchf-spendinglimitcontrol/v1";
 constexpr const char* kProductCatalogBase = "https://127.0.0.1:7785";
 constexpr const char* kProductCatalogApiRoot = "/tmf-api/productCatalogManagement/v4";
+// P4.3 (ADR-0056/0057): CHF's real client to bss/balance-management (ABMF).
+constexpr const char* kBalanceManagementBase = "https://127.0.0.1:7786";
+constexpr const char* kBalanceManagementApiRoot = "/tmf-api/prepayBalanceManagement/v4";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -213,7 +227,18 @@ build_spending_limit_status(const sbi_gen::SpendingLimitContext& context) {
     return status;
 }
 
-std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& catalog_client) {
+// P4.3 (ADR-0057): a rating decision is now a real (GrantedUnit, cost) pair -- the quantity of
+// service granted (e.g. 5GB) AND its real monetary cost (e.g. $20), confirmed as two genuinely
+// separate real TMF620 fields on ProductOfferingPrice (`unitOfMeasure` vs `price`), not something
+// this project invented a split for. `cost` is nullopt when the matched price has no `price`
+// field set (a real, valid TMF620 state -- not every price is monetary), in which case no real
+// balance reservation is attempted for this grant (same as before this ADR).
+struct RatingResult {
+    std::optional<sbi_gen::GrantedUnit> grant;
+    std::optional<bss_sid::Money> cost;
+};
+
+RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client) {
     sbi_core::http2::ClientRequest offerings_req;
     offerings_req.method = "GET";
     offerings_req.url =
@@ -221,7 +246,7 @@ std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& 
     auto offerings_resp = catalog_client.send(offerings_req);
     if (!offerings_resp.has_value() || offerings_resp->status != 200) {
         spdlog::warn("chf: could not reach bss/product-catalog for rating, granting nothing");
-        return std::nullopt;
+        return {};
     }
 
     std::vector<bss_sid::ProductOffering> offerings;
@@ -229,7 +254,7 @@ std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& 
         offerings = json::parse(offerings_resp->body).get<std::vector<bss_sid::ProductOffering>>();
     } catch (const json::exception& e) {
         spdlog::warn("chf: malformed ProductOffering list from product-catalog: {}", e.what());
-        return std::nullopt;
+        return {};
     }
 
     const auto offering_it = std::find_if(offerings.begin(), offerings.end(), [](const auto& o) {
@@ -239,7 +264,7 @@ std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& 
     if (offering_it == offerings.end()) {
         spdlog::info("chf: no Active/isSellable ProductOffering with a price found, granting "
                      "nothing this call");
-        return std::nullopt;
+        return {};
     }
 
     sbi_core::http2::ClientRequest price_req;
@@ -250,7 +275,7 @@ std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& 
     if (!price_resp.has_value() || price_resp->status != 200) {
         spdlog::warn("chf: could not fetch ProductOfferingPrice {}, granting nothing",
                      offering_it->productOfferingPrice.front().id);
-        return std::nullopt;
+        return {};
     }
 
     bss_sid::ProductOfferingPrice price;
@@ -258,12 +283,12 @@ std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& 
         price = json::parse(price_resp->body).get<bss_sid::ProductOfferingPrice>();
     } catch (const json::exception& e) {
         spdlog::warn("chf: malformed ProductOfferingPrice from product-catalog: {}", e.what());
-        return std::nullopt;
+        return {};
     }
     if (!price.unitOfMeasure.has_value() || !price.unitOfMeasure->amount.has_value()) {
         spdlog::info("chf: ProductOfferingPrice {} has no unitOfMeasure, granting nothing",
                      *price.id);
-        return std::nullopt;
+        return {};
     }
 
     sbi_gen::GrantedUnit grant{};
@@ -283,7 +308,139 @@ std::optional<sbi_gen::GrantedUnit> build_rating_grant(sbi_core::http2::Client& 
                      : std::to_string(*grant.serviceSpecificUnits) + " service-specific units",
                  offering_it->name.value_or(""),
                  price.name.value_or(""));
-    return grant;
+    return {grant, price.price};
+}
+
+// P4.3 (ADR-0057): CHF as a real HTTP client of bss/balance-management (ADR-0056) -- reserves
+// `cost` against the real per-subscriber Bucket keyed by SUPI (this project's own disclosed
+// convention: no real customer-to-bucket provisioning system exists, see
+// bss/balance-management's own file header). Returns false if the reservation was rejected
+// (insufficient balance, or no bucket exists yet for this SUPI -- same real business outcome
+// either way) -- callers must not grant units when this returns false, the real prepaid-
+// enforcement point this ADR closes (ADR-0048/0050's own disclosed "no balance/wallet deduction"
+// gap).
+bool reserve_subscriber_balance(sbi_core::http2::Client& balance_client,
+                                const std::string& supi,
+                                const bss_sid::Money& cost,
+                                const std::string& description) {
+    if (!cost.value.has_value() || *cost.value <= 0.0) {
+        // A real, valid TMF620 state (price with no monetary value, or a zero-cost promotional
+        // price) -- nothing to reserve, not a failure.
+        return true;
+    }
+
+    bss_sid::ReserveBalance reserve_req{};
+    bss_sid::Quantity amount{};
+    amount.amount = *cost.value;
+    amount.units = cost.unit;
+    reserve_req.amount = amount;
+    bss_sid::BucketRef bucket{};
+    bucket.id = supi;
+    reserve_req.bucket = bucket;
+    reserve_req.description = description;
+    reserve_req.usageType = "monetary";
+
+    sbi_core::http2::ClientRequest req;
+    req.method = "POST";
+    req.url = std::string(kBalanceManagementBase) + kBalanceManagementApiRoot + "/reserveBalance";
+    req.headers.emplace("content-type", "application/json");
+    req.body = json(reserve_req).dump();
+
+    auto resp = balance_client.send(req);
+    if (!resp.has_value() || resp->status != 201) {
+        spdlog::warn("chf: reserveBalance call to bss/balance-management failed (SUPI={})", supi);
+        return false;
+    }
+    try {
+        const auto result = json::parse(resp->body).get<bss_sid::ReserveBalance>();
+        return result.status.value_or("") == "completed";
+    } catch (const json::exception& e) {
+        spdlog::warn("chf: malformed ReserveBalance response: {}", e.what());
+        return false;
+    }
+}
+
+// P4.3 (ADR-0057): Release-time finalization -- converts everything reserved for this session
+// (ChargingDataStore::get_reserved_total) into a real, permanent debit. Disclosed simplification:
+// this finalizes the FULL reserved total, not a proportional amount based on SMF's actually-
+// reported usage (usedUnitContainer) -- a real per-usage proportional refund is deferred, not
+// fabricated as more sophisticated than it is (see this file's own header).
+//
+// Real bug found and fixed via live verification, not caught by unit-level reasoning alone:
+// bss/balance-management's `ReserveBalance` (positive amount) moves money remainingValue ->
+// reservedValue; `AdjustBalance` only ever touches remainingValue directly and its own atomic
+// floor check (`remaining_value + amount >= 0`) has no visibility into reservedValue at all.
+// Neither operation alone can "commit" a reservation (decrease reservedValue permanently WITHOUT
+// crediting remainingValue back first) -- TMF654's own modeled resource set (this project's
+// scope, see bss_sid/balance.hpp) has no dedicated "commit" action. The correct way to compose
+// the two real primitives into a net "commit" is ORDER-DEPENDENT: unreserve FIRST (ReserveBalance,
+// negative amount -- returns the money to remainingValue, always succeeds since exactly this much
+// is known to be reserved), THEN debit (AdjustBalance, negative amount -- now succeeds, since the
+// money is back in remainingValue) -- net effect: reservedValue permanently decreases by the full
+// amount, remainingValue is unchanged (temporarily credited then immediately re-debited the same
+// amount). Doing this in the OPPOSITE order (debit before unreserve, this function's first,
+// buggy version) makes the debit's own atomic floor check fail (the money is still sitting in
+// reservedValue, not yet in remainingValue), so only the unreserve half succeeds -- silently
+// refunding the entire reservation instead of committing it. Caught by this ADR's own real
+// end-to-end live verification (a real $50 topup, $40 total reserved across Create+Update, then
+// Release incorrectly returned the bucket to $50/$0 instead of the correct $10/$0) -- exactly the
+// kind of bug this project's "live-verify over self-consistency" discipline exists to catch.
+void finalize_subscriber_balance(sbi_core::http2::Client& balance_client,
+                                 const std::string& supi,
+                                 double total_reserved,
+                                 const std::string& description) {
+    if (total_reserved <= 0.0) {
+        return;
+    }
+
+    bss_sid::BucketRef bucket{};
+    bucket.id = supi;
+
+    bss_sid::ReserveBalance unreserve_req{};
+    bss_sid::Quantity unreserve_amount{};
+    unreserve_amount.amount = -total_reserved;
+    unreserve_req.amount = unreserve_amount;
+    unreserve_req.bucket = bucket;
+    unreserve_req.description = description + " (unreserve before commit)";
+    unreserve_req.usageType = "monetary";
+
+    sbi_core::http2::ClientRequest unreserve_http_req;
+    unreserve_http_req.method = "POST";
+    unreserve_http_req.url =
+        std::string(kBalanceManagementBase) + kBalanceManagementApiRoot + "/reserveBalance";
+    unreserve_http_req.headers.emplace("content-type", "application/json");
+    unreserve_http_req.body = json(unreserve_req).dump();
+    auto unreserve_resp = balance_client.send(unreserve_http_req);
+    if (!unreserve_resp.has_value() || unreserve_resp->status != 201) {
+        spdlog::warn("chf: finalize unreserve call failed (SUPI={})", supi);
+        return;
+    }
+
+    bss_sid::AdjustBalance adjust_req{};
+    bss_sid::Quantity debit{};
+    debit.amount = -total_reserved;
+    adjust_req.amount = debit;
+    adjust_req.bucket = bucket;
+    adjust_req.adjustType = "oneTime";
+    adjust_req.description = description + " (commit)";
+    adjust_req.usageType = "monetary";
+
+    sbi_core::http2::ClientRequest adjust_http_req;
+    adjust_http_req.method = "POST";
+    adjust_http_req.url =
+        std::string(kBalanceManagementBase) + kBalanceManagementApiRoot + "/adjustBalance";
+    adjust_http_req.headers.emplace("content-type", "application/json");
+    adjust_http_req.body = json(adjust_req).dump();
+    auto adjust_resp = balance_client.send(adjust_http_req);
+    if (!adjust_resp.has_value() || adjust_resp->status != 201) {
+        // Real, disclosed gap: the unreserve above already succeeded, so if this commit debit
+        // fails (e.g. balance-management becomes unreachable mid-finalize), the money is left
+        // sitting back in remainingValue, uncommitted -- not a lost-money bug (the ledger still
+        // has both real action records to reconcile from), but not a fully atomic two-call
+        // sequence either. A real distributed-transaction/outbox mechanism would close this;
+        // not built here, disclosed rather than silently assumed safe.
+        spdlog::warn("chf: finalize commit AdjustBalance call failed (SUPI={})", supi);
+    }
 }
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as every other
@@ -417,6 +574,16 @@ int main() {
     };
     sbi_core::http2::Client catalog_client(std::move(catalog_client_tls));
 
+    // P4.3 (ADR-0056/0057): CHF's own client to bss/balance-management -- same mTLS-only, no-OAuth2
+    // reasoning as catalog_client above (balance-management, like product-catalog, has no
+    // NRF-issued token source).
+    sbi_core::http2::TlsConfig balance_client_tls{
+        .cert_path = CERTS_DIR "/chf/cert.pem",
+        .key_path = CERTS_DIR "/chf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client balance_client(std::move(balance_client_tls));
+
     auto meter = sbi_core::get_meter("chf");
     auto create_counter = meter->CreateUInt64Counter("chf_charging_data_create_total",
                                                      "Total Nchf_ConvergedCharging_Create calls");
@@ -426,6 +593,9 @@ int main() {
                                                      "Total Nchf_ConvergedCharging_Update calls");
     auto grant_counter = meter->CreateUInt64Counter(
         "chf_rating_grant_total", "Total real GrantedUnit rating decisions issued");
+    auto reserve_rejected_counter = meter->CreateUInt64Counter(
+        "chf_balance_reserve_rejected_total",
+        "Total grants withheld because the real balance reservation was rejected (P4.3/ADR-0057)");
     auto offline_create_counter = meter->CreateUInt64Counter(
         "chf_offline_charging_data_create_total", "Total Nchf_OfflineOnlyCharging_Create calls");
     auto offline_update_counter = meter->CreateUInt64Counter(
@@ -449,8 +619,13 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/chargingdata",
-        [&verifier, &charging_data_store, &create_counter, &catalog_client, &grant_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &charging_data_store,
+         &create_counter,
+         &catalog_client,
+         &balance_client,
+         &grant_counter,
+         &reserve_rejected_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -461,7 +636,8 @@ int main() {
                 return err;
             }
 
-            const auto ref = charging_data_store.create();
+            const auto supi = body->subscriberIdentifier.value_or("");
+            const auto ref = charging_data_store.create(supi);
 
             // docs/CHARGING_MAPPING.md's resolved mapping: build the TM Forum SID record for the
             // subscriber this charging event is for. Logged, not yet persisted or exposed via a
@@ -483,17 +659,35 @@ int main() {
             // independent CHF-side sequence.
             response.invocationSequenceNumber = body->invocationSequenceNumber;
 
-            // ADR-0048: the real rating engine. Only runs if the request actually asked for units
-            // (a real MultipleUnitUsage entry, mandatory ratingGroup) -- SMF's own call always
-            // sends exactly one (see nfs/smf/src/main.cpp), but this handler doesn't assume that,
-            // it reads what's actually there.
+            // ADR-0048/ADR-0057: the real rating engine. Only runs if the request actually asked
+            // for units (a real MultipleUnitUsage entry, mandatory ratingGroup) -- SMF's own call
+            // always sends exactly one (see nfs/smf/src/main.cpp), but this handler doesn't
+            // assume that, it reads what's actually there. ADR-0057: a grant is only actually
+            // included in the response if its real monetary cost was successfully reserved
+            // against the subscriber's real balance (bss/balance-management) -- real prepaid
+            // enforcement, closing this project's long-disclosed "no balance/wallet deduction"
+            // gap.
             if (body->multipleUnitUsage.has_value()) {
                 std::vector<sbi_gen::MultipleUnitInformation> granted;
                 for (const auto& usage : *body->multipleUnitUsage) {
                     sbi_gen::MultipleUnitInformation info{};
                     info.ratingGroup = usage.ratingGroup;
-                    info.grantedUnit = build_rating_grant(catalog_client);
-                    if (info.grantedUnit.has_value()) {
+                    const auto rating = build_rating_grant(catalog_client);
+                    bool reserved = true;
+                    if (rating.cost.has_value() && !supi.empty()) {
+                        reserved =
+                            reserve_subscriber_balance(balance_client,
+                                                       supi,
+                                                       *rating.cost,
+                                                       "Nchf_ConvergedCharging_Create " + ref);
+                        if (reserved) {
+                            charging_data_store.add_reserved(ref, *rating.cost->value);
+                        } else {
+                            reserve_rejected_counter->Add(1);
+                        }
+                    }
+                    if (reserved && rating.grant.has_value()) {
+                        info.grantedUnit = rating.grant;
                         grant_counter->Add(1);
                     }
                     granted.push_back(info);
@@ -515,8 +709,13 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/chargingdata/{ChargingDataRef}/update",
-        [&verifier, &charging_data_store, &update_counter, &catalog_client, &grant_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &charging_data_store,
+         &update_counter,
+         &catalog_client,
+         &balance_client,
+         &grant_counter,
+         &reserve_rejected_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -532,6 +731,7 @@ int main() {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No active charging data resource " + ref);
             }
+            const auto supi = charging_data_store.get_supi(ref).value_or("");
 
             // ADR-0050 Stage 4: log the real reported usage this call carries -- SMF's Stage 3
             // Nchf_ConvergedCharging_Update, itself built from UPF's real Stage 2 Usage Report.
@@ -559,17 +759,34 @@ int main() {
             response.invocationSequenceNumber = body->invocationSequenceNumber;
 
             // Real re-authorization: a fresh grant for continued usage, from the same rating
-            // engine Create already uses -- same disclosed simplification (whichever catalog
-            // offering is first, no real balance/wallet deduction against what was already
-            // consumed) and no differentiation between a Volume-Threshold report and a
-            // Volume-Quota-exhaustion one (see this file's own header comment for why).
+            // engine Create already uses -- ADR-0057: a real reservation against the subscriber's
+            // balance is attempted for each fresh grant too, same prepaid-enforcement point as
+            // Create. Still disclosed, real simplification carried forward: no differentiation
+            // between a Volume-Threshold report and a Volume-Quota-exhaustion one (see this
+            // file's own header comment for why), and no proportional finalize against what was
+            // actually reported used this call (see finalize_subscriber_balance's own comment --
+            // Release finalizes the full session total, not incrementally per Update).
             if (body->multipleUnitUsage.has_value()) {
                 std::vector<sbi_gen::MultipleUnitInformation> granted;
                 for (const auto& usage : *body->multipleUnitUsage) {
                     sbi_gen::MultipleUnitInformation info{};
                     info.ratingGroup = usage.ratingGroup;
-                    info.grantedUnit = build_rating_grant(catalog_client);
-                    if (info.grantedUnit.has_value()) {
+                    const auto rating = build_rating_grant(catalog_client);
+                    bool reserved = true;
+                    if (rating.cost.has_value() && !supi.empty()) {
+                        reserved =
+                            reserve_subscriber_balance(balance_client,
+                                                       supi,
+                                                       *rating.cost,
+                                                       "Nchf_ConvergedCharging_Update " + ref);
+                        if (reserved) {
+                            charging_data_store.add_reserved(ref, *rating.cost->value);
+                        } else {
+                            reserve_rejected_counter->Add(1);
+                        }
+                    }
+                    if (reserved && rating.grant.has_value()) {
+                        info.grantedUnit = rating.grant;
                         grant_counter->Add(1);
                     }
                     granted.push_back(info);
@@ -590,15 +807,13 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/chargingdata/{ChargingDataRef}/release",
-        [&verifier, &charging_data_store, &release_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &charging_data_store, &release_counter, &balance_client](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             // Real spec shape (requestBody required: true, schema ChargingDataRequest) -- parsed
-            // for validation/mandatory-field-checking parity with Create, even though this
-            // build's Release doesn't otherwise use its content (no rating/quota state exists to
-            // reconcile against a final usage report -- same disclosed gap as Create's own
-            // "no real rating engine" simplification).
+            // for validation/mandatory-field-checking parity with Create.
             sbi_core::http2::Response err;
             auto body = sbi_core::http2::parse_json_body<
                 sbi_gen::ChargingDataRequest_Nchf_ConvergedCharging>(req, err);
@@ -607,9 +822,20 @@ int main() {
             }
 
             const auto ref = req.path_params.at("ChargingDataRef");
+            // ADR-0057: finalize (real permanent debit + unreserve) whatever this session
+            // reserved, BEFORE releasing the ref -- get_supi/get_reserved_total read
+            // chf:cdr:content:{ref}, which release() deliberately does not erase (see
+            // ChargingDataStore::release's own comment), but reading before releasing keeps the
+            // real order-of-operations obviously correct rather than relying on that.
+            const auto supi = charging_data_store.get_supi(ref);
+            const auto reserved_total = charging_data_store.get_reserved_total(ref);
             if (!charging_data_store.release(ref)) {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No active charging data resource " + ref);
+            }
+            if (supi.has_value() && !supi->empty()) {
+                finalize_subscriber_balance(
+                    balance_client, *supi, reserved_total, "Nchf_ConvergedCharging_Release " + ref);
             }
             release_counter->Add(1);
 

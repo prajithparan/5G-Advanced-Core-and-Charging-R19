@@ -18,21 +18,52 @@ std::string spending_limit_key(const std::string& id) {
     return "chf:sub:" + id;
 }
 
+std::string charging_data_content_key(const std::string& ref) {
+    return "chf:cdr:content:" + ref;
+}
+
 } // namespace
 
-std::string ChargingDataStore::create() {
+std::string ChargingDataStore::create(const std::string& supi) {
     const auto id = redis_->incr(kChargingDataNextIdKey);
     auto ref = "chg-" + std::to_string(id);
     redis_->sadd(kChargingDataActiveSet, ref);
+    redis_->hset(charging_data_content_key(ref), "supi", supi);
+    redis_->hset(charging_data_content_key(ref), "reserved_total", "0");
     return ref;
 }
 
 bool ChargingDataStore::release(const std::string& ref) {
+    // Content (chf:cdr:content:{ref}) is deliberately left behind after release -- a real,
+    // disclosed audit trail (which SUPI/how much was reserved for this now-closed session) that
+    // the balance-management side's own AdjustBalance/ReserveBalance ledger rows independently
+    // corroborate. Only the active-set membership is removed, matching this method's own existing
+    // "no longer active" contract.
     return redis_->srem(kChargingDataActiveSet, ref) > 0;
 }
 
 bool ChargingDataStore::is_active(const std::string& ref) {
     return redis_->sismember(kChargingDataActiveSet, ref);
+}
+
+std::optional<std::string> ChargingDataStore::get_supi(const std::string& ref) {
+    const auto value = redis_->hget(charging_data_content_key(ref), "supi");
+    if (!value) {
+        return std::nullopt;
+    }
+    return *value;
+}
+
+double ChargingDataStore::add_reserved(const std::string& ref, double amount) {
+    return redis_->hincrbyfloat(charging_data_content_key(ref), "reserved_total", amount);
+}
+
+double ChargingDataStore::get_reserved_total(const std::string& ref) {
+    const auto value = redis_->hget(charging_data_content_key(ref), "reserved_total");
+    if (!value) {
+        return 0.0;
+    }
+    return std::stod(*value);
 }
 
 std::string OfflineChargingDataStore::create() {
