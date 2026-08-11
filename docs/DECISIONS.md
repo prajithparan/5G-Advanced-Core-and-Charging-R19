@@ -5173,3 +5173,107 @@ fix.
   route handlers all run on the server's single `io_context` thread today, so this is safe in this
   build's actual concurrency model, but is not safe to share across multiple threads without adding
   a mutex first if that model ever changes -- documented in `cdr.hpp` itself, not just here.
+
+## ADR-0059: P4.5 kickoff -- protocol translator layer architecture, real Diameter reference material, staged plan
+
+**Date:** 2026-08-11
+**Status:** Accepted (Stage 1 only implemented by this ADR; Stages 2-5 disclosed as a staged plan,
+not yet built).
+
+**Context:** CHARGING_PROMPT.md's P4.5 asks for a legacy-protocol translator layer -- Diameter
+Ro/Rf/Gy (TS 32.299), Sy (TS 29.219), CAP/CAMEL (TS 29.078), and MAP -- all normalizing to the same
+internal representation the real `Nchf_ConvergedCharging`/`Nchf_SpendingLimitControl` handlers
+already use, with a test proving identical rated results via Gy and via Nchf for the same usage
+event. None of these protocols have OpenAPI YAML (they predate REST/JSON entirely -- Diameter is
+RFC 6733/3GPP-extended binary TLV; CAP/MAP run over TCAP/SCCP/MTP3, the classic SS7 stack), and
+none of their spec text or real AVP/operation-code dictionaries were vendored in this repo before
+this ADR. Per CLAUDE.md's "if spec is unavailable: stop and ask, never invent field names" rule,
+work stopped here rather than guessing AVP codes -- the user ran
+`sudo apt-get install libfdcore6 libfdproto6 libfreediameter-dev` (freeDiameter, a real, mature
+open-source Diameter implementation) to unblock this with real reference material.
+
+### Real, disclosed license check (P1)
+
+`libfreediameter-dev`'s Debian copyright file confirms `Files: *` (the base library,
+`libfdcore.so`/`libfdproto.so`, everything this ADR uses) is **BSD-3-clause**. A handful of
+*extensions* (not linked by this ADR) carry GPL-2 (`app_radgw`'s `md5.c`/`radius.c`) or BSD-2/BSD-4
+-- none of those files are used here. Confirmed a second time directly from freeDiameter's real
+upstream git history (`github.com/sdecugis/freeDiameter`, commit `e48fd4f8afc48f5e839558a90ef5a67165e94fad`,
+2024-06-08): repo-root `LICENSE` is the same BSD license, and the two specific files vendored below
+each carry their own real BSD header (`dict_base_proto.c`: WIDE Project/NICT BSD-3;
+`dict_dcca_3gpp.c`: Thomas Klausner/nfotex, BSD-2 per the Ubuntu copyright file's own
+`Files: extensions/dict_dcca_3gpp/dict_dcca_3gpp.c ... License: BSD-2-clause` entry). Both
+OSI-approved, compatible with this project's Apache-2.0 license.
+
+### Real reference material vendored (arms-length, same pattern as UERANSIM for NGAP)
+
+`simulators/reference/freeDiameter/` -- `COMMIT` file pinning the exact upstream commit, `LICENSE`,
+and three real source files copied verbatim (not modified, not linked into this project's build,
+read-only reference the way `simulators/ransim/vendor/UERANSIM/tools/ngap-17.9.asn` grounded the
+NGAP ASN.1 work):
+- `libfdcore/dict_base_proto.c` -- RFC 6733 base protocol: every base AVP and command
+  (CER/CEA=257, DWR/DWA=280, DPR/DPA=282) with real codes, flags, and types, plus RFC prose quoted
+  verbatim in freeDiameter's own comments.
+- `extensions/dict_dcca/dict_dcca.c` -- RFC 4006 Diameter Credit-Control Application: CCR/CCA=272,
+  the full CCR/CCA AVP table (quoted from the RFC), and every DCC AVP (`CC-Request-Type`=416,
+  `CC-Request-Number`=415, `Service-Context-Id`=461, `Rating-Group`=432,
+  `Multiple-Services-Credit-Control`=456, `Requested-Service-Unit`=437, `Used-Service-Unit`=446,
+  `Granted-Service-Unit`=431, `CC-Total-Octets`=421, `CC-Service-Specific-Units`=417,
+  `Subscription-Id`=443, `Final-Unit-Indication`=430).
+- `extensions/dict_dcca_3gpp/dict_dcca_3gpp.c` -- the real 3GPP Ro/Rf/Gy extension AVPs (TS 32.299
+  itself, not RFC 4006) -- not yet consumed by Stage 1's code (base protocol only), reference for
+  Stage 3 (see below).
+
+Every AVP/command constant this ADR's code defines cites its exact source file and line range in a
+code comment -- none guessed.
+
+### Real architecture decision: hand-rolled codec, freeDiameter as reference only, not a linked dependency
+
+freeDiameter itself is a full daemon framework (its own event loop, threading model, extension
+plugin system via `dlopen`, config-file DSL) -- adopting it directly would mean embedding a second,
+foreign process/threading model inside CHF, contradicting this project's existing convention of its
+own `sbi_core`/Boost.Asio `io_context` stack for every other protocol (SBI's own HTTP/2 stack,
+NGAP's own SCTP wrapper, PFCP's own hand-rolled codec). Decision: **hand-roll a minimal Diameter
+base-protocol codec** (`libs/diameter-core`), grounded in the real AVP/command constants above,
+matching the same "implement if none suitable" precedent CLAUDE.md's own mandated tech stack
+already sets for PFCP. freeDiameter is not linked, not a build dependency -- reference only.
+
+### Staged plan for P4.5 (Stage 1 implemented by this ADR; Stages 2-5 disclosed, not yet built)
+
+1. **Stage 1 (this ADR): Diameter base-protocol wire codec.** Message header (RFC 6733 §3: Version,
+   Message Length, Command Flags, Command Code, Application-Id, Hop-by-Hop Id, End-to-End Id) and
+   AVP TLV codec (Code, Flags, Length, optional Vendor-Id, Data, 4-byte padding), plus the real base
+   AVP dictionary constants above. Unit-tested (round-trip encode/decode, including
+   `AVP_FLAG_VENDOR`-flagged and grouped AVPs) -- same wire-codec-first pattern already established
+   for PFCP's own IE codec before session establishment was wired up.
+2. **Stage 2 (not yet built): CER/CEA capability-exchange handshake over real TCP**, a real Diameter
+   peer connection -- CHF acting as a Diameter server (real deployments run PGW/SMF-equivalent
+   clients against a CHF-equivalent Gy server).
+3. **Stage 3 (not yet built): CCR-I/U/T -> normalize -> the SAME internal path
+   `Nchf_ConvergedCharging`'s handlers already use -> CCA**, the actual single-code-path proof
+   CHARGING_PROMPT.md's P4.5 explicitly asks for (a test charging an identical usage event via Gy
+   and via Nchf, asserting an identical rated result). Uses `extensions/dict_dcca_3gpp/`'s real
+   3GPP AVPs where CHF's real fields need them. Decoder fuzzing (libFuzzer, matching this project's
+   existing PFCP fuzzing convention) and per-protocol TPS spike protection (P15) land here too.
+4. **Stage 4 (not yet built): Rf (offline charging) and Sy (spending limit)** -- the same
+   normalize-to-shared-path pattern applied to CHF's already-real `Nchf_OfflineOnlyCharging`/
+   `Nchf_SpendingLimitControl` handlers (ADR-0055).
+5. **Stage 5 (not yet built, explicitly flagged as a materially different, comparably large effort
+   in its own right): CAP/CAMEL (TS 29.078) and MAP.** These are NOT Diameter -- they run over
+   TCAP/SCCP/MTP3, the classic SS7 protocol stack, a completely different transport and ASN.1
+   BER-based encoding (not Diameter's TLV, not NGAP's ASN.1 PER). No SS7 stack of any kind exists
+   in this codebase. Real open-source options (e.g. Osmocom's `libosmo-sccp`/`libosmo-mtp`) have
+   not yet been evaluated for license/fit -- deliberately deferred to its own dedicated
+   research-and-plan turn rather than folded into this ADR's Diameter-focused plan, matching the
+   same "evaluated with evidence, not guessed" discipline used for every other major dependency
+   decision in this project.
+
+### Disclosed, NOT done by this ADR
+
+- No network transport, no CER/CEA, no CCR/CCA, no CHF wiring at all yet -- Stage 1 is the wire
+  codec only, unit-tested in isolation. The single-code-path proof test CHARGING_PROMPT.md asks for
+  does not exist yet -- it is Stage 3's own explicit deliverable.
+- CAP/CAMEL/MAP (Stage 5) are not started, and are flagged as comparable in size to this entire
+  Diameter effort -- not a small remaining item.
+- No decoder fuzzing yet (Stage 3's own deliverable, once there is a decoder consuming
+  untrusted/network input rather than just this ADR's own round-trip unit tests).
