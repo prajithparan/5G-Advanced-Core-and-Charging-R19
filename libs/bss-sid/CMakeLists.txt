@@ -9,6 +9,7 @@ add_library(bss_sid STATIC
     src/product.cpp
     src/balance.cpp
     src/rating.cpp
+    src/agreement.cpp
 )
 
 target_include_directories(bss_sid PUBLIC

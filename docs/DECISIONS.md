@@ -5321,8 +5321,8 @@ this update. 158/158 tests pass (10 new Stage 1 tests + 2 new Stage 2 `Address` 
 ## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
 
 **Date:** 2026-08-11
-**Status:** In progress -- E2 (this entry) complete; E6/E1/E10/E5/E8/E7 tracked as follow-on entries
-in this same ADR as each completes.
+**Status:** Accepted, complete -- E2, E6, E1+E10, E5, E8, E7 all done (see each entity's own section
+below, in the order completed).
 
 **Context:** User review of the existing `schema.sql` files (product-catalog, balance-management)
 found them "very primitive" and asked for a real comparison against TM Forum SID/Open API data
@@ -5610,3 +5610,60 @@ table applied. Created a real `ProductOfferingPrice`/`ProductOffering`/`ProductS
   current real mutation set (all current mutations are creates, a delete, or an append-only
   ledger action); the column exists for when one does.
 - No cross-service unified audit view/aggregation pipeline -- disclosed above, real future work.
+
+### E7 (Roaming and Interconnect Agreements) -- complete, net-new. Closes this ADR's own initiative.
+
+Re-fetched the real TMF651 swagger directly (`tmforum-apis/TMF651_AgreementManagement`, real
+repo/branch found via GitHub search on the first try this time, having already learned the lesson
+from E5's two wrong guesses). New `libs/bss-sid/include/bss_sid/agreement.hpp`/`.cpp`: the full
+real `Agreement` field set (E7's own SID mapping) plus its real sub-types
+(`AgreementAuthorization`, `AgreementItem`, `AgreementSpecificationRef`,
+`AgreementTermOrCondition`, `ProductOfferingRef`). Real, confirmed detail not previously stated:
+`Agreement.documentNumber` is `integer`, and `Agreement.agreementPeriod`/`Agreement.completionDate`
+are both real `TimePeriod` fields (not plain date strings).
+
+**Real, third instance of the same class of bug this pass, caught immediately this time**:
+`AgreementRef` already exists in `product.hpp` (TMF620's own real, identically-shaped `{id, href,
+name}` Ref) -- reused directly rather than redefined, avoiding a repeat of E2's `RelatedParty`
+collision. `ProductOfferingRef` is new (no prior collision) but its `id` was initially modeled
+`optional<string>` before checking -- corrected to required `std::string` after confirming TMF651's
+own real `required: [id]` on that type.
+
+New `bss/roaming-interconnect/` (schema + a real PostgreSQL-backed store library, no HTTP service
+yet -- same real, disclosed scoping decision as E1/E10: CHARGING_PROMPT.md's P4.11 owns the full
+roaming/interconnect settlement service, not built prematurely here). `InterconnectAgreement`
+(project-internal, per `docs/DATA_MODEL.md`'s own disclosure) wraps a real TMF651 `Agreement` on
+the same row -- same pattern as E6's `Bucket`/E5's `rating_decision`. `RoamingCdrFile.raw_payload`
+is a real `bytea` column, `format` defaults to the real, spec-anticipated `STUB` value -- TAP3/RAP/
+NRTRDE remain genuinely out of reach (GSMA documents behind membership, not quoted from memory,
+not fabricated, restated from P4.1's own original disclosure). E8's `audit_record` table and
+`write_audit_record` wiring included from the start (same pattern as E1/E10, since this service was
+built after E8 already existed in this same pass).
+
+**Real libpqxx API correction found while implementing, not guessed**: `RoamingCdrFile.rawPayload`
+is modeled as `std::vector<std::byte>` (matching libpqxx's own real `pqxx::bytes` /
+`pqxx::bytes_view = std::span<const std::byte>` types directly), not `std::vector<std::uint8_t>`
+-- confirmed by reading the actual vendored `pqxx/types.hxx` rather than assuming a `uint8_t`-based
+byte buffer would bind correctly.
+
+**Live-verified for real**: a real standalone test program against a fresh PostgreSQL 16 container
+with this ADR's own `schema.sql` applied -- created a real `InterconnectAgreement` (`ROAMING` type,
+`documentNumber=42`, a real `engagedParty` `RelatedParty`, a real `characteristic`, an opaque
+`rateTerms` jsonb blob) and a real `RoamingCdrFile` (`format=STUB`, a real opaque binary payload)
+-- every field round-tripped correctly, independently confirmed via direct `psql` query, including
+a byte-for-byte match on the binary `raw_payload` round-trip. Both real `audit_record` rows
+(`interconnectAgreement.create`, `roamingCdrFile.create`) also confirmed. 158/158 tests pass,
+`clang-format-18` clean.
+
+### This closes the "no compromise on data model" initiative's planned scope
+
+E2 (enrich), E6 (enrich, two real type bugs fixed), E1+E10 (net-new), E5 (net-new, one real E2 bug
+found via cross-check and fixed), E8 (net-new, wired into E2/E5/E6), E7 (net-new) -- all seven
+`docs/DATA_MODEL.md` entities now have real, live-verified persistence with full real TMF field
+fidelity, or an explicit, disclosed reason why not (E3/E4/E9 were already real and out of this
+ADR's scope; TAP3/RAP/NRTRDE remain a genuine, disclosed gap, not fabricated). Three real
+duplicate-type-definition bugs and two real missing/wrong-field bugs were found and fixed across
+this pass -- each one caught by either compile-time redefinition errors or by live-verification
+cross-checking a field end-to-end, not by the "no compromise" review pass alone -- the project's
+own "live-verify over self-consistency" discipline held up under real, repeated pressure in this
+ADR specifically.
