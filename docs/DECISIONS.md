@@ -5176,9 +5176,10 @@ fix.
 
 ## ADR-0059: P4.5 kickoff -- protocol translator layer architecture, real Diameter reference material, staged plan
 
-**Date:** 2026-08-11
-**Status:** Accepted (Stages 1-3 implemented; Stage 4's Rf half implemented, Sy half blocked on
-real spec material -- see update below; Stage 5 disclosed as a staged plan, not yet built).
+**Date:** 2026-08-11 (Stage 4 Rf half); 2026-08-12 (Stage 4 Sy half, unblocked)
+**Status:** Accepted (Stages 1-4 fully implemented -- Sy's real spec-material block was resolved
+the next day when the user supplied the real ETSI TS 129 219 PDF directly, see the update below;
+Stage 5 disclosed as a staged plan, not yet built).
 
 **Context:** CHARGING_PROMPT.md's P4.5 asks for a legacy-protocol translator layer -- Diameter
 Ro/Rf/Gy (TS 32.299), Sy (TS 29.219), CAP/CAMEL (TS 29.078), and MAP -- all normalizing to the same
@@ -5263,9 +5264,9 @@ already sets for PFCP. freeDiameter is not linked, not a build dependency -- ref
    convention; a repo-wide check (`grep -rl LLVMFuzzerTestOneInput`) found zero existing libFuzzer
    targets anywhere in this codebase. Both decoder fuzzing and per-protocol TPS spike protection
    (P15) remain real, disclosed gaps, deferred to a later stage, not delivered by Stage 3.
-4. **Stage 4: Rf (offline charging, implemented, see the update below) and Sy (spending limit,
-   blocked -- see the same update)** -- the same normalize-to-shared-path pattern applied to CHF's
-   already-real `Nchf_OfflineOnlyCharging`/`Nchf_SpendingLimitControl` handlers (ADR-0055).
+4. **Stage 4 (fully implemented, see the two updates below): Rf (offline charging) and Sy
+   (spending limit)** -- the same normalize-to-shared-path pattern applied to CHF's already-real
+   `Nchf_OfflineOnlyCharging`/`Nchf_SpendingLimitControl` handlers (ADR-0055).
 5. **Stage 5 (not yet built, explicitly flagged as a materially different, comparably large effort
    in its own right): CAP/CAMEL (TS 29.078) and MAP.** These are NOT Diameter -- they run over
    TCAP/SCCP/MTP3, the classic SS7 protocol stack, a completely different transport and ASN.1
@@ -5502,6 +5503,80 @@ published ETSI PDF (`TS 129 219 V13.2.0`,
 a genuine unblock path (same shape as this ADR's own Stage 1 kickoff, where the user personally ran
 `apt-get install libfreediameter-dev` to unblock Gy) -- asked of the user rather than silently
 skipped or fabricated.
+
+### Update, next day: Sy half unblocked and implemented -- real SLR/STR
+
+The user resolved the block directly: placed a genuine ETSI TS 129 219 **V19.0.0** PDF (`specs/
+ts_129219v190000p.pdf`, October 2025, Release 19 -- newer and more directly REL-19-relevant than
+the V13.2.0 this ADR's own previous update had located online) in the repo's `specs/` directory.
+Read in full (25 pages) via the PDF tool directly -- primary spec text, not a third-party
+recreation, not a WebFetch-summarized extraction (rejected as an option specifically because an
+LLM-summarization step over a PDF is not this project's vendoring standard for fabrication-
+sensitive AVP codes, same reasoning ADR-0059's own Gy/Rf work applied to freeDiameter's C source).
+
+**Real Sy facts confirmed from the primary spec text** (clause citations in parens): Application-Id
+**16777302** (§5.1.5, correcting nothing -- matches the third-party reference found earlier, now
+confirmed from primary text), 3GPP Vendor-Id **10415** (§5.1.5). Commands: SLR/SLA = **8388635**
+(§5.6.1/5.6.2/5.6.3), SNR/SNA = 8388636 (§5.6.4/5.6.5, NOT implemented -- see below), and
+Session-Termination-Request/Answer **reused verbatim from RFC 6733** (§5.6.6/5.6.7, command-code
+**275** -- already covered by Stage 1's own vendored `dict_base_proto.c`, no new material needed
+for this part). Sy-specific AVPs (Table 5.3.0.1, all Vendor-Id=10415/'V' flag set): `Policy-
+Counter-Identifier`=2901 (UTF8String), `Policy-Counter-Status`=2902 (UTF8String), `Policy-Counter-
+Status-Report`=2903 (Grouped: `{Policy-Counter-Identifier}{Policy-Counter-Status}`), `SL-Request-
+Type`=2904 (Enumerated: `INITIAL_REQUEST`=0/`INTERMEDIATE_REQUEST`=1), `Pending-Policy-Counter-
+Information`=2905/`Pending-Policy-Counter-Change-Time`=2906 (not consumed -- no real pending-status
+engine exists), `SN-Request-Type`=2907 (ASR feature, not consumed -- SNR direction unimplemented,
+see below). `DIAMETER_USER_UNKNOWN`=5030 is explicitly confirmed reused from RFC 4006 (§5.5.2);
+two new Sy-specific Experimental-Result-Codes, `DIAMETER_ERROR_UNKNOWN_POLICY_COUNTERS`=5570
+(§5.5.2) and `DIAMETER_ERROR_NO_AVAILABLE_POLICY_COUNTERS`=4241 (§5.5.3), modeled but not emitted
+(no real "unknown policy counter" rejection path exists -- CHF's own `build_spending_limit_status`
+accepts any `policyCounterId`, same disclosed "unknown" placeholder as the HTTP side). Also newly
+added, real, cited from the already-vendored `dict_base_proto.c` (needed for STR/STA):
+`Termination-Cause`=295 (`DIAMETER_LOGOUT`=1 -- TS 29.219's own Table 4.5.3.1/1 requires this exact
+value), `Experimental-Result`=297/`Experimental-Result-Code`=298 (modeled, not yet emitted -- this
+codec's own SLA/STA error paths use plain `Result-Code`, not `Experimental-Result`, since none of
+the Sy-specific experimental codes above are currently triggered).
+
+**Real command dispatch, onto the exact same direction `Nchf_SpendingLimitControl`'s own HTTP
+handlers already have** (CHF is the real OCS/server role on Sy -- no direction mismatch to
+resolve, unlike a naive reading of CHARGING_PROMPT.md's "N28 wiring" phrase might suggest, same
+finding ADR-0055 already made for the HTTP side): SLR with `SL-Request-Type`=`INITIAL_REQUEST` ->
+`SpendingLimitSubscriptionStore::create`, `INTERMEDIATE_REQUEST` -> `::update`; STR (TS 29.219's
+own real Final Spending Limit Report Request, §4.5.3.1) -> `::remove`. Each SLA's `Policy-Counter-
+Status-Report` AVPs are built from `chf::build_spending_limit_status` (`charging_engine.hpp`) --
+extracted from `main.cpp` this update alongside the Sy work specifically so the Diameter handler
+calls the exact same function the HTTP Subscribe/Update handlers call, the same single-code-path
+property already established for Gy/Rf. CER/CEA now also advertises real Sy support the way the
+spec requires for a vendor-specific application -- `Supported-Vendor-Id`=10415 plus a `Vendor-
+Specific-Application-Id` grouped AVP (`{Vendor-Id=10415}{Auth-Application-Id=16777302}`), a
+materially different advertisement shape from Gy/Rf's own plain top-level Auth-/Acct-Application-Id
+AVPs (real, per RFC 6733 §6.11's own real ABNF, cross-checked against the already-vendored
+`dict_base_proto.c`).
+
+**Real, disclosed gap, not started**: OCS-initiated SNR (Spending-Status-Notification-Request --
+CHF pushing a policy-counter-status change to PCF) is NOT implemented. Same real reason the HTTP
+side's own `statusNotification` callback is already disclosed as not implemented: no real policy-
+counter-breach-detection engine exists anywhere in this codebase to trigger either push from. This
+is a real, structural gap (CHF would need to become a Diameter *client* initiating SNR toward PCF,
+a materially different capability from anything built so far), not an oversight.
+
+**Live-verified, real stack**: real `chf` (same Redis-backed setup as the Rf verification) against
+a real, separately-compiled Sy test client. CEA correctly advertised `Supported-Vendor-Id`=10415
+and the real `Vendor-Specific-Application-Id` grouped AVP (`Vendor-Id`=10415, `Auth-Application-
+Id`=16777302). A real SLR-Initial (Subscription-Id=IMSI, one `Policy-Counter-Identifier`) returned
+`Result-Code`=2001 with a correct `Policy-Counter-Status-Report`. A real SLR-Intermediate on the
+same Session-Id, now requesting two policy counters, correctly returned two `Policy-Counter-Status-
+Report` AVPs. A real STR correctly returned `Result-Code`=2001. A real STR for a never-seen
+Session-Id correctly returned `Result-Code`=5002. **Independently confirmed via a direct `redis-cli
+KEYS` query** (not trusting the STA's own Result-Code alone, same discipline as the Rf
+verification): after the full SLR-Initial -> SLR-Intermediate -> STR sequence, zero
+`chf:spending_limit:*`-shaped keys remained -- the real subscription was genuinely created and
+genuinely removed, not just reported as success.
+
+Full rebuild + 158/158 tests pass, `clang-format-18` clean. **Stage 4 is now fully complete** (both
+Rf and Sy halves real, live-verified, single-code-path with their respective HTTP handlers) --
+Stage 5 (CAP/CAMEL/MAP, explicitly flagged in this ADR's own original text as comparable in size to
+this entire Diameter effort) is the only remaining item in P4.5's staged plan.
 
 ## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
 

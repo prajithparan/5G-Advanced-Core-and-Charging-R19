@@ -83,6 +83,34 @@ std::vector<std::uint8_t> build_cea(const Header& request_header,
     acct_app_id_avp.data = encode_unsigned32(dictionary::BaseAccounting::kApplicationId);
     encode_avp(avps_bytes, acct_app_id_avp);
 
+    // TS 29.219 §5.1.5 (real Sy, ADR-0059 Stage 4 Sy half): a real vendor-specific application is
+    // advertised differently from Gy/Rf's plain Auth-/Acct-Application-Id above -- Supported-
+    // Vendor-Id (3GPP=10415) at the top level, plus a Vendor-Specific-Application-Id grouped AVP
+    // ({ Vendor-Id=10415 } [ Auth-Application-Id=16777302 ]), exactly as the real spec text
+    // requires.
+    Avp supported_vendor_id_avp;
+    supported_vendor_id_avp.code = dictionary::Avp::kSupportedVendorId;
+    supported_vendor_id_avp.flags = AvpFlag::kMandatory;
+    supported_vendor_id_avp.data = encode_unsigned32(dictionary::Sy::kVendorId);
+    encode_avp(avps_bytes, supported_vendor_id_avp);
+
+    std::vector<std::uint8_t> vsai_bytes;
+    Avp vsai_vendor_id_avp;
+    vsai_vendor_id_avp.code = dictionary::Avp::kVendorId;
+    vsai_vendor_id_avp.flags = AvpFlag::kMandatory;
+    vsai_vendor_id_avp.data = encode_unsigned32(dictionary::Sy::kVendorId);
+    encode_avp(vsai_bytes, vsai_vendor_id_avp);
+    Avp vsai_auth_app_id_avp;
+    vsai_auth_app_id_avp.code = dictionary::Avp::kAuthApplicationId;
+    vsai_auth_app_id_avp.flags = AvpFlag::kMandatory;
+    vsai_auth_app_id_avp.data = encode_unsigned32(dictionary::Sy::kApplicationId);
+    encode_avp(vsai_bytes, vsai_auth_app_id_avp);
+    Avp vsai_avp;
+    vsai_avp.code = dictionary::Avp::kVendorSpecificApplicationId;
+    vsai_avp.flags = AvpFlag::kMandatory;
+    vsai_avp.data = vsai_bytes;
+    encode_avp(avps_bytes, vsai_avp);
+
     Header answer_header;
     answer_header.flags = 0; // R bit cleared: this is an Answer, not a Request
     answer_header.command_code = dictionary::Command::kCapabilitiesExchange;
@@ -389,6 +417,216 @@ std::vector<std::uint8_t> build_aca(const Header& request_header,
     return message;
 }
 
+// P4.5/ADR-0059 Stage 4 (Sy half): real SLR decode (TS 29.219 §5.6.2). Session-Id and SL-Request-
+// Type are mandatory; Subscription-Id (reused from RFC 4006, 0+, same decode as CCR's own) and
+// Policy-Counter-Identifier (0+, real scalar UTF8String -- unlike Gy's own grouped MSCC) are both
+// real-spec-optional.
+struct DecodedSlr {
+    std::string session_id;
+    std::int32_t sl_request_type = 0;
+    std::string supi; // "" if no Subscription-Id (or none of Subscription-Id-Type END_USER_IMSI)
+    std::vector<std::string> policy_counter_ids;
+};
+
+std::optional<DecodedSlr> decode_slr(const std::vector<Avp>& avps) {
+    const auto* session_id_avp = find_avp(avps, dictionary::Avp::kSessionId);
+    const auto* sl_request_type_avp = find_avp(avps, dictionary::Sy::kSlRequestType);
+    if (session_id_avp == nullptr || sl_request_type_avp == nullptr) {
+        return std::nullopt;
+    }
+    const auto session_id = decode_octet_string(session_id_avp->data);
+    const auto sl_request_type = decode_integer32(sl_request_type_avp->data);
+    if (!session_id.has_value() || !sl_request_type.has_value()) {
+        return std::nullopt;
+    }
+
+    DecodedSlr out;
+    out.session_id = *session_id;
+    out.sl_request_type = *sl_request_type;
+
+    // Subscription-Id (Grouped, RFC 4006 AVP reused by TS 29.219 §5.4's own "Sy re-used AVPs"
+    // table) -- same real END_USER_IMSI-wins decode as decode_ccr's own.
+    for (const auto& avp : avps) {
+        if (avp.code != dictionary::Dcc::kSubscriptionId) {
+            continue;
+        }
+        const auto sub_avps = decode_avps(avp.data);
+        if (!sub_avps.has_value()) {
+            continue;
+        }
+        const auto* type_avp = find_avp(*sub_avps, dictionary::Dcc::kSubscriptionIdType);
+        const auto* data_avp = find_avp(*sub_avps, dictionary::Dcc::kSubscriptionIdData);
+        if (type_avp == nullptr || data_avp == nullptr) {
+            continue;
+        }
+        const auto type = decode_integer32(type_avp->data);
+        const auto data = decode_octet_string(data_avp->data);
+        if (!type.has_value() || !data.has_value()) {
+            continue;
+        }
+        if (*type == dictionary::Dcc::SubscriptionIdType::kEndUserImsi) {
+            out.supi = "imsi-" + *data;
+            break;
+        }
+    }
+
+    for (const auto& avp : avps) {
+        if (avp.code == dictionary::Sy::kPolicyCounterIdentifier) {
+            if (const auto id = decode_octet_string(avp.data); id.has_value()) {
+                out.policy_counter_ids.push_back(*id);
+            }
+        }
+    }
+
+    return out;
+}
+
+// P4.5/ADR-0059 Stage 4 (Sy half): real SLA encode (TS 29.219 §5.6.3). `policy_counter_status`
+// carries one (Policy-Counter-Identifier, Policy-Counter-Status) pair per real Policy-Counter-
+// Status-Report AVP -- built from the exact same `build_spending_limit_status` function main.cpp's
+// HTTP Subscribe/Update handlers already call (the single-code-path property for Sy, same as
+// Gy/Rf's own shared-function calls).
+std::vector<std::uint8_t>
+build_sla(const Header& request_header,
+          const std::string& origin_host,
+          const std::string& origin_realm,
+          const std::string& session_id,
+          std::int32_t result_code,
+          const std::vector<std::pair<std::string, std::string>>& policy_counter_status) {
+    std::vector<std::uint8_t> avps_bytes;
+
+    Avp session_id_avp;
+    session_id_avp.code = dictionary::Avp::kSessionId;
+    session_id_avp.flags = AvpFlag::kMandatory;
+    session_id_avp.data = encode_octet_string(session_id);
+    encode_avp(avps_bytes, session_id_avp);
+
+    Avp result_code_avp;
+    result_code_avp.code = dictionary::Avp::kResultCode;
+    result_code_avp.flags = AvpFlag::kMandatory;
+    result_code_avp.data = encode_integer32(result_code);
+    encode_avp(avps_bytes, result_code_avp);
+
+    Avp origin_host_avp;
+    origin_host_avp.code = dictionary::Avp::kOriginHost;
+    origin_host_avp.flags = AvpFlag::kMandatory;
+    origin_host_avp.data = encode_octet_string(origin_host);
+    encode_avp(avps_bytes, origin_host_avp);
+
+    Avp origin_realm_avp;
+    origin_realm_avp.code = dictionary::Avp::kOriginRealm;
+    origin_realm_avp.flags = AvpFlag::kMandatory;
+    origin_realm_avp.data = encode_octet_string(origin_realm);
+    encode_avp(avps_bytes, origin_realm_avp);
+
+    Avp auth_app_id_avp;
+    auth_app_id_avp.code = dictionary::Avp::kAuthApplicationId;
+    auth_app_id_avp.flags = AvpFlag::kMandatory;
+    auth_app_id_avp.data = encode_unsigned32(dictionary::Sy::kApplicationId);
+    encode_avp(avps_bytes, auth_app_id_avp);
+
+    for (const auto& [counter_id, status] : policy_counter_status) {
+        std::vector<std::uint8_t> report_bytes;
+
+        Avp id_avp;
+        id_avp.code = dictionary::Sy::kPolicyCounterIdentifier;
+        id_avp.flags = AvpFlag::kVendor | AvpFlag::kMandatory;
+        id_avp.vendor_id = dictionary::Sy::kVendorId;
+        id_avp.data = encode_octet_string(counter_id);
+        encode_avp(report_bytes, id_avp);
+
+        Avp status_avp;
+        status_avp.code = dictionary::Sy::kPolicyCounterStatus;
+        status_avp.flags = AvpFlag::kVendor | AvpFlag::kMandatory;
+        status_avp.vendor_id = dictionary::Sy::kVendorId;
+        status_avp.data = encode_octet_string(status);
+        encode_avp(report_bytes, status_avp);
+
+        Avp report_avp;
+        report_avp.code = dictionary::Sy::kPolicyCounterStatusReport;
+        report_avp.flags = AvpFlag::kVendor | AvpFlag::kMandatory;
+        report_avp.vendor_id = dictionary::Sy::kVendorId;
+        report_avp.data = report_bytes;
+        encode_avp(avps_bytes, report_avp);
+    }
+
+    Header answer_header;
+    answer_header.flags = 0; // R bit cleared: this is an Answer, not a Request
+    answer_header.command_code = dictionary::Command::kSpendingLimit;
+    answer_header.application_id = request_header.application_id;
+    answer_header.hop_by_hop_id = request_header.hop_by_hop_id; // real spec: echoed from request
+    answer_header.end_to_end_id = request_header.end_to_end_id; // real spec: echoed from request
+
+    auto message = encode_header(answer_header, static_cast<std::uint32_t>(avps_bytes.size()));
+    message.insert(message.end(), avps_bytes.begin(), avps_bytes.end());
+    return message;
+}
+
+// P4.5/ADR-0059 Stage 4 (Sy half): real STR decode (RFC 6733, reused per TS 29.219 §4.5.3.1 for
+// the Final Spending Limit Report Request -- Sy's own real Unsubscribe trigger).
+struct DecodedStr {
+    std::string session_id;
+    std::int32_t termination_cause = 0;
+};
+
+std::optional<DecodedStr> decode_str(const std::vector<Avp>& avps) {
+    const auto* session_id_avp = find_avp(avps, dictionary::Avp::kSessionId);
+    const auto* cause_avp = find_avp(avps, dictionary::Avp::kTerminationCause);
+    if (session_id_avp == nullptr || cause_avp == nullptr) {
+        return std::nullopt;
+    }
+    const auto session_id = decode_octet_string(session_id_avp->data);
+    const auto cause = decode_integer32(cause_avp->data);
+    if (!session_id.has_value() || !cause.has_value()) {
+        return std::nullopt;
+    }
+    return DecodedStr{*session_id, *cause};
+}
+
+// P4.5/ADR-0059 Stage 4 (Sy half): real STA encode (RFC 6733 §8.5.2, dict_base_proto.c:3040-3060).
+std::vector<std::uint8_t> build_sta(const Header& request_header,
+                                    const std::string& origin_host,
+                                    const std::string& origin_realm,
+                                    const std::string& session_id,
+                                    std::int32_t result_code) {
+    std::vector<std::uint8_t> avps_bytes;
+
+    Avp session_id_avp;
+    session_id_avp.code = dictionary::Avp::kSessionId;
+    session_id_avp.flags = AvpFlag::kMandatory;
+    session_id_avp.data = encode_octet_string(session_id);
+    encode_avp(avps_bytes, session_id_avp);
+
+    Avp result_code_avp;
+    result_code_avp.code = dictionary::Avp::kResultCode;
+    result_code_avp.flags = AvpFlag::kMandatory;
+    result_code_avp.data = encode_integer32(result_code);
+    encode_avp(avps_bytes, result_code_avp);
+
+    Avp origin_host_avp;
+    origin_host_avp.code = dictionary::Avp::kOriginHost;
+    origin_host_avp.flags = AvpFlag::kMandatory;
+    origin_host_avp.data = encode_octet_string(origin_host);
+    encode_avp(avps_bytes, origin_host_avp);
+
+    Avp origin_realm_avp;
+    origin_realm_avp.code = dictionary::Avp::kOriginRealm;
+    origin_realm_avp.flags = AvpFlag::kMandatory;
+    origin_realm_avp.data = encode_octet_string(origin_realm);
+    encode_avp(avps_bytes, origin_realm_avp);
+
+    Header answer_header;
+    answer_header.flags = 0; // R bit cleared: this is an Answer, not a Request
+    answer_header.command_code = dictionary::Command::kSessionTermination;
+    answer_header.application_id = request_header.application_id;
+    answer_header.hop_by_hop_id = request_header.hop_by_hop_id; // real spec: echoed from request
+    answer_header.end_to_end_id = request_header.end_to_end_id; // real spec: echoed from request
+
+    auto message = encode_header(answer_header, static_cast<std::uint32_t>(avps_bytes.size()));
+    message.insert(message.end(), avps_bytes.begin(), avps_bytes.end());
+    return message;
+}
+
 } // namespace
 
 DiameterServer::DiameterServer(
@@ -400,6 +638,7 @@ DiameterServer::DiameterServer(
     CdrWriter& cdr_writer,
     RatingDecisionStore& rating_decision_store,
     OfflineChargingDataStore& offline_charging_data_store,
+    SpendingLimitSubscriptionStore& spending_limit_store,
     opentelemetry::metrics::Counter<std::uint64_t>* grant_counter,
     opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter,
     opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter,
@@ -408,17 +647,22 @@ DiameterServer::DiameterServer(
     opentelemetry::metrics::Counter<std::uint64_t>* acr_event_counter,
     opentelemetry::metrics::Counter<std::uint64_t>* acr_start_counter,
     opentelemetry::metrics::Counter<std::uint64_t>* acr_interim_counter,
-    opentelemetry::metrics::Counter<std::uint64_t>* acr_stop_counter)
+    opentelemetry::metrics::Counter<std::uint64_t>* acr_stop_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* slr_initial_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* slr_intermediate_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* str_counter)
     : ioc_(), acceptor_(ioc_, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), port)),
       origin_host_(std::move(origin_host)), origin_realm_(std::move(origin_realm)),
       client_tls_(std::move(client_tls)), charging_data_store_(charging_data_store),
       cdr_writer_(cdr_writer), rating_decision_store_(rating_decision_store),
-      offline_charging_data_store_(offline_charging_data_store), grant_counter_(grant_counter),
+      offline_charging_data_store_(offline_charging_data_store),
+      spending_limit_store_(spending_limit_store), grant_counter_(grant_counter),
       reserve_rejected_counter_(reserve_rejected_counter),
       ccr_initial_counter_(ccr_initial_counter), ccr_update_counter_(ccr_update_counter),
       ccr_termination_counter_(ccr_termination_counter), acr_event_counter_(acr_event_counter),
       acr_start_counter_(acr_start_counter), acr_interim_counter_(acr_interim_counter),
-      acr_stop_counter_(acr_stop_counter) {
+      acr_stop_counter_(acr_stop_counter), slr_initial_counter_(slr_initial_counter),
+      slr_intermediate_counter_(slr_intermediate_counter), str_counter_(str_counter) {
     accept_thread_ = std::thread(&DiameterServer::accept_loop, this);
 }
 
@@ -537,6 +781,10 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
     // never sharing a ref even if a peer happened to reuse the same Session-Id string.
     std::unordered_map<std::string, std::string> offline_session_to_ref;
 
+    // Same real per-connection Session-Id -> id scoping as the two maps above, for the real Sy
+    // SLR/STR path (ADR-0059 Stage 4) onto Nchf_SpendingLimitControl's own subscriptionId.
+    std::unordered_map<std::string, std::string> sl_session_to_id;
+
     while (!stop_) {
         std::vector<std::uint8_t> next_header_bytes(20);
         boost::asio::read(socket, boost::asio::buffer(next_header_bytes), ec);
@@ -563,15 +811,19 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
             }
         }
 
-        if ((next_header->command_code != dictionary::Command::kCreditControl &&
-             next_header->command_code != dictionary::Command::kAccounting) ||
-            (next_header->flags & CommandFlag::kRequest) == 0) {
-            // Stage 3/4 scope (ADR-0059/ADR-0060): only real CCR-I/U/T and ACR (Event/Start/
-            // Interim/Stop) are handled -- DWR/DPR and any other real Diameter command close the
-            // connection with a warning, same disclosed-gap pattern Stage 2 already used for
-            // "first message not CER".
+        const bool is_known_command =
+            next_header->command_code == dictionary::Command::kCreditControl ||
+            next_header->command_code == dictionary::Command::kAccounting ||
+            next_header->command_code == dictionary::Command::kSpendingLimit ||
+            next_header->command_code == dictionary::Command::kSessionTermination;
+        if (!is_known_command || (next_header->flags & CommandFlag::kRequest) == 0) {
+            // Stage 3/4 scope (ADR-0059/ADR-0060): only real CCR-I/U/T (Gy), ACR (Rf, Event/
+            // Start/Interim/Stop), and SLR/STR (Sy) are handled -- DWR/DPR and any other real
+            // Diameter command close the connection with a warning, same disclosed-gap pattern
+            // Stage 2 already used for "first message not CER".
             spdlog::warn("chf: Diameter peer sent an unsupported message (command_code={}, "
-                         "flags={:#x}) -- closing connection (only real CCR/ACR are handled)",
+                         "flags={:#x}) -- closing connection (only real CCR/ACR/SLR/STR are "
+                         "handled)",
                          next_header->command_code,
                          next_header->flags);
             return;
@@ -579,9 +831,8 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
 
         const auto next_avps = decode_avps(next_avps_bytes);
         if (!next_avps.has_value()) {
-            spdlog::warn("chf: Diameter {} had malformed AVPs, closing connection",
-                         next_header->command_code == dictionary::Command::kAccounting ? "ACR"
-                                                                                       : "CCR");
+            spdlog::warn("chf: Diameter command_code={} had malformed AVPs, closing connection",
+                         next_header->command_code);
             return;
         }
 
@@ -680,6 +931,149 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
             boost::asio::write(socket, boost::asio::buffer(aca), ec);
             if (ec) {
                 spdlog::warn("chf: failed to send ACA: {}", ec.message());
+                return;
+            }
+            continue;
+        }
+
+        if (next_header->command_code == dictionary::Command::kSpendingLimit) {
+            // P4.5/ADR-0059 Stage 4 (Sy half): real SLR dispatched onto
+            // Nchf_SpendingLimitControl's own real Subscribe/Update (spending_limit_store_) and
+            // chf::build_spending_limit_status (charging_engine.hpp) -- the same single-code-path
+            // property Gy/Rf already established, applied to Sy.
+            const auto slr = decode_slr(*next_avps);
+            if (!slr.has_value()) {
+                spdlog::warn("chf: Diameter SLR missing a mandatory AVP (Session-Id/"
+                             "SL-Request-Type)");
+                std::string best_effort_session_id;
+                if (const auto* sid = find_avp(*next_avps, dictionary::Avp::kSessionId);
+                    sid != nullptr) {
+                    best_effort_session_id = decode_octet_string(sid->data).value_or("");
+                }
+                const auto sla = build_sla(*next_header,
+                                           origin_host_,
+                                           origin_realm_,
+                                           best_effort_session_id,
+                                           dictionary::ResultCode::kDiameterMissingAvp,
+                                           {});
+                boost::asio::write(socket, boost::asio::buffer(sla), ec);
+                if (ec) {
+                    spdlog::warn("chf: failed to send SLA: {}", ec.message());
+                    return;
+                }
+                continue;
+            }
+
+            spdlog::info("chf: real SLR received (Session-Id={}, SL-Request-Type={}, SUPI={}, "
+                         "{} Policy-Counter-Identifier(s))",
+                         slr->session_id,
+                         slr->sl_request_type,
+                         slr->supi.empty() ? "?" : slr->supi,
+                         slr->policy_counter_ids.size());
+
+            sbi_gen::SpendingLimitContext context{};
+            if (!slr->supi.empty()) {
+                context.supi = slr->supi;
+            }
+            if (!slr->policy_counter_ids.empty()) {
+                context.policyCounterIds = slr->policy_counter_ids;
+            }
+
+            std::int32_t result_code = dictionary::ResultCode::kDiameterSuccess;
+            std::vector<std::pair<std::string, std::string>> policy_counter_status;
+            const auto status = chf::build_spending_limit_status(context);
+            if (status.statusInfos.has_value() && status.statusInfos->is_object()) {
+                for (const auto& [counter_id, info] : status.statusInfos->items()) {
+                    policy_counter_status.emplace_back(
+                        counter_id, info.value("currentStatus", std::string("unknown")));
+                }
+            }
+
+            if (slr->sl_request_type == dictionary::Sy::SlRequestType::kInitial) {
+                sl_session_to_id[slr->session_id] = spending_limit_store_.create(context);
+                if (slr_initial_counter_ != nullptr) {
+                    slr_initial_counter_->Add(1);
+                }
+            } else if (slr->sl_request_type == dictionary::Sy::SlRequestType::kIntermediate) {
+                const auto it = sl_session_to_id.find(slr->session_id);
+                if (it == sl_session_to_id.end() ||
+                    !spending_limit_store_.update(it->second, context)) {
+                    spdlog::warn("chf: Diameter SLR (INTERMEDIATE_REQUEST) for unknown "
+                                 "Session-Id={}",
+                                 slr->session_id);
+                    result_code = dictionary::ResultCode::kDiameterUnknownSessionId;
+                } else if (slr_intermediate_counter_ != nullptr) {
+                    slr_intermediate_counter_->Add(1);
+                }
+            } else {
+                spdlog::warn("chf: Diameter SLR with unrecognized SL-Request-Type={}",
+                             slr->sl_request_type);
+                result_code = dictionary::ResultCode::kDiameterUnableToComply;
+            }
+
+            const auto sla = build_sla(*next_header,
+                                       origin_host_,
+                                       origin_realm_,
+                                       slr->session_id,
+                                       result_code,
+                                       result_code == dictionary::ResultCode::kDiameterSuccess
+                                           ? policy_counter_status
+                                           : std::vector<std::pair<std::string, std::string>>{});
+            boost::asio::write(socket, boost::asio::buffer(sla), ec);
+            if (ec) {
+                spdlog::warn("chf: failed to send SLA: {}", ec.message());
+                return;
+            }
+            continue;
+        }
+
+        if (next_header->command_code == dictionary::Command::kSessionTermination) {
+            // P4.5/ADR-0059 Stage 4 (Sy half): real STR (TS 29.219's own real Final Spending
+            // Limit Report Request, §4.5.3.1) dispatched onto Nchf_SpendingLimitControl's own
+            // real Unsubscribe (spending_limit_store_.remove).
+            const auto str = decode_str(*next_avps);
+            if (!str.has_value()) {
+                spdlog::warn("chf: Diameter STR missing a mandatory AVP (Session-Id/"
+                             "Termination-Cause)");
+                std::string best_effort_session_id;
+                if (const auto* sid = find_avp(*next_avps, dictionary::Avp::kSessionId);
+                    sid != nullptr) {
+                    best_effort_session_id = decode_octet_string(sid->data).value_or("");
+                }
+                const auto sta = build_sta(*next_header,
+                                           origin_host_,
+                                           origin_realm_,
+                                           best_effort_session_id,
+                                           dictionary::ResultCode::kDiameterMissingAvp);
+                boost::asio::write(socket, boost::asio::buffer(sta), ec);
+                if (ec) {
+                    spdlog::warn("chf: failed to send STA: {}", ec.message());
+                    return;
+                }
+                continue;
+            }
+
+            spdlog::info("chf: real STR received (Session-Id={}, Termination-Cause={})",
+                         str->session_id,
+                         str->termination_cause);
+
+            std::int32_t result_code = dictionary::ResultCode::kDiameterSuccess;
+            const auto it = sl_session_to_id.find(str->session_id);
+            if (it == sl_session_to_id.end() || !spending_limit_store_.remove(it->second)) {
+                spdlog::warn("chf: Diameter STR for unknown Session-Id={}", str->session_id);
+                result_code = dictionary::ResultCode::kDiameterUnknownSessionId;
+            } else {
+                sl_session_to_id.erase(it);
+                if (str_counter_ != nullptr) {
+                    str_counter_->Add(1);
+                }
+            }
+
+            const auto sta =
+                build_sta(*next_header, origin_host_, origin_realm_, str->session_id, result_code);
+            boost::asio::write(socket, boost::asio::buffer(sta), ec);
+            if (ec) {
+                spdlog::warn("chf: failed to send STA: {}", ec.message());
                 return;
             }
             continue;

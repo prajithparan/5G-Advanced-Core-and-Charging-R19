@@ -328,4 +328,25 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
     return result;
 }
 
+sbi_gen::SpendingLimitStatus
+build_spending_limit_status(const sbi_gen::SpendingLimitContext& context) {
+    sbi_gen::SpendingLimitStatus status{};
+    status.supi = context.supi;
+    status.notifId = context.notifId;
+    status.expiry = context.expiry;
+    status.supportedFeatures = context.supportedFeatures;
+
+    json status_infos = json::object();
+    if (context.policyCounterIds.has_value()) {
+        for (const auto& counter_id : *context.policyCounterIds) {
+            sbi_gen::PolicyCounterInfo info{};
+            info.policyCounterId = counter_id;
+            info.currentStatus = "unknown";
+            status_infos[counter_id] = info;
+        }
+    }
+    status.statusInfos = status_infos;
+    return status;
+}
+
 } // namespace chf

@@ -228,39 +228,6 @@ std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::R
     return verifier.verify(value.substr(kPrefix.size()));
 }
 
-// Nchf_SpendingLimitControl (TS 29.594, P4.2/ADR-0055): builds the real SpendingLimitStatus both
-// Subscribe (201) and Update (200) return, per the real confirmed schema. `statusInfos` is a
-// map<policyCounterId, PolicyCounterInfo> -- the generated type falls back to opaque
-// nlohmann::json for it (additionalProperties-only schema, no fixed key set), so it's built by
-// hand here rather than through a generated struct.
-//
-// Disclosed, real simplification: `currentStatus` is a fixed placeholder ("unknown") for every
-// policy counter -- no real policy-counter engine exists in this codebase to report a genuine
-// status from (same category of gap as ADR-0028's PCF fixed-default policy, or this same file's
-// own rating-engine "whichever catalog offering is first" simplification). The real spec text
-// itself says the status values "are not specified... out of scope of 3GPP", so any string is
-// schema-conformant; "unknown" is the least-invented choice, not a guess at real semantics.
-sbi_gen::SpendingLimitStatus
-build_spending_limit_status(const sbi_gen::SpendingLimitContext& context) {
-    sbi_gen::SpendingLimitStatus status{};
-    status.supi = context.supi;
-    status.notifId = context.notifId;
-    status.expiry = context.expiry;
-    status.supportedFeatures = context.supportedFeatures;
-
-    json status_infos = json::object();
-    if (context.policyCounterIds.has_value()) {
-        for (const auto& counter_id : *context.policyCounterIds) {
-            sbi_gen::PolicyCounterInfo info{};
-            info.policyCounterId = counter_id;
-            info.currentStatus = "unknown";
-            status_infos[counter_id] = info;
-        }
-    }
-    status.statusInfos = status_infos;
-    return status;
-}
-
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as every other
 // NF's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019).
 void run_nrf_lifecycle(const std::string& chf_instance_id) {
@@ -473,17 +440,33 @@ int main() {
                                    "Total real Diameter Rf ACR (INTERIM_RECORD) requests handled");
     auto acr_stop_counter = meter->CreateUInt64Counter(
         "chf_diameter_acr_stop_total", "Total real Diameter Rf ACR (STOP_RECORD) requests handled");
+    // P4.5/ADR-0059 Stage 4 (Sy half): real TS 29.219 SLR/STR counters, mirroring
+    // spending_limit_subscribe_counter/spending_limit_update_counter/
+    // spending_limit_unsubscribe_counter's own per-operation shape above -- the same real
+    // Nchf_SpendingLimitControl decisions, arriving over Sy instead of the HTTP SBI path.
+    auto slr_initial_counter =
+        meter->CreateUInt64Counter("chf_diameter_slr_initial_total",
+                                   "Total real Diameter Sy SLR (INITIAL_REQUEST) requests handled");
+    auto slr_intermediate_counter = meter->CreateUInt64Counter(
+        "chf_diameter_slr_intermediate_total",
+        "Total real Diameter Sy SLR (INTERMEDIATE_REQUEST) requests handled");
+    auto str_counter =
+        meter->CreateUInt64Counter("chf_diameter_str_total",
+                                   "Total real Diameter Sy STR (Final Spending Limit Report) "
+                                   "requests handled");
 
     // P4.5/ADR-0060 Stage 3 + ADR-0059 Stage 4: real Diameter server -- CER/CEA capability exchange
     // (Stage 2) plus real CCR-I/U/T (Stage 3, Gy) dispatched through the exact same
     // charging_engine.hpp functions Nchf_ConvergedCharging's HTTP Create/Update/Release handlers
-    // below call, and real ACR (Stage 4, Rf) dispatched onto the same offline_charging_data_store
-    // Nchf_OfflineOnlyCharging's own HTTP handlers use -- the single-code-path property
-    // CHARGING_PROMPT.md's P4.5 explicitly requires, for both protocols. Constructed here, after
-    // catalog_client/balance_client/the counters above all exist, since its own per-connection
-    // threads need real, already-built dependencies to share (see diameter_server.hpp's own header
-    // for why it builds its OWN dedicated catalog/balance http2::Client pair per connection rather
-    // than reusing catalog_client/balance_client, which are confined to ioc's thread).
+    // below call, real ACR (Stage 4, Rf) dispatched onto the same offline_charging_data_store
+    // Nchf_OfflineOnlyCharging's own HTTP handlers use, and real SLR/STR (Stage 4, Sy) dispatched
+    // onto the same spending_limit_store Nchf_SpendingLimitControl's own HTTP handlers use -- the
+    // single-code-path property CHARGING_PROMPT.md's P4.5 explicitly requires, for all three
+    // protocols. Constructed here, after catalog_client/balance_client/the counters above all
+    // exist, since its own per-connection threads need real, already-built dependencies to share
+    // (see diameter_server.hpp's own header for why it builds its OWN dedicated catalog/balance
+    // http2::Client pair per connection rather than reusing catalog_client/balance_client, which
+    // are confined to ioc's thread).
     sbi_core::http2::TlsConfig diameter_client_tls{
         .cert_path = CERTS_DIR "/chf/cert.pem",
         .key_path = CERTS_DIR "/chf/key.pem",
@@ -497,6 +480,7 @@ int main() {
                                         cdr_writer,
                                         rating_decision_store,
                                         offline_charging_data_store,
+                                        spending_limit_store,
                                         grant_counter.get(),
                                         reserve_rejected_counter.get(),
                                         ccr_initial_counter.get(),
@@ -505,8 +489,11 @@ int main() {
                                         acr_event_counter.get(),
                                         acr_start_counter.get(),
                                         acr_interim_counter.get(),
-                                        acr_stop_counter.get());
-    spdlog::info("chf: Diameter (Gy+Rf) listening on tcp://0.0.0.0:{}", kDiameterPort);
+                                        acr_stop_counter.get(),
+                                        slr_initial_counter.get(),
+                                        slr_intermediate_counter.get(),
+                                        str_counter.get());
+    spdlog::info("chf: Diameter (Gy+Rf+Sy) listening on tcp://0.0.0.0:{}", kDiameterPort);
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -925,7 +912,7 @@ int main() {
                 return err;
             }
 
-            const auto status = build_spending_limit_status(*body);
+            const auto status = chf::build_spending_limit_status(*body);
             const auto id = spending_limit_store.create(*body);
             spending_limit_subscribe_counter->Add(1);
 
@@ -960,7 +947,7 @@ int main() {
             }
             spending_limit_update_counter->Add(1);
 
-            const auto status = build_spending_limit_status(*body);
+            const auto status = chf::build_spending_limit_status(*body);
             sbi_core::http2::Response resp;
             resp.status = 200;
             resp.headers.emplace("content-type", "application/json");

@@ -23,6 +23,7 @@
 #include <string>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "TS29594_Nchf_SpendingLimitControl.hpp"
 #include "bss_sid/balance.hpp"
 #include "bss_sid/product.hpp"
 #include "cdr.hpp"
@@ -142,5 +143,19 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
                  const std::string& node_functionality,
                  std::int64_t invocation_sequence_number,
                  const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage);
+
+// P4.2/ADR-0055, TS 29.594 (Nchf_SpendingLimitControl): builds the real SpendingLimitStatus both
+// Subscribe/Update return, per the real confirmed schema. Extracted from main.cpp (was anonymous-
+// namespace-local) alongside the P4.5/ADR-0059 Stage 4 (Sy half) work, so diameter_server.cpp's
+// real SLR/SLA handler can call the exact same function the HTTP Subscribe/Update handlers use --
+// the same single-code-path property Stage 3/4's Gy/Rf work already established, applied to Sy.
+//
+// Disclosed, real simplification (unchanged from its original main.cpp home): `currentStatus` is a
+// fixed placeholder ("unknown") for every policy counter -- no real policy-counter engine exists in
+// this codebase to report a genuine status from. The real spec text itself says the status values
+// "are not specified... out of scope of 3GPP", so any string is schema-conformant; "unknown" is the
+// least-invented choice, not a guess at real semantics.
+sbi_gen::SpendingLimitStatus
+build_spending_limit_status(const sbi_gen::SpendingLimitContext& context);
 
 } // namespace chf

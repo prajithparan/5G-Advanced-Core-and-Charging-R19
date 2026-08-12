@@ -45,6 +45,17 @@
 // `Nchf_OfflineOnlyCharging`'s own real Create/Update/Release (`offline_charging_data_store`) --
 // the same shared-HTTP-handler-state normalize pattern Stage 3 established for Gy/CCR, just with no
 // rating engine involved (`Nchf_OfflineOnlyCharging` never had one, see main.cpp's own header).
+//
+// P4.5/ADR-0059 Stage 4 (Sy half): the same per-connection loop also dispatches real TS 29.219 SLR/
+// STR (command-codes 8388635/275, real vendor-specific Application-Id 16777302 -- spec text read
+// directly from the user-provided ETSI TS 129 219 V19.0.0 PDF, `specs/ts_129219v190000p.pdf`, since
+// no dict_sy exists anywhere in the vendored freeDiameter tree, disclosed in dictionary.hpp's own
+// header), normalized onto `Nchf_SpendingLimitControl`'s own real Subscribe/Update/Unsubscribe
+// (`spending_limit_store`) -- CHF is the real OCS/server role on Sy, exactly matching its already-
+// real SERVER role on the HTTP `Nchf_SpendingLimitControl` side (ADR-0055), so no direction
+// mismatch to resolve. OCS-initiated SNR (policy-counter-change push notifications) is NOT
+// implemented -- same real, disclosed gap as the HTTP side's own statusNotification callback (no
+// policy-counter-breach-detection engine exists in this codebase to trigger either one from).
 
 namespace chf {
 
@@ -65,6 +76,7 @@ public:
                    CdrWriter& cdr_writer,
                    RatingDecisionStore& rating_decision_store,
                    OfflineChargingDataStore& offline_charging_data_store,
+                   SpendingLimitSubscriptionStore& spending_limit_store,
                    opentelemetry::metrics::Counter<std::uint64_t>* grant_counter,
                    opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter,
                    opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter,
@@ -73,7 +85,10 @@ public:
                    opentelemetry::metrics::Counter<std::uint64_t>* acr_event_counter,
                    opentelemetry::metrics::Counter<std::uint64_t>* acr_start_counter,
                    opentelemetry::metrics::Counter<std::uint64_t>* acr_interim_counter,
-                   opentelemetry::metrics::Counter<std::uint64_t>* acr_stop_counter);
+                   opentelemetry::metrics::Counter<std::uint64_t>* acr_stop_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* slr_initial_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* slr_intermediate_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* str_counter);
     ~DiameterServer();
 
     DiameterServer(const DiameterServer&) = delete;
@@ -92,6 +107,7 @@ private:
     CdrWriter& cdr_writer_;
     RatingDecisionStore& rating_decision_store_;
     OfflineChargingDataStore& offline_charging_data_store_;
+    SpendingLimitSubscriptionStore& spending_limit_store_;
     opentelemetry::metrics::Counter<std::uint64_t>* grant_counter_;
     opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter_;
     opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter_;
@@ -101,6 +117,9 @@ private:
     opentelemetry::metrics::Counter<std::uint64_t>* acr_start_counter_;
     opentelemetry::metrics::Counter<std::uint64_t>* acr_interim_counter_;
     opentelemetry::metrics::Counter<std::uint64_t>* acr_stop_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* slr_initial_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* slr_intermediate_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* str_counter_;
     std::thread accept_thread_;
     std::atomic<bool> stop_{false};
 };

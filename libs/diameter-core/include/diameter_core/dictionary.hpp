@@ -20,6 +20,10 @@ constexpr std::uint32_t kCreditControl = 272;        // dict_dcca.c:1353 (RFC 40
 constexpr std::uint32_t kAccounting = 271; // dict_base_proto.c:3236 (RFC 6733 base ACR/ACA, real Rf
                                            // command -- TS 32.299 Rf runs the Diameter Base
                                            // Accounting application over this same real command)
+constexpr std::uint32_t kSessionTermination = 275; // dict_base_proto.c:2993 (RFC 6733 base STR/STA
+                                                   // -- TS 29.219 Sy's own Final Spending Limit
+                                                   // Report Request/Response, real command reuse)
+constexpr std::uint32_t kSpendingLimit = 8388635;  // TS 29.219 §5.6.1/5.6.2 (real Sy SLR/SLA)
 } // namespace Command
 
 // Base protocol AVP codes -- dict_base_proto.c. All base AVPs carry AVP_FLAG_VENDOR |
@@ -49,7 +53,18 @@ constexpr std::uint32_t kSupportedVendorId = 265;           // dict_base_proto.c
 constexpr std::uint32_t kInbandSecurityId = 299;            // dict_base_proto.c:817
 constexpr std::uint32_t kAccountingRecordType = 480;        // dict_base_proto.c:2312 (Enumerated)
 constexpr std::uint32_t kAccountingRecordNumber = 485;      // dict_base_proto.c:2388 (Unsigned32)
+constexpr std::uint32_t kTerminationCause = 295;            // dict_base_proto.c:2010 (Enumerated)
+constexpr std::uint32_t kExperimentalResult = 297;          // dict_base_proto.c:1640 (Grouped)
+constexpr std::uint32_t kExperimentalResultCode = 298;      // dict_base_proto.c:1606 (Unsigned32)
 } // namespace Avp
+
+// Termination-Cause real enumerated values -- dict_base_proto.c:1998-2006. Only DIAMETER_LOGOUT is
+// consumed (TS 29.219's own Table 4.5.3.1/1: "It shall be set to DIAMETER_LOGOUT" for Sy's Final
+// Spending Limit Report Request) -- the other seven are real, cited values, not invented, even
+// though unused today.
+namespace TerminationCause {
+constexpr std::int32_t kDiameterLogout = 1;
+} // namespace TerminationCause
 
 // Real Diameter Base Accounting application (RFC 6733 §9, dict_base_proto.c:107: "Diameter Base
 // Accounting") -- distinct real Application-Id from RFC 4006 DCC's own Dcc::kApplicationId=4
@@ -79,8 +94,9 @@ constexpr std::int32_t kDiameterUnableToComply = 5012;   // libfdproto.h:1883
 // carries the base-protocol values; DCC's own extension registers these at dictionary load time).
 constexpr std::int32_t kDiameterEndUserServiceDenied = 4010; // dict_dcca.c:85
 constexpr std::int32_t kDiameterCreditLimitReached = 4012;   // dict_dcca.c:95
-constexpr std::int32_t kDiameterUserUnknown = 5030;          // dict_dcca.c:100
-constexpr std::int32_t kDiameterRatingFailed = 5031;         // dict_dcca.c:105
+constexpr std::int32_t kDiameterUserUnknown = 5030;  // dict_dcca.c:100 (RFC 4006 §9.9; also
+                                                     // reused by TS 29.219 §5.5.2 for Sy)
+constexpr std::int32_t kDiameterRatingFailed = 5031; // dict_dcca.c:105
 } // namespace ResultCode
 
 // RFC 4006 Diameter Credit-Control (DCC) AVP codes -- dict_dcca.c. This is the base DCC
@@ -128,5 +144,55 @@ constexpr std::int32_t kEndUserSipUri = 2;
 constexpr std::int32_t kEndUserNai = 3;
 } // namespace SubscriptionIdType
 } // namespace Dcc
+
+// TS 29.219 Sy reference point (spending-limit reporting, PCRF<->OCS) -- P4.5/ADR-0059 Stage 4 (Sy
+// half). Real, primary spec text read directly from the user-provided ETSI TS 129 219 V19.0.0 PDF
+// (specs/ts_129219v190000p.pdf, Release 19 -- matches this project's own REL-19 scope), NOT
+// freeDiameter material: a direct check of the vendored simulators/reference/freeDiameter/ tree
+// confirmed no dict_sy-equivalent file exists there at all (freeDiameter's own upstream does not
+// ship a stock Sy dictionary the way it does for DCC/DCC-3GPP) -- this is this project's first
+// Diameter AVP dictionary sourced directly from a real 3GPP spec PDF rather than freeDiameter's own
+// C source, a different but still-primary citation class, disclosed rather than silently treated
+// the same as the freeDiameter-sourced constants above. Each constant below cites its exact real
+// clause.
+namespace Sy {
+constexpr std::uint32_t kVendorId = 10415;         // §5.1.5 (real 3GPP vendor ID)
+constexpr std::uint32_t kApplicationId = 16777302; // §5.1.5 (real Sy application identifier)
+
+constexpr std::uint32_t kPolicyCounterIdentifier = 2901;         // §5.3.1, UTF8String
+constexpr std::uint32_t kPolicyCounterStatus = 2902;             // §5.3.2, UTF8String
+constexpr std::uint32_t kPolicyCounterStatusReport = 2903;       // §5.3.3, Grouped
+constexpr std::uint32_t kSlRequestType = 2904;                   // §5.3.4, Enumerated
+constexpr std::uint32_t kPendingPolicyCounterInformation = 2905; // §5.3.5, Grouped -- not consumed
+                                                                 // (no real pending-status engine
+                                                                 // exists in this codebase, same
+                                                                 // category of gap as CHF's own
+                                                                 // fixed "unknown" currentStatus,
+                                                                 // main.cpp's own disclosure)
+constexpr std::uint32_t kPendingPolicyCounterChangeTime = 2906;  // §5.3.6, Time -- not consumed
+constexpr std::uint32_t kSnRequestType = 2907; // §5.3.7, Unsigned32 (ASR feature) -- not consumed;
+                                               // this Stage only handles PCRF-initiated SLR/STR,
+                                               // not OCS-initiated SNR (see this ADR's own
+                                               // disclosure for why)
+
+// SL-Request-Type real enumerated values -- §5.3.4.
+namespace SlRequestType {
+constexpr std::int32_t kInitial = 0;
+constexpr std::int32_t kIntermediate = 1;
+} // namespace SlRequestType
+
+// Sy-specific Experimental-Result-Code values -- §5.5.2 (permanent)/§5.5.3 (transient), carried in
+// the real base-protocol Experimental-Result grouped AVP (Avp::kExperimentalResult=297) alongside
+// Vendor-Id=kVendorId above.
+namespace ExperimentalResultCode {
+constexpr std::int32_t kUnknownPolicyCounters = 5570;     // §5.5.2, permanent
+constexpr std::int32_t kNoAvailablePolicyCounters = 4241; // §5.5.3, transient -- not emitted by
+                                                          // this codec (CHF always has "available"
+                                                          // policy counters in the trivial sense
+                                                          // that it accepts any policyCounterId,
+                                                          // see build_spending_limit_status's own
+                                                          // disclosed "unknown" placeholder)
+} // namespace ExperimentalResultCode
+} // namespace Sy
 
 } // namespace diameter_core::dictionary
