@@ -66,13 +66,22 @@ std::vector<std::uint8_t> build_cea(const Header& request_header,
     product_name_avp.data = encode_octet_string("5gc-r19-chf");
     encode_avp(avps_bytes, product_name_avp);
 
-    // Auth-Application-Id=4: real RFC 4006 Diameter Credit-Control Application ID -- the only
-    // application this CHF's Diameter server accepts (real CCR/CCA, RFC 4006).
+    // Auth-Application-Id=4: real RFC 4006 Diameter Credit-Control Application ID (real Gy CCR/
+    // CCA, ADR-0059 Stage 3).
     Avp auth_app_id_avp;
     auth_app_id_avp.code = dictionary::Avp::kAuthApplicationId;
     auth_app_id_avp.flags = AvpFlag::kMandatory;
     auth_app_id_avp.data = encode_unsigned32(dictionary::Dcc::kApplicationId);
     encode_avp(avps_bytes, auth_app_id_avp);
+
+    // Acct-Application-Id=3: real RFC 6733 "Diameter Base Accounting" application ID (real Rf
+    // ACR/ACA, ADR-0059 Stage 4) -- a real, distinct capability from Auth-Application-Id above,
+    // both genuinely advertised since this CHF process accepts both.
+    Avp acct_app_id_avp;
+    acct_app_id_avp.code = dictionary::Avp::kAcctApplicationId;
+    acct_app_id_avp.flags = AvpFlag::kMandatory;
+    acct_app_id_avp.data = encode_unsigned32(dictionary::BaseAccounting::kApplicationId);
+    encode_avp(avps_bytes, acct_app_id_avp);
 
     Header answer_header;
     answer_header.flags = 0; // R bit cleared: this is an Answer, not a Request
@@ -295,6 +304,91 @@ build_cca(const Header& request_header,
     return message;
 }
 
+// P4.5/ADR-0059 Stage 4 (Rf half): real ACR decode (RFC 6733 §9.3, dict_base_proto.c:3212-3230).
+// Only Session-Id, Accounting-Record-Type, Accounting-Record-Number are extracted -- the mandatory
+// fields this project's `Nchf_OfflineOnlyCharging` normalize path actually consumes (no rating
+// engine, no per-usage AVPs the way Gy's own MSCC carries -- `Nchf_OfflineOnlyCharging`'s real
+// schema has no `multipleUnitInformation`/grant field at all, see main.cpp's own header).
+struct DecodedAcr {
+    std::string session_id;
+    std::int32_t accounting_record_type = 0;
+    std::uint32_t accounting_record_number = 0;
+};
+
+std::optional<DecodedAcr> decode_acr(const std::vector<Avp>& avps) {
+    const auto* session_id_avp = find_avp(avps, dictionary::Avp::kSessionId);
+    const auto* record_type_avp = find_avp(avps, dictionary::Avp::kAccountingRecordType);
+    const auto* record_number_avp = find_avp(avps, dictionary::Avp::kAccountingRecordNumber);
+    if (session_id_avp == nullptr || record_type_avp == nullptr || record_number_avp == nullptr) {
+        return std::nullopt;
+    }
+    const auto session_id = decode_octet_string(session_id_avp->data);
+    const auto record_type = decode_integer32(record_type_avp->data);
+    const auto record_number = decode_unsigned32(record_number_avp->data);
+    if (!session_id.has_value() || !record_type.has_value() || !record_number.has_value()) {
+        return std::nullopt;
+    }
+    return DecodedAcr{*session_id, *record_type, *record_number};
+}
+
+// P4.5/ADR-0059 Stage 4 (Rf half): real ACA encode (RFC 6733 §9.3, dict_base_proto.c:3291-3316).
+std::vector<std::uint8_t> build_aca(const Header& request_header,
+                                    const std::string& origin_host,
+                                    const std::string& origin_realm,
+                                    const std::string& session_id,
+                                    std::int32_t accounting_record_type,
+                                    std::uint32_t accounting_record_number,
+                                    std::int32_t result_code) {
+    std::vector<std::uint8_t> avps_bytes;
+
+    Avp session_id_avp;
+    session_id_avp.code = dictionary::Avp::kSessionId;
+    session_id_avp.flags = AvpFlag::kMandatory;
+    session_id_avp.data = encode_octet_string(session_id);
+    encode_avp(avps_bytes, session_id_avp);
+
+    Avp result_code_avp;
+    result_code_avp.code = dictionary::Avp::kResultCode;
+    result_code_avp.flags = AvpFlag::kMandatory;
+    result_code_avp.data = encode_integer32(result_code);
+    encode_avp(avps_bytes, result_code_avp);
+
+    Avp origin_host_avp;
+    origin_host_avp.code = dictionary::Avp::kOriginHost;
+    origin_host_avp.flags = AvpFlag::kMandatory;
+    origin_host_avp.data = encode_octet_string(origin_host);
+    encode_avp(avps_bytes, origin_host_avp);
+
+    Avp origin_realm_avp;
+    origin_realm_avp.code = dictionary::Avp::kOriginRealm;
+    origin_realm_avp.flags = AvpFlag::kMandatory;
+    origin_realm_avp.data = encode_octet_string(origin_realm);
+    encode_avp(avps_bytes, origin_realm_avp);
+
+    Avp record_type_avp;
+    record_type_avp.code = dictionary::Avp::kAccountingRecordType;
+    record_type_avp.flags = AvpFlag::kMandatory;
+    record_type_avp.data = encode_integer32(accounting_record_type);
+    encode_avp(avps_bytes, record_type_avp);
+
+    Avp record_number_avp;
+    record_number_avp.code = dictionary::Avp::kAccountingRecordNumber;
+    record_number_avp.flags = AvpFlag::kMandatory;
+    record_number_avp.data = encode_unsigned32(accounting_record_number);
+    encode_avp(avps_bytes, record_number_avp);
+
+    Header answer_header;
+    answer_header.flags = 0; // R bit cleared: this is an Answer, not a Request
+    answer_header.command_code = dictionary::Command::kAccounting;
+    answer_header.application_id = request_header.application_id;
+    answer_header.hop_by_hop_id = request_header.hop_by_hop_id; // real spec: echoed from request
+    answer_header.end_to_end_id = request_header.end_to_end_id; // real spec: echoed from request
+
+    auto message = encode_header(answer_header, static_cast<std::uint32_t>(avps_bytes.size()));
+    message.insert(message.end(), avps_bytes.begin(), avps_bytes.end());
+    return message;
+}
+
 } // namespace
 
 DiameterServer::DiameterServer(
@@ -305,18 +399,26 @@ DiameterServer::DiameterServer(
     ChargingDataStore& charging_data_store,
     CdrWriter& cdr_writer,
     RatingDecisionStore& rating_decision_store,
+    OfflineChargingDataStore& offline_charging_data_store,
     opentelemetry::metrics::Counter<std::uint64_t>* grant_counter,
     opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter,
     opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter,
     opentelemetry::metrics::Counter<std::uint64_t>* ccr_update_counter,
-    opentelemetry::metrics::Counter<std::uint64_t>* ccr_termination_counter)
+    opentelemetry::metrics::Counter<std::uint64_t>* ccr_termination_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* acr_event_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* acr_start_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* acr_interim_counter,
+    opentelemetry::metrics::Counter<std::uint64_t>* acr_stop_counter)
     : ioc_(), acceptor_(ioc_, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), port)),
       origin_host_(std::move(origin_host)), origin_realm_(std::move(origin_realm)),
       client_tls_(std::move(client_tls)), charging_data_store_(charging_data_store),
       cdr_writer_(cdr_writer), rating_decision_store_(rating_decision_store),
-      grant_counter_(grant_counter), reserve_rejected_counter_(reserve_rejected_counter),
+      offline_charging_data_store_(offline_charging_data_store), grant_counter_(grant_counter),
+      reserve_rejected_counter_(reserve_rejected_counter),
       ccr_initial_counter_(ccr_initial_counter), ccr_update_counter_(ccr_update_counter),
-      ccr_termination_counter_(ccr_termination_counter) {
+      ccr_termination_counter_(ccr_termination_counter), acr_event_counter_(acr_event_counter),
+      acr_start_counter_(acr_start_counter), acr_interim_counter_(acr_interim_counter),
+      acr_stop_counter_(acr_stop_counter) {
     accept_thread_ = std::thread(&DiameterServer::accept_loop, this);
 }
 
@@ -429,6 +531,12 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
     // sharing: a real peer reconnect starts fresh sessions, same as a real OCS would see.
     std::unordered_map<std::string, std::string> session_to_ref;
 
+    // Same real per-connection Session-Id -> ref scoping as session_to_ref above, for the real Rf
+    // ACR/ACA path (ADR-0059 Stage 4) onto Nchf_OfflineOnlyCharging's own OfflineChargingDataStore
+    // refs -- a separate map since Gy and Rf are real, independent Diameter sessions/applications,
+    // never sharing a ref even if a peer happened to reuse the same Session-Id string.
+    std::unordered_map<std::string, std::string> offline_session_to_ref;
+
     while (!stop_) {
         std::vector<std::uint8_t> next_header_bytes(20);
         boost::asio::read(socket, boost::asio::buffer(next_header_bytes), ec);
@@ -455,13 +563,15 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
             }
         }
 
-        if (next_header->command_code != dictionary::Command::kCreditControl ||
+        if ((next_header->command_code != dictionary::Command::kCreditControl &&
+             next_header->command_code != dictionary::Command::kAccounting) ||
             (next_header->flags & CommandFlag::kRequest) == 0) {
-            // Stage 3 scope (ADR-0060): only real CCR-I/U/T is handled -- DWR/DPR and any other
-            // real Diameter command close the connection with a warning, same disclosed-gap
-            // pattern Stage 2 already used for "first message not CER".
+            // Stage 3/4 scope (ADR-0059/ADR-0060): only real CCR-I/U/T and ACR (Event/Start/
+            // Interim/Stop) are handled -- DWR/DPR and any other real Diameter command close the
+            // connection with a warning, same disclosed-gap pattern Stage 2 already used for
+            // "first message not CER".
             spdlog::warn("chf: Diameter peer sent an unsupported message (command_code={}, "
-                         "flags={:#x}) -- closing connection (only real CCR is handled)",
+                         "flags={:#x}) -- closing connection (only real CCR/ACR are handled)",
                          next_header->command_code,
                          next_header->flags);
             return;
@@ -469,8 +579,110 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
 
         const auto next_avps = decode_avps(next_avps_bytes);
         if (!next_avps.has_value()) {
-            spdlog::warn("chf: Diameter CCR had malformed AVPs, closing connection");
+            spdlog::warn("chf: Diameter {} had malformed AVPs, closing connection",
+                         next_header->command_code == dictionary::Command::kAccounting ? "ACR"
+                                                                                       : "CCR");
             return;
+        }
+
+        if (next_header->command_code == dictionary::Command::kAccounting) {
+            // P4.5/ADR-0059 Stage 4 (Rf half): real ACR dispatched onto
+            // Nchf_OfflineOnlyCharging's own real Create/Update/Release (offline_charging_data_
+            // store) -- no rating engine involved (Nchf_OfflineOnlyCharging never had one, see
+            // main.cpp's own header), so unlike CCR there is no chf::charge_one_usage call here.
+            const auto acr = decode_acr(*next_avps);
+            if (!acr.has_value()) {
+                spdlog::warn("chf: Diameter ACR missing a mandatory AVP (Session-Id/"
+                             "Accounting-Record-Type/Accounting-Record-Number)");
+                std::string best_effort_session_id;
+                if (const auto* sid = find_avp(*next_avps, dictionary::Avp::kSessionId);
+                    sid != nullptr) {
+                    best_effort_session_id = decode_octet_string(sid->data).value_or("");
+                }
+                const auto aca = build_aca(*next_header,
+                                           origin_host_,
+                                           origin_realm_,
+                                           best_effort_session_id,
+                                           0,
+                                           0,
+                                           dictionary::ResultCode::kDiameterMissingAvp);
+                boost::asio::write(socket, boost::asio::buffer(aca), ec);
+                if (ec) {
+                    spdlog::warn("chf: failed to send ACA: {}", ec.message());
+                    return;
+                }
+                continue;
+            }
+
+            spdlog::info("chf: real ACR received (Session-Id={}, Accounting-Record-Type={}, "
+                         "Accounting-Record-Number={})",
+                         acr->session_id,
+                         acr->accounting_record_type,
+                         acr->accounting_record_number);
+
+            std::int32_t result_code = dictionary::ResultCode::kDiameterSuccess;
+            using dictionary::BaseAccounting::AccountingRecordType::kEvent;
+            using dictionary::BaseAccounting::AccountingRecordType::kInterim;
+            using dictionary::BaseAccounting::AccountingRecordType::kStart;
+            using dictionary::BaseAccounting::AccountingRecordType::kStop;
+
+            if (acr->accounting_record_type == kStart) {
+                offline_session_to_ref[acr->session_id] = offline_charging_data_store_.create();
+                if (acr_start_counter_ != nullptr) {
+                    acr_start_counter_->Add(1);
+                }
+            } else if (acr->accounting_record_type == kEvent) {
+                // Real RFC 6733 semantics: EVENT_RECORD is a single, self-contained accounting
+                // event, not part of a Start/Interim/Stop session -- create then immediately
+                // release, matching Nchf_OfflineOnlyCharging's own Create/Release pair rather
+                // than leaving a session open with nothing to ever close it.
+                const auto ref = offline_charging_data_store_.create();
+                offline_charging_data_store_.release(ref);
+                if (acr_event_counter_ != nullptr) {
+                    acr_event_counter_->Add(1);
+                }
+            } else if (acr->accounting_record_type == kInterim) {
+                const auto it = offline_session_to_ref.find(acr->session_id);
+                if (it == offline_session_to_ref.end() ||
+                    !offline_charging_data_store_.is_active(it->second)) {
+                    spdlog::warn("chf: Diameter ACR (INTERIM_RECORD) for unknown Session-Id={}",
+                                 acr->session_id);
+                    result_code = dictionary::ResultCode::kDiameterUnknownSessionId;
+                } else if (acr_interim_counter_ != nullptr) {
+                    acr_interim_counter_->Add(1);
+                }
+            } else if (acr->accounting_record_type == kStop) {
+                const auto it = offline_session_to_ref.find(acr->session_id);
+                if (it == offline_session_to_ref.end() ||
+                    !offline_charging_data_store_.release(it->second)) {
+                    spdlog::warn("chf: Diameter ACR (STOP_RECORD) for unknown Session-Id={}",
+                                 acr->session_id);
+                    result_code = dictionary::ResultCode::kDiameterUnknownSessionId;
+                } else {
+                    offline_session_to_ref.erase(it);
+                    if (acr_stop_counter_ != nullptr) {
+                        acr_stop_counter_->Add(1);
+                    }
+                }
+            } else {
+                spdlog::warn("chf: Diameter ACR with unrecognized Accounting-Record-Type={}",
+                             acr->accounting_record_type);
+                result_code = dictionary::ResultCode::kDiameterUnableToComply;
+            }
+
+            const auto aca = build_aca(*next_header,
+                                       origin_host_,
+                                       origin_realm_,
+                                       acr->session_id,
+                                       acr->accounting_record_type,
+                                       acr->accounting_record_number,
+                                       result_code);
+            boost::asio::write(socket, boost::asio::buffer(aca), ec);
+            if (ec) {
+                spdlog::warn("chf: failed to send ACA: {}", ec.message());
+                return;
+            }
+            continue;
         }
 
         const auto ccr = decode_ccr(*next_avps);

@@ -457,11 +457,29 @@ int main() {
     auto ccr_termination_counter =
         meter->CreateUInt64Counter("chf_diameter_ccr_termination_total",
                                    "Total real Diameter Gy CCR-Termination requests handled");
+    // P4.5/ADR-0059 Stage 4 (Rf half): real Diameter Base Accounting ACR counters, mirroring
+    // offline_create_counter/offline_update_counter/offline_release_counter's own per-operation
+    // shape above -- the same real Nchf_OfflineOnlyCharging decisions, arriving over Rf instead of
+    // the HTTP SBI path. EVENT_RECORD gets its own counter (a real, distinct Accounting-Record-Type
+    // from START_RECORD, not folded together).
+    auto acr_event_counter =
+        meter->CreateUInt64Counter("chf_diameter_acr_event_total",
+                                   "Total real Diameter Rf ACR (EVENT_RECORD) requests handled");
+    auto acr_start_counter =
+        meter->CreateUInt64Counter("chf_diameter_acr_start_total",
+                                   "Total real Diameter Rf ACR (START_RECORD) requests handled");
+    auto acr_interim_counter =
+        meter->CreateUInt64Counter("chf_diameter_acr_interim_total",
+                                   "Total real Diameter Rf ACR (INTERIM_RECORD) requests handled");
+    auto acr_stop_counter = meter->CreateUInt64Counter(
+        "chf_diameter_acr_stop_total", "Total real Diameter Rf ACR (STOP_RECORD) requests handled");
 
-    // P4.5/ADR-0060 Stage 3: real Diameter server -- CER/CEA capability exchange (Stage 2) plus
-    // real CCR-I/U/T dispatched through the exact same charging_engine.hpp functions
-    // Nchf_ConvergedCharging's HTTP Create/Update/Release handlers below call (the single-code-path
-    // property CHARGING_PROMPT.md's P4.5 explicitly requires). Constructed here, after
+    // P4.5/ADR-0060 Stage 3 + ADR-0059 Stage 4: real Diameter server -- CER/CEA capability exchange
+    // (Stage 2) plus real CCR-I/U/T (Stage 3, Gy) dispatched through the exact same
+    // charging_engine.hpp functions Nchf_ConvergedCharging's HTTP Create/Update/Release handlers
+    // below call, and real ACR (Stage 4, Rf) dispatched onto the same offline_charging_data_store
+    // Nchf_OfflineOnlyCharging's own HTTP handlers use -- the single-code-path property
+    // CHARGING_PROMPT.md's P4.5 explicitly requires, for both protocols. Constructed here, after
     // catalog_client/balance_client/the counters above all exist, since its own per-connection
     // threads need real, already-built dependencies to share (see diameter_server.hpp's own header
     // for why it builds its OWN dedicated catalog/balance http2::Client pair per connection rather
@@ -478,12 +496,17 @@ int main() {
                                         charging_data_store,
                                         cdr_writer,
                                         rating_decision_store,
+                                        offline_charging_data_store,
                                         grant_counter.get(),
                                         reserve_rejected_counter.get(),
                                         ccr_initial_counter.get(),
                                         ccr_update_counter.get(),
-                                        ccr_termination_counter.get());
-    spdlog::info("chf: Diameter (Gy) listening on tcp://0.0.0.0:{}", kDiameterPort);
+                                        ccr_termination_counter.get(),
+                                        acr_event_counter.get(),
+                                        acr_start_counter.get(),
+                                        acr_interim_counter.get(),
+                                        acr_stop_counter.get());
+    spdlog::info("chf: Diameter (Gy+Rf) listening on tcp://0.0.0.0:{}", kDiameterPort);
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.

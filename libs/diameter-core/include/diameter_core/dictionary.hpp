@@ -17,6 +17,9 @@ constexpr std::uint32_t kCapabilitiesExchange = 257; // dict_base_proto.c:2604
 constexpr std::uint32_t kDeviceWatchdog = 280;       // dict_base_proto.c:2791
 constexpr std::uint32_t kDisconnectPeer = 282;       // dict_base_proto.c:2714
 constexpr std::uint32_t kCreditControl = 272;        // dict_dcca.c:1353 (RFC 4006, real Gy command)
+constexpr std::uint32_t kAccounting = 271; // dict_base_proto.c:3236 (RFC 6733 base ACR/ACA, real Rf
+                                           // command -- TS 32.299 Rf runs the Diameter Base
+                                           // Accounting application over this same real command)
 } // namespace Command
 
 // Base protocol AVP codes -- dict_base_proto.c. All base AVPs carry AVP_FLAG_VENDOR |
@@ -44,7 +47,25 @@ constexpr std::uint32_t kAcctApplicationId = 259;           // dict_base_proto.c
 constexpr std::uint32_t kVendorSpecificApplicationId = 260; // dict_base_proto.c:882
 constexpr std::uint32_t kSupportedVendorId = 265;           // dict_base_proto.c:447
 constexpr std::uint32_t kInbandSecurityId = 299;            // dict_base_proto.c:817
+constexpr std::uint32_t kAccountingRecordType = 480;        // dict_base_proto.c:2312 (Enumerated)
+constexpr std::uint32_t kAccountingRecordNumber = 485;      // dict_base_proto.c:2388 (Unsigned32)
 } // namespace Avp
+
+// Real Diameter Base Accounting application (RFC 6733 §9, dict_base_proto.c:107: "Diameter Base
+// Accounting") -- distinct real Application-Id from RFC 4006 DCC's own Dcc::kApplicationId=4
+// below. TS 32.299's Rf reference point runs this same real base-protocol accounting application,
+// not a 3GPP-specific one.
+namespace BaseAccounting {
+constexpr std::uint32_t kApplicationId = 3; // dict_base_proto.c:107
+
+// Accounting-Record-Type real enumerated values -- dict_base_proto.c:2304-2308.
+namespace AccountingRecordType {
+constexpr std::int32_t kEvent = 1;
+constexpr std::int32_t kStart = 2;
+constexpr std::int32_t kInterim = 3;
+constexpr std::int32_t kStop = 4;
+} // namespace AccountingRecordType
+} // namespace BaseAccounting
 
 // Real Result-Code enumerated values -- include/libfdproto.h (the #define macros
 // dict_base_proto.c's own real DIAMETER_SUCCESS/DIAMETER_MISSING_AVP enum registrations use).

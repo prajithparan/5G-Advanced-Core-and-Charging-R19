@@ -5177,7 +5177,8 @@ fix.
 ## ADR-0059: P4.5 kickoff -- protocol translator layer architecture, real Diameter reference material, staged plan
 
 **Date:** 2026-08-11
-**Status:** Accepted (Stages 1-3 implemented; Stages 4-5 disclosed as a staged plan, not yet built).
+**Status:** Accepted (Stages 1-3 implemented; Stage 4's Rf half implemented, Sy half blocked on
+real spec material -- see update below; Stage 5 disclosed as a staged plan, not yet built).
 
 **Context:** CHARGING_PROMPT.md's P4.5 asks for a legacy-protocol translator layer -- Diameter
 Ro/Rf/Gy (TS 32.299), Sy (TS 29.219), CAP/CAMEL (TS 29.078), and MAP -- all normalizing to the same
@@ -5262,9 +5263,9 @@ already sets for PFCP. freeDiameter is not linked, not a build dependency -- ref
    convention; a repo-wide check (`grep -rl LLVMFuzzerTestOneInput`) found zero existing libFuzzer
    targets anywhere in this codebase. Both decoder fuzzing and per-protocol TPS spike protection
    (P15) remain real, disclosed gaps, deferred to a later stage, not delivered by Stage 3.
-4. **Stage 4 (not yet built): Rf (offline charging) and Sy (spending limit)** -- the same
-   normalize-to-shared-path pattern applied to CHF's already-real `Nchf_OfflineOnlyCharging`/
-   `Nchf_SpendingLimitControl` handlers (ADR-0055).
+4. **Stage 4: Rf (offline charging, implemented, see the update below) and Sy (spending limit,
+   blocked -- see the same update)** -- the same normalize-to-shared-path pattern applied to CHF's
+   already-real `Nchf_OfflineOnlyCharging`/`Nchf_SpendingLimitControl` handlers (ADR-0055).
 5. **Stage 5 (not yet built, explicitly flagged as a materially different, comparably large effort
    in its own right): CAP/CAMEL (TS 29.078) and MAP.** These are NOT Diameter -- they run over
    TCAP/SCCP/MTP3, the classic SS7 protocol stack, a completely different transport and ASN.1
@@ -5442,6 +5443,65 @@ format-18` clean.
   project's existing manual-verification precedent for multi-process flows CI cannot yet host.
 - Stage 4 (Rf/Sy normalize-to-shared-path) and Stage 5 (CAP/CAMEL/MAP) remain not started, per this
   ADR's original staged plan.
+
+### Update, next day: Stage 4 (Rf half) implemented -- real ACR/ACA, Sy half genuinely blocked
+
+**Rf implemented.** TS 32.299's Rf reference point runs the real RFC 6733 base-protocol
+**Diameter Base Accounting** application (`dict_base_proto.c:107`, real Application-Id **3** --
+distinct from RFC 4006 DCC's Application-Id 4 used for Gy), not a 3GPP-specific one -- already
+fully present in the same vendored `dict_base_proto.c` Stage 1 cited, no new material needed. Real
+ACR/ACA (command-code **271**, `dict_base_proto.c:3212-3316`), `Accounting-Record-Type`=480
+(Enumerated: `EVENT_RECORD`=1/`START_RECORD`=2/`INTERIM_RECORD`=3/`STOP_RECORD`=4,
+`dict_base_proto.c:2304-2308`) and `Accounting-Record-Number`=485 (Unsigned32,
+`dict_base_proto.c:2388`) added to `dictionary.hpp`, each citing its real source line.
+`diameter_server.cpp`'s same per-connection loop (already open for Gy CCR since Stage 3) now also
+decodes ACR and dispatches by `Accounting-Record-Type` onto `Nchf_OfflineOnlyCharging`'s own real
+`OfflineChargingDataStore` (the exact same store `main.cpp`'s HTTP Create/Update/Release handlers
+use): `START_RECORD` -> `create()`, `INTERIM_RECORD` -> `is_active()` check only,
+`STOP_RECORD` -> `release()`. `EVENT_RECORD` (a real, self-contained one-shot record per RFC 6733
+§9.3, not part of a Start/Interim/Stop session) maps to an immediate `create()`+`release()` pair --
+a real, disclosed interpretation choice, since `Nchf_OfflineOnlyCharging` has no distinct "event"
+operation to hold it open with nothing to ever close it. An unknown `Session-Id` on
+`INTERIM_RECORD`/`STOP_RECORD` returns `Result-Code`=5002 (`DIAMETER_UNKNOWN_SESSION_ID`, same
+real code Gy's own CCR-Update/Termination unknown-session path already uses). CER/CEA now also
+advertises real `Acct-Application-Id`=3 alongside Gy's existing `Auth-Application-Id`=4 (both real,
+both genuinely accepted by this one CHF Diameter listener). No rating engine involved anywhere in
+this path -- `Nchf_OfflineOnlyCharging` never had one (main.cpp's own header), so unlike Gy there is
+no `chf::charge_one_usage`-equivalent shared function to point at; the "normalize onto the same
+real store" property is the single-code-path proof here, not a shared rating decision.
+
+**Live-verified, real stack**: real `chf` (Redis-backed `OfflineChargingDataStore`, ClickHouse/E5
+Postgres deliberately left as in Stage 3's own verification) against a real, separately-compiled
+ACR test client (`diameter_core`-linked). CEA correctly advertised `Acct-Application-Id`=3. A real
+`EVENT_RECORD` ACR (Session-Id `...;9001;1`) returned `Result-Code`=2001. A real
+`START_RECORD`/`INTERIM_RECORD`/`STOP_RECORD` sequence on one real Session-Id (`...;9002;1`,
+`Accounting-Record-Number` correctly incrementing 0/1/2) all returned `Result-Code`=2001. A real
+`STOP_RECORD` for a never-seen Session-Id correctly returned `Result-Code`=5002. **Independently
+confirmed via a direct `redis-cli KEYS` query** (not trusting the ACA's own Result-Code alone,
+same "live-verify over self-consistency" discipline this project's own memory of past bugs
+enforces): after all five ACRs, only the `chf:offline:next_id` counter key remained -- both the
+EVENT_RECORD's create+release pair and the START/STOP session's own ref were genuinely created
+and genuinely cleaned up in the real shared Redis store, not just reported as success.
+
+Full rebuild + 158/158 tests pass, `clang-format-18` clean.
+
+**Sy half: genuinely blocked on real spec material, not started.** TS 29.219's Sy reference point
+is a bespoke 3GPP Diameter application (real command `Spending-Limit-Request`/`-Answer`, real
+Application-Id 16777302 per third-party dictionary references found via web search) -- unlike Rf,
+this is NOT part of RFC 6733 base protocol or RFC 4006 DCC, and a direct check of this repo's own
+vendored `simulators/reference/freeDiameter/` tree confirms **no `dict_sy`-equivalent file exists
+there at all** (freeDiameter's own upstream does not ship a stock Sy dictionary the way it does for
+DCC/DCC-3GPP). The only material found (Mobileum's public AVP-dictionary reference pages,
+tech-invite.com's TS 29.219 table-of-contents page) is third-party recreation, not primary spec
+text or an OSI-licensed real dictionary source this project can cite/vendor the way `dict_base_proto
+.c`/`dict_dcca.c`/`dict_dcca_3gpp.c` were arms-length-vendored for Gy/Rf. Per CLAUDE.md's own
+non-negotiable rule ("if a YAML/spec file is unavailable offline: stop and ask, never invent field
+names"), Sy's real AVP codes are NOT guessed from the third-party pages found. The real, freely
+published ETSI PDF (`TS 129 219 V13.2.0`,
+`https://www.etsi.org/deliver/etsi_ts/129200_129299/129219/13.02.00_60/ts_129219v130200p.pdf`) is
+a genuine unblock path (same shape as this ADR's own Stage 1 kickoff, where the user personally ran
+`apt-get install libfreediameter-dev` to unblock Gy) -- asked of the user rather than silently
+skipped or fabricated.
 
 ## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
 

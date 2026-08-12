@@ -38,6 +38,13 @@
 // real connection pool is documented thread-safe already, ADR-0055; CdrWriter/RatingDecisionStore
 // gained a real mutex this Stage specifically because this new concurrent caller now exists, see
 // their own header comments).
+//
+// P4.5/ADR-0059 Stage 4 (Rf half): the same per-connection loop also dispatches real Diameter Base
+// Accounting ACR/ACA (RFC 6733 §9, command-code 271, Application-Id 3 -- TS 32.299's Rf reference
+// point runs this same real base-protocol application, not a 3GPP-specific one), normalized onto
+// `Nchf_OfflineOnlyCharging`'s own real Create/Update/Release (`offline_charging_data_store`) --
+// the same shared-HTTP-handler-state normalize pattern Stage 3 established for Gy/CCR, just with no
+// rating engine involved (`Nchf_OfflineOnlyCharging` never had one, see main.cpp's own header).
 
 namespace chf {
 
@@ -57,11 +64,16 @@ public:
                    ChargingDataStore& charging_data_store,
                    CdrWriter& cdr_writer,
                    RatingDecisionStore& rating_decision_store,
+                   OfflineChargingDataStore& offline_charging_data_store,
                    opentelemetry::metrics::Counter<std::uint64_t>* grant_counter,
                    opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter,
                    opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter,
                    opentelemetry::metrics::Counter<std::uint64_t>* ccr_update_counter,
-                   opentelemetry::metrics::Counter<std::uint64_t>* ccr_termination_counter);
+                   opentelemetry::metrics::Counter<std::uint64_t>* ccr_termination_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* acr_event_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* acr_start_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* acr_interim_counter,
+                   opentelemetry::metrics::Counter<std::uint64_t>* acr_stop_counter);
     ~DiameterServer();
 
     DiameterServer(const DiameterServer&) = delete;
@@ -79,11 +91,16 @@ private:
     ChargingDataStore& charging_data_store_;
     CdrWriter& cdr_writer_;
     RatingDecisionStore& rating_decision_store_;
+    OfflineChargingDataStore& offline_charging_data_store_;
     opentelemetry::metrics::Counter<std::uint64_t>* grant_counter_;
     opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter_;
     opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter_;
     opentelemetry::metrics::Counter<std::uint64_t>* ccr_update_counter_;
     opentelemetry::metrics::Counter<std::uint64_t>* ccr_termination_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* acr_event_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* acr_start_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* acr_interim_counter_;
+    opentelemetry::metrics::Counter<std::uint64_t>* acr_stop_counter_;
     std::thread accept_thread_;
     std::atomic<bool> stop_{false};
 };
