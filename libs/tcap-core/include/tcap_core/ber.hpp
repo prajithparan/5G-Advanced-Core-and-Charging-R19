@@ -41,6 +41,7 @@ constexpr std::uint32_t kNull = 5;
 constexpr std::uint32_t kOctetString = 4;
 constexpr std::uint32_t kObjectIdentifier = 6;
 constexpr std::uint32_t kExternal = 8;
+constexpr std::uint32_t kEnumerated = 10;
 constexpr std::uint32_t kSequence = 16;
 } // namespace UniversalTag
 

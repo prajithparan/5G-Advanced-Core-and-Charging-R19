@@ -5917,6 +5917,85 @@ including default-omission and required-field-rejection cases, 2 composition tes
 `ReturnResultLast`) -- all pass. Full rebuild + `ctest` run (the project's full-suite runner, which
 also enumerates `structural_conformance`): 220/220 total tests pass (203 prior + 17 new).
 
+### Update, 2026-08-14: Stage 7 (MAP) -- real insertSubscriberData codec, closing the MAP/CAP loop
+
+TS 29.002 (MAP) was read for the first time this stage (clause 17, ~170 pages, 25 ASN.1 modules,
+~90+ operations -- mobility management, call handling, SS, SMS, group-call, LCS). Real, stated
+scope decision: building all of MAP would be comparable in size to this entire Diameter effort, so
+this increment covers exactly one real operation -- `insertSubscriberData` (clause 17.6.1, page
+358, real `CODE local:7`, `ERRORS {dataMissing | unexpectedDataValue | unidentifiedSubscriber}`) --
+chosen because it is the real HLR->VLR/MSC mechanism that provisions CAMEL Subscription Info
+(O-CSI/D-CSI), which is what causes a real switch to later invoke Stage 6's CAP `InitialDP`. This
+closes the real architectural loop this whole P4.5 SS7 effort was building toward. The remaining
+~90 real MAP operations are out of scope, real opcodes not yet located beyond the handful cited in
+`map_dictionary.hpp`.
+
+**A real corroborating fact found this stage**: TS 29.002 clause 17.7.1 (page 411) directly defines
+`ServiceKey ::= INTEGER(0..2147483647)`. Stage 6's own `cap_dictionary.hpp` had encoded CAP's own
+`ServiceKey` (imported into CAP from CS1-DataTypes, a different source) as a plain INTEGER on an
+inferred-not-confirmed basis -- this MAP definition is real, primary-text evidence for the same
+value shape from a different, independently-read 3GPP module, upgrading that inference's confidence
+without changing the code (still not a direct citation of CS1-DataTypes itself, so the disclosure in
+`cap_operations.hpp` is left as-is rather than silently upgraded to "confirmed").
+
+**A real, disclosed gap found and NOT worked around**: TS 29.002 clause 17.1.6 states plainly that
+`MobileDomainDefinitions` (which defines the `gsm-NetworkId`/`ac-Id` root arcs `map-ac` is built
+from, and therefore the full numeric Application Context OID for `subscriberDataMngtContext-v3`,
+`{map-ac subscriberDataMngt(16) version3(3)}`) is an external module "defined in the technical
+specification Mobile Services Domain" -- NOT reproduced in TS 29.002 itself. Not fabricated: only
+the real, cited symbolic name/version is recorded in `map_dictionary.hpp`; the numeric OID is left
+unresolved and explicitly flagged, same treatment as the numeric MAP-Errors local error codes
+(module 12 in TS 29.002's own clause 17.1 module list; the clause slot its ordering implies,
+17.6.9, is marked "Void" in this V19.0.0 text, so those numeric codes were not located either).
+Neither gap blocks the operation-argument codec itself, which needs neither.
+
+**A real ASN.1 fact this stage had to get right before writing any codec**: unlike CAP's
+`CAP-gsmSSF-gsmSCF-ops-args` module, MAP's `MAP-MS-DataTypes` module has no CHOICE-tagged fields in
+this increment's scope, so no EXPLICIT-wrap mechanism was needed. A different real subtlety
+appeared instead: several real fields (e.g. `O-BcsmCamelTDPData`'s first two fields,
+`DP-AnalysedInfoCriterion`'s all four fields) are UNTAGGED, retaining their type's own universal
+tag -- and within `DP-AnalysedInfoCriterion` specifically, two untagged sibling fields
+(`dialledNumber`, `gsmSCF-Address`) share the *identical* universal OCTET STRING tag. Real BER
+disambiguates this by definition order, not by tag, so `map_operations.cpp` decodes
+`O-BcsmCamelTDPData` and `DP-AnalysedInfoCriterion` positionally (fixed field order) rather than by
+the tag-lookup approach CAP's codec used throughout -- verified necessary by reading the actual
+field list before writing the decoder, not assumed.
+
+New `libs/map-core`: `map_dictionary.hpp` (real opcodes, cited AC name/version, the two disclosed
+numeric gaps above), `map_operations.hpp/.cpp` (`InsertSubscriberDataArg`, `VlrCamelSubscriptionInfo`,
+`OCsi`/`OBcsmCamelTdpData`, `DCsi`/`DpAnalysedInfoCriterion`, `InsertSubscriberDataRes`). Builds
+directly on `tcap_core`'s existing BER primitives and `Invoke`/`ReturnResult` framing -- no
+duplication. One small, real, shared addition to `tcap_core::UniversalTag`:
+`kEnumerated = 10` (X.690 Table 1), needed for MAP's own untagged ENUMERATED fields and not
+previously required by any TCAP/CAP work.
+
+**Real, disclosed scope narrowing** (every field modeled has a real, cited tag; every field NOT
+modeled is a disclosed gap): `InsertSubscriberDataArg` implements 3 of its real ~50+ fields
+(`imsi`, `msisdn`, `vlrCamelSubscriptionInfo`) -- the real structure is `imsi[0]` plus
+`COMPONENTS OF SubscriberData` (itself ~11 more real fields) plus ~40 more real extension fields up
+to tag `[54]`, none of which are modeled. `VlrCamelSubscriptionInfo` implements 2 of its real 11
+fields (`o-CSI`, `d-CSI`) -- `ss-CSI`, `tif-CSI`, `m-CSI`, `mo-sms-CSI`, `vt-CSI`,
+`t-BCSM-CAMEL-TDP-CriteriaList`, `mt-sms-CSI`, `mt-smsCAMELTDP-CriteriaList` are not modeled.
+`InsertSubscriberDataRes` is a real, valid EMPTY SEQUENCE (the real operation definition marks its
+RESULT "-- optional" and every one of its own real fields is itself OPTIONAL, so this is not a
+simplification) -- `supportedCamelPhases` and the rest are not modeled, would need a BIT STRING BER
+primitive this codebase does not have yet. `gsmSCF-Address`/`dialledNumber`/`msisdn` are carried as
+opaque bytes (real `ISDN-AddressString`/`AddressString` types, not independently read from
+MAP-CommonDataTypes this session); `imsi` uses the same TBCD convention already established
+elsewhere in this codebase (UDM/AKA), not a fresh, unverified claim.
+
+**Not yet done, stated plainly**: no HLR/UDM wiring (no NF's `main()` sends or receives a real
+`insertSubscriberData`; this stage is a pure codec, same "no transport verification yet" disclosure
+already carried forward from Stage 5b/6); no other MAP operation has an argument codec; the two
+numeric gaps above (Application Context OID root, MAP-Errors local codes) remain open, to be
+resolved if/when a live MAP dialogue or `ReturnError` composition is actually needed.
+
+9 new unit tests (`InsertSubscriberDataArg`/`Res` round trips including all-fields-absent and
+malformed-input-rejection cases, `O-CSI`/`D-CSI` round trips through the full nested structure, 2
+composition tests proving a real `insertSubscriberData` travels inside a real TCAP `Invoke` and a
+real `InsertSubscriberDataRes` inside a real `ReturnResultLast`) -- all pass. Full rebuild + `ctest`
+run: 229/229 total tests pass (220 prior + 9 new).
+
 ## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
 
 **Date:** 2026-08-11
