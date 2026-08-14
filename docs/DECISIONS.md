@@ -5773,9 +5773,6 @@ NF -- pure codec, same "wire-codec-first" scope as every prior Stage in this ADR
 
 ### Disclosed, NOT done by Stage 5b (this update)
 
-- No wiring between `tcap_core` and `ss7_core` -- TCAP messages aren't yet carried inside a real
-  SCCP UDT `data` field end-to-end, though both codecs individually exist and are individually
-  tested.
 - AARE (dialogue response) and dialogue-portion-wrapped ABRT (U-Abort) -- real, disclosed gaps in
   `dialogue_portion.hpp`, see its own header.
 - MAP (TS 29.002) and CAP (TS 29.078) themselves -- the actual real operations (SendRoutingInfo,
@@ -5784,6 +5781,19 @@ NF -- pure codec, same "wire-codec-first" scope as every prior Stage in this ADR
   TS 29.002/TS 29.078 ASN.1 or spec material has been located or supplied yet, same class of gap
   Sy had before the user's ETSI PDF unblocked it. The user is looking for real material to unblock
   this the same way.
+
+### Update, same day: `tcap_core`/`ss7_core` composition verified
+
+No new spec material was needed for this -- both codecs' own framing fields
+(`SccpUdt::data`/`M3uaProtocolData::user_protocol_data`) are already plain `std::vector<std::uint8_t>`,
+so no glue code exists to write; the real work was proving the composition actually round-trips.
+New `tests/conformance/test_ss7_tcap_stack.cpp`: a real TC-Begin carrying a real Invoke is encoded,
+placed in a real SCCP UDT's `data` field (addressed by real SSN, `SubsystemNumber::kHlr`/`kMsc`),
+placed in a real M3UA Protocol Data parameter (`ServiceIndicator::kSccp`), framed in a real M3UA
+DATA message (header + TLV) -- then fully decoded back through all four layers, confirming the
+original Invoke's `invoke_id`/`operation_code`/`parameter` survive intact. 198/198 total tests pass
+(197 prior + 1 new), `clang-format-18` clean. Still NOT a real SCTP transport/listener -- pure
+codec composition, proving the layers fit together correctly before any network code is built.
 - No fuzzing, no TPS spike protection -- same carried-forward disclosure as Stage 5a.
 
 ## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
