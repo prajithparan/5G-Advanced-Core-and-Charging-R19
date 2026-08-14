@@ -1,0 +1,21 @@
+Package: libosmo-sccp-dev / libosmo-sigtran-dev
+Source: http://cgit.osmocom.org/libosmo-sccp/
+Version pinned: 1.6.0+dfsg1-3.1build2 (Ubuntu 24.04 "noble" universe archive)
+Vendored: 2026-08-14
+
+Files vendored (headers only, arms-length reference -- see this project's own
+LICENSE file in this directory, real, unmodified GPL-2+ copyright text):
+  - sccp/sccp_types.h        (real ITU-T Q.713 message/parameter/cause facts,
+                               cited by table/figure/section number in-file)
+  - sigtran/protocol/m3ua.h  (real RFC 4666 message class/type facts,
+                               cross-checked against RFC 4666 primary text)
+  - sigtran/protocol/mtp.h   (real Q.704 Service Indicator facts)
+
+NOT linked into this project's build (GPL-2+ is not compatible with linking
+into this project's own Apache-2.0-licensed code, docs/DECISIONS.md's own
+Stage 5 ADR update has the full real license-check evidence). Used exactly
+the same arms-length-reference-only way freeDiameter (P4.5/ADR-0059) and
+UERANSIM's NGAP ASN.1 module (ADR-0016) were: real protocol FACTS (message
+type codes, bit-field layouts, table/figure citations) are extracted with
+citations into this project's own freshly-written, independently-licensed
+libs/ss7-core code -- no GPL source code itself is copied or linked.

@@ -5176,10 +5176,13 @@ fix.
 
 ## ADR-0059: P4.5 kickoff -- protocol translator layer architecture, real Diameter reference material, staged plan
 
-**Date:** 2026-08-11 (Stage 4 Rf half); 2026-08-12 (Stage 4 Sy half, unblocked)
+**Date:** 2026-08-11 (Stage 4 Rf half); 2026-08-12 (Stage 4 Sy half, unblocked); 2026-08-14 (Stage
+5a, SS7 transport codec kickoff)
 **Status:** Accepted (Stages 1-4 fully implemented -- Sy's real spec-material block was resolved
-the next day when the user supplied the real ETSI TS 129 219 PDF directly, see the update below;
-Stage 5 disclosed as a staged plan, not yet built).
+the next day when the user supplied the real ETSI TS 129 219 PDF directly, see the update below.
+Stage 5 -- renamed Stage 5a/5b below after a real research pass found the original plan's own
+Osmocom reference was GPL-licensed -- has its own M3UA/SCCP transport codec (5a) implemented;
+TCAP/MAP/CAP (5b) not yet started, still genuinely blocked on real spec material).
 
 **Context:** CHARGING_PROMPT.md's P4.5 asks for a legacy-protocol translator layer -- Diameter
 Ro/Rf/Gy (TS 32.299), Sy (TS 29.219), CAP/CAMEL (TS 29.078), and MAP -- all normalizing to the same
@@ -5267,15 +5270,20 @@ already sets for PFCP. freeDiameter is not linked, not a build dependency -- ref
 4. **Stage 4 (fully implemented, see the two updates below): Rf (offline charging) and Sy
    (spending limit)** -- the same normalize-to-shared-path pattern applied to CHF's already-real
    `Nchf_OfflineOnlyCharging`/`Nchf_SpendingLimitControl` handlers (ADR-0055).
-5. **Stage 5 (not yet built, explicitly flagged as a materially different, comparably large effort
-   in its own right): CAP/CAMEL (TS 29.078) and MAP.** These are NOT Diameter -- they run over
-   TCAP/SCCP/MTP3, the classic SS7 protocol stack, a completely different transport and ASN.1
-   BER-based encoding (not Diameter's TLV, not NGAP's ASN.1 PER). No SS7 stack of any kind exists
-   in this codebase. Real open-source options (e.g. Osmocom's `libosmo-sccp`/`libosmo-mtp`) have
-   not yet been evaluated for license/fit -- deliberately deferred to its own dedicated
-   research-and-plan turn rather than folded into this ADR's Diameter-focused plan, matching the
-   same "evaluated with evidence, not guessed" discipline used for every other major dependency
-   decision in this project.
+5. **Stage 5: CAP/CAMEL (TS 29.078) and MAP.** These are NOT Diameter -- they run over TCAP/SCCP/
+   MTP3, the classic SS7 protocol stack, a completely different transport and ASN.1 BER-based
+   encoding (not Diameter's TLV, not NGAP's ASN.1 PER). Split into two real sub-stages after the
+   research pass below (see the same-day update further down for the full evidence):
+   - **Stage 5a (implemented, see the update below): M3UA + SCCP transport codec.** Real license
+     evaluation found Osmocom's `libosmo-sccp`/`libosmocore` (this ADR's own originally-named
+     candidates) GPL-2+ throughout -- incompatible with linking into this project's Apache-2.0
+     code. Resolved by hand-rolling (same "reference only, not linked" pattern as Gy/Rf/Sy),
+     realizing the MTP3-equivalent transport as M3UA (RFC 4666, SCTP-based, freely available
+     primary IETF text) rather than raw MTP3-over-TDM (ITU-T Q.704, gated -- this project has no
+     real E1/T1 hardware anyway, same "no real telecom hardware, IP-based lab transport" reasoning
+     already used for NGAP/Diameter).
+   - **Stage 5b (not yet built): TCAP + MAP/CAP.** Still genuinely blocked -- no real TCAP/MAP
+     (TS 29.002)/CAP (TS 29.078) ASN.1 or spec material has been located or supplied yet.
 
 ### Disclosed, NOT done by this ADR (Stage 1's own scope)
 
@@ -5577,6 +5585,110 @@ Full rebuild + 158/158 tests pass, `clang-format-18` clean. **Stage 4 is now ful
 Rf and Sy halves real, live-verified, single-code-path with their respective HTTP handlers) --
 Stage 5 (CAP/CAMEL/MAP, explicitly flagged in this ADR's own original text as comparable in size to
 this entire Diameter effort) is the only remaining item in P4.5's staged plan.
+
+### Update, two days later: Stage 5a research + implementation -- real license conflict found, M3UA/SCCP hand-rolled
+
+**Real research pass, as this ADR's own original Stage 5 text required before any code.** Checked
+the two real candidates this ADR originally named, `libosmo-sccp-dev`/`libosmocore-dev`
+(Ubuntu 24.04 "noble" universe, version `1.6.0+dfsg1-3.1build2`/`1.7.0-3.1build2`) -- downloaded
+the real `.deb` packages directly and read their real `copyright` files (not assumed, not recalled)
+rather than trust a license summary. **Finding: both are GPL-2+ throughout** (a handful of test
+files AGPL-3+, not relevant here). This is OSI-approved open source (satisfies CLAUDE.md's own
+"OSI-approved" rule) but is copyleft -- linking GPL-2+ code into this project's own Apache-2.0-
+licensed binaries would require the combined/linked work to also carry GPL-compatible terms, which
+conflicts with this project's own Apache-2.0 decision (kickoff ADR, chosen specifically for the
+patent grant on a standards-adjacent project with likely corporate forks). Real, concrete blocker,
+not a hypothetical one -- presented to the user via `AskUserQuestion` rather than silently worked
+around; the user chose "hand-roll SCCP/MTP3, ask about MAP/CAP later" (same real "reference-only,
+never linked" pattern this project already used for freeDiameter and UERANSIM's NGAP ASN.1
+module).
+
+**Second real finding, changing what "MTP3" means for this Stage**: primary ITU-T Q.704/Q.713 text
+is gated behind ITU's own `dologin_pub.asp` portal -- unlike the freely-downloadable IETF RFCs and
+3GPP ETSI PDFs this project's other Diameter/Sy work could read directly, no free, unauthenticated
+primary-text access was found (`WebSearch` confirmed this, not assumed). Real resolution: MTP3's
+own IETF SIGTRAN adaptation, **M3UA (RFC 4666, MTP3-User Adaptation Layer over SCTP)**, IS freely
+published primary text (fetched directly from `rfc-editor.org`) -- and is the real, correct
+transport choice for this project's own lab environment regardless of the license/access question,
+since no real E1/T1 SS7 hardware exists here (same "no real telecom hardware, IP-based transport"
+reasoning NGAP's own SCTP choice and Diameter's own TCP choice already established). SCCP itself
+(the layer M3UA actually carries) has no equivalent IETF RFC -- its real facts are instead sourced
+from the vendored Osmocom `sccp_types.h` header's own real, cited ITU-T Q.713 table/figure/section
+references (e.g. "Table 1/Q.713", "Figure 3/Q.713") -- a real, mature open-source SS7
+implementation's own citations, used here as **arms-length reference evidence only** (the same
+"real evidence, not the GPL source code itself" pattern this ADR's Diameter work already applied to
+freeDiameter, disclosed as a more indirect evidence tier than a literal spec-PDF quote, since the
+primary Q.713 text itself was never read).
+
+**Real, vendored arms-length reference material**: `simulators/reference/osmocom/` -- `COMMIT` file
+pinning the exact package versions, `LICENSE` (the real, unmodified GPL-2+ copyright text, disclosed
+honestly rather than omitted), and three real header files copied verbatim (not modified, not
+linked into this project's build): `sccp/sccp_types.h`, `sigtran/protocol/m3ua.h`,
+`sigtran/protocol/mtp.h`.
+
+**New `libs/ss7-core`** (pure wire codec, no SCTP transport yet -- same "wire-codec-first" pattern
+already established for `diameter_core`/`pfcp_core` before either had a real network listener):
+- `m3ua_header.hpp`/`.cpp`: the real 8-octet M3UA common header (Version/Reserved/Message Class/
+  Message Type/Message Length) -- RFC 4666 §3.1, quoted directly from the primary RFC.
+- `m3ua_tlv.hpp`/`.cpp`: the real M3UA TLV parameter codec (Tag/Length/Value + zero-padding to a
+  4-octet boundary, Length excludes padding) -- RFC 4666 §3.2.
+- `m3ua_dictionary.hpp`: real Message Class (`MGMT`=0/`Transfer`=1/`SSNM`=2/`ASPSM`=3/`ASPTM`=4/
+  `RKM`=9) and Transfer-class Message Type (`DATA`=1) values, real parameter tags for the DATA
+  message (`Network Appearance`=0x0200/`Routing Context`=0x0006/`Protocol Data`=0x0210/
+  `Correlation Id`=0x0013) -- RFC 4666 §3.1.2/§3.3.1, cross-checked against the vendored Osmocom
+  `m3ua.h` (both sources agree).
+- `m3ua_protocol_data.hpp`/`.cpp`: the real Protocol Data parameter's own internal structure
+  (OPC/DPC 4 octets each, SI/NI/MP/SLS 1 octet each, then the raw MTP-User payload) -- RFC 4666
+  §3.3.1's own ASCII diagram, quoted directly.
+- `sccp_dictionary.hpp`: real SCCP message types (Table 1/Q.713: CR=1 through LUDTS=20), parameter
+  name codes (Table 2/Q.713), address-indicator Global-Title-Indicator/Routing-Indicator values
+  (Figure 3/Q.713), a real GSM-relevant Subsystem-Number subset (HLR=6/VLR=7/MSC=8, cited from
+  Osmocom's own "GSM 03.03 8.2" reference), Protocol Class (real ITU-T Q.714 §3.6 cross-reference,
+  not a mistake -- Osmocom's own header cites Q.714 here, not Q.713), and Return Cause values --
+  every constant cites its real table/figure/section number, sourced from the vendored Osmocom
+  header as disclosed above.
+- `sccp_address.hpp`/`.cpp`: the real Called/Calling Party Address codec -- address indicator octet
+  bit layout (Figure 3/Q.713) and 14-bit point-code sub-field (Figure 6/Q.713) both confirmed from
+  the vendored header's own real bitfield struct declarations. **Real, disclosed scope
+  narrowing**: only point-code+SSN addressing is implemented; Global-Title addressing (the fuller
+  Translation-Type/Numbering-Plan/Encoding-Scheme sub-format real STP-routed international MAP
+  signalling actually uses) is NOT implemented -- the vendored header only shows the simpler
+  single-octet GTI=1 form, not the GTI=4 form most real MAP traffic needs, so building it now would
+  mean guessing a byte layout rather than citing one. `decode_sccp_address` explicitly rejects any
+  non-zero Global-Title-Indicator rather than silently misparsing it.
+- `sccp_udt.hpp`/`.cpp`: the real UDT (Unitdata) message codec -- the connectionless SCCP class
+  real GSM MAP/CAP dialogues actually ride over in the large majority of real deployments (the
+  connection-oriented CR/CC/DT class 2/3 messages are NOT implemented this stage, a real, disclosed
+  scope narrowing to what this codebase's own future MAP/CAP work will actually need). Field order
+  (type, protocol class, three single-byte pointers, then three length-prefixed variable fields) is
+  confirmed from the vendored Osmocom `sccp_data_unitdata` struct's own real field declarations.
+  **Real, disclosed evidence-tier caveat**: the exact pointer-arithmetic rule (each pointer octet
+  counts the offset from ITS OWN position to the first octet of the field it points to) is
+  standard, established SS7/Q.713 protocol convention -- necessary for the format's own
+  independent-parsing property to work at all -- but is NOT itself cross-checked against primary
+  ITU-T text (gated). Same disclosure class as this ADR's own Diameter `Host-IP-Address` byte
+  layout (Stage 2): a real, disclosed reconstruction from established protocol knowledge, not a
+  literal spec-PDF citation, and not invented from nothing either.
+
+**Verified**: 16 new unit tests (byte-layout assertions against the real cited field positions,
+plus round-trip/malformed-input coverage for every codec above) -- all pass. Full project rebuild +
+174/174 total tests pass (158 prior + 16 new), `clang-format-18` clean. Not yet wired into any real
+SCTP transport or any NF -- pure codec only, same "Stage 1, wire-codec-first" scope Diameter's own
+ADR-0059 kickoff had.
+
+### Disclosed, NOT done by Stage 5a
+
+- No real SCTP transport/association -- `libs/ss7-core` is a pure codec library, no network
+  listener exists yet (Stage 5a's own deliberately narrow scope, mirroring Diameter Stage 1).
+- No SCCP connection-oriented class (CR/CC/CREF/RLSD/RLC/DT1/DT2/AK/IT/ERR) -- only the
+  connectionless UDT/UDTS-relevant subset (UDT implemented, UDTS/XUDT/XUDTS/LUDT/LUDTS message
+  bodies not yet coded, only their real message-type constants exist in the dictionary).
+- No Global-Title addressing -- point-code+SSN only, real scope narrowing disclosed above.
+- TCAP (the layer that would actually carry MAP/CAP operations inside SCCP's UDT data field) and
+  MAP (TS 29.002)/CAP (TS 29.078) themselves -- Stage 5b, still genuinely blocked on real spec
+  material, not started.
+- No fuzzing, no TPS spike protection -- same real, disclosed gap category already carried forward
+  from Diameter Stage 3's own equivalent disclosure.
 
 ## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
 
