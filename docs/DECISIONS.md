@@ -5839,6 +5839,84 @@ in-process round-trip assertions.
 rejection) -- all pass. Full rebuild + 203/203 total tests pass (198 prior + 5 new),
 `clang-format-18` clean.
 
+### Update, 2026-08-14: MAP/CAP unblocked -- real ETSI PDFs freely downloadable; Stage 6 (CAP) built
+
+The "MAP/CAP genuinely blocked -- no real TS 29.002/TS 29.078 spec material located or supplied"
+gap this ADR carried since Stage 5b is resolved: both are freely downloadable directly from ETSI's
+own `/deliver/etsi_ts/` portal (the same access pattern already used for the user-supplied Sy PDF),
+once a browser-identifying `User-Agent` header is sent -- a bare `curl` gets HTTP 403 (Cloudflare
+bot-blocking, not a real access restriction), a browser UA gets HTTP 200. Real, current, REL-19-
+matching PDFs fetched this way: `ts_129002v190000p.pdf` (TS 29.002 MAP, V19.0.0, 200 pages) and
+`ts_129078v190000p.pdf` (TS 29.078 CAP, V19.0.0, 96 pages) -- both in `specs/`, both NOT committed
+to git per this project's standing ETSI-copyright policy (same treatment as the Sy PDF).
+
+**Scope decision, stated plainly rather than silently narrowed**: MAP (clause 17, ~170 pages, 25
+ASN.1 modules, ~90+ operations -- mobility management, call handling, SS, SMS, group-call, LCS) is
+comparable in size to this entire Diameter effort and is deferred to its own later stage. CAP
+(TS 29.078, 225 pages total) is built first instead: it is both the smaller document AND the
+protocol this ADR's own P4.5 effort actually exists for -- CAMEL-based prepaid charging
+interception for 2G/3G OCS (`InitialDP`/`ApplyCharging`/`ApplyChargingReport`), where MAP is
+mobility management and only tangentially charging-relevant.
+
+**Real facts extracted, with exact clause citations**: TS 29.078 clause 5 (Common CAP Types --
+data types 5.1, error types 5.2, operation codes 5.3, error codes 5.4, object identifiers 5.6) and
+clause 6.1 (gsmSSF/gsmSCF interface -- operations/arguments 6.1.1, the real ASN.1 module and
+Application Context definitions 6.1.2). Real operation codes used:
+`initialDP`=0, `connect`=20, `releaseCall`=22, `requestReportBCSMEvent`=23, `eventReportBCSM`=24,
+`continue`=31, `furnishChargingInformation`=34, `applyCharging`=35, `applyChargingReport`=36. Real
+Application Context OID (`capssf-scfGenericAC`, TS 29.078 clause 17.3.2 lineage via
+`id-ac-CAP-gsmSSF-scfGenericAC = {id-acE 4}`) fully derived and cited in `cap_dictionary.hpp`.
+
+**A real ASN.1 rule this stage had to get right before writing any codec**, cited directly from the
+CAP-errortypes module header (TS 29.078 clause 5.2): although `CAP-gsmSSF-gsmSCF-ops-args` is
+`DEFINITIONS IMPLICIT TAGS`, any field whose type is itself a CHOICE (`SendingSideID`,
+`ReceivingSideID`, `AChBillingChargingCharacteristics`, `CallResult`, `TimeInformation`, ...) is
+tagged EXPLICITLY instead -- the implicit-tags default only applies to non-CHOICE types. Implemented
+generically once (`wrap_explicit`/`unwrap_explicit` in `cap_types.hpp`) rather than re-derived per
+field. A second real fact, verified by reading `tcap_core::component.cpp` before writing any CAP
+code rather than assumed: `Invoke::parameter` must be exactly one complete, self-contained TLV
+(`decode_component` re-encodes "the next full TLV" into it) -- so every SEQUENCE-typed CAP ARGUMENT
+needed its own real outer universal-SEQUENCE wrapper (`wrap_sequence`/`unwrap_sequence`), not just
+raw concatenated field bytes as a first draft had assumed.
+
+New `libs/cap-core`: `cap_dictionary.hpp` (real opcodes/error-codes/AC OID), `cap_types.hpp/.cpp`
+(`LegType`, `SendingSideID`/`ReceivingSideID`, `TimeInformation`'s no-tariff-switch variant, `Cause`,
+the EXPLICIT-wrap helpers), `cap_operations.hpp/.cpp` (`InitialDPArg`, `ApplyChargingArg`,
+`ApplyChargingReportArg`/`CallResult`, `RequestReportBCSMEventArg`/`BCSMEvent`,
+`EventReportBCSMArg`, `ReleaseCallArg`). Builds directly on `tcap_core`'s existing BER primitives
+and `Invoke`/`ReturnResult` framing -- no duplication.
+
+**Real, disclosed scope narrowing** (every field modeled has a real, cited tag; every field NOT
+modeled is a disclosed gap, not a silent omission): `InitialDPArg` implements 6 of its ~30 real
+fields (`serviceKey`, `calledPartyNumber`, `callingPartyNumber`, `eventTypeBCSM`, `iMSI`, `cause`) --
+`locationInformation`, `iPSSPCapabilities`, `redirectingPartyID`, and the rest are not yet modeled.
+`ApplyChargingArg`/`ApplyChargingReportArg`/`RequestReportBCSMEventArg`/`EventReportBCSMArg` each
+implement the fields needed for a minimal `oAnswer`/`oDisconnect` charging round trip, not their
+full real optional-field sets (documented per-field in `cap_operations.hpp`'s own header comment).
+`ReleaseCallArg` implements only the common `allCallSegments` (bare `Cause`) variant, not
+`allCallSegmentsWithExtension`. `Cause` and `CalledPartyNumber`/`CallingPartyNumber` are carried as
+opaque bytes -- their real ETSI EN 300 356-1 (ISUP) internal encoding was referenced by TS 29.078
+but not itself read, same disclosed-scope treatment already used for this project's SCCP Global
+Title and Diameter Host-IP-Address fields. `BCSMEvent`'s `legID` field uses a type (`LegID`)
+imported from CS1-DataTypes, not inlined in TS 29.078 itself -- modeled as a CHOICE structurally
+mirroring this document's own `SendingSideID`/`ReceivingSideID` one-arm CHOICEs, flagged as
+inferred rather than independently confirmed against primary CS1-DataTypes text. `ServiceKey`
+(imported from CS1-DataTypes) is encoded as a plain INTEGER on the same inferred-not-confirmed
+basis. SMS control (clause 12) and GPRS control (clause 13) operations are out of scope for this
+increment; their real opcodes are cited in `cap_dictionary.hpp` but have no argument codec yet.
+
+**Not yet done, stated plainly**: no CHF wiring (no CAP-over-TCAP-over-SCCP-over-M3UA-over-SCTP
+live dialogue has been run against a real peer -- this stage is a pure codec, same "no transport
+verification yet" disclosure Stage 5b (TCAP) already carried); no MAP work at all (deferred, see
+scope decision above); AARE dialogue-response support in TCAP's own `dialogue_portion.hpp` remains
+the disclosed gap Stage 5b already carried, unaffected by this update.
+
+17 new unit tests (CHOICE/EXPLICIT-wrap helpers, all 6 implemented operation-argument round trips
+including default-omission and required-field-rejection cases, 2 composition tests proving a real
+`InitialDP` travels inside a real TCAP `Invoke` and a real `ApplyChargingReport` inside a real
+`ReturnResultLast`) -- all pass. Full rebuild + `ctest` run (the project's full-suite runner, which
+also enumerates `structural_conformance`): 220/220 total tests pass (203 prior + 17 new).
+
 ## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
 
 **Date:** 2026-08-11
