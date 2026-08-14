@@ -5177,7 +5177,7 @@ fix.
 ## ADR-0059: P4.5 kickoff -- protocol translator layer architecture, real Diameter reference material, staged plan
 
 **Date:** 2026-08-11 (Stage 4 Rf half); 2026-08-12 (Stage 4 Sy half, unblocked); 2026-08-14 (Stage
-5a, SS7 transport codec kickoff)
+5a, SS7 transport codec kickoff, and Stage 5b, TCAP codec, same day)
 **Status:** Accepted (Stages 1-4 fully implemented -- Sy's real spec-material block was resolved
 the next day when the user supplied the real ETSI TS 129 219 PDF directly, see the update below.
 Stage 5 -- renamed Stage 5a/5b below after a real research pass found the original plan's own
@@ -5282,8 +5282,11 @@ already sets for PFCP. freeDiameter is not linked, not a build dependency -- ref
      primary IETF text) rather than raw MTP3-over-TDM (ITU-T Q.704, gated -- this project has no
      real E1/T1 hardware anyway, same "no real telecom hardware, IP-based lab transport" reasoning
      already used for NGAP/Diameter).
-   - **Stage 5b (not yet built): TCAP + MAP/CAP.** Still genuinely blocked -- no real TCAP/MAP
-     (TS 29.002)/CAP (TS 29.078) ASN.1 or spec material has been located or supplied yet.
+   - **Stage 5b: TCAP (implemented, see the update below) + MAP/CAP (still not started).** The
+     generic TCAP (Q.773) dialogue/component layer is real and complete; MAP (TS 29.002)/CAP
+     (TS 29.078) themselves -- the actual CAMEL/mobility operations that would ride inside TCAP's
+     own opaque Invoke/ReturnResult parameter bytes -- remain genuinely blocked, no real ASN.1 or
+     spec material for either has been located or supplied yet.
 
 ### Disclosed, NOT done by this ADR (Stage 1's own scope)
 
@@ -5689,6 +5692,99 @@ ADR-0059 kickoff had.
   material, not started.
 - No fuzzing, no TPS spike protection -- same real, disclosed gap category already carried forward
   from Diameter Stage 3's own equivalent disclosure.
+
+### Update, same day: Stage 5b (TCAP layer) implemented -- MAP/CAP still blocked
+
+The user pointed at a real, complete open-source reference: `github.com/restcomm/jss7`, a mature
+Java implementation of the full SS7 stack (TCAP, MAP, CAP, SCCP, ISUP, INAP -- confirmed via its
+own real root directory listing). **Real license check performed before any code, same discipline
+as Stage 5a's own Osmocom check**: downloaded the real repo-level `LICENSE` file directly (not
+assumed, not recalled) -- **AGPL-3.0** (dual-licensed with a commercial TeleStax alternative, but
+the free/open one is AGPL-3.0, even more restrictive than Stage 5a's GPL-2+ finding for Osmocom,
+since AGPL also triggers on network use). Some individual source file headers in this vendored copy
+say LGPL-2.1 (stale, from an earlier point in the project's real history) -- the repository's own
+current, authoritative `LICENSE` file is what this project's real evidence is based on, disclosed
+in `simulators/reference/jss7/COMMIT`. Same conclusion as Stage 5a: **not linked**, used as
+arms-length reference only.
+
+**Real facts extracted** (each individually fetched from jss7's own real source files via the
+GitHub API, not assumed): jss7's TCAP implementation has no separate `.asn`/`.asn1` grammar file
+(confirmed by searching its full real repo tree) -- unlike UERANSIM's vendored NGAP module, MAP/CAP
+messages are hand-encoded in Java, so there is no raw 3GPP-published ASN.1 text to regenerate code
+from the way NGAP's own `ngap-17.9.asn` was used. Real tag constants and field structures were
+instead extracted directly from jss7's own real interface/impl source (`Invoke.java`,
+`ReturnResult.java`, `ReturnResultLast.java`, `ReturnError.java`, `Reject.java`,
+`OperationCode.java`, `ErrorCode.java`, `TCBeginMessage.java`/`TCContinueMessage.java`/
+`TCEndMessage.java`/`TCAbortMessage.java`/`TCUniMessage.java`, `DialogAPDU.java`,
+`ApplicationContextName.java`, `ProtocolVersion.java`, `UserInformation.java`,
+`DialogPortionImpl.java`, `DialogRequestAPDUImpl.java`, `DialogResponseAPDUImpl.java`) --
+`DialogPortionImpl.java`'s own real Javadoc is unusually strong evidence, directly citing exact
+ITU-T Q.773 table numbers (Table 30, 33, 34, 36, 37) alongside the byte-level structure, a
+citation quality closer to a primary-text quote than Stage 5a's own Osmocom evidence. Vendored at
+`simulators/reference/jss7/` (arms-length, real AGPL-3.0 `LICENSE` preserved unmodified, `COMMIT`
+pinning the exact real commit `81a54df19bb24878ab21bb88377ca45533b3a974`).
+
+**New `libs/tcap-core`** (pure wire codec, no SCTP/M3UA/SCCP transport wiring yet -- MAP/CAP
+argument bytes ride opaquely inside, not decoded):
+- `ber.hpp`/`.cpp`: a generic ASN.1 BER Tag-Length-Value codec (ITU-T X.690 -- established,
+  standard ASN.1 wire format, not project-specific) with both short- and long-form length, and the
+  high-tag-number multi-byte tag form (needed since `UserInformation`'s real tag is exactly 30,
+  right at the encoding boundary). Also real OBJECT IDENTIFIER (X.690 §8.19) and minimal-length
+  two's-complement INTEGER (§8.3) codecs.
+- `component.hpp`/`.cpp`: the five real Q.773 component types -- `Invoke` (tag 1), `ReturnResult`
+  (tag 7, real Q.773 structure confirmed from `ReturnResultImpl.decode`: InvokeID then an OPTIONAL
+  SEQUENCE wrapping {OperationCode, Parameter} together, not two independent fields),
+  `ReturnResultLast` (tag 2, same structure as ReturnResult), `ReturnError` (tag 3, InvokeID +
+  ErrorCode + optional Parameter, no SEQUENCE wrapper -- confirmed a real, deliberate structural
+  difference from ReturnResult, not an inconsistency), `Reject` (tag 4, real CHOICE between a known
+  InvokeID and a NULL "general problem" case, plus a real 4-way Problem CHOICE whose context tag
+  number IS the sub-choice discriminant -- `ProblemType.General/Invoke/ReturnResult/ReturnError` =
+  0/1/2/3, cited from jss7's own `ProblemType.java`). Operation/error codes and parameters are
+  opaque bytes, real Q.773 `ANY DEFINED BY operationCode` semantics -- MAP/CAP-specific argument
+  types are not decoded (Stage 5b's own real scope boundary).
+- `message.hpp`/`.cpp`: the five real Q.773 TC message types -- Begin (`[APPLICATION 2]`=0x62),
+  Continue (`[APPLICATION 5]`=0x65), End (`[APPLICATION 4]`=0x64), Abort (`[APPLICATION 7]`=0x67),
+  Uni (`[APPLICATION 1]`=0x61) -- with their real
+  OriginatingTransactionId/DestinationTransactionId (`[APPLICATION 8]`/`[APPLICATION 9]`) and
+  P-Abort-Cause (`[APPLICATION 10]`) sub-fields, and the real Component-portion wrapper
+  (`[APPLICATION 12]`=0x6C). Real, confirmed CHOICE: `TcAbort` carries EITHER a real P-Abort-Cause
+  (protocol-level abort) OR a DialoguePortion (U-Abort, TCAP-user-initiated) -- mutually exclusive,
+  matching the real spec's own structure, not modeled as two independent optionals.
+- `dialogue_portion.hpp`/`.cpp`: the real structured DialoguePortion (`[APPLICATION 11]`=0x6B)
+  wrapping a real EXTERNAL (`[UNIVERSAL 8]`) containing {a real dialogue-as-id OID
+  (`0.0.17.773.1.1.1` for structured, Table 37/Q.773 -- unstructured's own OID,
+  `0.0.17.773.1.2.1`, Table 36/Q.773, is cited but not built), a real Single-ASN.1-type wrapper
+  (`[CONTEXT 0]`), and a real AARQ (dialogue request/establishment, `[APPLICATION 0]`) with its own
+  optional ProtocolVersion (`[CONTEXT 0]`, opaque real BIT STRING content), mandatory
+  ApplicationContextName (`[CONTEXT 1]`, an OBJECT IDENTIFIER -- the caller supplies the real,
+  spec-defined AC name OID for whichever MAP/CAP service the dialogue is for), and optional
+  UserInformation (`[CONTEXT 30]`, opaque). **Real, disclosed scope narrowing**: AARE (dialogue
+  response) is NOT implemented -- its own real `Result`/`ResultSourceDiagnostic` sub-fields
+  (confirmed to exist via `DialogResponseAPDUImpl.java`, tags 2 and 3 respectively) need further
+  real evidence this pass didn't fully gather, disclosed rather than guessed at. A dialogue-portion-
+  wrapped ABRT (real U-Abort) is likewise not implemented -- `TcAbort::p_abort_cause` already
+  covers the real protocol-level abort case fully.
+
+**Verified**: 23 new unit tests (real byte-layout assertions for the BER TLV/tag/length forms,
+round-trip coverage for every component/message/dialogue-portion type, malformed-input rejection)
+-- all pass. Full project rebuild + 197/197 total tests pass (174 prior + 23 new),
+`clang-format-18` clean. Not yet wired into `libs/ss7-core`'s own SCCP UDT transport or any real
+NF -- pure codec, same "wire-codec-first" scope as every prior Stage in this ADR.
+
+### Disclosed, NOT done by Stage 5b (this update)
+
+- No wiring between `tcap_core` and `ss7_core` -- TCAP messages aren't yet carried inside a real
+  SCCP UDT `data` field end-to-end, though both codecs individually exist and are individually
+  tested.
+- AARE (dialogue response) and dialogue-portion-wrapped ABRT (U-Abort) -- real, disclosed gaps in
+  `dialogue_portion.hpp`, see its own header.
+- MAP (TS 29.002) and CAP (TS 29.078) themselves -- the actual real operations (SendRoutingInfo,
+  InitialDP, ApplyCharging, and the ~150 others) that would populate `Invoke`/`ReturnResult`'s own
+  opaque `parameter` bytes with real, specific ASN.1 structures. Genuinely blocked -- no real
+  TS 29.002/TS 29.078 ASN.1 or spec material has been located or supplied yet, same class of gap
+  Sy had before the user's ETSI PDF unblocked it. The user is looking for real material to unblock
+  this the same way.
+- No fuzzing, no TPS spike protection -- same carried-forward disclosure as Stage 5a.
 
 ## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
 

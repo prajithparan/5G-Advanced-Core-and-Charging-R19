@@ -1,0 +1,21 @@
+Repository: RestComm/jss7
+URL: https://github.com/RestComm/jss7
+Branch: master
+Commit pinned: 81a54df19bb24878ab21bb88377ca45533b3a974
+Vendored: 2026-08-14
+
+Files vendored (Java source, arms-length reference ONLY -- see this project's own real,
+unmodified AGPL-3.0 LICENSE text in this directory): the real ITU-T Q.773 TCAP tag constants
+(interfaces under tcap-api/asn/comp/, tcap-api/asn/) and DialogPortionImpl.java's own real Javadoc
+(which itself cites exact ITU-T Q.773 table numbers: Table 30, 33, 34, 36, 37).
+
+NOT linked into this project's build (AGPL-3.0 is not compatible with linking into this project's
+own Apache-2.0-licensed code -- see docs/DECISIONS.md's own Stage 5b ADR update for the real
+license-check evidence, same conclusion already reached for Osmocom/SCCP in Stage 5a). Used
+exactly the same arms-length-reference-only way Osmocom, freeDiameter, and UERANSIM's NGAP ASN.1
+module were: real protocol FACTS (tag numbers, tag classes, real cited ITU-T table numbers, real
+OID values) are extracted with citations into this project's own freshly-written, independently-
+licensed libs/tcap-core code -- no AGPL source code itself is copied or linked. Individual file
+license headers in this vendored copy may say LGPL-2.1 (an older, stale per-file header) -- the
+repository's own current, authoritative LICENSE file (AGPL-3.0, also vendored here unmodified) is
+what this project's own real license-check evidence is based on.
