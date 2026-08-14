@@ -5792,9 +5792,52 @@ placed in a real SCCP UDT's `data` field (addressed by real SSN, `SubsystemNumbe
 placed in a real M3UA Protocol Data parameter (`ServiceIndicator::kSccp`), framed in a real M3UA
 DATA message (header + TLV) -- then fully decoded back through all four layers, confirming the
 original Invoke's `invoke_id`/`operation_code`/`parameter` survive intact. 198/198 total tests pass
-(197 prior + 1 new), `clang-format-18` clean. Still NOT a real SCTP transport/listener -- pure
-codec composition, proving the layers fit together correctly before any network code is built.
-- No fuzzing, no TPS spike protection -- same carried-forward disclosure as Stage 5a.
+(197 prior + 1 new), `clang-format-18` clean. Still NOT a real SCTP transport/listener at the time
+of that update -- pure codec composition, proving the layers fit together correctly before any
+network code was built. (No fuzzing, no TPS spike protection -- same carried-forward disclosure as
+Stage 5a; still true as of this ADR.)
+
+### Update, same day: real M3UA ASPSM/ASPTM handshake + real kernel SCTP transport
+
+MAP/CAP remains genuinely blocked (real spec material still not located/supplied), so this
+increment stayed within the already-evidenced M3UA/SCCP/TCAP work: the real M3UA capability/
+activation handshake (RFC 4666 §3.5 ASPSM, §3.7 ASPTM) a real M3UA peer runs before any DATA
+message can flow -- the same real role Diameter's own CER/CEA plays before CCR/CCA (ADR-0059 Stage
+2), now for this transport layer. Real facts fetched directly from `rfc-editor.org` (§3.1.2 for
+the six ASPSM message types -- ASP Up/Down/Heartbeat/Up-Ack/Down-Ack/Heartbeat-Ack, values 1-6 --
+and the four ASPTM types -- ASP Active/Inactive/Active-Ack/Inactive-Ack, values 1-4; §3.5.1-§3.5.4
+and §3.7.1-§3.7.2 for their real parameters: ASP Identifier=0x0011, INFO String=0x0004, Traffic
+Mode Type=0x000B, Routing Context=0x0006 reused from the DATA message), then independently
+cross-checked against the already-vendored Osmocom `m3ua.h` (`M3UA_ASPSM_UP`=1 etc.,
+`M3UA_IEI_ASP_ID`=0x0011 etc., `M3UA_TMOD_OVERRIDE`/`LOADSHARE`/`BCAST`=1/2/3 for Traffic Mode
+Type's own real enumerated values) -- both sources agree exactly on every value. Real M3UA SCTP
+port (2905, RFC 4666 §1.4.8) and real IANA SCTP Payload Protocol Identifier (3, fetched directly
+from IANA's own `sctp-parameters` registry, citing RFC 4666) also confirmed from primary sources,
+not assumed.
+
+New `m3ua_asp.hpp`/`.cpp`: `AspStateMessage` (ASP Up/Down/-Ack, real optional ASP-Identifier +
+INFO-String shape) and `AspTrafficMessage` (ASP Active/Inactive/-Ack, real mandatory-on-Active-only
+Traffic-Mode-Type + conditional Routing-Context + optional INFO-String).
+
+**Real kernel SCTP transport**: new `sctp_socket.hpp`/`.cpp` mirrors `libs/ngap-core`'s own real,
+already-working `SctpSocket` class byte-for-byte in its socket-level mechanics (this project's own
+Apache-2.0 code, not a third-party dependency -- reusing it is not the same license question
+Osmocom/jss7 raised) with M3UA's own real PPID (3) and port (2905) in place of NGAP's. Real,
+disclosed scope: this is a transport *primitive*, not a live listener bound into any NF's `main()`
+-- no NF in CLAUDE.md's own Tier 1-3 list is explicitly an SS7 gateway, and MAP/CAP (the actual
+real reason to open a live association) remains blocked, so deciding which NF should own one is
+deliberately not made unilaterally here.
+
+**Live-verified against a real kernel SCTP socket**, not just self-consistency (this project's own
+established discipline for anything touching a real OS/network API): a standalone client/server
+pair exchanged a real ASP-Up (`identifier=7`, `info="chf-ss7-test-client"`) and a real ASP-Up-Ack
+(`info="chf-ss7-test"`) over a genuine local SCTP association -- both messages sent, received, and
+decoded correctly on the far side, confirmed by the test program's own printed output, not just
+in-process round-trip assertions.
+
+5 new unit tests (ASP-Up/-Ack, ASP-Active/-Inactive-Ack round-trips, mismatched-message-type
+rejection) -- all pass. Full rebuild + 203/203 total tests pass (198 prior + 5 new),
+`clang-format-18` clean.
 
 ## ADR-0060: "No compromise on data model" -- full real-field-fidelity pass over E2/E6 (enrichment) and E1/E5/E7/E8/E10 (net-new), per DATA_MODEL.md's already-approved sketches
 

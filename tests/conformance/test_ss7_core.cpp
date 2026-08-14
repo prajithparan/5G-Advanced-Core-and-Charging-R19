@@ -3,6 +3,7 @@
 // see ss7_core/sccp_dictionary.hpp's own comment and docs/DECISIONS.md's Stage 5 ADR update for
 // the full disclosure of what is/isn't primary-spec-text-cited).
 
+#include "ss7_core/m3ua_asp.hpp"
 #include "ss7_core/m3ua_dictionary.hpp"
 #include "ss7_core/m3ua_header.hpp"
 #include "ss7_core/m3ua_protocol_data.hpp"
@@ -246,4 +247,83 @@ TEST(SccpUdt, RejectsWrongMessageType) {
 TEST(SccpUdt, RejectsTooShortBuffer) {
     std::vector<std::uint8_t> bytes = {ss7_core::dictionary::MessageType::kUdt, 0};
     EXPECT_FALSE(ss7_core::decode_sccp_udt(bytes).has_value());
+}
+
+TEST(M3uaAsp, AspUpRoundTripsWithIdentifierAndInfoString) {
+    ss7_core::AspStateMessage msg;
+    msg.asp_identifier = 42;
+    msg.info_string = "5gc-r19-chf";
+
+    const auto bytes =
+        ss7_core::encode_asp_state_message(ss7_core::dictionary::AspsmMessageType::kAspUp, msg);
+
+    std::size_t offset = 0;
+    std::uint32_t payload_length = 0;
+    const auto header = ss7_core::decode_m3ua_header(bytes, offset, payload_length);
+    ASSERT_TRUE(header.has_value());
+    EXPECT_EQ(header->message_class, ss7_core::dictionary::MessageClass::kAspsm);
+    EXPECT_EQ(header->message_type, ss7_core::dictionary::AspsmMessageType::kAspUp);
+
+    const auto decoded =
+        ss7_core::decode_asp_state_message(ss7_core::dictionary::AspsmMessageType::kAspUp, bytes);
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(decoded->asp_identifier.has_value());
+    EXPECT_EQ(*decoded->asp_identifier, 42u);
+    ASSERT_TRUE(decoded->info_string.has_value());
+    EXPECT_EQ(*decoded->info_string, "5gc-r19-chf");
+}
+
+TEST(M3uaAsp, AspUpAckRoundTripsWithNoOptionalParams) {
+    ss7_core::AspStateMessage msg;
+    const auto bytes =
+        ss7_core::encode_asp_state_message(ss7_core::dictionary::AspsmMessageType::kAspUpAck, msg);
+
+    const auto decoded = ss7_core::decode_asp_state_message(
+        ss7_core::dictionary::AspsmMessageType::kAspUpAck, bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_FALSE(decoded->asp_identifier.has_value());
+    EXPECT_FALSE(decoded->info_string.has_value());
+}
+
+TEST(M3uaAsp, RejectsMismatchedAspStateMessageType) {
+    ss7_core::AspStateMessage msg;
+    const auto bytes =
+        ss7_core::encode_asp_state_message(ss7_core::dictionary::AspsmMessageType::kAspUp, msg);
+    EXPECT_FALSE(
+        ss7_core::decode_asp_state_message(ss7_core::dictionary::AspsmMessageType::kAspDown, bytes)
+            .has_value());
+}
+
+TEST(M3uaAsp, AspActiveRoundTripsWithTrafficModeAndRoutingContext) {
+    ss7_core::AspTrafficMessage msg;
+    msg.traffic_mode_type = ss7_core::dictionary::TrafficModeType::kLoadshare;
+    msg.routing_context = std::vector<std::uint32_t>{100, 200};
+
+    const auto bytes = ss7_core::encode_asp_traffic_message(
+        ss7_core::dictionary::AsptmMessageType::kAspActive, msg);
+
+    std::size_t offset = 0;
+    std::uint32_t payload_length = 0;
+    const auto header = ss7_core::decode_m3ua_header(bytes, offset, payload_length);
+    ASSERT_TRUE(header.has_value());
+    EXPECT_EQ(header->message_class, ss7_core::dictionary::MessageClass::kAsptm);
+
+    const auto decoded = ss7_core::decode_asp_traffic_message(
+        ss7_core::dictionary::AsptmMessageType::kAspActive, bytes);
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(decoded->traffic_mode_type.has_value());
+    EXPECT_EQ(*decoded->traffic_mode_type, ss7_core::dictionary::TrafficModeType::kLoadshare);
+    ASSERT_TRUE(decoded->routing_context.has_value());
+    EXPECT_EQ(*decoded->routing_context, (std::vector<std::uint32_t>{100, 200}));
+}
+
+TEST(M3uaAsp, AspInactiveAckRoundTripsWithNoTrafficModeType) {
+    ss7_core::AspTrafficMessage msg;
+    const auto bytes = ss7_core::encode_asp_traffic_message(
+        ss7_core::dictionary::AsptmMessageType::kAspInactiveAck, msg);
+
+    const auto decoded = ss7_core::decode_asp_traffic_message(
+        ss7_core::dictionary::AsptmMessageType::kAspInactiveAck, bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_FALSE(decoded->traffic_mode_type.has_value());
 }
