@@ -971,3 +971,38 @@ project's actual established deploy-verification bar -- Docker + compose, live-v
 Helm, which has never itself been verified for anything in this repo). All disclosed in each
 service's own `src/main.cpp` header and ADR-0066. This file itself remains stale for ADR-0053
 through ADR-0065 -- a real, separate, disclosed backlog item, not backfilled by this entry.
+
+## `libs/tap3-core`: real GSMA TAP3 roaming CDR codec, all 9 `CallEventDetail` variants (P4.11, ADR-0067)
+
+Hand-rolled BER codec (real transfer syntax per TAP-SPEC.pdf section 6.2) against the real TAP3
+ASN.1 module (TAP-SPEC.pdf section 6.1) -- GSMA member-confidential source, no spec-derived file
+committed, real cited field names/tag numbers only, same discipline as TCAP/MAP/CAP.
+
+| Procedure | Real ASN.1 type / tag | Test |
+|---|---|---|
+| Envelope: `DataInterchange` -> `TransferBatch`/`Notification` -> `BatchControlInfo`/`AccountingInfo`/`NetworkInfo`/`AuditControlInfo` | `[APPLICATION 1]`/`[2]`/`[4]`/`[5]`/`[6]`/`[15]` | `Tap3Envelope.*` (9 tests), `tests/conformance/test_tap3_core.cpp` |
+| `MobileOriginatedCall` | `[APPLICATION 9]` | `Tap3MoCall.*` (6 tests) |
+| `MobileTerminatedCall` | `[APPLICATION 10]` | `Tap3MtCall.FullMobileTerminatedCallRoundTrips` |
+| `SupplServiceEvent` | `[APPLICATION 11]` | `Tap3SupplService.FullSupplServiceEventRoundTrips` |
+| `ServiceCentreUsage` | `[APPLICATION 12]` | `Tap3Scu.*` (2 tests) |
+| `GprsCall` | `[APPLICATION 14]` | `Tap3GprsCall.FullGprsCallRoundTrips` (exercises the real 8-byte-INTEGER `ChargingId`/`DataVolumeIncoming`/`DataVolumeOutgoing` path) |
+| `ContentTransaction` | `[APPLICATION 17]` | `Tap3ContentTransaction.FullContentTransactionRoundTrips` |
+| `LocationService` | `[APPLICATION 297]` | `Tap3LocationService.FullLocationServiceRoundTrips` |
+| `MessagingEvent` | `[APPLICATION 433]` | `Tap3MessagingEvent.FullMessagingEventRoundTrips` |
+| `MobileSession` | `[APPLICATION 434]` | `Tap3MobileSession.FullMobileSessionRoundTrips` |
+| `AggregatedUsageRecord` | `[APPLICATION 453]` | `Tap3AggregatedUsage.FullAggregatedUsageRecordRoundTrips` |
+| `CallEventDetailList` real tag-dispatch across all 9 variants | untagged CHOICE, TAP-SPEC.pdf p.257 | `Tap3Envelope.CallEventDetailListDispatchesAllRealVariants` |
+| `RoamingCdrFileStore` wiring (`format="TAP3"`, real encode/decode) | -- (project-internal storage shape) | `RoamingInterconnectTap3.*` (2 tests), `tests/conformance/test_roaming_interconnect_tap3.cpp` |
+
+**Disclosed gaps**: RAP/NRTRDE remain fully unsupplied (still `"STUB"`); live wiring from CHF's
+real CDR data into a real outbound TAP3 file is separate, later work -- this codec proves the
+byte-level format is real and correct, not yet fed by a live production data path;
+`TransferBatch.messageDescriptionInfo`, `AuditControlInfo.totalAdvisedChargeValueList`, and
+`MobileOriginatedCall`'s own `BasicServiceUsed.chargeInformationList`/
+`CamelServiceUsed.{taxInformation,discountInformation}` remain deferred (real, cited, declared
+field order not confirmed for the last three); `AggregatedUsageRecord.operatorSpecInformation`'s
+real list-type-name is flagged, not resolved. All disclosed in `libs/tap3-core`'s own header
+comments and ADR-0067. No genuine external TAP3 sample file exists to cross-check against without
+violating the same GSMA confidentiality boundary this codec was built to respect -- verification
+is internal round-trip correctness plus per-field tag citations, not conformance against a real
+third-party file.

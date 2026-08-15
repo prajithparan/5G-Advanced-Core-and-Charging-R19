@@ -2,7 +2,34 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cstdint>
+
 namespace roaming_interconnect {
+
+RoamingCdrFile make_tap3_roaming_cdr_file(std::optional<std::string> agreementId,
+                                          const tap3_core::DataInterchange& data) {
+    RoamingCdrFile file;
+    file.agreementId = std::move(agreementId);
+    file.format = "TAP3";
+    const auto bytes = tap3_core::encode_data_interchange(data);
+    file.rawPayload.resize(bytes.size());
+    std::transform(bytes.begin(), bytes.end(), file.rawPayload.begin(), [](std::uint8_t b) {
+        return static_cast<std::byte>(b);
+    });
+    return file;
+}
+
+std::optional<tap3_core::DataInterchange> decode_tap3_roaming_cdr_file(const RoamingCdrFile& file) {
+    if (file.format != "TAP3") {
+        return std::nullopt;
+    }
+    std::vector<std::uint8_t> bytes(file.rawPayload.size());
+    std::transform(file.rawPayload.begin(), file.rawPayload.end(), bytes.begin(), [](std::byte b) {
+        return static_cast<std::uint8_t>(b);
+    });
+    return tap3_core::decode_data_interchange(bytes);
+}
 
 namespace {
 
