@@ -58,6 +58,13 @@ public:
 
     bool valid() const { return fd_ >= 0; }
 
+    // Closes the underlying fd early (idempotent -- safe to call more than once, and the
+    // destructor no-ops if already closed). Added for CHF's real CAP listener (ADR-0061): closing
+    // the listening socket from another thread is the same real, standard technique
+    // DiameterServer's own shutdown already uses (closing its Boost.Asio acceptor) to unblock a
+    // thread currently parked in a blocking accept() call.
+    void close();
+
 private:
     explicit SctpSocket(int fd);
     void close_if_open();

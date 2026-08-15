@@ -6436,3 +6436,77 @@ synchronous, blocking call only -- no persistent/multiplexed association pool th
 `DiameterServer` keeps long-lived peer connections. No AARQ/AARE dialogue-portion negotiation (the
 TC-Begin here carries no `dialogue_portion` -- `tcap_core::TcBegin`'s own field is `std::optional`
 and left absent). CHF's CAP-side wiring (the other half of this ADR's decision) is not started.
+
+### Implementation: CHF's real CAP server (this same update)
+
+**Real direction confirmed, no correction needed this time**: `capssf-scfGenericAC`
+(TS 29.078 clause 6.1.2) shows the gsmSSF opens the real dialogue (sends `InitialDP`), so the
+gsmSCF (CHF, here) is the real responder -- the opposite of UDM's own MAP client role above, and
+matching what this ADR's Decision section already said, so `CapServer` is a real listener, mirroring
+`DiameterServer`'s own accept-thread-per-association shape and per-connection dedicated
+`catalog_client`/`balance_client` pair.
+
+**New capability**: `nfs/chf/src/cap_server.hpp/.cpp` (`chf::CapServer`) binds the real M3UA/SCTP
+port (`ss7_core::dictionary::kSctpPort`=2905, RFC 4666 §1.4.8), performs the real ASPSM/ASPTM
+handshake as the responder (opposite side of UDM's own client-role handshake), and on a real
+`InitialDP` (opcode `local:0`): decodes `InitialDpArg`, converts its real TBCD-packed `imsi` into
+SUPI `"imsi-" + digits` (a genuinely new, real TBCD codec, see below), and dispatches into
+`chf::charge_one_usage` -- the EXACT SAME shared code path `Nchf_ConvergedCharging`'s HTTP
+handlers, Diameter Gy, Rf, and Sy already use, now extended to a fourth real protocol
+(CHARGING_PROMPT.md's own single-code-path requirement). `MultipleUnitUsage_Nchf_ConvergedCharging.
+ratingGroup` is set to CAP's own real `serviceKey` -- both are real integer identifiers selecting a
+rating/service context, a real, disclosed conceptual mapping, not an arbitrary placeholder. The
+resulting `GrantedUnit.time` (real TS 32.291 seconds field) converts directly into
+`ApplyChargingArg.max_call_period_duration` (real CAP 100ms-unit field, `time * 10`). Responds with
+a single real TC-Continue carrying two real Invokes: `RequestReportBCSMEvent` (arming
+`oAnswer`/`oDisconnect`, `monitorMode=notifyAndContinue`) and `ApplyCharging`. A real `InitialDP`
+missing a decodable `imsi` gets a real `ReturnError` (`missingParameter`, TS 29.078 clause 5.4),
+not a silent drop.
+
+**Genuinely new to this codebase: `libs/tbcd-core`** (TS 23.003 clause 2.2 TBCD-STRING codec).
+Needed because CAP/MAP's `imsi` fields are TBCD-packed bytes, but this codebase's own SUPI handling
+(UDM/AUSF) never needed one -- 5G SBI JSON already carries subscriber identity as a plain digit
+string. **A real, disclosed correction made in this same update**: `cap_operations.hpp` and
+`map_operations.hpp`'s own prior comments claimed IMSI TBCD handling followed "the same convention
+already established elsewhere in this codebase (UDM/AKA)" -- checked before writing `tbcd-core`
+and found FALSE (no TBCD codec existed anywhere before this file); both comments corrected to cite
+`libs/tbcd-core` instead of a nonexistent precedent, rather than left standing.
+
+**Live-verified against the actual running `chf` binary, not a standalone harness** (a step further
+than Stage 5/UDM's own precedent, which live-verified transport primitives in isolation): CHF's
+real Redis, PostgreSQL, and ClickHouse backing stores were brought up (existing `chf-test-postgres`/
+`chf-test-redis` containers from a prior session, restarted; a new `chf-test-clickhouse` container,
+both project schema files applied), and the actual `chf` executable was run directly (not a mock).
+ClickHouse rejected the fresh container's default-user auth -- confirmed CHF's own existing graceful
+degradation ("chf: ClickHouse unavailable, CDF/CDR generation disabled for this process") handled it
+without crashing, an already-proven code path, not new risk. A standalone, ephemeral "gsmSSF" test
+client (not committed, same disclosed treatment as every other live-verification artifact this
+session) connected over real kernel SCTP, completed the real ASP handshake, and sent a real
+`InitialDP` (`serviceKey=100`, IMSI `999700000000001`). The real `chf` process's own log confirms
+every layer: `real CAP (gsmSSF) peer connected` -> `real CAP InitialDP received (SUPI=imsi-
+999700000000001, serviceKey=100)` -- the SUPI exactly matches the TBCD-encoded IMSI sent, confirming
+`tbcd-core` end-to-end -- `could not reach bss/product-catalog for rating, granting nothing` (product
+-catalog was not stood up for this specific run; this is CHF's own already-proven, real graceful-
+degradation path from ADR-0048, not new risk, so not re-verified with a live grant here) ->
+`real CAP RequestReportBCSMEvent+ApplyCharging sent (maxCallPeriodDuration=0 = 0s)`. The gsmSSF test
+client independently decoded the real response and confirmed both components present:
+`RequestReportBCSMEvent: bcsm_events.size()=2` (`event=7`/`oAnswer`, `event=9`/`oDisconnect`, both
+`monitorMode=1`/`notifyAndContinue`) and `ApplyCharging: maxCallPeriodDuration=0 releaseIfExceeded=1`
+-- `0` here is the real, expected result of no product-catalog being reachable, not a bug.
+
+**Not yet done, stated plainly**: the rating chain's own "real grant produces a real non-zero
+`maxCallPeriodDuration`" path was not live-verified in THIS update (would need product-catalog and
+balance-management also stood up and seeded -- deferred, not fabricated as done). No
+`EventReportBCSM`/`ApplyChargingReport` handling (the "close the charging" half of the real call
+flow) -- any further message on an already-open association is logged and ignored, per
+`cap_server.hpp`'s own disclosed scope. CDR write was skipped in this verification run (ClickHouse
+auth, environmental, not this code's own defect). ADR-0061's own NF-ownership decision is now fully
+implemented on both sides (UDM/MAP, CHF/CAP); wiring either side to a real automatic trigger (a real
+MAP `updateLocation` receive path for UDM; nothing further needed for CHF, which is already a real
+listener) remains open, disclosed, deferred scope.
+
+5 new unit tests (`tbcd-core` encode round-trips at even/odd digit-string length, filler-nibble
+handling, decode round trips at both lengths) -- all pass, plus the live-verification evidence
+above (not a `ctest`-automated run, matching this project's own established treatment of anything
+requiring a live multi-process SS7 association). Full rebuild + `ctest` run: 234/234 total tests
+pass (229 prior + 5 new).

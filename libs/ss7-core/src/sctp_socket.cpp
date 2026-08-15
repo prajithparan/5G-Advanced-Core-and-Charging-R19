@@ -77,6 +77,10 @@ void SctpSocket::close_if_open() {
     }
 }
 
+void SctpSocket::close() {
+    close_if_open();
+}
+
 void SctpSocket::bind_and_listen(const std::string& address, std::uint16_t port, int backlog) {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;

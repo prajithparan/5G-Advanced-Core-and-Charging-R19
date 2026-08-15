@@ -88,8 +88,9 @@ struct VlrCamelSubscriptionInfo {
 };
 
 struct InsertSubscriberDataArg {
-    std::optional<std::vector<std::uint8_t>> imsi;   // [0], TBCD (same convention as this
-                                                     // codebase's existing UDM/AKA IMSI handling)
+    std::optional<std::vector<std::uint8_t>> imsi; // [0], TBCD-STRING (TS 23.003 clause 2.2) --
+                                                   // see libs/tbcd-core, added alongside ADR-0061's
+                                                   // CHF/CAP wiring
     std::optional<std::vector<std::uint8_t>> msisdn; // [1], opaque AddressString
     std::optional<VlrCamelSubscriptionInfo> vlr_camel_subscription_info; // [13]
 };

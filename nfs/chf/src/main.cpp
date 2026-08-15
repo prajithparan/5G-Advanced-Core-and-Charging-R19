@@ -127,11 +127,13 @@
 #include "bss_sid/party.hpp"
 #include "bss_sid/product.hpp"
 #include "bss_sid/rating.hpp"
+#include "cap_server.hpp"
 #include "cdr.hpp"
 #include "charging_engine.hpp"
 #include "diameter_core/header.hpp"
 #include "diameter_server.hpp"
 #include "rating_decision_store.hpp"
+#include "ss7_core/m3ua_dictionary.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -148,6 +150,10 @@ constexpr unsigned short kPort = 7784;
 // realm/enterprise number, matching the same per-NF naming convention already used for TLS cert
 // CNs (scripts/gen-lab-pki.sh).
 constexpr unsigned short kDiameterPort = diameter_core::kDiameterTcpPort;
+// P4.5/ADR-0061: real CAP (gsmSCF) listener, real IANA-assigned M3UA port (RFC 4666 §1.4.8,
+// ss7_core::dictionary::kSctpPort) -- CHF's second, non-SBI real network listener alongside
+// Diameter's, same "second real protocol on the same NF" shape.
+constexpr unsigned short kCapPort = ss7_core::dictionary::kSctpPort;
 constexpr const char* kDiameterOriginHost = "chf.5gc-r19.local";
 constexpr const char* kDiameterOriginRealm = "5gc-r19.local";
 constexpr const char* kMetricsBindAddress = "0.0.0.0:9472";
@@ -454,6 +460,13 @@ int main() {
         meter->CreateUInt64Counter("chf_diameter_str_total",
                                    "Total real Diameter Sy STR (Final Spending Limit Report) "
                                    "requests handled");
+    // P4.5/ADR-0061: real CAP (TS 29.078) counters, mirroring the Diameter counters' own
+    // per-operation shape above -- the same real charging decisions, arriving over CAP/SS7
+    // instead of Diameter or the HTTP SBI path.
+    auto cap_initial_dp_counter = meter->CreateUInt64Counter(
+        "chf_cap_initial_dp_total", "Total real CAP InitialDP requests handled");
+    auto cap_apply_charging_counter = meter->CreateUInt64Counter(
+        "chf_cap_apply_charging_total", "Total real CAP ApplyCharging responses sent");
 
     // P4.5/ADR-0060 Stage 3 + ADR-0059 Stage 4: real Diameter server -- CER/CEA capability exchange
     // (Stage 2) plus real CCR-I/U/T (Stage 3, Gy) dispatched through the exact same
@@ -494,6 +507,28 @@ int main() {
                                         slr_intermediate_counter.get(),
                                         str_counter.get());
     spdlog::info("chf: Diameter (Gy+Rf+Sy) listening on tcp://0.0.0.0:{}", kDiameterPort);
+
+    // P4.5/ADR-0061: real CAP server -- CHF plays the real gsmSCF role, receiving InitialDP from
+    // a real gsmSSF peer and dispatching into the exact same charge_one_usage shared code path
+    // above, extending CHARGING_PROMPT.md's single-code-path property to a fourth real protocol.
+    // Real, disclosed scope: only the InitialDP -> RequestReportBCSMEvent+ApplyCharging half of
+    // the real call flow is implemented -- see cap_server.hpp's own header for the full real,
+    // disclosed gap list (EventReportBCSM/ApplyChargingReport not yet handled).
+    sbi_core::http2::TlsConfig cap_client_tls{
+        .cert_path = CERTS_DIR "/chf/cert.pem",
+        .key_path = CERTS_DIR "/chf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    chf::CapServer cap_server(kCapPort,
+                              std::move(cap_client_tls),
+                              charging_data_store,
+                              cdr_writer,
+                              rating_decision_store,
+                              grant_counter.get(),
+                              reserve_rejected_counter.get(),
+                              cap_initial_dp_counter.get(),
+                              cap_apply_charging_counter.get());
+    spdlog::info("chf: CAP (gsmSCF) listening on sctp://0.0.0.0:{}", kCapPort);
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
