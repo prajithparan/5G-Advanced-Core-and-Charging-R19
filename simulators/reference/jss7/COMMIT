@@ -9,6 +9,16 @@ unmodified AGPL-3.0 LICENSE text in this directory): the real ITU-T Q.773 TCAP t
 (interfaces under tcap-api/asn/comp/, tcap-api/asn/) and DialogPortionImpl.java's own real Javadoc
 (which itself cites exact ITU-T Q.773 table numbers: Table 30, 33, 34, 36, 37).
 
+Extended 2026-08-15 (real "more complete MAP/CAP/TCAP/SCCP coverage" pass): added
+DialogResponseAPDUImpl.java, ResultImpl.java, ResultSourceDiagnosticImpl.java (tcap-impl/asn/) and
+DialogAPDU.java, DialogResponseAPDU.java, Result.java, ResultSourceDiagnostic.java, ResultType.java,
+DialogServiceUserType.java, DialogServiceProviderType.java (tcap-api/asn/) -- the real AARE
+(dialogue response) structure this project's own Stage 5b work had left as a disclosed gap
+("AARE... own real Result/ResultSourceDiagnostic sub-fields need further real evidence"). Fetched
+fresh from the same pinned commit above via `gh api repos/RestComm/jss7/contents/...`, same
+arms-length-reference-only treatment -- no code copied or linked into this project's own
+Apache-2.0-licensed `libs/tcap-core`.
+
 NOT linked into this project's build (AGPL-3.0 is not compatible with linking into this project's
 own Apache-2.0-licensed code -- see docs/DECISIONS.md's own Stage 5b ADR update for the real
 license-check evidence, same conclusion already reached for Osmocom/SCCP in Stage 5a). Used

@@ -339,3 +339,77 @@ TEST(TcapDialoguePortion, RoundTripsWithinTcBegin) {
     ASSERT_TRUE(decoded_req.has_value());
     EXPECT_EQ(decoded_req->application_context_name, req.application_context_name);
 }
+
+TEST(TcapDialoguePortion, RoundTripsAareAcceptedWithUserDiagnostic) {
+    tcap_core::DialogueResponse res;
+    res.application_context_name = {0, 4, 0, 0, 1, 0, 21, 3};
+    res.result = tcap_core::ResultType::kAccepted;
+    res.diagnostic.is_user_type = true;
+    res.diagnostic.value = tcap_core::DialogServiceUserType::kNull;
+    res.user_information = {0x28, 0x02, 0x01, 0x00};
+
+    const auto bytes = tcap_core::encode_dialogue_portion_response(res);
+    const auto decoded = tcap_core::decode_dialogue_portion_response(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->application_context_name, res.application_context_name);
+    EXPECT_EQ(decoded->result, tcap_core::ResultType::kAccepted);
+    EXPECT_TRUE(decoded->diagnostic.is_user_type);
+    EXPECT_EQ(decoded->diagnostic.value, tcap_core::DialogServiceUserType::kNull);
+    ASSERT_TRUE(decoded->user_information.has_value());
+    EXPECT_EQ(*decoded->user_information, *res.user_information);
+    EXPECT_FALSE(decoded->protocol_version.has_value());
+}
+
+TEST(TcapDialoguePortion, RoundTripsAareRejectedWithProviderDiagnostic) {
+    tcap_core::DialogueResponse res;
+    res.application_context_name = {0, 4, 0, 0, 1, 0, 21, 3};
+    res.result = tcap_core::ResultType::kRejectedPermanent;
+    res.diagnostic.is_user_type = false;
+    res.diagnostic.value = tcap_core::DialogServiceProviderType::kNoCommonDialogPortion;
+
+    const auto bytes = tcap_core::encode_dialogue_portion_response(res);
+    const auto decoded = tcap_core::decode_dialogue_portion_response(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->result, tcap_core::ResultType::kRejectedPermanent);
+    EXPECT_FALSE(decoded->diagnostic.is_user_type);
+    EXPECT_EQ(decoded->diagnostic.value,
+              tcap_core::DialogServiceProviderType::kNoCommonDialogPortion);
+    EXPECT_FALSE(decoded->user_information.has_value());
+}
+
+TEST(TcapDialoguePortion, DecodeResponseRejectsRealAarq) {
+    tcap_core::DialogueRequest req;
+    req.application_context_name = {0, 4, 0, 0, 1, 0, 21, 3};
+    const auto bytes = tcap_core::encode_dialogue_portion_request(req);
+    EXPECT_FALSE(tcap_core::decode_dialogue_portion_response(bytes).has_value());
+}
+
+TEST(TcapDialoguePortion, DecodeRequestRejectsRealAare) {
+    tcap_core::DialogueResponse res;
+    res.application_context_name = {0, 4, 0, 0, 1, 0, 21, 3};
+    res.result = tcap_core::ResultType::kAccepted;
+    const auto bytes = tcap_core::encode_dialogue_portion_response(res);
+    EXPECT_FALSE(tcap_core::decode_dialogue_portion_request(bytes).has_value());
+}
+
+TEST(TcapDialoguePortion, AareRoundTripsWithinTcEnd) {
+    tcap_core::DialogueResponse res;
+    res.application_context_name = {0, 4, 0, 0, 1, 0, 21, 3};
+    res.result = tcap_core::ResultType::kAccepted;
+    res.diagnostic.is_user_type = true;
+    res.diagnostic.value = tcap_core::DialogServiceUserType::kNull;
+
+    tcap_core::TcEnd msg;
+    msg.destination_transaction_id = {0x00, 0x00, 0x00, 0x01};
+    msg.dialogue_portion = tcap_core::encode_dialogue_portion_response(res);
+
+    const auto bytes = tcap_core::encode_tc_end(msg);
+    const auto decoded = tcap_core::decode_tc_end(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(decoded->dialogue_portion.has_value());
+
+    const auto decoded_res =
+        tcap_core::decode_dialogue_portion_response(*decoded->dialogue_portion);
+    ASSERT_TRUE(decoded_res.has_value());
+    EXPECT_EQ(decoded_res->result, tcap_core::ResultType::kAccepted);
+}
