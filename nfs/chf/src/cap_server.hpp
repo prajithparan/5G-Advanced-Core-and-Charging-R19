@@ -21,22 +21,36 @@
 // association) and the same real per-connection dedicated `catalog_client`/`balance_client`
 // rationale (`sbi_core::http2::Client`'s own documented "one Client instance per thread" contract).
 //
-// Real, disclosed scope this increment covers -- the "arm the charging" half of the real
-// TS 29.078 clause 11 call flow: receive `InitialDP`, rate/reserve via the exact same
+// Real, disclosed scope -- now the full real TS 29.078 clause 11 call flow's happy path, both
+// halves: (1) "arm the charging" -- receive `InitialDP`, rate/reserve via the exact same
 // `chf::charge_one_usage` shared code path Gy/Rf/Sy already use (CHARGING_PROMPT.md's own
 // single-code-path requirement, now extended to a fourth real protocol), convert the resulting
 // `GrantedUnit.time` into `ApplyChargingArg.max_call_period_duration`, and respond with a single
 // real TC-Continue carrying `RequestReportBCSMEvent` (arming `oAnswer`/`oDisconnect`) and
-// `ApplyCharging`. Real, disclosed gap: the "close the charging" half -- receiving
-// `EventReportBCSM` when those armed events actually fire, and `ApplyChargingReport`'s own final
-// usage report -- is NOT implemented; any further message on an already-open association is logged
-// and ignored, not silently mishandled. `ratingGroup` is set to CAP's own real `serviceKey` (both
-// are real integer identifiers selecting a rating/service context -- a real, disclosed conceptual
-// mapping, not an arbitrary placeholder). Subscriber identity: `InitialDPArg.imsi` (TBCD, TS 23.003
-// §2.2, decoded via the new `libs/tbcd-core`) becomes SUPI `"imsi-" + digits`, the real TS 23.003
-// SUPI format already used elsewhere in this codebase's own test fixtures -- if `imsi` is absent (a
-// real, valid `InitialDPArg` state per its own OPTIONAL tag), the InitialDP is rejected with a real
-// `ReturnError` (`missingParameter`, TS 29.078 clause 5.4) rather than guessing an identity.
+// `ApplyCharging`; (2) "close the charging" -- on the same association's later real TC-Continue
+// messages, `EventReportBCSM` is logged (Class 4, "ALWAYS RESPONDS FALSE" per TS 29.078 clause
+// 6.1.1 -- no real response is defined, logging IS the whole real obligation) and
+// `ApplyChargingReport` finalizes the reservation via `chf::finalize_subscriber_balance` (the same
+// real "finalize the full reserved total" simplification already disclosed for Diameter Gy's own
+// CCR-Termination path, ADR-0057 -- not a new one) and closes the dialogue with a real, empty
+// TC-End (Class 2, "RESULT FALSE" -- no real successful RESULT payload exists to send back,
+// confirmed from the real operation definition, not guessed). Any other opcode, on either a
+// TC-Begin or TC-Continue, is logged and ignored, not silently mishandled. `ratingGroup` is set to
+// CAP's own real `serviceKey` (both are real integer identifiers selecting a rating/service
+// context -- a real, disclosed conceptual mapping, not an arbitrary placeholder). Subscriber
+// identity: `InitialDPArg.imsi` (TBCD, TS 23.003 §2.2, decoded via the new `libs/tbcd-core`)
+// becomes SUPI `"imsi-" + digits`, the real TS 23.003 SUPI format already used elsewhere in this
+// codebase's own test fixtures -- if `imsi` is absent (a real, valid `InitialDPArg` state per its
+// own OPTIONAL tag), the InitialDP is rejected with a real `ReturnError` (`missingParameter`,
+// TS 29.078 clause 5.4) rather than guessing an identity.
+//
+// Real, disclosed gap still open: no periodic re-authorization when `maxCallPeriodDuration`
+// expires mid-call (real CAMEL would expect another `ApplyChargingReport`/`ApplyCharging` exchange
+// at that point, not just at call end) -- this dialogue only ever runs one InitialDP -> one
+// ApplyChargingReport -> close, not a real multi-report call. No `ReleaseCall`/`Connect` handling.
+// The finalize step uses the FULL reserved total regardless of `ApplyChargingReport`'s own real
+// reported elapsed time (logged, not applied to a proportional refund) -- same disclosed
+// simplification as the Diameter path, not a new gap introduced here.
 
 namespace chf {
 

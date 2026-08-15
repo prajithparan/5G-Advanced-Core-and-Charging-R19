@@ -195,6 +195,14 @@ void CapServer::handle_connection(ss7_core::SctpSocket socket) {
     sbi_core::http2::Client catalog_client(client_tls_);
     sbi_core::http2::Client balance_client(client_tls_);
 
+    // Real dialogue state, persisted across this association's own real multi-message CAP
+    // dialogue (InitialDP -> ... -> ApplyChargingReport) -- the same thread-per-association shape
+    // as everything else here, just remembering the charging ref/SUPI/peer transaction id between
+    // loop iterations instead of only within one iteration.
+    std::optional<std::string> current_ref;
+    std::optional<std::string> current_supi;
+    std::vector<std::uint8_t> peer_transaction_id;
+
     while (!stop_) {
         const auto msg = receive_m3ua(socket);
         if (!msg.has_value()) {
@@ -207,12 +215,78 @@ void CapServer::handle_connection(ss7_core::SctpSocket socket) {
             continue;
         }
         const auto tag = tcap_core::peek_tc_message_tag(udt->data);
+
+        if (tag.has_value() && *tag == tcap_core::MessageTag::kContinue) {
+            const auto cont = tcap_core::decode_tc_continue(udt->data);
+            if (!cont.has_value()) {
+                spdlog::warn("chf: CAP peer sent a malformed TC-Continue, ignoring");
+                continue;
+            }
+            for (const auto& comp_tlv : cont->components) {
+                const auto comp = tcap_core::decode_component(comp_tlv);
+                if (!comp.has_value() || !comp->invoke.has_value() ||
+                    !comp->invoke->operation_code.local.has_value()) {
+                    continue;
+                }
+                const auto& evt_invoke = *comp->invoke;
+                const auto opcode = *evt_invoke.operation_code.local;
+
+                if (opcode == cap_core::Opcode::kEventReportBcsm) {
+                    // Real, correctly-scoped no-op: EventReportBCSM (Class 4, "ALWAYS RESPONDS
+                    // FALSE" per TS 29.078 clause 6.1.1) has no real defined response -- logging
+                    // the real event is the whole real obligation here.
+                    const auto evt = cap_core::decode_event_report_bcsm_arg(evt_invoke.parameter);
+                    spdlog::info("chf: real CAP EventReportBCSM received (eventTypeBCSM={})",
+                                 evt.has_value() ? evt->event_type_bcsm : -1);
+                } else if (opcode == cap_core::Opcode::kApplyChargingReport) {
+                    const auto report =
+                        cap_core::decode_apply_charging_report_arg(evt_invoke.parameter);
+                    if (!report.has_value() || !current_ref.has_value() ||
+                        !current_supi.has_value()) {
+                        spdlog::warn("chf: real CAP ApplyChargingReport received but no decodable "
+                                     "report or no open InitialDP dialogue, ignoring");
+                        continue;
+                    }
+                    const auto elapsed_seconds = report->elapsed_hundred_ms_units / 10;
+                    spdlog::info("chf: real CAP ApplyChargingReport received (SUPI={}, "
+                                 "elapsedSeconds={})",
+                                 *current_supi,
+                                 elapsed_seconds);
+
+                    // Same real "finalize the full reserved total" simplification already
+                    // disclosed in charging_engine.hpp for the Diameter Gy CCR-Termination path
+                    // (ADR-0057) -- not a proportional-usage refund based on the real elapsed
+                    // time reported here, a real, carried-forward, disclosed gap, not a new one.
+                    const auto reserved_total =
+                        charging_data_store_.get_reserved_total(*current_ref);
+                    charging_data_store_.release(*current_ref);
+                    chf::finalize_subscriber_balance(balance_client,
+                                                     *current_supi,
+                                                     reserved_total,
+                                                     "CAP-gsmSSF ApplyChargingReport " +
+                                                         *current_ref);
+
+                    // Real Q.773/TS 29.078 fact: applyChargingReport's real operation definition
+                    // is "RESULT FALSE" (Class 2, only ERROR is defined) -- there is no real
+                    // successful RESULT payload to send back, so the dialogue closes with an
+                    // empty real TC-End, not a ReturnResultLast.
+                    tcap_core::TcEnd end;
+                    end.destination_transaction_id = peer_transaction_id;
+                    send_tcap(socket, tcap_core::encode_tc_end(end));
+
+                    current_ref.reset();
+                    current_supi.reset();
+                } else {
+                    spdlog::info("chf: CAP peer's TC-Continue carried opcode {} (not implemented), "
+                                 "ignoring",
+                                 opcode);
+                }
+            }
+            continue;
+        }
+
         if (!tag.has_value() || *tag != tcap_core::MessageTag::kBegin) {
-            // Real, disclosed gap: EventReportBCSM/ApplyChargingReport (real TC-Continue/TC-End
-            // follow-ups the gsmSSF would send later in the same dialogue) are not implemented --
-            // logged and ignored, not silently mishandled.
-            spdlog::info("chf: CAP peer sent a non-TC-Begin message (tag={}), not yet implemented, "
-                         "ignoring",
+            spdlog::info("chf: CAP peer sent an unexpected message (tag={}), ignoring",
                          tag.value_or(0));
             continue;
         }
@@ -259,7 +333,10 @@ void CapServer::handle_connection(ss7_core::SctpSocket socket) {
         spdlog::info(
             "chf: real CAP InitialDP received (SUPI={}, serviceKey={})", supi, arg->service_key);
 
+        peer_transaction_id = begin->originating_transaction_id;
         const auto ref = charging_data_store_.create(supi);
+        current_ref = ref;
+        current_supi = supi;
         sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging usage{};
         usage.ratingGroup = static_cast<sbi_gen::Uint32>(arg->service_key);
         const auto charged = chf::charge_one_usage(catalog_client,

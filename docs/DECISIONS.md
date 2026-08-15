@@ -6510,3 +6510,45 @@ handling, decode round trips at both lengths) -- all pass, plus the live-verific
 above (not a `ctest`-automated run, matching this project's own established treatment of anything
 requiring a live multi-process SS7 association). Full rebuild + `ctest` run: 234/234 total tests
 pass (229 prior + 5 new).
+
+### Update, same day: CHF's CAP dialogue now closes the loop (EventReportBCSM + ApplyChargingReport)
+
+The prior update's own disclosed gap -- "the close the charging half... is NOT implemented" -- is
+closed. `CapServer::handle_connection` now keeps real per-association dialogue state
+(`current_ref`/`current_supi`/`peer_transaction_id`, persisted across loop iterations on the same
+thread, not a new concurrency mechanism) and dispatches real `TC-Continue` messages the peer sends
+later in the same real dialogue, not just the opening `TC-Begin`:
+
+- **`EventReportBCSM`** (opcode `local:24`) is decoded and logged. Real, cited fact confirmed
+  before writing this: the real operation definition is Class 4 ("ALWAYS RESPONDS FALSE" per
+  TS 29.078 clause 6.1.1) -- there is no real response to send, so logging the real event IS the
+  complete real obligation, not a stub.
+- **`ApplyChargingReport`** (opcode `local:36`) is decoded (real `CallResult`
+  `timeDurationChargingResult`: `partyToCharge`, `elapsedHundredMsUnits`), and finalizes the real
+  reservation via `chf::finalize_subscriber_balance` -- the exact same real "finalize the full
+  reserved total" code path Diameter Gy's own CCR-Termination handler already uses (ADR-0057), not
+  a new, CAP-specific finalization scheme. A second real, cited fact confirmed before writing:
+  `applyChargingReport`'s own real operation definition is Class 2 ("RESULT FALSE", only `ERRORS`
+  defined) -- there is no real successful RESULT payload, so the dialogue closes with a real,
+  empty `TC-End` (no `ReturnResultLast` component), not an invented acknowledgment shape.
+
+**Live-verified against the actual running `chf` binary** (same real backing-store setup as the
+prior update, reused): an extended standalone gsmSSF test client (not committed) sent the full
+real sequence -- `InitialDP` -> (real `TC-Continue` response) -> `EventReportBCSM(oAnswer)` ->
+`ApplyChargingReport(elapsed=45.0s)` -- on ONE association. CHF's own log confirms every step:
+`real CAP EventReportBCSM received (eventTypeBCSM=7)` then `real CAP ApplyChargingReport received
+(SUPI=imsi-999700000000001, elapsedSeconds=45)` -- `45` exactly matches the `450` (100ms units)
+sent, confirming the real unit conversion -- then `CAP peer association closed`. The test client
+independently confirmed the response: message tag `0x4` (`TC-End`) with `0` components, exactly
+matching the real Class 2 "RESULT FALSE" semantics above, not assumed.
+
+**Real, disclosed gaps still open, stated plainly**: no periodic re-authorization when
+`maxCallPeriodDuration` expires mid-call (a real multi-`ApplyChargingReport` call is not modeled,
+only one InitialDP -> one ApplyChargingReport -> close). No `ReleaseCall`/`Connect` handling. The
+finalize step still uses the FULL reserved total regardless of the real elapsed time
+`ApplyChargingReport` reports (logged, not applied to a proportional refund) -- the same disclosed
+simplification already carried from the Diameter path, not a new one introduced here. No automated
+`ctest` coverage for this multi-message dialogue (matching this project's own established
+treatment of anything requiring a live multi-process SS7 association -- live-verified, not
+unit-tested). Full rebuild + `ctest` run: 234/234 total tests pass (unchanged -- no new automated
+tests this update, live-verification only).
