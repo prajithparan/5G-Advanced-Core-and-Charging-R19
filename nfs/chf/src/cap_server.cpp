@@ -13,6 +13,7 @@
 #include "ss7_core/sccp_udt.hpp"
 #include "tbcd_core/tbcd.hpp"
 #include "tcap_core/component.hpp"
+#include "tcap_core/dialogue_portion.hpp"
 #include "tcap_core/message.hpp"
 
 namespace chf {
@@ -302,6 +303,18 @@ void CapServer::handle_connection(ss7_core::SctpSocket socket) {
             spdlog::warn("chf: CAP peer's TC-Begin did not carry a decodable Invoke, ignoring");
             continue;
         }
+        // Real, disclosed leniency, symmetric with UDM's own MAP client
+        // (nfs/udm/src/map_client.cpp): logged when present, not required -- some real gsmSSF peers
+        // may not negotiate a structured dialogue portion at all.
+        if (begin->dialogue_portion.has_value()) {
+            const auto aarq = tcap_core::decode_dialogue_portion_request(*begin->dialogue_portion);
+            if (aarq.has_value()) {
+                spdlog::info("chf: real CAP peer opened the dialogue with a structured AARQ "
+                             "(applicationContextName has {} arcs)",
+                             aarq->application_context_name.size());
+            }
+        }
+
         const auto& invoke = *component->invoke;
         if (*invoke.operation_code.local != cap_core::Opcode::kInitialDp) {
             spdlog::info("chf: CAP peer's TC-Begin carried opcode {} (only InitialDP=0 is "
@@ -382,9 +395,23 @@ void CapServer::handle_connection(ss7_core::SctpSocket socket) {
         ac_invoke.operation_code.local = cap_core::Opcode::kApplyCharging;
         ac_invoke.parameter = cap_core::encode_apply_charging_arg(ac);
 
+        // Real AARE (dialogue response), sent only when the gsmSSF peer opened with a real,
+        // structured AARQ -- ACSE only expects a dialogue response when a dialogue was actually
+        // proposed. Echoes back the real gsmSSF-scfGenericAC OID the peer proposed (real X.227
+        // semantics: accepting the SAME application context the AARQ named, not inventing a
+        // different one) with ResultType::kAccepted and a real
+        // DialogServiceUserType::kNoReasonGiven diagnostic (no real reason needed for an accept).
         tcap_core::TcContinue cont;
         cont.originating_transaction_id = {0x00, 0x00, 0x00, 0x01};
         cont.destination_transaction_id = begin->originating_transaction_id;
+        if (begin->dialogue_portion.has_value()) {
+            tcap_core::DialogueResponse aare;
+            aare.application_context_name = cap_core::kGsmssfScfGenericAcOid;
+            aare.result = tcap_core::ResultType::kAccepted;
+            aare.diagnostic.is_user_type = true;
+            aare.diagnostic.value = tcap_core::DialogServiceUserType::kNoReasonGiven;
+            cont.dialogue_portion = tcap_core::encode_dialogue_portion_response(aare);
+        }
         cont.components.push_back(tcap_core::encode_invoke(rrbe_invoke));
         cont.components.push_back(tcap_core::encode_invoke(ac_invoke));
 

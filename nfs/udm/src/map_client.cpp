@@ -1,5 +1,7 @@
 #include "map_client.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include "map_core/map_dictionary.hpp"
 #include "ss7_core/m3ua_asp.hpp"
 #include "ss7_core/m3ua_dictionary.hpp"
@@ -10,6 +12,7 @@
 #include "ss7_core/sccp_udt.hpp"
 #include "ss7_core/sctp_socket.hpp"
 #include "tcap_core/component.hpp"
+#include "tcap_core/dialogue_portion.hpp"
 #include "tcap_core/message.hpp"
 
 namespace udm {
@@ -98,8 +101,12 @@ bool send_insert_subscriber_data(const std::string& peer_address,
     invoke.operation_code.local = map_core::Opcode::kInsertSubscriberData;
     invoke.parameter = map_core::encode_insert_subscriber_data_arg(arg);
 
+    tcap_core::DialogueRequest aarq;
+    aarq.application_context_name = map_core::kSubscriberDataMngtContextV3Oid;
+
     tcap_core::TcBegin begin;
     begin.originating_transaction_id = {0x00, 0x00, 0x00, 0x01};
+    begin.dialogue_portion = tcap_core::encode_dialogue_portion_request(aarq);
     begin.components.push_back(tcap_core::encode_invoke(invoke));
     const auto tcap_bytes = tcap_core::encode_tc_begin(begin);
 
@@ -164,20 +171,37 @@ bool send_insert_subscriber_data(const std::string& peer_address,
     }
 
     std::vector<tcap_core::Tlv> components;
+    std::optional<std::vector<std::uint8_t>> dialogue_portion;
     if (*msg_tag == tcap_core::MessageTag::kEnd) {
         const auto end = tcap_core::decode_tc_end(resp_udt->data);
         if (!end.has_value()) {
             return false;
         }
         components = end->components;
+        dialogue_portion = end->dialogue_portion;
     } else if (*msg_tag == tcap_core::MessageTag::kContinue) {
         const auto cont = tcap_core::decode_tc_continue(resp_udt->data);
         if (!cont.has_value()) {
             return false;
         }
         components = cont->components;
+        dialogue_portion = cont->dialogue_portion;
     } else {
         return false;
+    }
+
+    // Real, disclosed leniency: a real AARE is optional-but-checked here -- some real peers don't
+    // negotiate the dialogue portion at all (this project's own CHF/CAP side didn't, before this
+    // same change), so its absence is not itself a failure. When a real AARE IS present and the
+    // real VLR/MSC rejected the dialogue (ResultType::kRejectedPermanent), that's a real,
+    // disclosed failure -- do not go on to interpret the component portion as if the dialogue
+    // succeeded.
+    if (dialogue_portion.has_value()) {
+        const auto aare = tcap_core::decode_dialogue_portion_response(*dialogue_portion);
+        if (aare.has_value() && aare->result == tcap_core::ResultType::kRejectedPermanent) {
+            spdlog::warn("udm: real MAP peer rejected the dialogue (AARE RejectedPermanent)");
+            return false;
+        }
     }
 
     if (components.empty()) {
