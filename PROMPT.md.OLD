@@ -7,8 +7,8 @@
 > 4. Thereafter drive the program with one-line prompts: `Follow Phase 2 in PROMPT.md.`
 >
 > Do not paste this whole file into the prompt box — let Claude Code read it.
-> Companion files: `CHARGING_PROMPT.md` (charging entity model, sub-phases,
-> AI-enabled CHF), `Phase_Prompts_Sequence.md` (per-session prompts with gates).
+> Companion files: `CHARGING_PROMPT.md` (charging sub-phases + AI-enabled CHF),
+> `Phase_Prompts_Sequence.md` (per-session prompts with gates).
 
 ---
 
@@ -39,46 +39,6 @@ production. Never describe any output as carrier-grade until it has passed
 conformance and soak testing; maintain an honest gap list at all times. If I ask
 whether something is production-ready, answer with evidence, not optimism.
 
-=== ARCHITECTURE AND DESIGN PRINCIPLES (MANDATORY - NO COMPROMISE) ===
-These 15 principles are binding on every phase and every component. They are not
-aspirations; a design that violates one is rejected. If a principle is
-technically impossible for a specific component, STOP and tell me which, why, and
-what you propose instead — do not silently deviate.
-
- P1.  100% open-source products. OSI-approved licences only. Check licence
-      compatibility BEFORE adding any dependency and record it in the ADR.
- P2.  100% based on 3GPP standards. Deviation only where I approve it in writing,
-      and then documented as a marked non-standard extension.
- P3.  100% container-based: Kubernetes, multiple clusters across data centres and
-      regions, all tiers (frontend, middle, backend, databases). Microservices,
-      not a distributed monolith — each service independently deployable.
- P4.  AI-based algorithms for product definitions and customer patterns in real
-      time (see the AI section and CHARGING_PROMPT.md).
- P5.  100% compliance with TM Forum Open APIs and SID models.
- P6.  100% 3GPP-compliant data models and rating engine covering SID, 5G NRM and
-      IOC elements.
- P7.  All SID / 3GPP objects / NRM / IOC elements must be AVAILABLE IN THE
-      CHARGING MODEL TO CONFIGURE. Product, tariff and policy definition is data,
-      never code. If a change of tariff requires a recompile, the design is wrong.
- P8.  Highly intelligent auto-scaling — scale up and down on load, predictively
-      where possible (see AIOps in CHARGING_PROMPT.md).
- P9.  Complete CI/CD pipeline for deployment of all nodes.
- P10. Performance-oriented with least resource usage: lightweight models, high
-      throughput, auto-scalable pods and replica sets for redundancy, K8s design
-      patterns (health probe, sidecar, init container, operator, stateful
-      service, automated placement). Benchmark; do not assume.
- P11. Highly geo-redundant with active/active deployment across multiple data
-      centres. Telco-grade. State and prove RPO/RTO.
- P12. Extensive monitoring and operational capability — GUI and batch — with
-      alarms pushed from every level: syslog, application, and BUSINESS errors
-      (a failed rating decision is an alarm, not just a log line).
- P13. Charging and rating must support AI/ML/SON-driven changes in radio,
-      transport and core. When the network reconfigures itself, charging stays
-      correct and attributable.
- P14. Automatic archival on databases driven by retention rules.
- P15. Automatic spike protection at protocol level (MAP / CAP / Gy / Sy / SBI)
-      with TPS governance, so an infrastructure surge cannot take the system down.
-
 === SOURCE OF TRUTH (STRICT) ===
 - 3GPP OpenAPI YAML (REL-19) is the ONLY source for API shapes, paths, schemas,
   and enums. Never hand-write a DTO that the YAML can generate.
@@ -92,9 +52,6 @@ what you propose instead — do not silently deviate.
   32.290 / 32.291 (charging), TS 29.500 / 29.501 (SBI framework principles).
 - Where R19 stage-3 YAML does not yet exist (e.g. some Ambient IoT surfaces),
   implement against stage-2 and mark the gap explicitly in code and docs.
-- GSMA specifications (TAP3, RAP, NRTRDE for roaming settlement) are behind GSMA
-  membership. Do not quote their document numbers or field layouts from memory —
-  ask me to supply them.
 
 === NON-NEGOTIABLE ENGINEERING RULES ===
 - C++20 minimum (C++23 where the toolchain allows). No raw new/delete; RAII
@@ -106,6 +63,9 @@ what you propose instead — do not silently deviate.
   ProblemDetails on errors, 3gpp-Sbi-* headers, OAuth2 tokens from NRF.
 - Test-first for protocol logic: every procedure gets a test derived from the
   TS 23.502 call flow it implements.
+- All third-party dependencies must be OSI-approved open source. No proprietary
+  SDKs, no vendor lock-in, no closed binaries. Check licence compatibility before
+  adding any dependency and record it in the ADR.
 - Production-intent from day one: no in-memory-only state that cannot survive a
   pod restart, no single points of failure, no unbounded queues, no silent retry
   loops, no logging of subscriber identifiers in clear text.
@@ -125,15 +85,13 @@ Async/runtime:  Boost.Asio (or libuv), a lock-free MPMC queue, thread-per-core
                 where it measurably helps
 PFCP/N4 + UP:   libpfcp-style codec (implement if none suitable), DPDK or VPP
                 or eBPF/XDP for the UPF datapath — evaluate and justify
-Legacy charging protocols: freeDiameter (or equivalent) for Ro/Rf/Gy/Sy, a
-                CAP/CAMEL stack and a MAP stack for 2G/3G, GTP' for CDR transport
+Legacy charging protocols: freeDiameter (or equivalent) for Ro/Rf/Gy/Sy,
+                a CAP/CAMEL stack for 2G/3G, GTP' for CDR transport
 Storage:        Redis/Valkey (UDSF, session cache, quota/balance hot state),
                 PostgreSQL (UDR, subscriber, catalogue, tariff, invoice),
                 ClickHouse (CDR/usage analytics), MongoDB or ScyllaDB (flexible
                 product definitions, mediation records), HDFS or S3-compatible
                 object store (CDR archive), Kafka or Redpanda (event bus)
-Integration:    Apache Camel (ESB/EIP), ActiveMQ or RabbitMQ (broker),
-                Kong or Ambassador (API gateway), ZooKeeper or etcd (registry)
 Observability:  OpenTelemetry C++, Prometheus exporter, spdlog, Grafana,
                 Elasticsearch + Kibana for log analytics
 Testing:        GoogleTest, Catch2, gMock, libFuzzer for codec fuzzing
@@ -165,12 +123,11 @@ were never assigned; N44-49 and N100-109 are reserved to TS 32.240; N90-95 to
 TS 23.503. Do not invent numbers to fill gaps.
 
 === CHARGING DOMAIN: UNIVERSAL CHARGING SYSTEM (UCS) ===
-Full detail — the high-level entity model, the master/consumer/enterprise
-specialisation, all sub-phase prompts, and the AI-enabled CHF design — is in
-CHARGING_PROMPT.md. Read it before starting Phase 4. Summary of the mandate:
+Full detail, including all sub-phase prompts, is in CHARGING_PROMPT.md — read it
+before starting Phase 4. Summary of the mandate:
 
 SCOPE IS ALL-G, NOT 5G-ONLY. One converged system serves every generation:
-  OCS  -> 2G / 3G / 4G / VoLTE / 5G-NSA  via MAP, CAP (CAMEL), Diameter Ro/Rf/Gy/Sy
+  OCS  -> 2G / 3G / 4G / VoLTE / 5G-NSA  via CAP (CAMEL), Diameter Ro/Rf/Gy/Sy
   CCS  -> 5G-SA                          via SBI (Nchf_*)
   Both feed the Billing Domain over Bx. The BD itself is OUT of scope.
 
@@ -185,18 +142,32 @@ THREE-LAYER INTERNAL ARCHITECTURE:
      came from a 2G MSC or a 5G SMF. Do not compromise this property.
   3. Internal DB Layer — polyglot persistence, CAP-theorem justified per domain.
 
-HIGH-LEVEL DATA MODEL ENTITIES (authoritative — expanded in CHARGING_PROMPT.md):
-  Subscriber Management | Service Catalog + Charging Plans | Session Establishment
-  Usage Records (CDR) / CDF | Rating Function (RF) | Balance Management (ABMF)
-  Roaming and Interconnect Agreements | Security | Front-End API Gateway (ODA)
-  MASTER MODEL, specialised into CONSUMER and ENTERPRISE.
+Specs: TS 32.240, 32.255, 32.256, 32.260, 32.270, 32.274, 32.275, 32.290, 32.291,
+32.295 (GTP' CDR transport), 32.296, 32.297 (Bx), 32.298 (CDR parameters),
+32.299 (Diameter Ro/Rf), 29.594 (Nchf_SpendingLimitControl), 29.219 (Sy),
+29.078 (CAP), 28.201/28.202 (charging NRM). Verify every one; quote none from
+memory.
+
+DATA MODEL: the union of TM Forum SID (Customer, Party, Product, ProductOffering,
+ProductPrice, Service CFS/RFS, Resource, Agreement, CustomerOrder, CustomerBill,
+AppliedCustomerBillingRate, BalanceTopUp, Event, Policy) and 3GPP 5G NRM/IOC
+elements. Every SID entity, NRM object and IOC element in scope must be
+CONFIGURABLE in the charging model — product and tariff definition is data, not
+code. Expose via TMF620, 622, 632, 635, 637, 666, 676, 678, aligned to TM Forum
+ODA component boundaries so the BSS layer could be swapped for a commercial stack.
+
+Deliver docs/CHARGING_MAPPING.md — 3GPP CDR field -> SID entity -> TMF Open API
+resource — for my review BEFORE writing any mapping code. Mark ambiguous mappings
+TODO and ask. Do not silently invent a mapping.
 
 CHARGING PRINCIPLES (charging defects are revenue and regulatory events):
   1. MONEY IS DETERMINISTIC. Same inputs -> same charge, forever, provably.
   2. EVERY CHARGE IS EXPLAINABLE. Reconstruct which rule, tariff version,
      balance, and (if any) model advice produced it.
   3. NO SILENT AI IN THE MONEY PATH (see below).
-  4. TELCO-GRADE per P11, P12, P15 above.
+  4. TELCO-GRADE: geo-redundant active/active, K8s autoscaling, CI/CD per node,
+     protocol-level TPS spike protection (CAP/Diameter/Gy/Sy/SBI), retention-
+     driven auto-archival, alarms at syslog / application / business-error level.
   5. IDEMPOTENCY AND EXACTLY-ONCE ACCOUNTING. Duplicates, retries and partitions
      must never double-charge or lose usage. Designed in, not hardened later.
 
@@ -213,27 +184,44 @@ CHARGING PRINCIPLES (charging defects are revenue and regulatory events):
   energy-efficiency analytics and a vertical federated learning (VFL) hook.
 
 (B) AI-ENABLED CHF — ACROSS THE ENTIRE 5G CORE
-Seven angles, full detail in CHARGING_PROMPT.md:
+The CHF sees usage, money, product and behaviour together, which makes it the
+richest AI vantage point in the core. Implement all seven angles (full detail in
+CHARGING_PROMPT.md):
   1. Inside the charging decision — predictive quota sizing, adaptive
-     reauthorisation triggers, fraud/abuse scoring, bill-shock and credit-risk
-     prediction, CDR anomaly detection.
-  2. CHF <-> NWDAF both directions (verify CHF's standardised data-source status
-     in TS 23.288 before implementing; feature-flag if non-standard).
-  3. CHF <-> PCF policy loop (N28) — predicted-spend-informed spending limits.
+     reauthorisation triggers, real-time fraud/abuse scoring, bill-shock and
+     credit-risk prediction, CDR anomaly detection.
+  2. CHF <-> NWDAF both directions — consume analytics that change charging
+     behaviour; expose charging-derived features via DCCF/ADRF. VERIFY in
+     TS 23.288 whether CHF is a standardised data source before implementing;
+     if not, feature-flag it as a documented non-standard extension.
+  3. CHF <-> PCF policy loop (N28) — spending limits informed by predicted spend;
+     PCF remains the deterministic enforcement point.
   4. Product and customer intelligence — offer/tariff design copilot with
-     simulation, segmentation, churn, next-best-offer, in-session offers.
-  5. Charging correctness under AI/ML/SON network reconfiguration (P13).
-  6. AIOps — predictive spike protection (P15), mediation error prediction,
-     revenue-leakage detection with quantified exposure.
-  7. Agentic layer — MCP server, read-only by default, human-approved writes,
-     immutable audit log.
+     simulation against historical usage, segmentation, churn, next-best-offer,
+     in-session offers at quota exhaustion.
+  5. Charging correctness when AI/ML/SON reconfigures radio/transport/core —
+     charging context must capture WHICH network condition produced the usage
+     (slice reconfiguration, R19 energy-saving states, NTN vs terrestrial, edge
+     vs central breakout).
+  6. AIOps — predictive TPS spike protection and autoscaling, mediation error
+     prediction, revenue-leakage detection reconciling network vs rated vs
+     billed usage with quantified exposure.
+  7. Agentic layer — an MCP server exposing NF state, analytics and charging data
+     as tools for an LLM assistant: natural-language usage queries, tariff
+     explanation, dispute investigation, offer simulation. READ-ONLY by default;
+     any write requires explicit human approval, shows the exact change before
+     execution, and is written to an immutable audit log.
 
-MODEL GOVERNANCE (mandatory): MLflow versioning with lineage; every AI-influenced
-decision logs model id/version, features, score, reason codes and the
-deterministic rule that acted on it; drift monitoring; a per-model kill switch
-degrading to deterministic default with no outage; bias/fairness review for
-anything touching credit, throttling or offers; hard inference latency budget
-with deterministic fallback — charging never blocks on a model.
+MODEL GOVERNANCE (mandatory):
+- Every model versioned in MLflow with training-data lineage.
+- Every AI-influenced decision logs model id + version, input features, output
+  score, reason codes, and the deterministic rule that acted on it.
+- Drift monitoring wired to Nnwdaf_MLModelMonitor where applicable.
+- A kill switch per model: disabling it degrades to deterministic default
+  behaviour with no outage and no revenue impact.
+- Bias/fairness review for anything touching credit, throttling, or offers.
+- Online inference has a hard latency budget; if exceeded, the deterministic path
+  proceeds WITHOUT it. Charging must never block on a model.
 
 THE LINE THAT MUST NOT BE CROSSED — state this at every AI integration point:
   "This model informs the decision. The deterministic engine makes it."
@@ -246,12 +234,11 @@ between — STOP and ask me first.
 2. NRF registration/discovery/heartbeat working, OAuth2 token validated
 3. All mandatory procedures from TS 23.502 for that NF implemented + tested
 4. ProblemDetails error handling per TS 29.500
-5. OpenTelemetry spans + Prometheus metrics emitted, business-level alarms wired
+5. OpenTelemetry spans + Prometheus metrics emitted
 6. Conformance test against the generated OpenAPI schema (request AND response)
-7. Docker image + Compose entry + Helm chart, horizontally scalable
+7. Docker image + Compose entry + Helm chart
 8. Spec-traceability entry: procedure -> TS clause -> source file -> test
 9. Failure behaviour documented: restart, partition, upstream timeout, overload
-10. Compliance statement against principles P1-P15, with any deviation flagged
 
 === YOUR WORKING STYLE FOR THIS PROJECT ===
 - Work in small, reviewable increments. Never generate more than one NF per turn.
@@ -277,8 +264,7 @@ CI (build + sanitizers + tests), docs/DECISIONS/, docs/TRACEABILITY.md, and a
 libs/sbi-core library exposing: HTTP/2 server + client, JSON (de)serialization,
 ProblemDetails, 3gpp-Sbi-* header handling, OAuth2 client-credentials, structured
 logging, OTel tracing. Include a "hello NF" that registers with a stub NRF.
-No 5G business logic yet. Show me the dependency graph before you build, and a
-compliance note against principles P1, P3, P9, P10.
+No 5G business logic yet. Show me the dependency graph before you build.
 ```
 
 ### Phase 0.5 — Build vs fork (decide before scaffolding further)
@@ -288,16 +274,16 @@ fork/extend an existing open-source 5GC? Evaluate at minimum Open5GS, free5GC,
 OpenAirInterface 5GC, Magma, and any actively maintained C++ 5G core, WITH
 EVIDENCE (repo, last commit, release notes — do not guess):
  1. Language and how badly it fights a C++ mandate
- 2. Licence and its commercial implications — these differ materially; flag any
-    copyleft terms that would constrain a vendor or consulting engagement
-    (state plainly that this is not legal advice)
- 3. NF coverage vs the Tier 1/2/3 list — what R17/R18/R19 is missing
+ 2. Licence and its commercial implications — these differ materially between
+    these projects; flag any copyleft terms that would constrain a vendor or
+    consulting engagement (state plainly that this is not legal advice)
+ 3. NF coverage vs the Tier 1/2/3 list — specifically what R17/R18/R19 is missing
  4. How their APIs are defined: hand-written or generated from the 3GPP YAML?
- 5. Fit for SBI-only NF isolation, TM Forum SID charging, NWDAF AI pipelines,
-    and principles P1-P15
+    Could our codegen spine be retrofitted, or would it fight their conventions?
+ 5. Fit for SBI-only NF isolation, TM Forum SID charging, and NWDAF AI pipelines
  6. Community health: commit cadence, maintainer count, issue responsiveness
- 7. Effort for three paths: (a) greenfield C++, (b) fork and extend to R19,
-    (c) hybrid — reuse a proven UPF datapath, greenfield the control plane
+ 7. Effort estimate for three paths: (a) greenfield C++, (b) fork and extend to
+    R19, (c) hybrid — reuse a proven UPF datapath, greenfield the control plane
 Recommend ONE with rationale, top three risks, and rejected options. Stop and
 wait for my decision. Mark anything you cannot verify as "unverified".
 ```
@@ -338,12 +324,11 @@ packet-level test harness. Fuzz the PFCP IE decoder.
 
 ### Phase 4 — Universal Charging System
 ```
-Read CHARGING_PROMPT.md and follow its sub-phases P4.1 through P4.12 in order,
-one per session: entity model + architecture ADR, CHF core (5G-SA), rating engine
-+ ABMF, CDF/CGF/Bx, All-G protocol translator layer, SID mapping table (review
-gate), BSS layer + master/consumer/enterprise model, AI layer parts 1 and 2,
-agentic layer + revenue assurance, roaming and interconnect settlement, and
-telco-grade hardening. Do not skip the review gates — I adjudicate the SID
+Read CHARGING_PROMPT.md and follow its sub-phases P4.1 through P4.11 in order,
+one per session: architecture ADR, CHF core (5G-SA), rating engine + ABMF,
+CDF/CGF/Bx, All-G protocol translator layer, SID mapping table (review gate),
+BSS layer, AI layer parts 1 and 2, agentic layer + revenue assurance, and
+telco-grade hardening. Do not skip the two review gates — I adjudicate the SID
 mapping and the NWDAF data-source verification before code is written.
 ```
 
@@ -369,12 +354,11 @@ PIN, EIF (N110-N114). Same definition of done applies.
 ### Phase 7 — GUI + operations console
 ```
 Build the JSON-schema-driven operator console: backend REST + WebSocket JSON
-publishing JSON Schema for every resource so new NFs and new product types need
-no UI code (principle P7); front end with a topology view mirroring my R19
-architecture poster, live NF status from NRF, session and subscriber browsers,
-NWDAF analytics dashboards, and the charging/BSS view including the product
-configuration and rule-engine environment. Grafana for infrastructure metrics,
-the console for network and business state, with business-level alarms per P12.
+publishing JSON Schema for every resource so new NFs need no UI code; front end
+with a topology view mirroring my R19 architecture poster, live NF status from
+NRF, session and subscriber browsers, NWDAF analytics dashboards, and the
+charging/BSS view including product configuration. Grafana for infrastructure
+metrics, the console for network and business state.
 ```
 
 ### Phase 8 — Lab packaging and conformance
@@ -383,9 +367,9 @@ Deliver `make lab-up` (Docker Compose, full core + UCS on a single Ubuntu 24.04
 workstation), Helm charts for k8s, a synthetic traffic generator, a
 getting-started guide with expected output at each step, and a conformance report
 generator: every implemented procedure vs its TS clause with pass/fail from the
-test suite, a compliance matrix against principles P1-P15, plus an explicit list
-of everything stubbed, simplified, or non-conformant. That report is the
-project's credibility — accurate and unflattering where warranted.
+test suite, plus an explicit list of everything stubbed, simplified, or
+non-conformant. That report is the project's credibility — accurate and
+unflattering where warranted.
 ```
 
 ---
@@ -405,12 +389,42 @@ project's credibility — accurate and unflattering where warranted.
   demos, thought leadership, interop experiments, and as the seed of a community
   project. Treat "carrier-grade" as a destination reached through conformance and
   soak testing, not a label applied at commit time.
-- Principles P11 (geo-redundant active/active) and P15 (TPS spike protection)
-  cannot be validated on a single workstation. Design for them from day one;
-  prove them only when multi-node infrastructure exists, and say so plainly
-  rather than claiming compliance.
 - Phase 0.5 (build vs fork) will dominate the project's economics more than any
   other decision. Do it before scaffolding further.
+- Lab hardware: an MX450 / CUDA 12.6 laptop is fine for control-plane development
+  and ONNX inference. The UPF datapath, load testing, and any serious model
+  training want the larger lab tier.
+
+### Commercialization mandate (added 2026-08-10, user-directed)
+
+The user's explicit, stated intent is to commercialize this system. Two concrete, mandatory
+requirements follow from that, recorded here per the user's direct instruction:
+
+1. **Performance and reliability must exceed free5GC** (the real, existing open-source 5GC this
+   project has used as a scale comparator since Section 2 above) — not merely match it. This is a
+   target to design and measure toward, not a claim to assert. As of 2026-08-10, **no benchmarking
+   of any kind has been performed** against free5GC or anything else in this codebase — stating
+   otherwise before real, reproducible measurement exists would be exactly the kind of unearned
+   "carrier-grade" label this section already warns against. Known, already-disclosed architectural
+   debt that would need to be closed before a real performance claim is even meaningful: the
+   synchronous HTTP/2 client (ADR-0009's tracked debt), no load-balancing/clustering/HA across NF
+   instances, no benchmarking harness or load-generation infrastructure exists yet (Phase 8's
+   "synthetic traffic generator" is the planned home for this, not started).
+2. **CHF and every other component must be tested as carrier-grade products**, against real
+   standards and frameworks — not just this project's own conformance tests against the 3GPP
+   OpenAPI schemas (real and valuable, but not the same thing as carrier-grade telecom validation).
+   Relevant real frameworks to evaluate in a dedicated future turn (not yet selected, so not cited
+   here as already-adopted): ETSI NFV-TST (pre-deployment testing) and NFV-REL (resiliency
+   requirements) specification series, and standard telecom high-availability conventions (e.g.
+   "five nines" uptime targets) as an industry benchmark, not yet a number this project has
+   committed to. Which specific framework(s) apply, and how they map onto this project's own
+   conformance-test-per-procedure discipline (already in `docs/TRACEABILITY.md`), is real,
+   unresolved scope for a future ADR — not decided here, to avoid inventing a framework citation
+   this project hasn't actually evaluated.
+
+This does not change Section 2's honest reality check above: this remains a genuinely
+multi-engineer, multi-year undertaking to actually reach and prove carrier-grade parity or better,
+not something achievable by restating the goal. See `docs/DECISIONS.md` for the ADR tracking this.
 
 ---
 
@@ -419,8 +433,7 @@ project's credibility — accurate and unflattering where warranted.
 **Drift — paste when output wanders from the conventions:**
 ```
 Stop. Re-read PROMPT.md and docs/DECISIONS/. You have drifted from the agreed
-conventions or from principles P1-P15. List where, then propose a correction
-before writing more code.
+conventions. List where, then propose a correction before writing more code.
 ```
 
 **Suspected fabrication:**
@@ -446,9 +459,8 @@ Do not write code yet.
 3. Tell me explicitly what is a stub, what is simplified, and what is not
    conformant. Do not let me discover it in review.
 4. Every architectural decision goes in docs/DECISIONS/ with the rejected
-   alternatives, and states which of P1-P15 it satisfies or strains.
+   alternatives.
 5. Never report a metric you have not measured, and never call anything
    production-ready without evidence.
 6. In the charging domain: the model informs, the deterministic engine decides.
-7. Configuration over code — if a business change needs a recompile, redesign it.
 ```
