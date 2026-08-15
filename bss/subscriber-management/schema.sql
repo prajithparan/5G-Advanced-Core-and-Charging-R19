@@ -2,13 +2,14 @@
 --
 -- P4.1/P4.7's E1 (Subscriber Management) and E10 (Master Model -> Consumer|Enterprise) persistence,
 -- per docs/DATA_MODEL.md's own schema sketches. Real, disclosed scoping decision (2026-08-11,
--- docs/DECISIONS.md ADR-0060): this turn builds the schema and a real PostgreSQL-backed store
--- library (src/store.hpp/.cpp), proven with real live verification -- same rigor as E2/E6 -- but
--- deliberately does NOT add a new HTTP/REST service (main.cpp) yet. CHARGING_PROMPT.md's own phase
--- sequence assigns "BSS layer + master/consumer/enterprise model (E1, E2, E9, E10)" to P4.7, a
--- later, not-yet-reached phase -- building a full new NF's REST surface now would risk conflicting
--- with P4.7's own more complete design (real subscriber CRUD API shape, GUI wiring, etc.) rather
--- than genuinely completing it early. Disclosed, not silently narrowed.
+-- docs/DECISIONS.md ADR-0060): this turn built the schema and a real PostgreSQL-backed store
+-- library (src/store.hpp/.cpp), proven with real live verification -- same rigor as E2/E6 -- and
+-- deliberately deferred the HTTP/REST service (main.cpp) to P4.7 itself.
+--
+-- UPDATE (P4.7, docs/DECISIONS.md ADR-0066): that deferred service now exists (src/main.cpp) --
+-- real TMF632 Individual/Organization Create/Get/List over `/tmf-api/party/v4/`, plus
+-- project-internal Account/Subscriber Create/Get/List over `/bss-api/subscriberManagement/v1/`.
+-- See src/main.cpp's own header for the full real disclosure.
 --
 -- `subscriber`/`account` themselves are project-internal linking tables (same "not itself a SID
 -- business entity" category as E3's ChargingSession) -- DATA_MODEL.md's own E1/E10 sections say so

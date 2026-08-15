@@ -31,6 +31,35 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # Real PostgreSQL for tests/integration/test_subscriber_management_postgres.cpp and
+      # test_roaming_interconnect_postgres.cpp (P4.7) -- same "one postgres per consumer" shape
+      # docker-compose.yml already established for balance-management/chf (ADR-0056/ADR-0058).
+      postgres-subscriber:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: subscriber_management
+          POSTGRES_PASSWORD: subscriber_management
+          POSTGRES_DB: subscriber_management
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres-roaming:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: roaming_interconnect
+          POSTGRES_PASSWORD: roaming_interconnect
+          POSTGRES_DB: roaming_interconnect
+        ports:
+          - 5436:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -88,10 +117,15 @@ jobs:
         # own real cert or it crashes on startup (real failure this project's CI hit and had never
         # caught before: local dev machines already had every NF's certs generated from countless
         # prior manual sessions, masking that CI's own from-scratch checkout never got them).
-        run: ./scripts/gen-lab-pki.sh nrf hello-nf amf smf udm udr ausf pcf chf upf product-catalog
+        run: ./scripts/gen-lab-pki.sh nrf hello-nf amf smf udm udr ausf pcf chf upf product-catalog subscriber-management roaming-interconnect
 
       - name: Apply product-catalog PostgreSQL schema (ADR-0054)
         run: PGPASSWORD=product_catalog psql -h localhost -U product_catalog -d product_catalog -f bss/product-catalog/schema.sql
+
+      - name: Apply subscriber-management/roaming-interconnect PostgreSQL schemas (P4.7)
+        run: |
+          PGPASSWORD=subscriber_management psql -h localhost -p 5435 -U subscriber_management -d subscriber_management -f bss/subscriber-management/schema.sql
+          PGPASSWORD=roaming_interconnect psql -h localhost -p 5436 -U roaming_interconnect -d roaming_interconnect -f bss/roaming-interconnect/schema.sql
 
       - name: Test
         # --timeout 120: defense in depth. A single spawned-NF-process crash/hang (real one hit
@@ -100,9 +134,13 @@ jobs:
         # with the still-running orphaned processes) should fail in ~2 minutes, not 25.
         # TEST_POSTGRES_URL: points test_product_catalog_postgres.cpp at the real service above
         # instead of its local-dev default, so CI exercises the real DB path (ADR-0054) instead of
-        # GTEST_SKIP()-ing it.
+        # GTEST_SKIP()-ing it. TEST_SUBSCRIBER_MANAGEMENT_POSTGRES_URL/
+        # TEST_ROAMING_INTERCONNECT_POSTGRES_URL do the same for P4.7's own two new store test
+        # files.
         env:
           TEST_POSTGRES_URL: postgresql://product_catalog:product_catalog@localhost:5432/product_catalog
+          TEST_SUBSCRIBER_MANAGEMENT_POSTGRES_URL: postgresql://subscriber_management:subscriber_management@localhost:5435/subscriber_management
+          TEST_ROAMING_INTERCONNECT_POSTGRES_URL: postgresql://roaming_interconnect:roaming_interconnect@localhost:5436/roaming_interconnect
         run: ctest --test-dir build --output-on-failure --timeout 120
 
   sanitize:
@@ -110,7 +148,7 @@ jobs:
     strategy:
       matrix:
         sanitizer: [asan-ubsan, tsan]
-    # See the build job's identical services block comment (ADR-0054).
+    # See the build job's identical services block comment (ADR-0054/P4.7).
     services:
       postgres:
         image: postgres:16-alpine
@@ -120,6 +158,32 @@ jobs:
           POSTGRES_DB: product_catalog
         ports:
           - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres-subscriber:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: subscriber_management
+          POSTGRES_PASSWORD: subscriber_management
+          POSTGRES_DB: subscriber_management
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres-roaming:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: roaming_interconnect
+          POSTGRES_PASSWORD: roaming_interconnect
+          POSTGRES_DB: roaming_interconnect
+        ports:
+          - 5436:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -184,10 +248,15 @@ jobs:
         # own real cert or it crashes on startup (real failure this project's CI hit and had never
         # caught before: local dev machines already had every NF's certs generated from countless
         # prior manual sessions, masking that CI's own from-scratch checkout never got them).
-        run: ./scripts/gen-lab-pki.sh nrf hello-nf amf smf udm udr ausf pcf chf upf product-catalog
+        run: ./scripts/gen-lab-pki.sh nrf hello-nf amf smf udm udr ausf pcf chf upf product-catalog subscriber-management roaming-interconnect
 
       - name: Apply product-catalog PostgreSQL schema (ADR-0054)
         run: PGPASSWORD=product_catalog psql -h localhost -U product_catalog -d product_catalog -f bss/product-catalog/schema.sql
+
+      - name: Apply subscriber-management/roaming-interconnect PostgreSQL schemas (P4.7)
+        run: |
+          PGPASSWORD=subscriber_management psql -h localhost -p 5435 -U subscriber_management -d subscriber_management -f bss/subscriber-management/schema.sql
+          PGPASSWORD=roaming_interconnect psql -h localhost -p 5436 -U roaming_interconnect -d roaming_interconnect -f bss/roaming-interconnect/schema.sql
 
       - name: Test
         # --timeout 120: defense in depth. A single spawned-NF-process crash/hang (real one hit
@@ -199,6 +268,8 @@ jobs:
         # GTEST_SKIP()-ing it.
         env:
           TEST_POSTGRES_URL: postgresql://product_catalog:product_catalog@localhost:5432/product_catalog
+          TEST_SUBSCRIBER_MANAGEMENT_POSTGRES_URL: postgresql://subscriber_management:subscriber_management@localhost:5435/subscriber_management
+          TEST_ROAMING_INTERCONNECT_POSTGRES_URL: postgresql://roaming_interconnect:roaming_interconnect@localhost:5436/roaming_interconnect
         run: ctest --test-dir build --output-on-failure --timeout 120
 
   lint:

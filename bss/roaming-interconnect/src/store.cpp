@@ -165,6 +165,18 @@ std::optional<InterconnectAgreement> InterconnectAgreementStore::get(const std::
     return row_to_agreement(result.front());
 }
 
+std::vector<InterconnectAgreement> InterconnectAgreementStore::list() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT * FROM interconnect_agreement ORDER BY id");
+    std::vector<InterconnectAgreement> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(row_to_agreement(row));
+    }
+    return out;
+}
+
 RoamingCdrFileStore::RoamingCdrFileStore(const std::string& conninfo) : conn_(conninfo) {}
 
 std::string RoamingCdrFileStore::create(RoamingCdrFile file) {
@@ -202,6 +214,42 @@ std::optional<RoamingCdrFile> RoamingCdrFileStore::get(const std::string& id) {
         v.rawPayload = *payload;
     }
     return v;
+}
+
+// Real TMF651 Agreement fields come from bss_sid::Agreement's own already-declared to_json/
+// from_json (libs/bss-sid) -- this composes that with the two project-internal fields
+// (docs/DATA_MODEL.md's own E7 disclosure) on top, id/href taken from InterconnectAgreement's own
+// (kept in sync with `agreement.id`/`agreement.href` at create() time, see store.cpp above).
+void to_json(nlohmann::json& j, const InterconnectAgreement& v) {
+    j = nlohmann::json(v.agreement);
+    if (v.id.has_value()) {
+        j["id"] = *v.id;
+    }
+    if (v.href.has_value()) {
+        j["href"] = *v.href;
+    }
+    if (v.partnerOperatorPlmnId.has_value()) {
+        j["partnerOperatorPlmnId"] = *v.partnerOperatorPlmnId;
+    }
+    if (!v.rateTerms.is_null()) {
+        j["rateTerms"] = v.rateTerms;
+    }
+}
+
+void from_json(const nlohmann::json& j, InterconnectAgreement& v) {
+    v.agreement = j.template get<bss_sid::Agreement>();
+    if (const auto it = j.find("id"); it != j.end() && !it->is_null()) {
+        v.id = it->get<std::string>();
+    }
+    if (const auto it = j.find("href"); it != j.end() && !it->is_null()) {
+        v.href = it->get<std::string>();
+    }
+    if (const auto it = j.find("partnerOperatorPlmnId"); it != j.end() && !it->is_null()) {
+        v.partnerOperatorPlmnId = it->get<std::string>();
+    }
+    if (const auto it = j.find("rateTerms"); it != j.end()) {
+        v.rateTerms = *it;
+    }
 }
 
 } // namespace roaming_interconnect

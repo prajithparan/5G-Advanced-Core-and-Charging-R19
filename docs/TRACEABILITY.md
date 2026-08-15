@@ -947,3 +947,27 @@ cannot work for a genuine 2-struct cycle regardless of declaration order. New
 instance of this exists in the current R19 corpus, but `render.py` now raises `NotImplementedError`
 with a clear message if one is ever found, rather than silently generating untested code. See
 ADR-0052.
+
+## `bss/subscriber-management` + `bss/roaming-interconnect`: real BSS layer REST services (P4.7, ADR-0066)
+
+Two new standalone HTTP/2 services closing the disclosed "store library only, no HTTP/REST service
+yet" gap both services' `schema.sql` carried since ADR-0060. Real basePaths confirmed directly
+against TM Forum's own public swagger, fetched live (not recalled from memory).
+
+| Procedure | TMF resource / operation | Test |
+|---|---|---|
+| `Individual`/`Organization` Create/Get/List | TMF632 Party Management, `/tmf-api/party/v4/individual`, `/organization` | Real mTLS `curl` interop: created a real Individual (Ada Lovelace) and Organization (Acme Enterprise), listed and fetched both by real server-assigned id |
+| `Account`/`Subscriber` Create/Get/List, `Subscriber` by-SUPI lookup | Project-internal (E10/E1), `/bss-api/subscriberManagement/v1/account`, `/subscriber`, `/subscriber/by-supi/{supi}` | Real mTLS `curl` interop: created an ENTERPRISE Account referencing the real Organization above (real FK constraint enforced, confirmed by a real constraint-violation error caught and fixed in the integration test), created a Subscriber with a real SUPI, fetched it back both by id and by SUPI |
+| `InterconnectAgreement` Create/Get/List | TMF651 Agreement Management, `/tmf-api/agreementManagement/v4/agreement` | Real mTLS `curl` interop: created a real roaming interconnect deal (partner PLMN 31026, rate terms), listed and fetched it by real server-assigned id |
+| mTLS enforcement, `ProblemDetails` 404 | -- (transport security / error shape, not a TMF procedure) | Live-verified: `GET` for a nonexistent Individual returns a real `{"status":404,"title":"Not Found","detail":"..."}` |
+| Real PostgreSQL persistence, both services | -- | 6 new integration tests (`tests/integration/test_subscriber_management_postgres.cpp`, `test_roaming_interconnect_postgres.cpp`), real cross-process re-derivation (independent `pqxx::connection` per store instance sees the same row), all pass against fresh real Postgres containers; CI extended with two new postgres service containers + schema-apply steps |
+
+**Disclosed gaps**: PATCH/DELETE not implemented (same disclosed narrowing `bss/product-catalog`
+already used); no NRF registration/OAuth2 (mTLS-only, same reasoning as every other `bss/*`
+component); `Subscriber`'s real trigger (an NF actually calling this service from a real SUPI
+lookup) doesn't exist yet; `RoamingCdrFileStore` still has no HTTP route -- real GSMA CDR ingestion
+remains P4.11's own blocked scope; no Helm charts for either service (consistent with this
+project's actual established deploy-verification bar -- Docker + compose, live-verified -- not
+Helm, which has never itself been verified for anything in this repo). All disclosed in each
+service's own `src/main.cpp` header and ADR-0066. This file itself remains stale for ADR-0053
+through ADR-0065 -- a real, separate, disclosed backlog item, not backfilled by this entry.

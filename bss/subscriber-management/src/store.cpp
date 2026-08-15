@@ -8,6 +8,23 @@ namespace {
 
 using nlohmann::json;
 
+// Same small put_optional/get_optional pattern libs/bss-sid/src/party.cpp's own anonymous
+// namespace already uses -- not shared across translation units, so re-declared locally here for
+// these two project-internal (non-TMF632) structs.
+template <typename T> void put_optional(json& j, const char* key, const std::optional<T>& v) {
+    if (v.has_value()) {
+        j[key] = *v;
+    }
+}
+
+template <typename T> void get_optional(const json& j, const char* key, std::optional<T>& v) {
+    if (const auto it = j.find(key); it != j.end() && !it->is_null()) {
+        v = it->template get<T>();
+    } else {
+        v = std::nullopt;
+    }
+}
+
 template <typename T> std::string dump_array(const std::vector<T>& v) {
     return json(v).dump();
 }
@@ -231,6 +248,18 @@ std::optional<bss_sid::Individual> PartyIndividualStore::get(const std::string& 
     return row_to_individual(result.front());
 }
 
+std::vector<bss_sid::Individual> PartyIndividualStore::list() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT * FROM party_individual ORDER BY id");
+    std::vector<bss_sid::Individual> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(row_to_individual(row));
+    }
+    return out;
+}
+
 // --- PartyOrganizationStore ---
 
 PartyOrganizationStore::PartyOrganizationStore(std::string resource_url,
@@ -294,6 +323,18 @@ std::optional<bss_sid::Organization> PartyOrganizationStore::get(const std::stri
     return row_to_organization(result.front());
 }
 
+std::vector<bss_sid::Organization> PartyOrganizationStore::list() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT * FROM party_organization ORDER BY id");
+    std::vector<bss_sid::Organization> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(row_to_organization(row));
+    }
+    return out;
+}
+
 // --- AccountStore ---
 
 AccountStore::AccountStore(std::string resource_url, const std::string& conninfo)
@@ -329,6 +370,18 @@ std::optional<Account> AccountStore::get(const std::string& id) {
         return std::nullopt;
     }
     return row_to_account(result.front());
+}
+
+std::vector<Account> AccountStore::list() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT * FROM account ORDER BY id");
+    std::vector<Account> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(row_to_account(row));
+    }
+    return out;
 }
 
 // --- SubscriberStore ---
@@ -377,6 +430,66 @@ std::optional<Subscriber> SubscriberStore::get_by_supi(const std::string& supi) 
         return std::nullopt;
     }
     return row_to_subscriber(result.front());
+}
+
+std::vector<Subscriber> SubscriberStore::list() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT * FROM subscriber ORDER BY id");
+    std::vector<Subscriber> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(row_to_subscriber(row));
+    }
+    return out;
+}
+
+void to_json(nlohmann::json& j, const Account& v) {
+    j = nlohmann::json::object();
+    put_optional(j, "id", v.id);
+    j["accountKind"] = v.accountKind;
+    put_optional(j, "parentAccountId", v.parentAccountId);
+    put_optional(j, "organizationId", v.organizationId);
+    put_optional(j, "billingMode", v.billingMode);
+    put_optional(j, "costCenter", v.costCenter);
+    put_optional(j, "contractSlaId", v.contractSlaId);
+    put_optional(j, "provisioningMode", v.provisioningMode);
+}
+
+void from_json(const nlohmann::json& j, Account& v) {
+    get_optional(j, "id", v.id);
+    j.at("accountKind").get_to(v.accountKind);
+    get_optional(j, "parentAccountId", v.parentAccountId);
+    get_optional(j, "organizationId", v.organizationId);
+    get_optional(j, "billingMode", v.billingMode);
+    get_optional(j, "costCenter", v.costCenter);
+    get_optional(j, "contractSlaId", v.contractSlaId);
+    get_optional(j, "provisioningMode", v.provisioningMode);
+}
+
+void to_json(nlohmann::json& j, const Subscriber& v) {
+    j = nlohmann::json::object();
+    put_optional(j, "id", v.id);
+    j["supi"] = v.supi;
+    put_optional(j, "individualId", v.individualId);
+    put_optional(j, "msisdn", v.msisdn);
+    put_optional(j, "accountId", v.accountId);
+    put_optional(j, "chargingMode", v.chargingMode);
+    put_optional(j, "billCycleDay", v.billCycleDay);
+    j["servicePreferences"] = v.servicePreferences;
+}
+
+void from_json(const nlohmann::json& j, Subscriber& v) {
+    get_optional(j, "id", v.id);
+    j.at("supi").get_to(v.supi);
+    get_optional(j, "individualId", v.individualId);
+    get_optional(j, "msisdn", v.msisdn);
+    get_optional(j, "accountId", v.accountId);
+    get_optional(j, "chargingMode", v.chargingMode);
+    get_optional(j, "billCycleDay", v.billCycleDay);
+    if (const auto it = j.find("servicePreferences"); it != j.end()) {
+        v.servicePreferences = *it;
+    }
 }
 
 } // namespace subscriber_management

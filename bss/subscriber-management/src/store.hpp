@@ -27,6 +27,7 @@ public:
 
     std::string create(bss_sid::Individual individual);
     std::optional<bss_sid::Individual> get(const std::string& id);
+    std::vector<bss_sid::Individual> list();
 
 private:
     std::string resource_url_;
@@ -40,6 +41,7 @@ public:
 
     std::string create(bss_sid::Organization organization);
     std::optional<bss_sid::Organization> get(const std::string& id);
+    std::vector<bss_sid::Organization> list();
 
 private:
     std::string resource_url_;
@@ -59,12 +61,16 @@ struct Account {
     std::optional<std::string> provisioningMode; // "INDIVIDUAL" | "BULK"
 };
 
+void to_json(nlohmann::json& j, const Account& v);
+void from_json(const nlohmann::json& j, Account& v);
+
 class AccountStore {
 public:
     AccountStore(std::string resource_url, const std::string& conninfo);
 
     std::string create(Account account);
     std::optional<Account> get(const std::string& id);
+    std::vector<Account> list();
 
 private:
     std::string resource_url_;
@@ -85,6 +91,9 @@ struct Subscriber {
     nlohmann::json servicePreferences = nlohmann::json::object();
 };
 
+void to_json(nlohmann::json& j, const Subscriber& v);
+void from_json(const nlohmann::json& j, Subscriber& v);
+
 class SubscriberStore {
 public:
     SubscriberStore(std::string resource_url, const std::string& conninfo);
@@ -92,6 +101,7 @@ public:
     std::string create(Subscriber subscriber);
     std::optional<Subscriber> get(const std::string& id);
     std::optional<Subscriber> get_by_supi(const std::string& supi);
+    std::vector<Subscriber> list();
 
 private:
     std::string resource_url_;

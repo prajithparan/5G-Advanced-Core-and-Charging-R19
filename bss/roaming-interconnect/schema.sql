@@ -1,11 +1,18 @@
 -- bss/roaming-interconnect PostgreSQL schema.
 --
--- P4.1/P4.11's E7 (Roaming and Interconnect Agreements) persistence, per docs/DATA_MODEL.md's own
--- schema sketch. Real, disclosed scoping decision (2026-08-11, docs/DECISIONS.md ADR-0060): this
--- turn builds the schema and a real PostgreSQL-backed store library (src/store.hpp/.cpp), proven
--- with real live verification -- same rigor as E1/E10/E2/E5/E6 -- but deliberately does NOT add a
--- new HTTP/REST service (main.cpp) yet. CHARGING_PROMPT.md's own phase sequence assigns "Roaming
--- and interconnect settlement (E7)" to P4.11, a later, not-yet-reached phase.
+-- P4.1/P4.7/P4.11's E7 (Roaming and Interconnect Agreements) persistence, per docs/DATA_MODEL.md's
+-- own schema sketch. Real, disclosed scoping decision (2026-08-11, docs/DECISIONS.md ADR-0060):
+-- this turn builds the schema and a real PostgreSQL-backed store library (src/store.hpp/.cpp),
+-- proven with real live verification -- same rigor as E1/E10/E2/E5/E6.
+--
+-- UPDATE (P4.7, docs/DECISIONS.md ADR-0066): the original text below assigned E7's entire HTTP
+-- service to P4.11 -- refined on review, since `InterconnectAgreement` itself (who the partner
+-- operator is, real TMF651 Agreement master data) is not GSMA-blocked at all, only
+-- `RoamingCdrFile` (real GSMA CDR ingestion) is. `src/main.cpp` now exists and exposes
+-- `InterconnectAgreementStore` (real Create/Get/List over `/tmf-api/agreementManagement/v4/
+-- agreement`) as part of P4.7's own "master model" layer; `RoamingCdrFileStore` still has no HTTP
+-- route -- that remains P4.11's own real, still-GSMA-blocked scope, not silently narrowed away.
+-- See src/main.cpp's own header for the full real disclosure of this split.
 --
 -- `interconnect_agreement` is project-internal (docs/DATA_MODEL.md's own explicit "not itself a
 -- spec-mandated shape" disclosure), realized as a real TMF651 Agreement -- header scalar fields

@@ -8,3 +8,8 @@ find_package(libpqxx CONFIG REQUIRED)
 add_library(roaming_interconnect_store STATIC src/store.cpp)
 target_link_libraries(roaming_interconnect_store PUBLIC bss_sid libpqxx::pqxx)
 target_include_directories(roaming_interconnect_store PUBLIC src)
+
+add_executable(roaming-interconnect src/main.cpp)
+target_link_libraries(roaming-interconnect PRIVATE sbi_core bss_sid roaming_interconnect_store)
+# See nfs/hello-nf/CMakeLists.txt for why this is a compile-time absolute path.
+target_compile_definitions(roaming-interconnect PRIVATE CERTS_DIR="${CMAKE_SOURCE_DIR}/certs")

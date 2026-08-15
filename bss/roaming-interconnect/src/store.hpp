@@ -29,6 +29,9 @@ struct InterconnectAgreement {
     nlohmann::json rateTerms; // opaque -- "partner-specific rating; shape TBD, not guessed"
 };
 
+void to_json(nlohmann::json& j, const InterconnectAgreement& v);
+void from_json(const nlohmann::json& j, InterconnectAgreement& v);
+
 // E7 RoamingCdrFile -- format is real-spec-disclosed as STUB until a real GSMA TAP3/RAP/NRTRDE
 // spec is supplied (schema.sql's own header).
 struct RoamingCdrFile {
@@ -45,6 +48,7 @@ public:
 
     std::string create(InterconnectAgreement agreement);
     std::optional<InterconnectAgreement> get(const std::string& id);
+    std::vector<InterconnectAgreement> list();
 
 private:
     std::string resource_url_;
