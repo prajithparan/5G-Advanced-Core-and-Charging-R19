@@ -104,6 +104,19 @@ TEST(TcapBer, RejectsTlvLengthPastEndOfBuffer) {
     EXPECT_FALSE(tcap_core::decode_tlv(bytes, offset).has_value());
 }
 
+// Real bug (ADR-0065), found by tests/fuzz/fuzz_dialogue_portion.cpp: a long-form length field
+// large enough to overflow `pos + length` (std::size_t) could wrap around and bypass the bounds
+// check entirely, crashing the process with an uncaught std::length_error instead of returning
+// std::nullopt. 8 bytes of 0xFF is the real, minimal overflow-triggering long-form length this
+// fuzzer found -- must NOT throw, must return std::nullopt.
+TEST(TcapBer, RejectsOverflowingLongFormLengthWithoutThrowing) {
+    std::vector<std::uint8_t> bytes = {
+        0xA1, 0x88, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // len-of-len=8,
+                                                                     // length=UINT64_MAX
+    std::size_t offset = 0;
+    EXPECT_NO_THROW({ EXPECT_FALSE(tcap_core::decode_tlv(bytes, offset).has_value()); });
+}
+
 TEST(TcapComponent, InvokeRoundTripsWithLocalOperationCode) {
     tcap_core::Invoke invoke;
     invoke.invoke_id = 1;

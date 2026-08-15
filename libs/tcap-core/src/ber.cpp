@@ -108,7 +108,17 @@ std::optional<Tlv> decode_tlv(const std::vector<std::uint8_t>& bytes, std::size_
         }
     }
 
-    if (pos + length > bytes.size()) {
+    // Real bug found by tests/fuzz/fuzz_dialogue_portion.cpp (ADR-0065): `length` is fully
+    // attacker-controlled by the long-form length bytes above and can be up to SIZE_MAX (e.g. 8+
+    // bytes of 0xFF) -- `pos + length` overflows/wraps size_t, which can make an out-of-range
+    // length pass this bounds check. The wrapped, too-small `pos + length` then produced an
+    // iterator range `[bytes.begin()+pos, bytes.begin()+(pos+length))` with `first > last` for
+    // `tlv.value.assign` below, which libstdc++'s vector implementation turns into a huge
+    // (underflowed) size request -- an uncaught `std::length_error`, crashing the process. Fixed
+    // by comparing `length` against `bytes.size() - pos` (safe: `pos <= bytes.size()` is already
+    // established by the length-of-length bounds check above), which cannot overflow regardless
+    // of how large the attacker-supplied `length` is.
+    if (length > bytes.size() - pos) {
         return std::nullopt;
     }
     tlv.value.assign(bytes.begin() + static_cast<std::ptrdiff_t>(pos),
