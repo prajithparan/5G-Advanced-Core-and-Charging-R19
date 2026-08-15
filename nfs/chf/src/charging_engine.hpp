@@ -33,9 +33,17 @@
 namespace chf {
 
 // CHF's own client base URLs/paths for its two real BSS-layer dependencies (ADR-0047/ADR-0056).
-constexpr const char* kProductCatalogBase = "https://127.0.0.1:7785";
+// Real, disclosed bug found and fixed while live-verifying the P4.5/ADR-0061 docker-compose.yml
+// fix: these were hardcoded to 127.0.0.1, which only works when every NF runs on the same host
+// (this project's own original lab convention) -- it can never work once product-catalog/
+// balance-management are separate containers, since 127.0.0.1 inside CHF's own container is CHF
+// itself, not another container. Same getenv-based-config precedent as every other CHF connection
+// string (chf_redis_conninfo/chf_clickhouse_options/chf_rating_postgres_conninfo, main.cpp) --
+// CHF_PRODUCT_CATALOG_BASE/CHF_BALANCE_MANAGEMENT_BASE, defaulting to the same real 127.0.0.1 URLs
+// for same-host lab runs so nothing existing breaks.
+std::string product_catalog_base();
+std::string balance_management_base();
 constexpr const char* kProductCatalogApiRoot = "/tmf-api/productCatalogManagement/v4";
-constexpr const char* kBalanceManagementBase = "https://127.0.0.1:7786";
 constexpr const char* kBalanceManagementApiRoot = "/tmf-api/prepayBalanceManagement/v4";
 
 // P4.3 (ADR-0057): a rating decision is now a real (GrantedUnit, cost) pair -- the quantity of

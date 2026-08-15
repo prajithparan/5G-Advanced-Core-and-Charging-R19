@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 
 namespace chf {
 
@@ -15,11 +16,24 @@ using nlohmann::json;
 
 } // namespace
 
+std::string product_catalog_base() {
+    if (const char* env = std::getenv("CHF_PRODUCT_CATALOG_BASE")) {
+        return env;
+    }
+    return "https://127.0.0.1:7785";
+}
+
+std::string balance_management_base() {
+    if (const char* env = std::getenv("CHF_BALANCE_MANAGEMENT_BASE")) {
+        return env;
+    }
+    return "https://127.0.0.1:7786";
+}
+
 RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client) {
     sbi_core::http2::ClientRequest offerings_req;
     offerings_req.method = "GET";
-    offerings_req.url =
-        std::string(kProductCatalogBase) + kProductCatalogApiRoot + "/productOffering";
+    offerings_req.url = product_catalog_base() + kProductCatalogApiRoot + "/productOffering";
     auto offerings_resp = catalog_client.send(offerings_req);
     if (!offerings_resp.has_value() || offerings_resp->status != 200) {
         spdlog::warn("chf: could not reach bss/product-catalog for rating, granting nothing");
@@ -46,8 +60,8 @@ RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client) {
 
     sbi_core::http2::ClientRequest price_req;
     price_req.method = "GET";
-    price_req.url = std::string(kProductCatalogBase) + kProductCatalogApiRoot +
-                    "/productOfferingPrice/" + offering_it->productOfferingPrice.front().id;
+    price_req.url = product_catalog_base() + kProductCatalogApiRoot + "/productOfferingPrice/" +
+                    offering_it->productOfferingPrice.front().id;
     auto price_resp = catalog_client.send(price_req);
     if (!price_resp.has_value() || price_resp->status != 200) {
         spdlog::warn("chf: could not fetch ProductOfferingPrice {}, granting nothing",
@@ -111,7 +125,7 @@ bool reserve_subscriber_balance(sbi_core::http2::Client& balance_client,
 
     sbi_core::http2::ClientRequest req;
     req.method = "POST";
-    req.url = std::string(kBalanceManagementBase) + kBalanceManagementApiRoot + "/reserveBalance";
+    req.url = balance_management_base() + kBalanceManagementApiRoot + "/reserveBalance";
     req.headers.emplace("content-type", "application/json");
     req.body = json(reserve_req).dump();
 
@@ -170,7 +184,7 @@ void finalize_subscriber_balance(sbi_core::http2::Client& balance_client,
     sbi_core::http2::ClientRequest unreserve_http_req;
     unreserve_http_req.method = "POST";
     unreserve_http_req.url =
-        std::string(kBalanceManagementBase) + kBalanceManagementApiRoot + "/reserveBalance";
+        balance_management_base() + kBalanceManagementApiRoot + "/reserveBalance";
     unreserve_http_req.headers.emplace("content-type", "application/json");
     unreserve_http_req.body = json(unreserve_req).dump();
     auto unreserve_resp = balance_client.send(unreserve_http_req);
@@ -190,8 +204,7 @@ void finalize_subscriber_balance(sbi_core::http2::Client& balance_client,
 
     sbi_core::http2::ClientRequest adjust_http_req;
     adjust_http_req.method = "POST";
-    adjust_http_req.url =
-        std::string(kBalanceManagementBase) + kBalanceManagementApiRoot + "/adjustBalance";
+    adjust_http_req.url = balance_management_base() + kBalanceManagementApiRoot + "/adjustBalance";
     adjust_http_req.headers.emplace("content-type", "application/json");
     adjust_http_req.body = json(adjust_req).dump();
     auto adjust_resp = balance_client.send(adjust_http_req);

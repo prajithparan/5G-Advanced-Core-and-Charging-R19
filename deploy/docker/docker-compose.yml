@@ -18,7 +18,7 @@ services:
     entrypoint:
       - /bin/bash
       - -c
-      - "apt-get update >/dev/null && apt-get install -y --no-install-recommends openssl >/dev/null && ./scripts/gen-lab-pki.sh nrf amf smf udm udr ausf pcf product-catalog"
+      - "apt-get update >/dev/null && apt-get install -y --no-install-recommends openssl >/dev/null && ./scripts/gen-lab-pki.sh nrf amf smf udm udr ausf pcf product-catalog balance-management chf"
 
   nrf:
     build:
@@ -162,6 +162,149 @@ services:
       - "7785:7785"   # TMF620 Product Catalog Management (TLS 1.3 + mTLS)
       - "9473:9473"   # Prometheus /metrics
 
+  # Real PostgreSQL for bss/balance-management's persistence (ADR-0056) -- own dedicated instance,
+  # same "one postgres per consumer" shape as the `postgres` service above (product-catalog's own),
+  # not a shared multi-database instance.
+  postgres-balance:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: balance_management
+      POSTGRES_PASSWORD: balance_management
+      POSTGRES_DB: balance_management
+    volumes:
+      - postgres_balance_data:/var/lib/postgresql/data
+      - ../../bss/balance-management/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U balance_management"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  balance-management:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/balance-management.Dockerfile
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+      postgres-balance:
+        condition: service_healthy
+    environment:
+      BALANCE_MANAGEMENT_DATABASE_URL: postgresql://balance_management:balance_management@postgres-balance:5432/balance_management
+    volumes:
+      - certs_data:/build/certs
+    ports:
+      - "7786:7786"   # TMF654 Prepay Balance Management (TLS 1.3 + mTLS)
+      - "9474:9474"   # Prometheus /metrics
+
+  # Real PostgreSQL for CHF's RatingDecision audit table (ADR-0060 E5) -- own dedicated instance,
+  # matching CHF's own real default conninfo (postgresql://postgres@.../chf_rating, no password --
+  # POSTGRES_HOST_AUTH_METHOD=trust matches that real, disclosed lab-only credential shape).
+  postgres-chf:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_DB: chf_rating
+    volumes:
+      - postgres_chf_data:/var/lib/postgresql/data
+      - ../../nfs/chf/schema.postgres.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Real Redis/Valkey for CHF's own ChargingDataStore (ADR-0055/E3 persistence).
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Real ClickHouse for CHF's CDR generation (ADR-0058, P4.4). Real, disclosed fact found via a
+  # genuine live-verification failure while fixing this file, not assumed: even with
+  # CLICKHOUSE_USER=default/CLICKHOUSE_PASSWORD="" set explicitly, the official image's own shipped
+  # `users.d/default-user.xml` restricts the `default` user's real network access to
+  # `127.0.0.1`/`::1` only ("User default is available only locally", confirmed by reading that
+  # file directly inside the running container) -- so a genuinely different container (CHF) is
+  # rejected regardless of password correctness, surfaced as ClickHouse's own generic "Authentication
+  # failed" error. A real, non-empty CLICKHOUSE_PASSWORD properly provisions the user without this
+  # loopback-only restriction (confirmed by re-testing after this change), so this lab uses one --
+  # matching the real, disclosed CHF_CLICKHOUSE_PASSWORD env var CHF's own `chf_clickhouse_options()`
+  # (nfs/chf/src/main.cpp) already reads, not a new mechanism invented for this fix.
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: chf_clickhouse_lab
+      CLICKHOUSE_DB: default
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ../../nfs/chf/schema.clickhouse.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  chf:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/chf.Dockerfile
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+      nrf:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      postgres-chf:
+        condition: service_healthy
+      product-catalog:
+        condition: service_started
+      balance-management:
+        condition: service_started
+    environment:
+      CHF_REDIS_URL: tcp://redis:6379
+      CHF_CLICKHOUSE_HOST: clickhouse
+      CHF_CLICKHOUSE_PORT: "9000"
+      CHF_CLICKHOUSE_PASSWORD: chf_clickhouse_lab
+      CHF_RATING_DATABASE_URL: postgresql://postgres@postgres-chf:5432/chf_rating
+      # Real bug found and fixed while live-verifying this file (nfs/chf/src/charging_engine.cpp):
+      # these were hardcoded to 127.0.0.1, which is CHF's own container in this compose network,
+      # not product-catalog's/balance-management's -- CHF could never reach either service without
+      # this override once they became separate containers.
+      CHF_PRODUCT_CATALOG_BASE: https://product-catalog:7785
+      CHF_BALANCE_MANAGEMENT_BASE: https://balance-management:7786
+    volumes:
+      - certs_data:/build/certs
+    ports:
+      - "7784:7784" # Nchf_ConvergedCharging + Nchf_OfflineOnlyCharging + Nchf_SpendingLimitControl
+      - "3868:3868" # Diameter Gy + Rf + Sy (ADR-0059)
+      - "9472:9472" # Prometheus /metrics
+      # CAP (port 2905) is deliberately NOT host-published here: Docker's `ports:` short syntax
+      # only accepts tcp/udp, and SCTP does not traverse Docker's userland-proxy/iptables NAT the
+      # way tcp/udp do -- a real, disclosed Docker networking limitation, not this project's own
+      # gap. Container-to-container SCTP on the shared compose bridge network works fine (direct
+      # L3 hop, no NAT); a real SS7 peer container reaching CHF for lab testing should join this
+      # same compose network and dial `chf:2905` directly, not a host-published port.
+
 volumes:
   certs_data:
   postgres_data:
+  postgres_balance_data:
+  postgres_chf_data:
+  clickhouse_data:
