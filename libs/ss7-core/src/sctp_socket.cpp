@@ -101,6 +101,18 @@ SctpSocket SctpSocket::accept() {
     return SctpSocket(client_fd);
 }
 
+void SctpSocket::connect(const std::string& address, std::uint16_t port) {
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (::inet_pton(AF_INET, address.c_str(), &addr.sin_addr) != 1) {
+        throw std::runtime_error("invalid IPv4 address for SCTP connect: " + address);
+    }
+    if (::connect(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        throw_errno(("connect(" + address + ":" + std::to_string(port) + ") failed").c_str());
+    }
+}
+
 void SctpSocket::send(const std::vector<std::uint8_t>& data, std::uint16_t stream) {
     const int result = ::sctp_sendmsg(
         fd_, data.data(), data.size(), nullptr, 0, htonl(dictionary::kSctpPpid), 0, stream, 0, 0);

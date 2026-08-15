@@ -38,6 +38,14 @@ public:
     // Throws std::runtime_error on failure.
     SctpSocket accept();
 
+    // Client-side association establishment (real kernel `connect()` on a one-to-one style SCTP
+    // socket -- same real syscall a TCP client would use; SCTP's own INIT/INIT-ACK/COOKIE-ECHO/
+    // COOKIE-ACK four-way handshake, RFC 4960 3.1, happens inside the kernel during this call, not
+    // modeled at this layer). Added for UDM's real MAP client role (ADR-0061) -- every prior use of
+    // this class and its ngap_core precedent was server-side (bind_and_listen/accept) only. Throws
+    // std::runtime_error on failure.
+    void connect(const std::string& address, std::uint16_t port);
+
     // One send() call = one SCTP message = one real M3UA message (SCTP preserves message
     // boundaries, unlike a TCP stream -- no length-prefixing needed). Throws std::runtime_error on
     // failure.
