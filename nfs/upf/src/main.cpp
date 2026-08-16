@@ -42,6 +42,7 @@
 #include <boost/asio/ip/udp.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <ctime>
@@ -128,6 +129,17 @@ public:
         return it->second;
     }
 
+    // ADR-0071, gap-closure Tier 1d: real Session Deletion cleanup -- without this, a deleted
+    // session's entry would live here for the rest of the process's lifetime (this project's own
+    // disclosed "no restart/session-teardown testing yet" gap, from before Session Deletion had
+    // any handler at all, no longer applies once this is called from one). No-op if the TEID isn't
+    // present (already removed, or never had a URR).
+    void remove(std::uint32_t teid) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sessions_.erase(teid);
+        next_ur_seqn_.erase(teid);
+    }
+
 private:
     std::mutex mutex_;
     std::unordered_map<std::uint32_t, UrrSessionInfo> sessions_;
@@ -154,6 +166,12 @@ public:
             return std::nullopt;
         }
         return it->second;
+    }
+
+    // ADR-0071: same real Session Deletion cleanup rationale as TeidSessionStore::remove above.
+    void remove(std::uint64_t seid) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        seid_to_teid_.erase(seid);
     }
 
 private:
@@ -331,10 +349,18 @@ struct SessionEstablishmentResult {
     // the SEID value provided by the corresponding receiving entity") means UPF's response header
     // must carry the value the CP F-SEID IE in the request said to use -- not UPF's own new SEID.
     std::uint64_t response_header_seid = 0;
-    // ADR-0050 Stage 2: set only when this session allocated a real uplink F-TEID AND the request
-    // carried a real Create URR for it -- the two pieces of information run_pfcp_lifecycle needs
-    // to remember this session in TeidSessionStore (so a later usage report can be addressed back
-    // to SMF). std::nullopt in every other case (no F-TEID allocated, or no URR requested).
+    // ADR-0071 (gap-closure Tier 1d): set whenever this session allocated a real uplink F-TEID,
+    // regardless of whether a URR was also provisioned -- run_pfcp_lifecycle needs this
+    // unconditionally to register SeidToTeidStore, since ANY session with an allocated F-TEID must
+    // be reachable by a later real Session Modification/Deletion (Update/Remove QER, Update/Remove
+    // BAR, Session Deletion), not just ones with a URR. Real bug fixed this turn: earlier code
+    // (ADR-0050 Stage 5) only ever set/used allocated_teid_with_urr, so a QER-only session (no
+    // charging URR -- an entirely ordinary real case) could establish successfully but then could
+    // never be found by SEID for any later Modification/Deletion, a genuine conformance gap this
+    // field closes. allocated_teid_with_urr is kept as a SEPARATE field (set only when a URR was
+    // ALSO provisioned) since TeidSessionStore's own real purpose -- addressing an unsolicited
+    // Session Report Request back to SMF -- genuinely only applies to URR-bearing sessions.
+    std::optional<std::uint32_t> allocated_teid;
     std::optional<std::uint32_t> allocated_teid_with_urr;
     std::optional<std::uint32_t> urr_id;
     // ADR-0050 Stage 5: this UPF's own newly-generated F-SEID for the session -- exposed so
@@ -422,6 +448,69 @@ build_session_establishment_response_ies(const std::vector<std::uint8_t>& reques
         }
     }
 
+    // ADR-0071, gap-closure Tier 1d: the real Create QER IE (TS 29.244 Table 7.5.2.5-1), top-level
+    // sibling of Create PDR/Create FAR/Create URR, same as the Create URR handling above. Real,
+    // disclosed simplification matching Create URR's own established scope: only the first Create
+    // QER is applied (this build's per-TEID datapath map holds one QER slot, same "one per
+    // session" narrowing already applied to URR). Gate Status is real Mandatory in Create QER; a
+    // request missing it is treated as malformed and this session gets no QoS enforcement, logged
+    // rather than silently accepted. Maximum Bitrate is real Conditional -- absent means no real
+    // MBR enforcement (register_qer's own header comment already documents mbr_ul_kbps=0 as that
+    // exact case).
+    const auto* create_qer_ie =
+        pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreateQer));
+    std::optional<pfcp_core::GateStatus> qer_gate_status;
+    std::uint32_t qer_mbr_ul_kbps = 0;
+    if (create_qer_ie != nullptr) {
+        const auto qer_ies = pfcp_core::decode_ies(create_qer_ie->value);
+        if (qer_ies.has_value()) {
+            const auto* gate_status_ie = pfcp_core::find_ie(
+                *qer_ies, static_cast<std::uint16_t>(pfcp_core::IeType::GateStatus));
+            const auto* mbr_ie =
+                pfcp_core::find_ie(*qer_ies, static_cast<std::uint16_t>(pfcp_core::IeType::Mbr));
+            if (gate_status_ie != nullptr) {
+                qer_gate_status = pfcp_core::decode_gate_status(gate_status_ie->value);
+            }
+            if (mbr_ie != nullptr) {
+                if (const auto mbr = pfcp_core::decode_mbr(mbr_ie->value); mbr.has_value()) {
+                    qer_mbr_ul_kbps = static_cast<std::uint32_t>(
+                        std::min<std::uint64_t>(mbr->ul_kbps, 0xFFFFFFFFULL));
+                }
+            }
+        }
+        if (!qer_gate_status.has_value()) {
+            spdlog::warn("upf: Session Establishment Request carried a malformed/incomplete "
+                         "Create QER (missing Mandatory Gate Status), ignoring QoS enforcement "
+                         "for this session");
+        }
+    }
+
+    // ADR-0071: real Create BAR IE (TS 29.244 Table 7.5.2.6-1), parsed and acknowledged only --
+    // this project has no downlink datapath (see this file's own header comment: no downlink
+    // PDR/FAR exists, since that needs NGAP PDU Session Resource Setup, still not implemented), so
+    // a BAR's real purpose (buffering downlink data while paging/notifying the UE) cannot actually
+    // be enforced here. Disclosed, deliberate scope: PFCP-level parse/log only, no BAR state is
+    // stored or applied to any datapath.
+    const auto* create_bar_ie =
+        pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreateBar));
+    if (create_bar_ie != nullptr) {
+        const auto bar_ies = pfcp_core::decode_ies(create_bar_ie->value);
+        const auto* bar_id_ie =
+            bar_ies.has_value()
+                ? pfcp_core::find_ie(*bar_ies, static_cast<std::uint16_t>(pfcp_core::IeType::BarId))
+                : nullptr;
+        const auto bar_id =
+            bar_id_ie != nullptr ? pfcp_core::decode_bar_id(bar_id_ie->value) : std::nullopt;
+        if (bar_id.has_value()) {
+            spdlog::info("upf: Create BAR {} acknowledged (PFCP-level only -- no downlink "
+                         "datapath exists to enforce buffering, see ADR-0071)",
+                         *bar_id);
+        } else {
+            spdlog::warn("upf: Session Establishment Request carried a malformed Create BAR "
+                         "(missing Mandatory BAR ID)");
+        }
+    }
+
     SessionEstablishmentResult result;
 
     std::vector<std::uint8_t> ies_out;
@@ -475,7 +564,22 @@ build_session_establishment_response_ies(const std::vector<std::uint8_t>& reques
                         *urr_volume_threshold,
                         *urr_volume_quota);
                 }
+                if (qer_gate_status.has_value()) {
+                    datapath->register_qer(allocated_teid,
+                                           qer_gate_status->ul_closed,
+                                           qer_gate_status->dl_closed,
+                                           qer_mbr_ul_kbps);
+                    spdlog::info("upf: registered QER for TEID {:#x}: ul_gate={} dl_gate={} "
+                                 "mbr_ul_kbps={}",
+                                 allocated_teid,
+                                 qer_gate_status->ul_closed ? "CLOSED" : "OPEN",
+                                 qer_gate_status->dl_closed ? "CLOSED" : "OPEN",
+                                 qer_mbr_ul_kbps);
+                }
             }
+            // ADR-0071: unconditional -- see this field's own header comment on the real bug this
+            // fixes (SEID resolution must work for every session with an allocated F-TEID).
+            result.allocated_teid = allocated_teid;
             if (urr_id.has_value() && urr_volume_threshold.has_value() &&
                 urr_volume_quota.has_value()) {
                 result.allocated_teid_with_urr = allocated_teid;
@@ -527,51 +631,231 @@ build_session_modification_response_ies(const std::vector<std::uint8_t>& request
     }
 
     const auto ies = pfcp_core::decode_ies(request_ies);
+
+    // ADR-0071, gap-closure Tier 1d: real Session Modification can carry any combination of
+    // Update URR / Update QER / Remove QER / Update BAR / Remove BAR as top-level sibling IEs (TS
+    // 29.244 Table 7.5.4.1-1 -- all Conditional/Optional, none Mandatory). This project's earlier
+    // Stage 5 build only ever handled Update URR and returned as soon as that one IE was checked;
+    // extended here (rather than kept as separate early-returns) so a single real request touching
+    // more than one of these actually gets all of them applied, not just the first. `failed` tracks
+    // whether ANY requested modification could not be applied -- the whole response is Rejected if
+    // so (this build has no per-IE Failed Rule ID reporting, a real, disclosed simplification: TS
+    // 29.244 does support partial success via Failed Rule ID, not implemented here).
+    bool failed = false;
+
     const auto* update_urr_ie =
         ies.has_value()
             ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::UpdateUrr))
             : nullptr;
-    if (update_urr_ie == nullptr) {
-        // Real spec: Update URR is conditional, only present if a URR needs modifying -- this
-        // build has no other real Modification content (Update PDR/FAR etc.), so an absent Update
-        // URR just means nothing to do; still a real, valid (accepted) Modification.
+    if (update_urr_ie != nullptr) {
+        const auto update_urr_ies = pfcp_core::decode_ies(update_urr_ie->value);
+        const auto* threshold_ie =
+            update_urr_ies.has_value()
+                ? pfcp_core::find_ie(*update_urr_ies,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::VolumeThreshold))
+                : nullptr;
+        const auto* quota_ie =
+            update_urr_ies.has_value()
+                ? pfcp_core::find_ie(*update_urr_ies,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota))
+                : nullptr;
+        const auto new_threshold = threshold_ie != nullptr
+                                       ? pfcp_core::decode_volume_total(threshold_ie->value)
+                                       : std::nullopt;
+        const auto new_quota =
+            quota_ie != nullptr ? pfcp_core::decode_volume_total(quota_ie->value) : std::nullopt;
+        if (!new_threshold.has_value() || !new_quota.has_value() || datapath == nullptr ||
+            !datapath->update_urr_thresholds(*teid, *new_threshold, *new_quota)) {
+            spdlog::warn("upf: failed to apply Update URR for TEID {:#x}", *teid);
+            failed = true;
+        } else {
+            spdlog::info("upf: applied Update URR for TEID {:#x}: threshold={} quota={} octets",
+                         *teid,
+                         *new_threshold,
+                         *new_quota);
+        }
+    }
+
+    // ADR-0071: real Update QER (TS 29.244 Table 7.5.4.5-1) -- QER ID is Mandatory but, matching
+    // this build's own "one QER per TEID" scope already established at Session Establishment, the
+    // actual value on the wire is not cross-checked against a stored QER ID; only its presence is
+    // required, same disclosed narrowing as URR ID's own handling throughout this file. Gate
+    // Status/Maximum Bitrate are real Conditional -- passed through as std::optional so
+    // Datapath::update_qer can do a real read-modify-write (see its own header comment for why a
+    // naive full-overwrite would be a correctness bug here).
+    const auto* update_qer_ie =
+        ies.has_value()
+            ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::UpdateQer))
+            : nullptr;
+    if (update_qer_ie != nullptr) {
+        const auto update_qer_ies = pfcp_core::decode_ies(update_qer_ie->value);
+        const auto* qer_id_ie =
+            update_qer_ies.has_value()
+                ? pfcp_core::find_ie(*update_qer_ies,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::QerId))
+                : nullptr;
+        const auto* gate_status_ie =
+            update_qer_ies.has_value()
+                ? pfcp_core::find_ie(*update_qer_ies,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::GateStatus))
+                : nullptr;
+        const auto* mbr_ie =
+            update_qer_ies.has_value()
+                ? pfcp_core::find_ie(*update_qer_ies,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::Mbr))
+                : nullptr;
+        std::optional<bool> new_ul_gate_closed;
+        std::optional<bool> new_dl_gate_closed;
+        if (gate_status_ie != nullptr) {
+            if (const auto gate = pfcp_core::decode_gate_status(gate_status_ie->value);
+                gate.has_value()) {
+                new_ul_gate_closed = gate->ul_closed;
+                new_dl_gate_closed = gate->dl_closed;
+            }
+        }
+        std::optional<std::uint32_t> new_mbr_ul_kbps;
+        if (mbr_ie != nullptr) {
+            if (const auto mbr = pfcp_core::decode_mbr(mbr_ie->value); mbr.has_value()) {
+                new_mbr_ul_kbps = static_cast<std::uint32_t>(
+                    std::min<std::uint64_t>(mbr->ul_kbps, 0xFFFFFFFFULL));
+            }
+        }
+        if (qer_id_ie == nullptr || datapath == nullptr ||
+            !datapath->update_qer(*teid, new_ul_gate_closed, new_dl_gate_closed, new_mbr_ul_kbps)) {
+            spdlog::warn("upf: failed to apply Update QER for TEID {:#x}", *teid);
+            failed = true;
+        } else {
+            spdlog::info("upf: applied Update QER for TEID {:#x}", *teid);
+        }
+    }
+
+    // ADR-0071: real Remove QER (TS 29.244 Table 7.5.4.9-1). Idempotent by design: if no QER is
+    // currently registered (already removed, or never created), the real intent -- "no QER active
+    // for this TEID" -- is already true, so this does NOT set `failed`, only logs.
+    const auto* remove_qer_ie =
+        ies.has_value()
+            ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::RemoveQer))
+            : nullptr;
+    if (remove_qer_ie != nullptr) {
+        if (datapath != nullptr && datapath->remove_qer(*teid)) {
+            spdlog::info("upf: removed QER for TEID {:#x}", *teid);
+        } else {
+            spdlog::warn("upf: Remove QER for TEID {:#x} found no QER to remove", *teid);
+        }
+    }
+
+    // ADR-0071: real Update BAR / Remove BAR (TS 29.244 Table 7.5.4.11-1/7.5.4.12-1) -- same
+    // disclosed "parse/log only, no downlink datapath to apply it to" scope as Create BAR's own
+    // handling in build_session_establishment_response_ies. Always a no-op success: there is no
+    // stored BAR state this build could fail to find.
+    const auto* update_bar_ie =
+        ies.has_value()
+            ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::UpdateBar))
+            : nullptr;
+    if (update_bar_ie != nullptr) {
+        spdlog::info("upf: Update BAR for TEID {:#x} acknowledged (PFCP-level only, see ADR-0071)",
+                     *teid);
+    }
+    const auto* remove_bar_ie =
+        ies.has_value()
+            ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::RemoveBar))
+            : nullptr;
+    if (remove_bar_ie != nullptr) {
+        spdlog::info("upf: Remove BAR for TEID {:#x} acknowledged (PFCP-level only, see ADR-0071)",
+                     *teid);
+    }
+
+    pfcp_core::encode_ie(result.ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                         pfcp_core::encode_cause(failed ? pfcp_core::Cause::RequestRejected
+                                                        : pfcp_core::Cause::RequestAccepted));
+    return result;
+}
+
+struct SessionDeletionResult {
+    std::vector<std::uint8_t> ies;
+    std::uint64_t response_header_seid = 0;
+};
+
+// ADR-0071, gap-closure Tier 1d: real Sx Session Deletion (TS 29.244 §7.5.6/§7.5.7) -- the one
+// PFCP message type this build had no handler for at all before this turn (previously fell into
+// run_pfcp_lifecycle's catch-all "no handler yet, ignoring" branch, never responding).
+// `request_seid` is the incoming header's own SEID, same UPF-addressed-by-CP meaning as
+// build_session_modification_response_ies's own parameter of the same name.
+std::optional<SessionDeletionResult>
+build_session_deletion_response_ies(std::uint64_t request_seid,
+                                    SeidToTeidStore& seid_to_teid_store,
+                                    TeidSessionStore& teid_session_store,
+                                    upf::Datapath* datapath) {
+    SessionDeletionResult result;
+    result.response_header_seid = request_seid;
+
+    const auto teid = seid_to_teid_store.get(request_seid);
+    if (!teid.has_value()) {
+        // Real spec Table 8.2.1-1 (Cause): "Session context not found... if the F-SEID included in
+        // a Sx Session Modification/Deletion Request message is unknown" -- the exact real case
+        // here, not the generic RequestRejected earlier PFCP work in this file used before this
+        // Cause value existed.
+        spdlog::warn("upf: Session Deletion Request references unknown SEID {:#x}", request_seid);
         pfcp_core::encode_ie(result.ies,
                              static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
-                             pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+                             pfcp_core::encode_cause(pfcp_core::Cause::SessionContextNotFound));
         return result;
     }
 
-    const auto update_urr_ies = pfcp_core::decode_ies(update_urr_ie->value);
-    const auto* threshold_ie =
-        update_urr_ies.has_value()
-            ? pfcp_core::find_ie(*update_urr_ies,
-                                 static_cast<std::uint16_t>(pfcp_core::IeType::VolumeThreshold))
-            : nullptr;
-    const auto* quota_ie =
-        update_urr_ies.has_value()
-            ? pfcp_core::find_ie(*update_urr_ies,
-                                 static_cast<std::uint16_t>(pfcp_core::IeType::VolumeQuota))
-            : nullptr;
-    const auto new_threshold = threshold_ie != nullptr
-                                   ? pfcp_core::decode_volume_total(threshold_ie->value)
-                                   : std::nullopt;
-    const auto new_quota =
-        quota_ie != nullptr ? pfcp_core::decode_volume_total(quota_ie->value) : std::nullopt;
-    if (!new_threshold.has_value() || !new_quota.has_value() || datapath == nullptr ||
-        !datapath->update_urr_thresholds(*teid, *new_threshold, *new_quota)) {
-        spdlog::warn("upf: failed to apply Update URR for TEID {:#x}", *teid);
-        pfcp_core::encode_ie(result.ies,
-                             static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
-                             pfcp_core::encode_cause(pfcp_core::Cause::RequestRejected));
-        return result;
+    // Real spec addressing rule (same as Session Modification's own use of this pattern): the
+    // response echoes the CP's own SEID for this session, known from the already-stored
+    // UrrSessionInfo if this session ever provisioned a URR.
+    const auto session_info = teid_session_store.get(*teid);
+    if (session_info.has_value()) {
+        result.response_header_seid = session_info->cp_seid;
     }
-    spdlog::info("upf: applied Update URR for TEID {:#x}: threshold={} quota={} octets",
-                 *teid,
-                 *new_threshold,
-                 *new_quota);
+
+    // ADR-0071: real cumulative usage, if any URR was provisioned for this session -- this also
+    // tears down ALL per-TEID datapath state (teid_map/urr_map/qer_map), the real, full session
+    // teardown TS 29.244 §7.5.6 requires at Sx session termination. A missing/absent datapath
+    // (e.g. no eBPF privileges, see datapath.hpp's own comment) just means no real total to
+    // report -- PFCP-level deletion still succeeds, same "control-plane works with or without a
+    // datapath" pattern this file already follows elsewhere.
+    const std::optional<std::uint64_t> total_octets =
+        datapath != nullptr ? datapath->remove_teid(*teid) : std::nullopt;
+
+    if (total_octets.has_value() && session_info.has_value()) {
+        const auto report_info = teid_session_store.get_and_advance_seqn(*teid);
+        // TS 29.244 Table 7.5.7.2-1's own narrower field set (URR ID, UR-SEQN, Usage Report
+        // Trigger, Volume Measurement) -- see ie.hpp's own UsageReportSessionDeletion comment for
+        // why this is real IE type 79, not the 80 used in the unsolicited Session Report path
+        // above.
+        std::vector<std::uint8_t> usage_report;
+        pfcp_core::encode_ie(usage_report,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::UrrId),
+                             pfcp_core::encode_urr_id(session_info->urr_id));
+        pfcp_core::encode_ie(
+            usage_report,
+            static_cast<std::uint16_t>(pfcp_core::IeType::UrSeqn),
+            pfcp_core::encode_ur_seqn(report_info.has_value() ? report_info->second : 0));
+        pfcp_core::encode_ie(usage_report,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::UsageReportTrigger),
+                             pfcp_core::encode_usage_report_trigger_termr());
+        pfcp_core::encode_ie(usage_report,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::VolumeMeasurement),
+                             pfcp_core::encode_volume_total(*total_octets));
+        pfcp_core::encode_ie(
+            result.ies,
+            static_cast<std::uint16_t>(pfcp_core::IeType::UsageReportSessionDeletion),
+            usage_report);
+        spdlog::info("upf: Session Deletion for TEID {:#x} reporting final usage: {} octets",
+                     *teid,
+                     *total_octets);
+    }
+
+    teid_session_store.remove(*teid);
+    seid_to_teid_store.remove(request_seid);
+
     pfcp_core::encode_ie(result.ies,
                          static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
                          pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+    spdlog::info("upf: Sx Session deleted for TEID {:#x}", *teid);
     return result;
 }
 
@@ -657,10 +941,12 @@ void run_pfcp_lifecycle(std::time_t start_time,
                 info.cp_seid = result->response_header_seid;
                 info.urr_id = *result->urr_id;
                 teid_session_store.put(*result->allocated_teid_with_urr, info);
-                // ADR-0050 Stage 5: only sessions with a real URR can ever receive a real Session
-                // Modification pushing an updated one -- same scoping as the TeidSessionStore
-                // registration above.
-                seid_to_teid_store.put(result->up_seid, *result->allocated_teid_with_urr);
+            }
+            // ADR-0071: unconditional -- see SessionEstablishmentResult::allocated_teid's own
+            // header comment for the real bug this fixes (a QER-only session with no URR used to
+            // be unreachable by SEID for any later Modification/Deletion at all).
+            if (result->allocated_teid.has_value()) {
+                seid_to_teid_store.put(result->up_seid, *result->allocated_teid);
             }
         } else if (header->message_type == pfcp_core::MessageType::SessionModificationRequest) {
             const auto result = build_session_modification_response_ies(
@@ -675,6 +961,20 @@ void run_pfcp_lifecycle(std::time_t start_time,
             resp_header.seid = result->response_header_seid;
             resp_ies = result->ies;
             spdlog::info("upf: Sx Session Modification processed from {}",
+                         sender.address().to_string());
+        } else if (header->message_type == pfcp_core::MessageType::SessionDeletionRequest) {
+            const auto result = build_session_deletion_response_ies(
+                header->seid, seid_to_teid_store, teid_session_store, datapath);
+            if (!result.has_value()) {
+                spdlog::warn("upf: malformed Session Deletion Request from {}, ignoring",
+                             sender.address().to_string());
+                continue;
+            }
+            resp_header.message_type = pfcp_core::MessageType::SessionDeletionResponse;
+            resp_header.has_seid = true;
+            resp_header.seid = result->response_header_seid;
+            resp_ies = result->ies;
+            spdlog::info("upf: Sx Session Deletion processed from {}",
                          sender.address().to_string());
         } else {
             spdlog::warn("upf: received PFCP message type {} with no handler yet, ignoring",

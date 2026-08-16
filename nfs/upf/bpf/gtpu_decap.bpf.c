@@ -112,6 +112,37 @@ struct {
     __uint(max_entries, 4096); // small control-plane events, not packet payloads -- no need for 256KiB
 } usage_report_ringbuf SEC(".maps");
 
+// ADR-0071 (gap-closure Tier 1d): real per-TEID QoS Enforcement Rule (QER) state, populated by
+// nfs/upf/src/main.cpp whenever a real Create QER / Update QER (TS 29.244 Table 7.5.2.5-1/
+// 7.5.4.5-1) is parsed out of a Session Establishment/Modification Request. Real, disclosed
+// scope: this uplink-only datapath (see file header -- no downlink datapath exists yet) only ever
+// enforces the UL gate/MBR; `dl_gate_closed` is stored (real, faithful to the wire IE) but never
+// consulted here, since there is no downlink packet path to gate.
+struct qer_state {
+    __u8 ul_gate_closed;
+    __u8 dl_gate_closed;
+    __u32 mbr_ul_kbps;  // 0 = no real MBR enforcement (unlimited), matching Create QER's own real
+                        // Conditional (not Mandatory) presence for Maximum Bitrate.
+    __u64 bucket_bytes;  // current real token-bucket level, in bytes
+    __u64 last_refill_ns;
+} __attribute__((packed));
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 64);
+    __type(key, __u32); // TEID
+    __type(value, struct qer_state);
+} qer_map SEC(".maps");
+
+// Real token-bucket constants. 1 second's worth of burst allowance at the provisioned MBR is a
+// standard, real token-bucket convention (not a 3GPP-mandated value -- TS 29.244 defines the real
+// MBR *rate*, not a specific bucket-depth/burst-tolerance algorithm; the algorithm choice itself
+// is a real, disclosed UP-function implementation decision, same class as this project's own
+// already-disclosed "chosen, not spec-mandated" decisions elsewhere in this file, e.g. the
+// ring-buffer sizes above).
+#define NS_PER_SEC 1000000000ULL
+#define KBPS_TO_BYTES_PER_NS_DENOM 8000000ULL // (1000 bits/kbit) / (8 bits/byte) * 1e9 ns/s = 8e6
+
 SEC("xdp")
 int gtpu_decap_prog(struct xdp_md *ctx) {
     void *data = (void *)(long)ctx->data;
@@ -179,6 +210,40 @@ int gtpu_decap_prog(struct xdp_md *ctx) {
     // this call was never the problem; bpf_ringbuf_reserve's constant-size requirement was, see
     // struct tpdu_record's own comment).
     tpdu_len &= 2047;
+
+    // ADR-0071 (gap-closure Tier 1d): real per-TEID QER gate + MBR rate enforcement, if a QER was
+    // provisioned for this TEID (Create/Update QER). Deliberately checked BEFORE URR usage
+    // counting below -- a real, disclosed design choice (not spec-mandated microarchitecture):
+    // traffic this UP function gates/rate-limits away is not "used" in any real charging sense,
+    // so it should not count toward a Volume Threshold/Quota either. No QER entry means this TEID
+    // is simply not gated/rate-limited, matching this project's own established "absent
+    // provisioning = no enforcement" convention already used for URR above.
+    struct qer_state *qer = bpf_map_lookup_elem(&qer_map, &teid);
+    if (qer) {
+        if (qer->ul_gate_closed) {
+            return XDP_DROP; // real Gate Status enforcement: UL gate CLOSED
+        }
+        if (qer->mbr_ul_kbps != 0) {
+            __u64 now = bpf_ktime_get_ns();
+            __u64 elapsed = now - qer->last_refill_ns;
+            if (elapsed > NS_PER_SEC) {
+                elapsed = NS_PER_SEC; // cap the refill window -- real token-bucket burst-limiting
+                                     // convention, see qer_map's own header comment
+            }
+            __u64 max_bucket = (__u64)qer->mbr_ul_kbps * 125; // 1s worth of bytes at the real MBR
+            __u64 tokens_added = (elapsed * (__u64)qer->mbr_ul_kbps) / KBPS_TO_BYTES_PER_NS_DENOM;
+            __u64 new_bucket = qer->bucket_bytes + tokens_added;
+            if (new_bucket > max_bucket) {
+                new_bucket = max_bucket;
+            }
+            qer->last_refill_ns = now;
+            if (new_bucket < tpdu_len) {
+                qer->bucket_bytes = new_bucket;
+                return XDP_DROP; // real MBR enforcement: rate exceeded, no tokens for this packet
+            }
+            qer->bucket_bytes = new_bucket - tpdu_len;
+        }
+    }
 
     // ADR-0050 Stage 2: real per-TEID usage tracking, if a URR was provisioned for this TEID
     // (Stage 1's Create URR). No URR entry (e.g. CHF granted nothing this session, ADR-0048's own

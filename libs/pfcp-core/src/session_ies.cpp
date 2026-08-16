@@ -185,6 +185,7 @@ constexpr std::uint8_t kVolumeTovolBit = 0x01;          // octet 5, bit 1 - TOVO
 constexpr std::uint8_t kReportTypeUsar = 0x02;          // bit 2 - USAR
 constexpr std::uint8_t kUsageReportTriggerVolth = 0x02; // octet 5, bit 2 - VOLTH
 constexpr std::uint8_t kUsageReportTriggerVolqu = 0x01; // octet 6, bit 1 - VOLQU
+constexpr std::uint8_t kUsageReportTriggerTermr = 0x08; // octet 6, bit 4 - TERMR
 } // namespace
 
 std::vector<std::uint8_t> encode_measurement_method_volume() {
@@ -239,6 +240,98 @@ std::vector<std::uint8_t> encode_usage_report_trigger_volth() {
 
 std::vector<std::uint8_t> encode_usage_report_trigger_volqu() {
     return {0x00, kUsageReportTriggerVolqu};
+}
+
+std::vector<std::uint8_t> encode_usage_report_trigger_termr() {
+    return {0x00, kUsageReportTriggerTermr};
+}
+
+// --- ADR-0071 (gap-closure Tier 1d): QER ID, BAR ID, Gate Status, MBR ---
+
+std::vector<std::uint8_t> encode_qer_id(std::uint32_t id) {
+    return {
+        static_cast<std::uint8_t>((id >> 24) & 0xFF),
+        static_cast<std::uint8_t>((id >> 16) & 0xFF),
+        static_cast<std::uint8_t>((id >> 8) & 0xFF),
+        static_cast<std::uint8_t>(id & 0xFF),
+    };
+}
+
+std::optional<std::uint32_t> decode_qer_id(const std::vector<std::uint8_t>& value) {
+    if (value.size() != 4) {
+        return std::nullopt;
+    }
+    return (static_cast<std::uint32_t>(value[0]) << 24) |
+           (static_cast<std::uint32_t>(value[1]) << 16) |
+           (static_cast<std::uint32_t>(value[2]) << 8) | static_cast<std::uint32_t>(value[3]);
+}
+
+std::vector<std::uint8_t> encode_bar_id(std::uint8_t id) {
+    return {id};
+}
+
+std::optional<std::uint8_t> decode_bar_id(const std::vector<std::uint8_t>& value) {
+    if (value.size() != 1) {
+        return std::nullopt;
+    }
+    return value[0];
+}
+
+namespace {
+constexpr std::uint8_t kGateStatusUlShift = 2; // bits 4-3
+constexpr std::uint8_t kGateStatusDlShift = 0; // bits 2-1
+constexpr std::uint8_t kGateStatusMask = 0x03;
+} // namespace
+
+std::vector<std::uint8_t> encode_gate_status(const GateStatus& v) {
+    std::uint8_t octet = 0;
+    if (v.ul_closed) {
+        octet |= (0x01 << kGateStatusUlShift);
+    }
+    if (v.dl_closed) {
+        octet |= (0x01 << kGateStatusDlShift);
+    }
+    return {octet};
+}
+
+std::optional<GateStatus> decode_gate_status(const std::vector<std::uint8_t>& value) {
+    if (value.size() != 1) {
+        return std::nullopt;
+    }
+    GateStatus out;
+    // Real spec rule (Table 8.2.7-1/8.2.7-2): 0=OPEN, 1=CLOSED, 2-3 reserved-for-future-use and
+    // "shall be interpreted as the value '1'" (CLOSED) if received -- so any non-zero 2-bit field
+    // means closed, not just the literal value 1.
+    out.ul_closed = ((value[0] >> kGateStatusUlShift) & kGateStatusMask) != 0;
+    out.dl_closed = ((value[0] >> kGateStatusDlShift) & kGateStatusMask) != 0;
+    return out;
+}
+
+std::vector<std::uint8_t> encode_mbr(const Mbr& v) {
+    std::vector<std::uint8_t> out(10);
+    for (int i = 0; i < 5; ++i) {
+        out[static_cast<std::size_t>(4 - i)] =
+            static_cast<std::uint8_t>((v.ul_kbps >> (8 * i)) & 0xFF);
+    }
+    for (int i = 0; i < 5; ++i) {
+        out[static_cast<std::size_t>(9 - i)] =
+            static_cast<std::uint8_t>((v.dl_kbps >> (8 * i)) & 0xFF);
+    }
+    return out;
+}
+
+std::optional<Mbr> decode_mbr(const std::vector<std::uint8_t>& value) {
+    if (value.size() != 10) {
+        return std::nullopt;
+    }
+    Mbr out;
+    for (int i = 0; i < 5; ++i) {
+        out.ul_kbps = (out.ul_kbps << 8) | value[static_cast<std::size_t>(i)];
+    }
+    for (int i = 0; i < 5; ++i) {
+        out.dl_kbps = (out.dl_kbps << 8) | value[static_cast<std::size_t>(5 + i)];
+    }
+    return out;
 }
 
 } // namespace pfcp_core

@@ -1059,3 +1059,31 @@ Annex C), independently verified against the spec's own real, officially-publish
 **Disclosed gaps**: NAI/GCI/GLI-based SUCI (`supiType` 1-7) parsing not implemented (real, cited,
 deferred -- see ADR-0070); Home Network private key is real spec test-vector material reused as
 lab-only key material, no real production key-provisioning path exists.
+
+## `nfs/upf`: real QER/BAR enforcement + full Sx session management (gap-closure Tier 1d, ADR-0071)
+
+Both free5GC and open5gs genuinely enforce QER (gate/MBR) and handle Session Deletion; this
+project's UPF previously had neither -- Session Deletion Request fell into the dispatch loop's
+catch-all and never responded at all. Closed with real QER/BAR IE codecs (TS 29.244), real eBPF/XDP
+gate+token-bucket enforcement, and a real Session Deletion handler with full datapath teardown.
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| Create QER (Gate Status + MBR) enforced by the real XDP datapath | TS 29.244 Table 7.5.2.5-1, §8.2.7/§8.2.8 | `PfcpSessionIes.GateStatus*`/`Mbr*` (`tests/conformance/test_pfcp_core.cpp`); live: 8kbps MBR session, 40-packet burst delivered exactly 22/40 (token-bucket arithmetic exact match) |
+| Update QER (Conditional Gate Status/MBR) does a real read-modify-write, not a blind overwrite | TS 29.244 Table 7.5.4.5-1 | live: UL gate close (0/1 delivered) then reopen (1/1 delivered), each via a real Update QER carrying only the changed field |
+| Remove QER is real and idempotent | TS 29.244 Table 7.5.4.9-1 | live: `RemoveQer` on an already-removed TEID returns `Cause::RequestAccepted`, not a failure |
+| Create/Update/Remove BAR parsed and acknowledged (PFCP-level only, disclosed no-downlink-datapath scope) | TS 29.244 Table 7.5.2.6-1/7.5.4.11-1/7.5.4.12-1, §8.2.57 | `PfcpSessionIes.BarIdRoundTripsAsSingleOctet`; live: `Create/Update/RemoveBar` all return `Cause::RequestAccepted` |
+| Session Deletion tears down all datapath state and emits a real final Usage Report | TS 29.244 §7.5.6/§7.5.7, Table 7.5.7.2-1 (Usage Report IE **type=79**, distinct from Session Report's type=80) | live: post-deletion packet on the same TEID is not decapsulated; `SessionDeletionResponse` carries a real type-79 grouped IE with TERMR trigger and correct `total_octets` |
+| A re-sent/unknown SEID on Session Modification or Deletion is correctly rejected | TS 29.244 Table 8.2.1-1, Cause value 65 "Session context not found" | live: replayed Session Deletion on an already-deleted SEID returns `Cause::SessionContextNotFound` (65) |
+
+**Real bug found and fixed via live testing (not by inspection)**: `SeidToTeidStore` was only
+populated for sessions that also provisioned a URR -- a QER-only session could establish but then
+never be found by SEID for any later Modification/Deletion. Fixed by decoupling SEID registration
+(now unconditional on F-TEID allocation) from `TeidSessionStore` registration (still scoped to
+real URR-bearing sessions, its own genuine purpose).
+
+**Disclosed gaps**: no real downlink QoS/buffering enforcement (DL Gate Status/MBR stored but
+unused; BAR has no real datapath to apply to) -- both need a downlink datapath this project
+doesn't have yet (same NGAP PDU Session Resource Setup dependency already disclosed throughout
+Phase 3). One QER per TEID (real spec allows several per PDR), same narrowing already established
+for URR. No per-IE `Failed Rule ID` on partial Modification failure (all-or-nothing Cause).

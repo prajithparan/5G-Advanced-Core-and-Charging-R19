@@ -50,6 +50,35 @@ enum class IeType : std::uint16_t {
     UrSeqn = 104,
     FarId = 108,
     PdrId = 56,
+    // ADR-0071, gap-closure Tier 1d: real QER/BAR support. Real IE type numbers confirmed
+    // directly against TS 29.244 Table 8.1.2-1 (the same master table every IE type above was
+    // already confirmed against).
+    CreateQer = 7,   // Table 7.5.2.5-1
+    UpdateQer = 14,  // Table 7.5.4.5-1
+    RemoveQer = 18,  // Table 7.5.4.9-1
+    GateStatus = 25, // §8.2.7
+    Mbr = 26,        // §8.2.8
+    CreateBar = 85,  // Table 7.5.2.6-1
+    // Real, confirmed asymmetry: "Update BAR" has TWO distinct real type numbers depending on
+    // message direction -- 86 when it's a CP->UP component of Sx Session Modification Request
+    // (Table 7.5.4.11-1, what this project uses), 12 when it's a UP->CP component of Sx Session
+    // Report Response (Table 7.5.9.2-1, a different, richer real IE this project doesn't need).
+    UpdateBar = 86,
+    RemoveBar = 87, // Table 7.5.4.12-1
+    BarId = 88,     // §8.2.57 -- real 1-octet IE, NOT the 4-octet Unsigned32 shape FarId/UrrId/
+                    // QerId share; see encode_bar_id/decode_bar_id's own comment.
+    QerId = 109,    // §8.2.75 -- same real "bit 8 of octet 5 = 0 for CP-allocated" convention as
+                    // FarId/UrrId (confirmed identical spec text, not assumed).
+    // Real, confirmed asymmetry (same class as UpdateBar's own 86-vs-12 split above, re-verified
+    // directly against TS 29.244 V14.3.0 p.95 before writing this rather than trusted from a
+    // secondary source): the "Usage Report" grouped IE has TWO distinct real type numbers
+    // depending on which message carries it -- 80 (Table 7.5.8.3-1, Sx Session Report Request,
+    // already in use above) when it's an unsolicited threshold/quota-crossing report, 79
+    // (Table 7.5.7.2-1, Sx Session Deletion Response) when it's the final cumulative usage
+    // reported at session teardown. Different child-IE set too (no Application Detection
+    // Information/UE IP address/etc. -- Session Deletion's variant is the narrower one, matching
+    // exactly the fields this project's UrrState already tracks).
+    UsageReportSessionDeletion = 79,
 };
 
 struct Ie {

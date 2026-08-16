@@ -68,6 +68,55 @@ public:
                                std::uint64_t new_volume_threshold_octets,
                                std::uint64_t new_volume_quota_octets);
 
+    // ADR-0071 (gap-closure Tier 1d): provisions real per-TEID QoS Enforcement Rule state (Gate
+    // Status + Maximum Bitrate) the XDP program gates/rate-limits uplink traffic against --
+    // called whenever Session Establishment/Modification (TS 29.244 Create/Update QER) parses one
+    // out of a real PFCP request. mbr_ul_kbps=0 means no real MBR enforcement (matching Maximum
+    // Bitrate's own real Conditional, not Mandatory, presence in Create QER). Always writes a
+    // fresh token-bucket state (bucket_bytes=0, refill starts now) -- correct for both a new
+    // Create and a real Update (TS 29.244 doesn't define bucket-state carry-over semantics across
+    // an MBR change, unlike URR's own real "total_octets persists" convention -- a fresh bucket on
+    // update is the conservative, real, disclosed choice, not spec-mandated either way). Returns
+    // false if the underlying BPF map update fails.
+    bool register_qer(std::uint32_t teid,
+                      bool ul_gate_closed,
+                      bool dl_gate_closed,
+                      std::uint32_t mbr_ul_kbps);
+
+    // ADR-0071: real Update QER (TS 29.244 Table 7.5.4.5-1) -- unlike register_qer (used for a
+    // real Create QER, where Gate Status is Mandatory so always fully specified), a real Update
+    // QER's Gate Status and Maximum Bitrate are both Conditional: present only if that field is
+    // actually changing. Blindly re-running register_qer on Update would silently reopen a closed
+    // gate (or drop an MBR cap) whenever an update changed some OTHER QER field but omitted
+    // Gate Status/MBR -- a real correctness bug, not a cosmetic one. This does a real
+    // read-modify-write instead (same "preserve what wasn't provided" discipline
+    // update_urr_thresholds already established for Update URR's own total_octets field):
+    // std::nullopt for either optional means "leave this field as it currently is". Also -- unlike
+    // register_qer's own disclosed "always fresh bucket" choice -- preserves the running token
+    // bucket (bucket_bytes/last_refill_ns) untouched, since an Update is modifying an existing,
+    // already-running QER, not creating a new one; there is no real spec text mandating either
+    // choice, this is this project's own conservative pick, disclosed here rather than silently
+    // matched to register_qer's different (Create-appropriate) behaviour. Returns false if no QER
+    // is currently registered for this TEID (a real Update QER always targets an existing one), or
+    // the underlying BPF map operation fails.
+    bool update_qer(std::uint32_t teid,
+                    std::optional<bool> ul_gate_closed,
+                    std::optional<bool> dl_gate_closed,
+                    std::optional<std::uint32_t> mbr_ul_kbps);
+
+    // ADR-0071: real Remove QER (TS 29.244 Table 7.5.4.9-1) -- removes the QER state entirely, so
+    // this TEID's traffic is neither gated nor rate-limited afterward (same "absent provisioning
+    // = no enforcement" convention register_qer's own header comment already establishes). Returns
+    // false if no QER was registered for this TEID.
+    bool remove_qer(std::uint32_t teid);
+
+    // ADR-0071: real Session Deletion (TS 29.244 §7.5.6/§7.5.7) support -- removes ALL per-TEID
+    // state (teid_map, urr_map, qer_map) for a real, full session teardown. Returns the real
+    // cumulative total_octets the URR (if any) had counted at deletion time, for a real Usage
+    // Report in the Session Deletion Response (Table 7.5.7.1-1's own real Conditional field) --
+    // std::nullopt if no URR was registered for this TEID (not an error).
+    std::optional<std::uint64_t> remove_teid(std::uint32_t teid);
+
 private:
     Datapath();
     struct Impl;

@@ -119,6 +119,15 @@ TEST(PfcpCommonIes, CauseRoundTrips) {
     EXPECT_EQ(*decoded, pfcp_core::Cause::RequestAccepted);
 }
 
+TEST(PfcpCommonIes, CauseSessionContextNotFoundRoundTrips) {
+    // ADR-0071: real Table 8.2.1-1 value 65, added for Session Deletion's unknown-SEID case.
+    const auto bytes = pfcp_core::encode_cause(pfcp_core::Cause::SessionContextNotFound);
+    EXPECT_EQ(bytes, (std::vector<std::uint8_t>{65}));
+    const auto decoded = pfcp_core::decode_cause(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, pfcp_core::Cause::SessionContextNotFound);
+}
+
 TEST(PfcpCommonIes, RecoveryTimeStampRoundTrips) {
     const std::time_t now = 1754660000; // arbitrary fixed Unix time
     const auto bytes = pfcp_core::encode_recovery_time_stamp(now);
@@ -327,4 +336,87 @@ TEST(PfcpSessionIes, EncodeUsageReportTriggerVolquRoundTrips) {
     EXPECT_EQ(
         pfcp_core::decode_usage_report_trigger(pfcp_core::encode_usage_report_trigger_volqu()),
         pfcp_core::UsageReportTriggerValue::VolumeQuotaExhausted);
+}
+
+TEST(PfcpSessionIes, EncodeUsageReportTriggerTermrSetsOctet6Bit4) {
+    // TS 29.244 §8.2.41 octet 6 bit 4 = TERMR = 0x08 -- decode_usage_report_trigger has no
+    // TERMR-specific enum value (this project's disclosed narrow scope, see its own header
+    // comment), so this checks the real wire bytes directly rather than round-tripping through it.
+    EXPECT_EQ(pfcp_core::encode_usage_report_trigger_termr(),
+              (std::vector<std::uint8_t>{0x00, 0x08}));
+}
+
+// --- ADR-0071 (gap-closure Tier 1d): QER ID, BAR ID, Gate Status, MBR ---
+
+TEST(PfcpSessionIes, QerIdRoundTrips) {
+    const auto encoded = pfcp_core::encode_qer_id(42);
+    EXPECT_EQ(encoded.size(), 4u);
+    const auto decoded = pfcp_core::decode_qer_id(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, 42u);
+}
+
+TEST(PfcpSessionIes, BarIdRoundTripsAsSingleOctet) {
+    const auto encoded = pfcp_core::encode_bar_id(7);
+    EXPECT_EQ(encoded.size(), 1u); // real, confirmed: 1 octet, not 4 like QER/FAR/URR ID
+    const auto decoded = pfcp_core::decode_bar_id(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, 7u);
+}
+
+TEST(PfcpSessionIes, GateStatusBothOpenRoundTrips) {
+    pfcp_core::GateStatus gs;
+    gs.ul_closed = false;
+    gs.dl_closed = false;
+    const auto encoded = pfcp_core::encode_gate_status(gs);
+    EXPECT_EQ(encoded, (std::vector<std::uint8_t>{0x00}));
+    const auto decoded = pfcp_core::decode_gate_status(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_FALSE(decoded->ul_closed);
+    EXPECT_FALSE(decoded->dl_closed);
+}
+
+TEST(PfcpSessionIes, GateStatusUlClosedDlOpenRoundTrips) {
+    pfcp_core::GateStatus gs;
+    gs.ul_closed = true;
+    gs.dl_closed = false;
+    const auto encoded = pfcp_core::encode_gate_status(gs);
+    // Real bit positions confirmed from the spec figure: UL Gate in bits 4-3 -> 0x01 << 2 = 0x04.
+    EXPECT_EQ(encoded, (std::vector<std::uint8_t>{0x04}));
+    const auto decoded = pfcp_core::decode_gate_status(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_TRUE(decoded->ul_closed);
+    EXPECT_FALSE(decoded->dl_closed);
+}
+
+TEST(PfcpSessionIes, GateStatusBothClosedRoundTrips) {
+    pfcp_core::GateStatus gs;
+    gs.ul_closed = true;
+    gs.dl_closed = true;
+    const auto decoded = pfcp_core::decode_gate_status(pfcp_core::encode_gate_status(gs));
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_TRUE(decoded->ul_closed);
+    EXPECT_TRUE(decoded->dl_closed);
+}
+
+TEST(PfcpSessionIes, MbrRoundTrips) {
+    pfcp_core::Mbr mbr;
+    mbr.ul_kbps = 10000;  // 10 Mbps
+    mbr.dl_kbps = 100000; // 100 Mbps
+    const auto encoded = pfcp_core::encode_mbr(mbr);
+    EXPECT_EQ(encoded.size(), 10u); // real, confirmed fixed 10-octet IE
+    const auto decoded = pfcp_core::decode_mbr(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->ul_kbps, 10000u);
+    EXPECT_EQ(decoded->dl_kbps, 100000u);
+}
+
+TEST(PfcpSessionIes, MbrRoundTripsLargeValue) {
+    pfcp_core::Mbr mbr;
+    mbr.ul_kbps = 0xFFFFFFFFFFULL; // max real 5-octet value (2^40 - 1)
+    mbr.dl_kbps = 1;
+    const auto decoded = pfcp_core::decode_mbr(pfcp_core::encode_mbr(mbr));
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->ul_kbps, 0xFFFFFFFFFFULL);
+    EXPECT_EQ(decoded->dl_kbps, 1u);
 }

@@ -138,5 +138,49 @@ UsageReportTriggerValue decode_usage_report_trigger(const std::vector<std::uint8
 // this project doesn't otherwise model).
 std::vector<std::uint8_t> encode_usage_report_trigger_volth();
 std::vector<std::uint8_t> encode_usage_report_trigger_volqu();
+// ADR-0071: TERMR (Termination Report, octet 6 bit 4) -- real spec text explicitly names this the
+// trigger for "a usage report being reported (in a Sx Session Deletion Response) for a URR due to
+// the termination of the Sx session" (the exact case this project's Session Deletion handling
+// uses it for), confirmed directly against the spec figure, not assumed from the bit's name alone.
+std::vector<std::uint8_t> encode_usage_report_trigger_termr();
+
+// The following (TS 29.244 Create/Update/Remove QER, Create/Update/Remove BAR) support ADR-0071's
+// gap-closure Tier 1d: real per-session QoS enforcement (QER) and real BAR protocol-level
+// bookkeeping. Byte layouts confirmed directly against the real spec PDF (specs/PFCP/29244-e30.pdf
+// V14.3.0), same discipline as every other IE in this file -- see each function's own citation.
+
+// TS 29.244 §8.2.75: QER ID -- Unsigned32, same real "bit 8 of octet 5 = 0 for dynamically-CP-
+// allocated" convention as FAR ID/URR ID (confirmed identical spec text, not assumed identical
+// from the IE type numbers alone) -- reuses that exact codec shape.
+std::vector<std::uint8_t> encode_qer_id(std::uint32_t id);
+std::optional<std::uint32_t> decode_qer_id(const std::vector<std::uint8_t>& value);
+
+// TS 29.244 §8.2.57: BAR ID -- real, confirmed DIFFERENT shape from QER/FAR/URR ID: a single
+// octet (range 0-255), no CP-allocated-bit convention exists for it in the real spec text at all
+// (checked, not assumed identical to the 4-octet IDs above).
+std::vector<std::uint8_t> encode_bar_id(std::uint8_t id);
+std::optional<std::uint8_t> decode_bar_id(const std::vector<std::uint8_t>& value);
+
+// TS 29.244 §8.2.7: Gate Status -- 1 octet, UL Gate in bits 4-3, DL Gate in bits 2-1 (real bit
+// positions, confirmed from the real spec figure, not assumed). OPEN=0, CLOSED=1 both real Table
+// 8.2.7-1/8.2.7-2 values; the real spec's own reserved values 2-3 are not encoded by this project
+// and decode as CLOSED per the spec's own "shall be interpreted as the value '1'" fallback rule.
+struct GateStatus {
+    bool ul_closed = false;
+    bool dl_closed = false;
+};
+std::vector<std::uint8_t> encode_gate_status(const GateStatus& v);
+std::optional<GateStatus> decode_gate_status(const std::vector<std::uint8_t>& value);
+
+// TS 29.244 §8.2.8: MBR (Maximum Bitrate) -- real fixed 10 octets: 5-octet UL MBR + 5-octet DL
+// MBR, each a binary integer in real units of kbps (1000 bps -- confirmed from the real spec
+// text, not assumed to be plain bps). 5 octets comfortably fits in std::uint64_t (max real value
+// 2^40-1 kbps).
+struct Mbr {
+    std::uint64_t ul_kbps = 0;
+    std::uint64_t dl_kbps = 0;
+};
+std::vector<std::uint8_t> encode_mbr(const Mbr& v);
+std::optional<Mbr> decode_mbr(const std::vector<std::uint8_t>& value);
 
 } // namespace pfcp_core

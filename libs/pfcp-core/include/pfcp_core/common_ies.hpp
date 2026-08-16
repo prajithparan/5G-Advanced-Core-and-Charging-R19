@@ -20,6 +20,12 @@ namespace pfcp_core {
 enum class Cause : std::uint8_t {
     RequestAccepted = 1,
     RequestRejected = 64,
+    // ADR-0071: real Table 8.2.1-1 value -- "This cause shall be returned, if the F-SEID included
+    // in a Sx Session Modification/Deletion Request message is unknown," confirmed directly
+    // against the spec text (not assumed), added for the real Session Deletion Request handler's
+    // unknown-SEID case rather than reusing the generic RequestRejected as earlier PFCP work here
+    // did before this IE existed.
+    SessionContextNotFound = 65,
     MandatoryIeMissing = 66,
     NoEstablishedAssociation = 72,
 };

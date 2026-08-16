@@ -185,6 +185,15 @@ struct UsageReportEventRecord {
     std::uint8_t quota_exhausted;
 } __attribute__((packed));
 
+// ADR-0071: mirrors nfs/upf/bpf/gtpu_decap.bpf.c's struct qer_state exactly.
+struct QerState {
+    std::uint8_t ul_gate_closed;
+    std::uint8_t dl_gate_closed;
+    std::uint32_t mbr_ul_kbps;
+    std::uint64_t bucket_bytes;
+    std::uint64_t last_refill_ns;
+} __attribute__((packed));
+
 int handle_tpdu_sample(void* ctx, void* data, std::size_t data_sz) {
     const int tun_fd = *static_cast<int*>(ctx);
     if (data_sz < sizeof(TpduRecord)) {
@@ -219,6 +228,7 @@ struct Datapath::Impl {
     int tun_fd = -1;
     int teid_map_fd = -1;
     int urr_map_fd = -1;
+    int qer_map_fd = -1; // ADR-0071
     int n3_ifindex = 0;
     std::thread poll_thread;
     bool stop_polling = false;
@@ -341,15 +351,17 @@ std::optional<Datapath> Datapath::create(UsageReportHandler on_usage_report) {
     bpf_map* teid_map = bpf_object__find_map_by_name(dp.impl_->obj, "teid_map");
     bpf_map* ringbuf_map = bpf_object__find_map_by_name(dp.impl_->obj, "tpdu_ringbuf");
     bpf_map* urr_map = bpf_object__find_map_by_name(dp.impl_->obj, "urr_map");
+    bpf_map* qer_map = bpf_object__find_map_by_name(dp.impl_->obj, "qer_map"); // ADR-0071
     bpf_map* usage_ringbuf_map =
         bpf_object__find_map_by_name(dp.impl_->obj, "usage_report_ringbuf");
-    if (teid_map == nullptr || ringbuf_map == nullptr || urr_map == nullptr ||
+    if (teid_map == nullptr || ringbuf_map == nullptr || urr_map == nullptr || qer_map == nullptr ||
         usage_ringbuf_map == nullptr) {
         spdlog::error("upf-datapath: expected BPF maps not found in {}", GTPU_BPF_OBJ_PATH);
         return std::nullopt;
     }
     dp.impl_->teid_map_fd = bpf_map__fd(teid_map);
     dp.impl_->urr_map_fd = bpf_map__fd(urr_map);
+    dp.impl_->qer_map_fd = bpf_map__fd(qer_map);
 
     dp.impl_->rb =
         ring_buffer__new(bpf_map__fd(ringbuf_map), handle_tpdu_sample, &dp.impl_->tun_fd, nullptr);
@@ -433,6 +445,72 @@ bool Datapath::update_urr_thresholds(std::uint32_t teid,
         return false;
     }
     return true;
+}
+
+bool Datapath::register_qer(std::uint32_t teid,
+                            bool ul_gate_closed,
+                            bool dl_gate_closed,
+                            std::uint32_t mbr_ul_kbps) {
+    QerState state{};
+    state.ul_gate_closed = ul_gate_closed ? 1 : 0;
+    state.dl_gate_closed = dl_gate_closed ? 1 : 0;
+    state.mbr_ul_kbps = mbr_ul_kbps;
+    state.bucket_bytes = 0;
+    state.last_refill_ns = 0;
+    if (bpf_map_update_elem(impl_->qer_map_fd, &teid, &state, BPF_ANY) != 0) {
+        spdlog::warn("upf-datapath: failed to register QER for TEID {:#x} with the XDP program",
+                     teid);
+        return false;
+    }
+    return true;
+}
+
+bool Datapath::update_qer(std::uint32_t teid,
+                          std::optional<bool> ul_gate_closed,
+                          std::optional<bool> dl_gate_closed,
+                          std::optional<std::uint32_t> mbr_ul_kbps) {
+    QerState state{};
+    if (bpf_map_lookup_elem(impl_->qer_map_fd, &teid, &state) != 0) {
+        spdlog::warn("upf-datapath: no QER registered for TEID {:#x}, cannot update", teid);
+        return false;
+    }
+    if (ul_gate_closed.has_value()) {
+        state.ul_gate_closed = *ul_gate_closed ? 1 : 0;
+    }
+    if (dl_gate_closed.has_value()) {
+        state.dl_gate_closed = *dl_gate_closed ? 1 : 0;
+    }
+    if (mbr_ul_kbps.has_value()) {
+        state.mbr_ul_kbps = *mbr_ul_kbps;
+    }
+    // bucket_bytes/last_refill_ns deliberately left as read -- see this method's own header
+    // comment on why an Update preserves the running token bucket rather than resetting it.
+    if (bpf_map_update_elem(impl_->qer_map_fd, &teid, &state, BPF_EXIST) != 0) {
+        spdlog::warn("upf-datapath: failed to update QER for TEID {:#x}", teid);
+        return false;
+    }
+    return true;
+}
+
+bool Datapath::remove_qer(std::uint32_t teid) {
+    if (bpf_map_delete_elem(impl_->qer_map_fd, &teid) != 0) {
+        spdlog::warn("upf-datapath: no QER registered for TEID {:#x}, cannot remove", teid);
+        return false;
+    }
+    return true;
+}
+
+std::optional<std::uint64_t> Datapath::remove_teid(std::uint32_t teid) {
+    std::optional<std::uint64_t> total_octets;
+    UrrState urr_state{};
+    if (bpf_map_lookup_elem(impl_->urr_map_fd, &teid, &urr_state) == 0) {
+        const std::uint64_t counted = urr_state.total_octets;
+        total_octets = counted;
+    }
+    bpf_map_delete_elem(impl_->urr_map_fd, &teid);
+    bpf_map_delete_elem(impl_->qer_map_fd, &teid);
+    bpf_map_delete_elem(impl_->teid_map_fd, &teid);
+    return total_octets;
 }
 
 } // namespace upf
