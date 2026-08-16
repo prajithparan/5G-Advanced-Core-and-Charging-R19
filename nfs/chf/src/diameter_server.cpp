@@ -639,6 +639,7 @@ DiameterServer::DiameterServer(
     RatingDecisionStore& rating_decision_store,
     OfflineChargingDataStore& offline_charging_data_store,
     SpendingLimitSubscriptionStore& spending_limit_store,
+    PolicyCounterConfigStore& policy_counter_config_store,
     opentelemetry::metrics::Counter<std::uint64_t>* grant_counter,
     opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter,
     opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter,
@@ -656,7 +657,8 @@ DiameterServer::DiameterServer(
       client_tls_(std::move(client_tls)), charging_data_store_(charging_data_store),
       cdr_writer_(cdr_writer), rating_decision_store_(rating_decision_store),
       offline_charging_data_store_(offline_charging_data_store),
-      spending_limit_store_(spending_limit_store), grant_counter_(grant_counter),
+      spending_limit_store_(spending_limit_store),
+      policy_counter_config_store_(policy_counter_config_store), grant_counter_(grant_counter),
       reserve_rejected_counter_(reserve_rejected_counter),
       ccr_initial_counter_(ccr_initial_counter), ccr_update_counter_(ccr_update_counter),
       ccr_termination_counter_(ccr_termination_counter), acr_event_counter_(acr_event_counter),
@@ -981,7 +983,8 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
 
             std::int32_t result_code = dictionary::ResultCode::kDiameterSuccess;
             std::vector<std::pair<std::string, std::string>> policy_counter_status;
-            const auto status = chf::build_spending_limit_status(context);
+            const auto status =
+                chf::build_spending_limit_status(context, policy_counter_config_store_);
             if (status.statusInfos.has_value() && status.statusInfos->is_object()) {
                 for (const auto& [counter_id, info] : status.statusInfos->items()) {
                     policy_counter_status.emplace_back(

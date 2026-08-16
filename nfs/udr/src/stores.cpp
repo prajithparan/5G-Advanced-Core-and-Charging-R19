@@ -188,4 +188,38 @@ std::vector<nlohmann::json> SmfRegistrationStore::list_for_ue(const std::string&
     return out;
 }
 
+SmPolicyDataStore::SmPolicyDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+std::optional<nlohmann::json> SmPolicyDataStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT policy_data FROM udr_sm_policy_data WHERE ue_id = $1",
+                                 pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(
+        nlohmann::json::parse(result.front()["policy_data"].as<std::string>()));
+}
+
+nlohmann::json SmPolicyDataStore::merge_patch(const std::string& ue_id,
+                                              const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT policy_data FROM udr_sm_policy_data WHERE ue_id = $1",
+                                 pqxx::params{ue_id});
+    // Real, deliberate upsert: an absent document starts from `{}` rather than being an error --
+    // see this store's own header comment on why (no real POST exists for this resource, so PATCH
+    // is this project's own chosen create path).
+    auto doc = result.empty()
+                   ? nlohmann::json::object()
+                   : nlohmann::json::parse(result.front()["policy_data"].as<std::string>());
+    doc.merge_patch(patch);
+    txn.exec("INSERT INTO udr_sm_policy_data (ue_id, policy_data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET policy_data = EXCLUDED.policy_data",
+             pqxx::params{ue_id, doc.dump()});
+    txn.commit();
+    return doc;
+}
+
 } // namespace udr

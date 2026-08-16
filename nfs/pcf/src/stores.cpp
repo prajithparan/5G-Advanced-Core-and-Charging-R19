@@ -64,4 +64,42 @@ bool SmPolicyStore::remove(const std::string& sm_policy_id) {
     return policies_.erase(sm_policy_id) > 0;
 }
 
+void SpendingLimitTrackingStore::put(const std::string& sm_policy_id, Entry entry) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    entries_[sm_policy_id] = std::move(entry);
+}
+
+std::optional<SpendingLimitTrackingStore::Entry>
+SpendingLimitTrackingStore::get(const std::string& sm_policy_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = entries_.find(sm_policy_id);
+    if (it == entries_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool SpendingLimitTrackingStore::update_status(const std::string& sm_policy_id,
+                                               nlohmann::json status) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = entries_.find(sm_policy_id);
+    if (it == entries_.end()) {
+        return false;
+    }
+    it->second.last_status = std::move(status);
+    return true;
+}
+
+std::optional<SpendingLimitTrackingStore::Entry>
+SpendingLimitTrackingStore::remove(const std::string& sm_policy_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = entries_.find(sm_policy_id);
+    if (it == entries_.end()) {
+        return std::nullopt;
+    }
+    auto entry = std::move(it->second);
+    entries_.erase(it);
+    return std::make_optional(std::move(entry));
+}
+
 } // namespace pcf

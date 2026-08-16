@@ -30,7 +30,29 @@ std::string balance_management_base() {
     return "https://127.0.0.1:7786";
 }
 
-RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client) {
+// ADR-0072 (gap-closure: real N40 product-configurability). Real TMF620 extension-point lookup:
+// `prodSpecCharValueUse`/`productSpecCharacteristicValue` is the spec's own generic mechanism for
+// vendor/domain-specific configurable attributes (this file's own header already establishes this
+// project's use of it for S-NSSAI/5QI/SLA-tier-class characteristics) -- 3GPP charging concepts
+// like `ratingGroup` and TS 32.291's own quota-policy fields have no NATIVE TMF620 field of their
+// own (TMF620 doesn't know what a 3GPP rating group is), so this is the real, correct extension
+// point for them, not a fabricated shortcut. Looked up by the characteristic's real `name` field
+// (no existing precedent in this codebase for id-vs-name lookup convention before this function,
+// `name` chosen as the human-readable, GUI-facing key a real operator/GUI would set).
+std::optional<nlohmann::json> find_characteristic_value(
+    const std::vector<bss_sid::ProductSpecificationCharacteristicValueUse>& characteristics,
+    const std::string& name) {
+    for (const auto& c : characteristics) {
+        if (c.name.value_or("") != name || c.productSpecCharacteristicValue.empty()) {
+            continue;
+        }
+        return c.productSpecCharacteristicValue.front().value;
+    }
+    return std::nullopt;
+}
+
+RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client,
+                                std::int64_t rating_group) {
     sbi_core::http2::ClientRequest offerings_req;
     offerings_req.method = "GET";
     offerings_req.url = product_catalog_base() + kProductCatalogApiRoot + "/productOffering";
@@ -48,58 +70,106 @@ RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client) {
         return {};
     }
 
-    const auto offering_it = std::find_if(offerings.begin(), offerings.end(), [](const auto& o) {
-        return o.isSellable.value_or(false) && o.lifecycleStatus.value_or("") == "Active" &&
-               !o.productOfferingPrice.empty();
-    });
-    if (offering_it == offerings.end()) {
-        spdlog::info("chf: no Active/isSellable ProductOffering with a price found, granting "
-                     "nothing this call");
-        return {};
+    // Real match: the FIRST Active/isSellable offering whose price's own real `ratingGroup`
+    // characteristic equals the request's ratingGroup -- see this function's own header comment
+    // for why "first Active/isSellable, ratingGroup ignored" (this project's own earlier behavior)
+    // was a real correctness gap, not a documented simplification.
+    for (const auto& offering : offerings) {
+        if (!offering.isSellable.value_or(false) ||
+            offering.lifecycleStatus.value_or("") != "Active" ||
+            offering.productOfferingPrice.empty()) {
+            continue;
+        }
+
+        sbi_core::http2::ClientRequest price_req;
+        price_req.method = "GET";
+        price_req.url = product_catalog_base() + kProductCatalogApiRoot + "/productOfferingPrice/" +
+                        offering.productOfferingPrice.front().id;
+        auto price_resp = catalog_client.send(price_req);
+        if (!price_resp.has_value() || price_resp->status != 200) {
+            continue;
+        }
+        bss_sid::ProductOfferingPrice price;
+        try {
+            price = json::parse(price_resp->body).get<bss_sid::ProductOfferingPrice>();
+        } catch (const json::exception&) {
+            continue;
+        }
+
+        const auto rg_value = find_characteristic_value(price.prodSpecCharValueUse, "ratingGroup");
+        if (!rg_value.has_value() || !rg_value->is_number_integer() ||
+            rg_value->get<std::int64_t>() != rating_group) {
+            continue;
+        }
+
+        if (!price.unitOfMeasure.has_value() || !price.unitOfMeasure->amount.has_value()) {
+            spdlog::info("chf: ProductOfferingPrice {} matches ratingGroup {} but has no "
+                         "unitOfMeasure, granting nothing",
+                         *price.id,
+                         rating_group);
+            return {};
+        }
+
+        RatingResult result;
+        sbi_gen::GrantedUnit grant{};
+        const auto amount = *price.unitOfMeasure->amount;
+        const auto units = price.unitOfMeasure->units.value_or("");
+        if (units == "GB") {
+            grant.totalVolume = static_cast<std::uint64_t>(amount * 1'000'000'000.0);
+        } else if (units == "MB") {
+            grant.totalVolume = static_cast<std::uint64_t>(amount * 1'000'000.0);
+        } else {
+            grant.serviceSpecificUnits = static_cast<std::uint64_t>(amount);
+        }
+        result.grant = grant;
+        result.cost = price.price;
+        result.tariffId = price.id;
+        result.tariffVersion = price.version;
+        result.offeringName = offering.name;
+        result.priceName = price.name;
+
+        if (const auto v = find_characteristic_value(price.prodSpecCharValueUse, "validityTime");
+            v.has_value() && v->is_number_integer()) {
+            result.validityTimeSec = v->get<std::int64_t>();
+        }
+        if (const auto v =
+                find_characteristic_value(price.prodSpecCharValueUse, "quotaHoldingTime");
+            v.has_value() && v->is_number_integer()) {
+            result.quotaHoldingTimeSec = v->get<std::int64_t>();
+        }
+        if (const auto v =
+                find_characteristic_value(price.prodSpecCharValueUse, "volumeQuotaThreshold");
+            v.has_value() && v->is_number_integer()) {
+            result.volumeQuotaThreshold = v->get<std::int64_t>();
+        }
+        if (const auto v =
+                find_characteristic_value(price.prodSpecCharValueUse, "timeQuotaThreshold");
+            v.has_value() && v->is_number_integer()) {
+            result.timeQuotaThreshold = v->get<std::int64_t>();
+        }
+        if (const auto v =
+                find_characteristic_value(price.prodSpecCharValueUse, "unitQuotaThreshold");
+            v.has_value() && v->is_number_integer()) {
+            result.unitQuotaThreshold = v->get<std::int64_t>();
+        }
+
+        spdlog::info(
+            "chf: rating engine granted {} from ProductOffering '{}' / ProductOfferingPrice "
+            "'{}' (ratingGroup={})",
+            units == "GB" || units == "MB"
+                ? std::to_string(*grant.totalVolume) + " octets"
+                : std::to_string(*grant.serviceSpecificUnits) + " service-specific units",
+            offering.name.value_or(""),
+            price.name.value_or(""),
+            rating_group);
+        return result;
     }
 
-    sbi_core::http2::ClientRequest price_req;
-    price_req.method = "GET";
-    price_req.url = product_catalog_base() + kProductCatalogApiRoot + "/productOfferingPrice/" +
-                    offering_it->productOfferingPrice.front().id;
-    auto price_resp = catalog_client.send(price_req);
-    if (!price_resp.has_value() || price_resp->status != 200) {
-        spdlog::warn("chf: could not fetch ProductOfferingPrice {}, granting nothing",
-                     offering_it->productOfferingPrice.front().id);
-        return {};
-    }
-
-    bss_sid::ProductOfferingPrice price;
-    try {
-        price = json::parse(price_resp->body).get<bss_sid::ProductOfferingPrice>();
-    } catch (const json::exception& e) {
-        spdlog::warn("chf: malformed ProductOfferingPrice from product-catalog: {}", e.what());
-        return {};
-    }
-    if (!price.unitOfMeasure.has_value() || !price.unitOfMeasure->amount.has_value()) {
-        spdlog::info("chf: ProductOfferingPrice {} has no unitOfMeasure, granting nothing",
-                     *price.id);
-        return {};
-    }
-
-    sbi_gen::GrantedUnit grant{};
-    const auto amount = *price.unitOfMeasure->amount;
-    const auto units = price.unitOfMeasure->units.value_or("");
-    if (units == "GB") {
-        grant.totalVolume = static_cast<std::uint64_t>(amount * 1'000'000'000.0);
-    } else if (units == "MB") {
-        grant.totalVolume = static_cast<std::uint64_t>(amount * 1'000'000.0);
-    } else {
-        grant.serviceSpecificUnits = static_cast<std::uint64_t>(amount);
-    }
-    spdlog::info("chf: rating engine granted {} from ProductOffering '{}' / ProductOfferingPrice "
-                 "'{}'",
-                 units == "GB" || units == "MB"
-                     ? std::to_string(*grant.totalVolume) + " octets"
-                     : std::to_string(*grant.serviceSpecificUnits) + " service-specific units",
-                 offering_it->name.value_or(""),
-                 price.name.value_or(""));
-    return {grant, price.price, price.id, price.version, offering_it->name, price.name};
+    spdlog::info(
+        "chf: no Active/isSellable ProductOfferingPrice configures ratingGroup {}, granting "
+        "nothing this call",
+        rating_group);
+    return {};
 }
 
 bool reserve_subscriber_balance(sbi_core::http2::Client& balance_client,
@@ -310,7 +380,8 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
                  std::int64_t invocation_sequence_number,
                  const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage) {
     ChargeUsageResult result;
-    result.rating = build_rating_grant(catalog_client);
+    result.rating =
+        build_rating_grant(catalog_client, static_cast<std::int64_t>(usage.ratingGroup));
 
     if (result.rating.cost.has_value() && !supi.empty()) {
         result.reserved =
@@ -342,7 +413,8 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
 }
 
 sbi_gen::SpendingLimitStatus
-build_spending_limit_status(const sbi_gen::SpendingLimitContext& context) {
+build_spending_limit_status(const sbi_gen::SpendingLimitContext& context,
+                            PolicyCounterConfigStore& config_store) {
     sbi_gen::SpendingLimitStatus status{};
     status.supi = context.supi;
     status.notifId = context.notifId;
@@ -354,7 +426,7 @@ build_spending_limit_status(const sbi_gen::SpendingLimitContext& context) {
         for (const auto& counter_id : *context.policyCounterIds) {
             sbi_gen::PolicyCounterInfo info{};
             info.policyCounterId = counter_id;
-            info.currentStatus = "unknown";
+            info.currentStatus = config_store.get_status(counter_id).value_or("unknown");
             status_infos[counter_id] = info;
         }
     }

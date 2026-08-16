@@ -32,6 +32,7 @@ set(SBI_CODEGEN_PILOT_FILES
     TS32291_Nchf_ConvergedCharging.yaml
     TS32291_Nchf_OfflineOnlyCharging.yaml
     TS29594_Nchf_SpendingLimitControl.yaml
+    TS29519_Policy_Data.yaml
     TS29571_CommonData.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
@@ -50,6 +51,7 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS32291_Nchf_ConvergedCharging.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS32291_Nchf_OfflineOnlyCharging.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29594_Nchf_SpendingLimitControl.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29519_Policy_Data.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29571_CommonData.yaml
 )
 
@@ -57,6 +59,18 @@ file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES
     ${CMAKE_SOURCE_DIR}/tools/sbi-codegen/*.py
     ${CMAKE_SOURCE_DIR}/tools/sbi-codegen/templates/*.j2
 )
+
+# Real bug found and fixed (2026-08-16, while adding TS29519_Policy_Data.yaml as a pilot file):
+# generate.py only ever WRITES files, never deletes ones from a previous run -- so a pilot-file-
+# list change that moves a type from its own standalone header into a merged SCC group (or vice
+# versa, see render.py's own module docstring on SCC grouping) leaves the OLD, now-stale header
+# behind on disk. file(GLOB) below then picks up BOTH the stale standalone header and the new
+# merged one, and the same types get compiled twice -- a real, reproducible "redefinition of
+# struct" build failure, not a hypothetical one. Removing the whole output directory first, both
+# here and in the build-time add_custom_command below, makes every regeneration a clean one --
+# this was already flagged as a known limitation in this file's own header comment before being
+# actually hit; fixed properly (clean-slate regeneration) rather than left as a recurring trap.
+file(REMOVE_RECURSE ${SBI_GENERATED_DIR})
 
 # Run once at configure time so the file(GLOB) below has output to find.
 execute_process(
@@ -77,6 +91,7 @@ file(GLOB SBI_GENERATED_HEADERS ${SBI_GENERATED_DIR}/*.hpp)
 # the pilot YAML change.
 add_custom_command(
     OUTPUT ${SBI_GENERATED_DIR}/.stamp
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SBI_GENERATED_DIR}
     COMMAND python3 ${SBI_CODEGEN_SCRIPT}
             ${SBI_CODEGEN_PILOT_FILES}
             --specs-dir ${SBI_CODEGEN_SPECS_DIR}

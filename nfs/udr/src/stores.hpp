@@ -100,4 +100,26 @@ private:
     pqxx::connection conn_;
 };
 
+// ADR-0072 (gap-closure: real N28 end-to-end): backs the real Nudr_DataRepository `policy-data`
+// group's SM policy resource (TS29519_Policy_Data.yaml, `/policy-data/ues/{ueId}/sm-data`, real
+// schema SmPolicyData -- genuinely distinct from ProvisionedDataStore's own `sm_data` column
+// above, see schema.postgres.sql's own comment). Real RFC 7396 JSON Merge Patch
+// (application/merge-patch+json, confirmed directly against the YAML -- same patch standard as
+// UDM's own AmfRegistrationStore/SmfRegistrationStore, NOT AmfContextStore's RFC 6902 above).
+// Deliberately upsert-capable (merge_patch creates a fresh document from `{}` if ueId doesn't
+// exist yet) so this resource can be created from a future GUI even though the real spec defines
+// no POST/create operation for it at all -- see schema.postgres.sql's own comment for why this is
+// a disclosed, deliberate choice.
+class SmPolicyDataStore {
+public:
+    explicit SmPolicyDataStore(const std::string& conninfo);
+
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    nlohmann::json merge_patch(const std::string& ue_id, const nlohmann::json& patch);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

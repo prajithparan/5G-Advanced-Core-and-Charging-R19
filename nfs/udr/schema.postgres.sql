@@ -44,3 +44,21 @@ CREATE TABLE IF NOT EXISTS udr_provisioned_data (
     sm_data          JSONB,
     PRIMARY KEY (ue_id, serving_plmn_id)
 );
+
+-- ADR-0072 (gap-closure: real N28 end-to-end): the real Nudr_DataRepository `policy-data` group's
+-- SM policy resource (TS29519_Policy_Data.yaml's /policy-data/ues/{ueId}/sm-data, real schema
+-- SmPolicyData) -- genuinely DIFFERENT real resource from udr_provisioned_data's own `sm_data`
+-- column above (that one is SessionManagementSubscriptionData, TS29503_Nudm_SDM/
+-- TS29505_Subscription_Data, keyed by ueId+servingPlmnId, GET-only; this one is SmPolicyData,
+-- TS29519_Policy_Data, keyed by ueId alone, real GET+PATCH). Confirmed by direct read of the real
+-- YAML: unlike provisioned-data, this resource DOES support PATCH (application/merge-patch+json,
+-- SmPolicyDataPatch) -- but the real spec still defines no POST/create operation for it at all
+-- (real 3GPP assumption: an out-of-band OSS/BSS tool creates the initial document; PATCH only
+-- ever modifies an existing one). This project's own store deliberately treats PATCH as
+-- upsert-capable (missing ueId = start from an empty document) so this resource can genuinely be
+-- created from a future GUI, per explicit user direction -- a disclosed, deliberate divergence
+-- from the real spec's own implicit assumption, not a misreading of it.
+CREATE TABLE IF NOT EXISTS udr_sm_policy_data (
+    ue_id       TEXT PRIMARY KEY,
+    policy_data JSONB NOT NULL
+);

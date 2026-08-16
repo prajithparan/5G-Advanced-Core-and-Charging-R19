@@ -13,9 +13,21 @@ constexpr const char* kChargingDataNextIdKey = "chf:cdr:next_id";
 constexpr const char* kOfflineActiveSet = "chf:offline:active";
 constexpr const char* kOfflineNextIdKey = "chf:offline:next_id";
 constexpr const char* kSpendingLimitNextIdKey = "chf:sub:next_id";
+// ADR-0072 (gap-closure: real N28 end-to-end) -- real active-subscription set, same pattern as
+// kChargingDataActiveSet/kOfflineActiveSet above, needed so a real policy-counter status change
+// can enumerate which subscriptions to push a real statusNotification to.
+constexpr const char* kSpendingLimitActiveSet = "chf:sub:active";
+// Real, this-project-owned config surface (NOT a 3GPP-defined resource -- PolicyCounterInfo.
+// currentStatus is explicitly operator-defined per TS29594's own spec text, see stores.hpp's own
+// comment) for the "configuration parameters... to create from GUI later" requirement.
+constexpr const char* kPolicyCounterConfigKeyPrefix = "chf:policycounter:";
 
 std::string spending_limit_key(const std::string& id) {
     return "chf:sub:" + id;
+}
+
+std::string policy_counter_config_key(const std::string& policy_counter_id) {
+    return std::string(kPolicyCounterConfigKeyPrefix) + policy_counter_id;
 }
 
 std::string charging_data_content_key(const std::string& ref) {
@@ -86,6 +98,7 @@ std::string SpendingLimitSubscriptionStore::create(sbi_gen::SpendingLimitContext
     auto sub_id = "sub-" + std::to_string(id);
     const json j = context;
     redis_->set(spending_limit_key(sub_id), j.dump());
+    redis_->sadd(kSpendingLimitActiveSet, sub_id);
     return sub_id;
 }
 
@@ -105,6 +118,7 @@ bool SpendingLimitSubscriptionStore::update(const std::string& id,
 }
 
 bool SpendingLimitSubscriptionStore::remove(const std::string& id) {
+    redis_->srem(kSpendingLimitActiveSet, id);
     return redis_->del(spending_limit_key(id)) > 0;
 }
 
@@ -115,6 +129,37 @@ SpendingLimitSubscriptionStore::get(const std::string& id) {
         return std::nullopt;
     }
     return json::parse(*value).get<sbi_gen::SpendingLimitContext>();
+}
+
+std::vector<std::pair<std::string, sbi_gen::SpendingLimitContext>>
+SpendingLimitSubscriptionStore::list_all() {
+    std::vector<std::string> ids;
+    redis_->smembers(kSpendingLimitActiveSet, std::back_inserter(ids));
+    std::vector<std::pair<std::string, sbi_gen::SpendingLimitContext>> out;
+    out.reserve(ids.size());
+    for (const auto& id : ids) {
+        if (auto context = get(id); context.has_value()) {
+            out.emplace_back(id, std::move(*context));
+        }
+    }
+    return out;
+}
+
+PolicyCounterConfigStore::PolicyCounterConfigStore(std::shared_ptr<sw::redis::Redis> redis)
+    : redis_(std::move(redis)) {}
+
+void PolicyCounterConfigStore::set_status(const std::string& policy_counter_id,
+                                          const std::string& status) {
+    redis_->set(policy_counter_config_key(policy_counter_id), status);
+}
+
+std::optional<std::string>
+PolicyCounterConfigStore::get_status(const std::string& policy_counter_id) {
+    const auto value = redis_->get(policy_counter_config_key(policy_counter_id));
+    if (!value) {
+        return std::nullopt;
+    }
+    return std::make_optional(*value);
 }
 
 } // namespace chf

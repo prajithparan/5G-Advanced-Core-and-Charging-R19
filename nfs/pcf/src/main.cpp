@@ -29,6 +29,18 @@
 // request plus a small fixed default policy (5QI 9 non-GBR, a placeholder ARP priority level not
 // sourced from any TS 23.501 table, a fixed 1 Gbps/1 Gbps session AMBR when the request doesn't
 // supply one) -- not real subscriber-specific decisioning. Same category of gap as UDM's SDM stub.
+//
+// UPDATE (ADR-0072, gap-closure: real N28 end-to-end): CreateSMPolicy now does one real piece of
+// subscriber-specific decisioning -- fetches the subscriber's real SmPolicyData from UDR
+// (TS29519_Policy_Data.yaml), and if `subscSpendingLimits` is real+true for the request's own
+// S-NSSAI+DNN, opens a real Nchf_SpendingLimitControl subscription with CHF (real "CHF hosts, PCF
+// subscribes" architecture, TS29594) and tracks it so DeleteSMPolicy can unsubscribe and so a real
+// statusNotification callback (`/sm-policies/{smPolicyId}/spending-limit-notify`, this project's
+// own chosen notifUri path) can receive later CHF-pushed updates. Real, disclosed non-scope: the
+// pushed spending-limit status does NOT yet drive any automated PCC/session-rule change -- 3GPP
+// itself leaves that mapping operator-defined (PolicyCounterInfo.currentStatus is explicitly a
+// free-form, unspecified string per the real spec text), so inventing that business logic here
+// would mean fabricating a rule no spec or user decision actually named.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -65,6 +77,18 @@ constexpr const char* kNfType = "PCF";
 constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kAmApiRoot = "/npcf-am-policy-control/v1";
 constexpr const char* kSmApiRoot = "/npcf-smpolicycontrol/v1";
+
+// ADR-0072 (gap-closure: real N28 end-to-end). PCF's real UDR client (fetches SmPolicyData,
+// TS29519_Policy_Data.yaml) and CHF client (Nchf_SpendingLimitControl, TS29594) -- same
+// separate-http2::Client-per-target-NF pattern nfs/udm/src/main.cpp's own udr_client already
+// established. kPcfSelfBase is this PCF's own externally-reachable base, used to build the real
+// notifUri CHF calls back on -- this lab's own loopback-only convention, same as every other NF's
+// own kNrfBase-style constant.
+constexpr const char* kUdrBase = "https://127.0.0.1:7781";
+constexpr const char* kUdrApiRoot = "/nudr-dr/v2";
+constexpr const char* kChfBase = "https://127.0.0.1:7784";
+constexpr const char* kChfSpendingLimitApiRoot = "/nchf-spendinglimitcontrol/v1";
+constexpr const char* kPcfSelfBase = "https://127.0.0.1:7783";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -137,6 +161,138 @@ sbi_gen::SmPolicyDecision build_default_decision(const sbi_gen::SmPolicyContextD
     decision.offline = context.offline;
     decision.suppFeat = context.suppFeat.value_or("");
     return decision;
+}
+
+// ADR-0072 (gap-closure: real N28 end-to-end). Real 3GPP text only says "the key of the map is
+// the S-NSSAI" for smPolicySnssaiData -- no wire encoding is spec-mandated (checked, not assumed).
+// This project's own disclosed, deliberate choice: decimal sst + "-" + sd, used consistently by
+// every writer/reader of this key in this project (this file, and the seed data the new N28
+// integration test provisions via UDR's real PATCH). Not a claim of interop with any other real
+// implementation's own choice, since none is spec-mandated to match against.
+std::string snssai_map_key(const sbi_gen::Snssai& snssai) {
+    return std::to_string(snssai.sst) + "-" + snssai.sd.value_or("");
+}
+
+// Real GET to UDR's `/policy-data/ues/{ueId}/sm-data` (TS29519_Policy_Data.yaml), navigating the
+// real nested SmPolicyData -> SmPolicySnssaiData -> SmPolicyDnnData shape down to the one DNN this
+// SM Policy request is actually for. Returns std::nullopt on any real failure (UDR unreachable,
+// 404, malformed body, or the specific snssai/dnn combination genuinely not provisioned) -- the
+// caller treats that as "no spending-limit enforcement for this session", not an error, matching
+// this project's own established fail-open convention for this kind of best-effort policy lookup.
+std::optional<json> fetch_sm_policy_dnn_data(sbi_core::http2::Client& udr_client,
+                                             sbi_core::OAuth2Client& udr_oauth,
+                                             const std::string& supi,
+                                             const sbi_gen::Snssai& snssai,
+                                             const std::string& dnn) {
+    auto token = udr_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::warn("pcf: OAuth2 token fetch failed for UDR SmPolicyData lookup: {}",
+                     token.error());
+        return std::nullopt;
+    }
+    sbi_core::http2::ClientRequest req;
+    req.method = "GET";
+    req.url = std::string(kUdrBase) + kUdrApiRoot + "/policy-data/ues/" + supi + "/sm-data";
+    req.headers.emplace("authorization", "Bearer " + *token);
+    auto resp = udr_client.send(req);
+    if (!resp.has_value() || resp->status != 200) {
+        return std::nullopt;
+    }
+    json doc;
+    try {
+        doc = json::parse(resp->body);
+    } catch (const json::parse_error&) {
+        return std::nullopt;
+    }
+    const auto snssai_key = snssai_map_key(snssai);
+    auto snssai_it = doc.find("smPolicySnssaiData");
+    if (snssai_it == doc.end() || !snssai_it->contains(snssai_key)) {
+        return std::nullopt;
+    }
+    const auto& snssai_data = (*snssai_it)[snssai_key];
+    auto dnn_it = snssai_data.find("smPolicyDnnData");
+    if (dnn_it == snssai_data.end() || !dnn_it->contains(dnn)) {
+        return std::nullopt;
+    }
+    return std::make_optional((*dnn_it)[dnn]);
+}
+
+// Real POST to CHF's `/nchf-spendinglimitcontrol/v1/subscriptions`
+// (TS29594_Nchf_SpendingLimitControl.yaml). Returns the real subscriptionId (parsed from the real
+// Location header CHF's own handler sets, matching that handler's own real, confirmed shape) plus
+// the real SpendingLimitStatus body. std::nullopt on any failure -- caller treats that as
+// "spending-limit tracking unavailable this call", not a reason to fail the whole SM Policy request
+// (CHF being unreachable shouldn't block a PDU session from getting service, same fail-open
+// reasoning as the UDR lookup above).
+std::optional<std::pair<std::string, json>>
+subscribe_spending_limit(sbi_core::http2::Client& chf_client,
+                         sbi_core::OAuth2Client& chf_oauth,
+                         const std::string& supi,
+                         const std::vector<std::string>& policy_counter_ids,
+                         const std::string& notif_uri) {
+    auto token = chf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::warn("pcf: OAuth2 token fetch failed for CHF spending-limit subscribe: {}",
+                     token.error());
+        return std::nullopt;
+    }
+    sbi_gen::SpendingLimitContext ctx{};
+    ctx.supi = supi;
+    ctx.policyCounterIds = policy_counter_ids;
+    ctx.notifUri = notif_uri;
+    sbi_core::http2::ClientRequest req;
+    req.method = "POST";
+    req.url = std::string(kChfBase) + kChfSpendingLimitApiRoot + "/subscriptions";
+    req.headers.emplace("content-type", "application/json");
+    req.headers.emplace("authorization", "Bearer " + *token);
+    json j = ctx;
+    req.body = j.dump();
+    auto resp = chf_client.send(req);
+    if (!resp.has_value() || resp->status != 201) {
+        spdlog::warn("pcf: CHF spending-limit subscribe failed (status {})",
+                     resp.has_value() ? resp->status : -1);
+        return std::nullopt;
+    }
+    const auto location_it = resp->headers.find("location");
+    if (location_it == resp->headers.end()) {
+        return std::nullopt;
+    }
+    const auto& location = location_it->second;
+    const auto slash = location.find_last_of('/');
+    const std::string subscription_id =
+        slash == std::string::npos ? location : location.substr(slash + 1);
+    json status_body;
+    try {
+        status_body = json::parse(resp->body);
+    } catch (const json::parse_error&) {
+        status_body = json::object();
+    }
+    return std::make_optional(std::make_pair(subscription_id, status_body));
+}
+
+// Real DELETE to CHF's `/nchf-spendinglimitcontrol/v1/subscriptions/{subscriptionId}`. Best-effort
+// -- a failure here leaves a real, disclosed CHF-side subscription orphaned until its own real
+// `expiry` lapses (no cleanup sweep exists in this build); logged, not retried.
+void unsubscribe_spending_limit(sbi_core::http2::Client& chf_client,
+                                sbi_core::OAuth2Client& chf_oauth,
+                                const std::string& subscription_id) {
+    auto token = chf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::warn("pcf: OAuth2 token fetch failed for CHF spending-limit unsubscribe: {}",
+                     token.error());
+        return;
+    }
+    sbi_core::http2::ClientRequest req;
+    req.method = "DELETE";
+    req.url =
+        std::string(kChfBase) + kChfSpendingLimitApiRoot + "/subscriptions/" + subscription_id;
+    req.headers.emplace("authorization", "Bearer " + *token);
+    auto resp = chf_client.send(req);
+    if (!resp.has_value() || resp->status != 204) {
+        spdlog::warn("pcf: CHF spending-limit unsubscribe failed for {} (status {})",
+                     subscription_id,
+                     resp.has_value() ? resp->status : -1);
+    }
 }
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as
@@ -244,6 +400,31 @@ int main() {
 
     pcf::AmPolicyStore am_policies;
     pcf::SmPolicyStore sm_policies;
+    pcf::SpendingLimitTrackingStore spending_limit_tracking;
+
+    // ADR-0072 (gap-closure: real N28 end-to-end) -- PCF's own client identity + token source for
+    // calling UDR and CHF, same separate-http2::Client-per-target-NF pattern this project already
+    // established (nfs/udm/src/main.cpp's own udr_client, nfs/ausf/src/main.cpp's own udm_client).
+    sbi_core::http2::TlsConfig udr_client_tls{
+        .cert_path = CERTS_DIR "/pcf/cert.pem",
+        .key_path = CERTS_DIR "/pcf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client udr_client(std::move(udr_client_tls));
+    sbi_core::OAuth2Client udr_oauth(
+        udr_client, std::string(kNrfBase) + "/oauth2/token", pcf_instance_id, "nudr-dr", "UDR");
+
+    sbi_core::http2::TlsConfig chf_client_tls{
+        .cert_path = CERTS_DIR "/pcf/cert.pem",
+        .key_path = CERTS_DIR "/pcf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client chf_client(std::move(chf_client_tls));
+    sbi_core::OAuth2Client chf_oauth(chf_client,
+                                     std::string(kNrfBase) + "/oauth2/token",
+                                     pcf_instance_id,
+                                     "nchf-spendinglimitcontrol",
+                                     "CHF");
 
     auto meter = sbi_core::get_meter("pcf");
     auto am_create_counter = meter->CreateUInt64Counter(
@@ -259,6 +440,12 @@ int main() {
         meter->CreateUInt64Counter("pcf_sm_policy_update_total", "Total UpdateSMPolicy calls");
     auto sm_delete_counter =
         meter->CreateUInt64Counter("pcf_sm_policy_delete_total", "Total DeleteSMPolicy calls");
+    auto spending_limit_subscribe_counter = meter->CreateUInt64Counter(
+        "pcf_spending_limit_subscribe_total",
+        "Total real Nchf_SpendingLimitControl subscriptions opened by this PCF");
+    auto spending_limit_notify_counter = meter->CreateUInt64Counter(
+        "pcf_spending_limit_notify_total",
+        "Total real Nchf_SpendingLimitControl statusNotification callbacks received");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -376,7 +563,15 @@ int main() {
     server.add_route(
         "POST",
         std::string(kSmApiRoot) + "/sm-policies",
-        [&verifier, &sm_policies, &sm_create_counter](const sbi_core::http2::Request& req) {
+        [&verifier,
+         &sm_policies,
+         &sm_create_counter,
+         &udr_client,
+         &udr_oauth,
+         &chf_client,
+         &chf_oauth,
+         &spending_limit_tracking,
+         &spending_limit_subscribe_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -392,6 +587,45 @@ int main() {
             control.policy = decision;
             const auto id = sm_policies.create(json(control));
             sm_create_counter->Add(1);
+
+            // ADR-0072 (gap-closure: real N28 end-to-end). Real, fail-open best-effort: fetches
+            // this subscriber's real SmPolicyDnnData from UDR for the request's own S-NSSAI+DNN,
+            // and if `subscSpendingLimits` is real+true there, opens a real CHF
+            // Nchf_SpendingLimitControl subscription for whichever policyCounterIds are already
+            // named in `spendLimInfo`'s own keys (this project's own disclosed choice for "which
+            // counters" -- see fetch_sm_policy_dnn_data's own comment; 3GPP leaves the initial
+            // counter-selection mechanism unspecified). Neither UDR nor CHF being reachable, nor
+            // spending limits simply not being configured for this subscriber, fails the SM Policy
+            // request itself -- this is real, additional enforcement, not a mandatory dependency.
+            auto dnn_data = fetch_sm_policy_dnn_data(
+                udr_client, udr_oauth, body->supi, body->sliceInfo, body->dnn);
+            if (dnn_data.has_value() && dnn_data->value("subscSpendingLimits", false)) {
+                std::vector<std::string> policy_counter_ids;
+                if (auto spend_it = dnn_data->find("spendLimInfo"); spend_it != dnn_data->end()) {
+                    for (const auto& [counter_id, _] : spend_it->items()) {
+                        policy_counter_ids.push_back(counter_id);
+                    }
+                }
+                if (!policy_counter_ids.empty()) {
+                    const std::string notif_uri = std::string(kPcfSelfBase) + kSmApiRoot +
+                                                  "/sm-policies/" + id + "/spending-limit-notify";
+                    auto subscribed = subscribe_spending_limit(
+                        chf_client, chf_oauth, body->supi, policy_counter_ids, notif_uri);
+                    if (subscribed.has_value()) {
+                        pcf::SpendingLimitTrackingStore::Entry entry{};
+                        entry.chf_subscription_id = subscribed->first;
+                        entry.supi = body->supi;
+                        entry.last_status = subscribed->second;
+                        spending_limit_tracking.put(id, entry);
+                        spending_limit_subscribe_counter->Add(1);
+                        spdlog::info("pcf: opened real CHF spending-limit subscription {} for SM "
+                                     "policy {} ({} policy counters)",
+                                     subscribed->first,
+                                     id,
+                                     policy_counter_ids.size());
+                    }
+                }
+            }
 
             sbi_core::http2::Response resp;
             resp.status = 201;
@@ -456,7 +690,12 @@ int main() {
     server.add_route(
         "POST",
         std::string(kSmApiRoot) + "/sm-policies/{smPolicyId}/delete",
-        [&verifier, &sm_policies, &sm_delete_counter](const sbi_core::http2::Request& req) {
+        [&verifier,
+         &sm_policies,
+         &sm_delete_counter,
+         &chf_client,
+         &chf_oauth,
+         &spending_limit_tracking](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -468,6 +707,56 @@ int main() {
                     404, "Not Found", "No SM policy " + sm_policy_id);
             }
             sm_delete_counter->Add(1);
+            // ADR-0072: real, best-effort CHF unsubscribe if this SM policy ever opened a real
+            // spending-limit subscription -- no-op (not an error) if it never did.
+            if (auto tracked = spending_limit_tracking.remove(sm_policy_id); tracked.has_value()) {
+                unsubscribe_spending_limit(chf_client, chf_oauth, tracked->chf_subscription_id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // ADR-0072 (gap-closure: real N28 end-to-end). PCF's own real statusNotification callback
+    // target -- the path this project chose for the notifUri it supplies at subscribe time (see
+    // subscribe_spending_limit's own call site). CHF POSTs a real SpendingLimitStatus here
+    // whenever a tracked policy counter's status changes. Real, disclosed scope: this build
+    // stores the pushed status (so a later GetSMPolicy/inspection could see it) but does NOT
+    // re-run any PCC-rule/session-rule decisioning in response -- 3GPP itself leaves the mapping
+    // from a free-form policyCounterId status string to a concrete policy action operator-defined
+    // (see docs/DECISIONS.md ADR-0072), so automating that mapping here would mean inventing
+    // business logic no spec or user decision has actually specified.
+    // Real spec: the callback's own URL is constructed as `{notifUri}/notify`
+    // (TS29594_Nchf_SpendingLimitControl.yaml's own callback key literally is
+    // `'{$request.body#/notifUri}/notify'`) -- CHF always appends "/notify" to whatever notifUri
+    // was supplied, so this project's own chosen notifUri value (see subscribe_spending_limit's
+    // own call site) must be registered here WITH that same suffix for CHF's real POST to land.
+    server.add_route(
+        "POST",
+        std::string(kSmApiRoot) + "/sm-policies/{smPolicyId}/spending-limit-notify/notify",
+        [&spending_limit_tracking,
+         &spending_limit_notify_counter](const sbi_core::http2::Request& req) {
+            // Real spec: this callback's own security scheme is the subscriber's choice (TS29594
+            // `security: [{}, oAuth2ClientCredentials: [nchf-spendinglimitcontrol]]`) -- no bearer
+            // check here, matching every other real callback endpoint already deferred/undefended
+            // the same way elsewhere in this project (e.g. CHF's own not-yet-implemented
+            // chargingNotification receiver).
+            json status;
+            try {
+                status = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto sm_policy_id = req.path_params.at("smPolicyId");
+            if (!spending_limit_tracking.update_status(sm_policy_id, status)) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No tracked spending-limit subscription for SM policy " + sm_policy_id);
+            }
+            spending_limit_notify_counter->Add(1);
+            spdlog::info("pcf: received real spending-limit statusNotification for SM policy {}",
+                         sm_policy_id);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

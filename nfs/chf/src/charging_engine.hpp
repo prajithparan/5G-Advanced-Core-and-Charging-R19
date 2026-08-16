@@ -22,8 +22,9 @@
 #include <optional>
 #include <string>
 
+// TS29594_Nchf_SpendingLimitControl's own types now live in TS29122_CommonData_grp.hpp -- see
+// stores.hpp's own comment (ADR-0072).
 #include "TS29122_CommonData_grp.hpp"
-#include "TS29594_Nchf_SpendingLimitControl.hpp"
 #include "bss_sid/balance.hpp"
 #include "bss_sid/product.hpp"
 #include "cdr.hpp"
@@ -62,15 +63,39 @@ struct RatingResult {
     std::optional<std::string> tariffVersion;
     std::optional<std::string> offeringName;
     std::optional<std::string> priceName;
+    // ADR-0072 (gap-closure: real N40 product-configurability). Real TS 32.291
+    // MultipleUnitInformation quota-policy fields (§ struct MultipleUnitInformation), populated
+    // from the matched ProductOfferingPrice's own real `prodSpecCharValueUse` characteristics (see
+    // find_characteristic_value's own comment for why TMF620's generic characteristic mechanism,
+    // not a native TMF620 field, is the real, correct place for these 3GPP-charging-specific
+    // values to live on a TM Forum resource). std::nullopt when the matched price doesn't
+    // configure that particular characteristic -- a real, valid "operator didn't set a policy for
+    // this" state, not an error.
+    std::optional<std::int64_t> validityTimeSec;
+    std::optional<std::int64_t> quotaHoldingTimeSec;
+    std::optional<std::int64_t> volumeQuotaThreshold;
+    std::optional<std::int64_t> timeQuotaThreshold;
+    std::optional<std::int64_t> unitQuotaThreshold;
 };
 
-// Real rating engine (ADR-0048). Fetches the first Active/isSellable ProductOffering from
-// bss/product-catalog (ADR-0047), then its first referenced ProductOfferingPrice, and converts
-// that price's unitOfMeasure into a real GrantedUnit -- the actual charging decision, not a
-// fabricated placeholder. No OAuth2 token needed: product-catalog is mTLS-only (ADR-0047), same
-// trust boundary the client cert already provides. Returns an empty result if the catalog is
-// unreachable or has no matching offering (schema-valid empty grant, same fallback this build has
-// always had).
+// UPDATE (ADR-0072, gap-closure: real N40 product-configurability). Real, fixed correctness gap:
+// this used to pick the first Active/isSellable ProductOffering with a price REGARDLESS of the
+// request's own real `ratingGroup` -- meaning every rating group billed identically, real
+// per-service/per-product differentiation never actually happened despite CHF->product-catalog
+// wiring existing since ADR-0048. Now real-matches on a `ratingGroup` characteristic
+// (`prodSpecCharValueUse`, see find_characteristic_value's own comment) -- the FIRST
+// Active/isSellable offering whose price's own `ratingGroup` characteristic value equals
+// `rating_group` wins; a price with no `ratingGroup` characteristic configured is never matched
+// (real, disclosed: an unconfigured price grants nothing for any rating group, rather than
+// ambiguously matching everything). Falls back to granting nothing (schema-valid empty grant,
+// same as always) if no price configures this rating group.
+//
+// Also populates RatingResult's own real quota-policy fields (validityTimeSec/
+// quotaHoldingTimeSec/volumeQuotaThreshold/timeQuotaThreshold/unitQuotaThreshold) from the SAME
+// matched price's own `prodSpecCharValueUse` entries, when configured.
+//
+// No OAuth2 token needed: product-catalog is mTLS-only (ADR-0047), same trust boundary the client
+// cert already provides.
 //
 // Unit conversion is real but deliberately narrow: TS 32.291's GrantedUnit has no generic "amount
 // + unit string" field the way TMF620's Quantity does -- totalVolume/uplinkVolume/downlinkVolume
@@ -79,7 +104,7 @@ struct RatingResult {
 // matching 3GPP's own octet-counting convention, not binary GiB/MiB) convert to totalVolume; any
 // other unit string falls back to serviceSpecificUnits carrying the raw amount unconverted --
 // disclosed as a real but narrow conversion, not a general unit-aware rating engine.
-RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client);
+RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client, std::int64_t rating_group);
 
 // P4.3 (ADR-0057): CHF as a real HTTP client of bss/balance-management (ADR-0056) -- reserves
 // `cost` against the real per-subscriber Bucket keyed by SUPI (this project's own disclosed
@@ -158,12 +183,15 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
 // real SLR/SLA handler can call the exact same function the HTTP Subscribe/Update handlers use --
 // the same single-code-path property Stage 3/4's Gy/Rf work already established, applied to Sy.
 //
-// Disclosed, real simplification (unchanged from its original main.cpp home): `currentStatus` is a
-// fixed placeholder ("unknown") for every policy counter -- no real policy-counter engine exists in
-// this codebase to report a genuine status from. The real spec text itself says the status values
-// "are not specified... out of scope of 3GPP", so any string is schema-conformant; "unknown" is the
-// least-invented choice, not a guess at real semantics.
+// UPDATE (ADR-0072, gap-closure: real N28 end-to-end): `currentStatus` is no longer a hardcoded
+// placeholder -- it's a real, per-policyCounterId lookup against `config_store` (this project's
+// own real, disclosed operator/GUI-facing config surface, since TS29594's own spec text leaves the
+// actual status values "not specified... out of scope of 3GPP", so this project must define its
+// own real source for them rather than inventing per-call values). A policyCounterId with no
+// configured status falls back to "unknown" -- the same least-invented placeholder as before, now
+// only for the genuinely-unconfigured case rather than always.
 sbi_gen::SpendingLimitStatus
-build_spending_limit_status(const sbi_gen::SpendingLimitContext& context);
+build_spending_limit_status(const sbi_gen::SpendingLimitContext& context,
+                            PolicyCounterConfigStore& config_store);
 
 } // namespace chf

@@ -9,6 +9,7 @@ add_executable(integration_tests
     test_udr_context_data.cpp
     test_ausf_ue_authentication.cpp
     test_pcf_policy_control.cpp
+    test_n28_spending_limit.cpp
     test_product_catalog_postgres.cpp
     test_subscriber_management_postgres.cpp
     test_roaming_interconnect_postgres.cpp

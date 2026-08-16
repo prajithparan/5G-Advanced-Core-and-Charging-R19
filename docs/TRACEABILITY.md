@@ -1087,3 +1087,39 @@ unused; BAR has no real datapath to apply to) -- both need a downlink datapath t
 doesn't have yet (same NGAP PDU Session Resource Setup dependency already disclosed throughout
 Phase 3). One QER per TEID (real spec allows several per PDR), same narrowing already established
 for URR. No per-IE `Failed Rule ID` on partial Modification failure (all-or-nothing Cause).
+
+## `nfs/pcf`/`nfs/udr`/`nfs/chf`: real N28 end-to-end + N40/N28 product-configurability (ADR-0072)
+
+`Nchf_SpendingLimitControl`'s HTTP handlers existed only on the CHF side (real Subscribe/Update/
+Unsubscribe CRUD) with zero PCF-side consumption, zero SMF/PCF/CHF/UDR integration, and CHF's own
+`currentStatus` hardcoded to `"unknown"` for every policy counter. Separately, CHF's rating engine
+picked the first Active/isSellable `ProductOffering` regardless of the request's own `ratingGroup`
+-- real per-product differentiation had never worked. Both closed this pass.
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| UDR real `/policy-data/ues/{ueId}/sm-data` (GET + RFC 7396 merge-patch PATCH, upsert-capable) | TS29519_Policy_Data.yaml, full real nested `SmPolicyData -> SmPolicySnssaiData -> SmPolicyDnnData` shape | `UdrSmPolicyDataIntegration.PatchCreatesAndMergesRealNestedDocument`; live: 404-before-create, real persisted create, real partial merge preserving earlier fields |
+| PCF fetches UDR's `SmPolicyDnnData` and opens a real CHF `Nchf_SpendingLimitControl` subscription when `subscSpendingLimits=true` | TS29594_Nchf_SpendingLimitControl.yaml Subscribe; real "CHF hosts, PCF subscribes" architecture (ADR-0055) | live: `pcf: opened real CHF spending-limit subscription sub-N for SM policy smpolicy-1`; real CHF unsubscribe on `DeleteSMPolicy`, confirmed via direct Redis inspection |
+| PCF/UDR/CHF calls fail open (unreachable dependency doesn't block the SM Policy request) | real, disclosed design choice -- spending-limit infra being down shouldn't block a PDU session | `PcfN28Integration.CreateSmPolicyFailsOpenWhenChfUnreachable` (CHF deliberately not running, real 201 still returned) |
+| CHF real, configurable `PolicyCounterInfo.currentStatus` + real `statusNotification` push | TS29594 Table (currentStatus is real, operator-defined per the spec's own text); real callback URL `{notifUri}/notify` (TS29594's own callback key construction) | live: `PUT /chf-admin/v1/policy-counters/{id}` real status change correctly pushed to PCF's real callback route (`pcf: received real spending-limit statusNotification...`); a follow-up subscription GET confirmed `currentStatus` genuinely reflects the configured value |
+| CHF real ratingGroup-matched product selection + real quota-policy fields | TS 32.291 `MultipleUnitInformation.validityTime/quotaHoldingTime/*QuotaThreshold`; TMF620 `prodSpecCharValueUse` as the real extension point | live: two real, distinct product tiers (Consumer ratingGroup=100/1GB, Enterprise ratingGroup=200/100GB) produced genuinely distinct real grants (1,000,000,000 vs. 100,000,000,000 octets) from two real `Nchf_ConvergedCharging_Create` calls differing only in `ratingGroup` |
+
+**Real infrastructure bug found and fixed**: `tools/sbi-codegen/generate.py` only ever writes
+generated files, never deletes stale ones from a prior pilot-file-list configuration -- adding
+`TS29519_Policy_Data.yaml` as a pilot file moved several existing types into a different SCC
+output group, and the old, now-stale per-file headers survived alongside the new ones, causing a
+real "redefinition of struct" build failure. Fixed at the root (`file(REMOVE_RECURSE)` before every
+codegen invocation in `libs/sbi-generated/CMakeLists.txt`), not worked around.
+
+**Real bug found and fixed via live testing**: this pass's own new integration test initially used
+a fixed, hardcoded test SUPI and asserted an initial 404 -- broke on any re-run against the same
+long-lived UDR Postgres database (real persistence, by design, ADR-0068) once the row already
+existed from a prior run. Fixed with a real per-process/per-call-site-unique test SUPI.
+
+**Disclosed gaps**: CHF has never been part of this project's automated `ctest` suite (needs Redis/
+ClickHouse, neither provisioned in `.github/workflows/ci.yml` -- a real, pre-existing gap, not
+newly introduced). Automated PCC/session-rule re-decisioning from a pushed policy-counter status
+not implemented (3GPP leaves the status-to-action mapping operator-defined). `subscriptionTermination`
+(the other real TS29594 callback) not implemented. AM-policy-side/UE-policy-side spending limits
+(`AmPolicyData`/`UePolicySet`, distinct real TS29519 resources) out of scope -- only the SM-policy
+variant PCF's already-built surface needs was built.

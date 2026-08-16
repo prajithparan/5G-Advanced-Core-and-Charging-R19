@@ -77,6 +77,7 @@ public:
                    RatingDecisionStore& rating_decision_store,
                    OfflineChargingDataStore& offline_charging_data_store,
                    SpendingLimitSubscriptionStore& spending_limit_store,
+                   PolicyCounterConfigStore& policy_counter_config_store,
                    opentelemetry::metrics::Counter<std::uint64_t>* grant_counter,
                    opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter,
                    opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter,
@@ -108,6 +109,7 @@ private:
     RatingDecisionStore& rating_decision_store_;
     OfflineChargingDataStore& offline_charging_data_store_;
     SpendingLimitSubscriptionStore& spending_limit_store_;
+    PolicyCounterConfigStore& policy_counter_config_store_;
     opentelemetry::metrics::Counter<std::uint64_t>* grant_counter_;
     opentelemetry::metrics::Counter<std::uint64_t>* reserve_rejected_counter_;
     opentelemetry::metrics::Counter<std::uint64_t>* ccr_initial_counter_;

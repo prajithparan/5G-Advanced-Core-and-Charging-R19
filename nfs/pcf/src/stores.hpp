@@ -52,4 +52,33 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// ADR-0072 (gap-closure: real N28 end-to-end). Backs PCF's own real subscription lifecycle with
+// CHF's Nchf_SpendingLimitControl -- keyed by the smPolicyId this subscription was opened for (so
+// DeleteSMPolicy can find and unsubscribe it, and the real statusNotification callback, PCF's own
+// notifUri target, can find which SM policy a pushed SpendingLimitStatus belongs to). In-memory
+// only, same disclosed simplification as every other PCF store (see this file's own header).
+class SpendingLimitTrackingStore {
+public:
+    struct Entry {
+        std::string chf_subscription_id;
+        std::string supi;
+        nlohmann::json last_status; // most recent real SpendingLimitStatus (initial subscribe
+                                    // response, updated by later statusNotification pushes)
+    };
+
+    void put(const std::string& sm_policy_id, Entry entry);
+    std::optional<Entry> get(const std::string& sm_policy_id);
+    // Updates last_status only (used by the statusNotification callback) -- no-op, returns false,
+    // if sm_policy_id isn't tracked.
+    bool update_status(const std::string& sm_policy_id, nlohmann::json status);
+    // Removes and returns the entry (so the caller can still read chf_subscription_id to issue the
+    // real DELETE to CHF) -- std::nullopt if nothing was tracked for this smPolicyId (a real,
+    // valid case: not every SM policy subscribes to spending limits).
+    std::optional<Entry> remove(const std::string& sm_policy_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, Entry> entries_;
+};
+
 } // namespace pcf

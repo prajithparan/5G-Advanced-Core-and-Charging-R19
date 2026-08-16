@@ -21,12 +21,25 @@
 // data is seeded at startup instead (see main() below), and nfs/udm's own GetAmData/GetSmfSelData/
 // GetSmData now call these real routes instead of returning the old permanently-empty stub.
 //
+// UPDATE (ADR-0072, gap-closure: real N28 end-to-end): the `policy-data` group's SM policy
+// resource (/policy-data/ues/{ueId}/sm-data, real schema SmPolicyData -- source
+// TS29519_Policy_Data.yaml) is now implemented, real GET+PATCH, keyed by ueId alone. Unlike
+// provisioned-data above, this real resource DOES support PATCH (application/merge-patch+json) --
+// but the real spec still has no POST/create operation for it, so this project's own store treats
+// PATCH as upsert-capable (a disclosed, deliberate choice enabling GUI-driven creation -- see
+// stores.hpp's own comment on SmPolicyDataStore). PCF is the real consumer, fetching a
+// subscriber's subscSpendingLimits/policyCounterIds per DNN to decide whether to subscribe to
+// CHF's Nchf_SpendingLimitControl.
+//
 // Deliberately still deferred, not dropped: authentication-data (real AUSF/UDM auth flow exists
 // now, but this UDR resource group itself is separate, still not implemented here);
 // ue-update-confirmation-data (SoR/UPU); context-data's other sub-resources (non-3gpp-access,
 // smsf-3gpp/non-3gpp, ip-sm-gw, mwd, roaming-information, pei-info, ee-subscriptions,
 // sdm-subscriptions, nidd-authorizations); operator-specific-data; lcs-*; pp-data; group-data;
-// shared-data; subs-to-notify; all of TS29504_Nudr_GroupIDmap.yaml.
+// shared-data; subs-to-notify; policy-data's own other resources (am-data, ue-policy-set,
+// sponsor-connectivity-data, bdt-data, slice-control-data, and others -- SM policy data is the
+// only policy-data resource this project's real N28 use case needs); all of
+// TS29504_Nudr_GroupIDmap.yaml.
 //
 // RFC 6902 JSON Patch, not RFC 7396 Merge Patch: AmfContext3gpp and UpdateSmfContext both use
 // application/json-patch+json (confirmed by reading the YAML directly), unlike UDM's
@@ -55,8 +68,9 @@
 #include <optional>
 #include <thread>
 
+// TS29505_Subscription_Data's own types now live in TS29122_CommonData_grp.hpp -- see
+// nfs/chf/src/stores.hpp's own comment (ADR-0072).
 #include "TS29122_CommonData_grp.hpp"
-#include "TS29505_Subscription_Data.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -216,6 +230,7 @@ int main() {
     udr::AmfContextStore amf_contexts(conninfo);
     udr::SmfRegistrationStore smf_registrations(conninfo);
     udr::ProvisionedDataStore provisioned_data(conninfo);
+    udr::SmPolicyDataStore sm_policy_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -255,6 +270,10 @@ int main() {
     auto provisioned_data_get_counter = meter->CreateUInt64Counter(
         "udr_provisioned_data_get_total",
         "Total provisioned-data am-data/smf-selection-subscription-data/sm-data GET calls");
+    auto sm_policy_data_get_counter = meter->CreateUInt64Counter(
+        "udr_sm_policy_data_get_total", "Total ReadSessionManagementPolicyData calls");
+    auto sm_policy_data_patch_counter = meter->CreateUInt64Counter(
+        "udr_sm_policy_data_patch_total", "Total UpdateSessionManagementPolicyData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -533,6 +552,55 @@ int main() {
                     404, "Not Found", "No provisioned sm-data for ueId " + ue_id);
             }
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: policy-data group, SM policy resource (ADR-0072, gap-closure: real
+    // N28 end-to-end) -- real GET+PATCH per TS29519_Policy_Data.yaml, keyed by ueId alone (no
+    // servingPlmnId in the real path, unlike provisioned-data above -- genuinely different
+    // resource, see schema.postgres.sql's own comment). ---
+
+    const std::string sm_policy_data_path_pattern =
+        std::string(kApiRoot) + "/policy-data/ues/{ueId}/sm-data";
+
+    server.add_route(
+        "GET",
+        sm_policy_data_path_pattern,
+        [&verifier, &sm_policy_data, &sm_policy_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = sm_policy_data.get(ue_id);
+            sm_policy_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SM policy data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        sm_policy_data_path_pattern,
+        [&verifier, &sm_policy_data, &sm_policy_data_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch;
+            try {
+                patch = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto patched = sm_policy_data.merge_patch(ue_id, patch);
+            sm_policy_data_patch_counter->Add(1);
+            // Real spec: 204 (no body) or 200 (with the updated SmPolicyData) are both valid --
+            // this project returns 200 with the real updated document, same real information a
+            // future GUI editing this resource would want back without a second GET round-trip.
+            return sbi_core::http2::Response::json(200, patched.dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id).detach();

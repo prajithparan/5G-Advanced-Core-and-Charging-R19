@@ -4,8 +4,16 @@
 #include <optional>
 #include <string>
 #include <sw/redis++/redis++.h>
+#include <utility>
+#include <vector>
 
-#include "TS29594_Nchf_SpendingLimitControl.hpp"
+// TS29594_Nchf_SpendingLimitControl's own real types (SpendingLimitContext/Status/
+// PolicyCounterInfo/etc.) now live in TS29122_CommonData_grp.hpp -- adding
+// TS29519_Policy_Data.yaml as a codegen pilot file (ADR-0072) created a new file-level cross-
+// reference cycle that pulled TS29594's own schemas into the shared SCC group; see
+// libs/sbi-generated/CMakeLists.txt's own comment on why a stale include here would otherwise
+// silently keep compiling against last build's now-wrong header name.
+#include "TS29122_CommonData_grp.hpp"
 
 // Private to nfs/chf -- not shared with any other NF, per CLAUDE.md's "no NF includes another
 // NF's private headers" rule.
@@ -101,6 +109,33 @@ public:
     bool remove(const std::string& id);
 
     std::optional<sbi_gen::SpendingLimitContext> get(const std::string& id);
+
+    // ADR-0072 (gap-closure: real N28 end-to-end) -- real enumeration of every currently active
+    // subscription, needed so a real policy-counter status change (see PolicyCounterConfigStore
+    // below) can find and notify every subscriber that named that counter. Real, disclosed cost:
+    // O(active subscriptions) full GET per call -- fine at this project's real lab scale, not
+    // claimed to be a production-scale design.
+    std::vector<std::pair<std::string, sbi_gen::SpendingLimitContext>> list_all();
+
+private:
+    std::shared_ptr<sw::redis::Redis> redis_;
+};
+
+// ADR-0072 (gap-closure: real N28 end-to-end). Real, THIS-PROJECT-OWNED configuration surface for
+// policyCounterId -> currentStatus -- NOT a 3GPP-defined resource. TS29594's own spec text is
+// explicit that PolicyCounterInfo.currentStatus values "are not specified... out of scope of
+// 3GPP" (real, cited, not assumed), so a real operator-facing config surface for it is this
+// project's own necessary addition, not a spec deviation -- matching the "configuration
+// parameters... to create from GUI later" requirement. Backs both `build_spending_limit_status`'s
+// real (no-longer-hardcoded) status lookup and the real statusNotification-push trigger wired into
+// main.cpp's own admin/config route.
+class PolicyCounterConfigStore {
+public:
+    explicit PolicyCounterConfigStore(std::shared_ptr<sw::redis::Redis> redis);
+
+    void set_status(const std::string& policy_counter_id, const std::string& status);
+    // std::nullopt if never configured -- caller falls back to a real, disclosed default.
+    std::optional<std::string> get_status(const std::string& policy_counter_id);
 
 private:
     std::shared_ptr<sw::redis::Redis> redis_;

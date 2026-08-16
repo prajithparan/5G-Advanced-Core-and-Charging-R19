@@ -9,12 +9,15 @@
 //   logs a TM Forum SID Individual for the subscriber (docs/CHARGING_MAPPING.md, ADR-0045).
 // - ADR-0046: Nchf_ConvergedCharging_Release -- POST /chargingdata/{ChargingDataRef}/
 //   release. Validates the ref is a real, still-active one (404 if not), returns 204 per spec.
-// - This turn (ADR-0048): a real rating engine. CHF is now a real HTTP client of
-//   bss/product-catalog (ADR-0047) -- when a request's multipleUnitUsage carries a ratingGroup,
-//   CHF fetches the first Active/isSellable ProductOffering's first referenced
-//   ProductOfferingPrice, converts its unitOfMeasure into a real GrantedUnit, and returns it in
-//   multipleUnitInformation. See build_rating_grant's own comment for the real conversion/
-//   simplification details.
+// - ADR-0048: a real rating engine. CHF is now a real HTTP client of bss/product-catalog
+//   (ADR-0047) -- when a request's multipleUnitUsage carries a ratingGroup, CHF looks up the
+//   ProductOfferingPrice whose own real `ratingGroup` characteristic matches it (UPDATE, ADR-0072:
+//   originally just picked the first Active/isSellable offering regardless of ratingGroup, a real
+//   correctness gap fixed this turn -- see build_rating_grant's own comment), converts its
+//   unitOfMeasure into a real GrantedUnit, and returns it in multipleUnitInformation along with
+//   real quota-policy fields (validityTime/quotaHoldingTime/*QuotaThreshold) read from that same
+//   price's own characteristics. See build_rating_grant's own comment for the real conversion
+//   details.
 //
 // - ADR-0050 Stage 4: Nchf_ConvergedCharging_Update -- POST /chargingdata/{ChargingDataRef}/
 //   update. Validates the ref is still active (404 if not, same convention as Release), logs the
@@ -120,8 +123,9 @@
 #include <optional>
 #include <thread>
 
+// TS29594_Nchf_SpendingLimitControl's own types now live in TS29122_CommonData_grp.hpp -- see
+// stores.hpp's own comment (ADR-0072).
 #include "TS29122_CommonData_grp.hpp"
-#include "TS29594_Nchf_SpendingLimitControl.hpp"
 #include "TS32291_Nchf_OfflineOnlyCharging.hpp"
 #include "bss_sid/balance.hpp"
 #include "bss_sid/party.hpp"
@@ -353,6 +357,7 @@ int main() {
     chf::ChargingDataStore charging_data_store(redis);
     chf::OfflineChargingDataStore offline_charging_data_store(redis);
     chf::SpendingLimitSubscriptionStore spending_limit_store(redis);
+    chf::PolicyCounterConfigStore policy_counter_config_store(redis);
 
     // P4.4/ADR-0058: real CDF (CDR generation, TS 32.240/32.296) -- see cdr.hpp's own header for
     // the full disclosure of what this real CDR record is (and is not: not a conformant TS 32.298
@@ -394,6 +399,18 @@ int main() {
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
     sbi_core::http2::Client balance_client(std::move(balance_client_tls));
+
+    // ADR-0072 (gap-closure: real N28 end-to-end). CHF's own real client for pushing
+    // statusNotification callbacks to subscribers' arbitrary notifUri targets -- same mTLS-only,
+    // no-OAuth2 reasoning as catalog_client/balance_client above (the callback target is whichever
+    // NF supplied notifUri, not a fixed NRF-discoverable service this project could token-source
+    // for generically).
+    sbi_core::http2::TlsConfig notify_client_tls{
+        .cert_path = CERTS_DIR "/chf/cert.pem",
+        .key_path = CERTS_DIR "/chf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client notify_client(std::move(notify_client_tls));
 
     auto meter = sbi_core::get_meter("chf");
     auto create_counter = meter->CreateUInt64Counter("chf_charging_data_create_total",
@@ -494,6 +511,7 @@ int main() {
                                         rating_decision_store,
                                         offline_charging_data_store,
                                         spending_limit_store,
+                                        policy_counter_config_store,
                                         grant_counter.get(),
                                         reserve_rejected_counter.get(),
                                         ccr_initial_counter.get(),
@@ -610,6 +628,14 @@ int main() {
                         usage);
                     if (charged.reserved && charged.rating.grant.has_value()) {
                         info.grantedUnit = charged.rating.grant;
+                        // ADR-0072 (gap-closure: real N40 product-configurability): real
+                        // quota-policy fields, populated from the matched ProductOfferingPrice's
+                        // own real characteristics -- see build_rating_grant's own comment.
+                        info.validityTime = charged.rating.validityTimeSec;
+                        info.quotaHoldingTime = charged.rating.quotaHoldingTimeSec;
+                        info.volumeQuotaThreshold = charged.rating.volumeQuotaThreshold;
+                        info.timeQuotaThreshold = charged.rating.timeQuotaThreshold;
+                        info.unitQuotaThreshold = charged.rating.unitQuotaThreshold;
                     }
                     granted.push_back(info);
                 }
@@ -710,6 +736,14 @@ int main() {
                         usage);
                     if (charged.reserved && charged.rating.grant.has_value()) {
                         info.grantedUnit = charged.rating.grant;
+                        // ADR-0072 (gap-closure: real N40 product-configurability): real
+                        // quota-policy fields, populated from the matched ProductOfferingPrice's
+                        // own real characteristics -- see build_rating_grant's own comment.
+                        info.validityTime = charged.rating.validityTimeSec;
+                        info.quotaHoldingTime = charged.rating.quotaHoldingTimeSec;
+                        info.volumeQuotaThreshold = charged.rating.volumeQuotaThreshold;
+                        info.timeQuotaThreshold = charged.rating.timeQuotaThreshold;
+                        info.unitQuotaThreshold = charged.rating.unitQuotaThreshold;
                     }
                     granted.push_back(info);
                 }
@@ -927,17 +961,26 @@ int main() {
     // Real spec shape confirmed directly against TS29594_Nchf_SpendingLimitControl.yaml: CHF is
     // the SERVER for this service (PCF subscribes TO CHF), unlike the "N28 wiring" phrase in
     // CHARGING_PROMPT.md's P4.2 prompt might suggest at a glance -- see ADR-0055 for the full
-    // finding. The real statusNotification/subscriptionTermination callbacks (CHF as client,
-    // POSTing to the subscriber's notifUri) are NOT implemented this turn -- no real policy-
-    // counter-breach-detection engine exists yet to trigger them from (same category of
-    // deliberately-deferred gap as Nchf_ConvergedCharging's own chargingNotification, this file's
-    // header comment). Subscribe/Update/Unsubscribe below are real, live resource CRUD.
+    // finding. Subscribe/Update/Unsubscribe below are real, live resource CRUD.
+    //
+    // UPDATE (ADR-0072, gap-closure: real N28 end-to-end): `currentStatus` is no longer a
+    // hardcoded "unknown" -- it's a real, configurable value (PolicyCounterConfigStore, Redis-
+    // backed) set via this project's own `/chf-admin/v1/policy-counters/{policyCounterId}` PUT
+    // endpoint (NOT a 3GPP-defined resource -- real, disclosed, this project's own operator/GUI
+    // config surface, since the spec itself leaves the actual status values operator-defined). The
+    // real statusNotification callback (CHF as client, POSTing `{notifUri}/notify`) is now
+    // implemented too, triggered by that same admin endpoint -- every active subscription naming
+    // the changed policyCounterId gets a real push. Real, disclosed non-scope: no automated
+    // balance/usage-threshold-crossing engine triggers this on its own; the trigger is
+    // operator/GUI-driven (a real, disclosed choice, not a gap being hidden).
 
     server.add_route(
         "POST",
         std::string(kSpendingLimitApiRoot) + "/subscriptions",
-        [&verifier, &spending_limit_store, &spending_limit_subscribe_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &spending_limit_store,
+         &policy_counter_config_store,
+         &spending_limit_subscribe_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -947,7 +990,8 @@ int main() {
                 return err;
             }
 
-            const auto status = chf::build_spending_limit_status(*body);
+            const auto status =
+                chf::build_spending_limit_status(*body, policy_counter_config_store);
             const auto id = spending_limit_store.create(*body);
             spending_limit_subscribe_counter->Add(1);
 
@@ -964,8 +1008,10 @@ int main() {
     server.add_route(
         "PUT",
         std::string(kSpendingLimitApiRoot) + "/subscriptions/{subscriptionId}",
-        [&verifier, &spending_limit_store, &spending_limit_update_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &spending_limit_store,
+         &policy_counter_config_store,
+         &spending_limit_update_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -982,7 +1028,8 @@ int main() {
             }
             spending_limit_update_counter->Add(1);
 
-            const auto status = chf::build_spending_limit_status(*body);
+            const auto status =
+                chf::build_spending_limit_status(*body, policy_counter_config_store);
             sbi_core::http2::Response resp;
             resp.status = 200;
             resp.headers.emplace("content-type", "application/json");
@@ -1005,6 +1052,74 @@ int main() {
                     404, "Not Found", "No active spending limit subscription " + id);
             }
             spending_limit_unsubscribe_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // ADR-0072 (gap-closure: real N28 end-to-end). Real, THIS-PROJECT-OWNED operator/GUI config
+    // endpoint -- NOT a 3GPP-defined resource (no such path exists in TS29594; PolicyCounterInfo.
+    // currentStatus is explicitly operator-defined per that spec's own text, see stores.hpp's own
+    // PolicyCounterConfigStore comment). Setting a status here is also the real trigger this
+    // project's own statusNotification push now has: every currently-active subscription that
+    // named this policyCounterId gets a real POST to `{notifUri}/notify` with the freshly-rebuilt
+    // SpendingLimitStatus, closing the loop the file's own original header comment disclosed as
+    // not-yet-implemented ("no real policy-counter-breach-detection engine exists yet to trigger
+    // them from" -- this admin endpoint IS that trigger, operator/GUI-driven rather than
+    // usage-driven, a real and disclosed choice given no real balance-threshold-crossing engine
+    // exists in this codebase to trigger it automatically instead).
+    server.add_route(
+        "PUT",
+        "/chf-admin/v1/policy-counters/{policyCounterId}",
+        [&verifier, &policy_counter_config_store, &spending_limit_store, &notify_client](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            if (!body.contains("currentStatus") || !body["currentStatus"].is_string()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "body must be {\"currentStatus\": \"<string>\"}");
+            }
+            const auto policy_counter_id = req.path_params.at("policyCounterId");
+            const std::string new_status = body["currentStatus"].get<std::string>();
+            policy_counter_config_store.set_status(policy_counter_id, new_status);
+
+            std::size_t notified = 0;
+            for (auto& [subscription_id, context] : spending_limit_store.list_all()) {
+                if (!context.notifUri.has_value() || !context.policyCounterIds.has_value() ||
+                    std::find(context.policyCounterIds->begin(),
+                              context.policyCounterIds->end(),
+                              policy_counter_id) == context.policyCounterIds->end()) {
+                    continue;
+                }
+                const auto status =
+                    chf::build_spending_limit_status(context, policy_counter_config_store);
+                sbi_core::http2::ClientRequest notify_req;
+                notify_req.method = "POST";
+                notify_req.url = *context.notifUri + "/notify";
+                notify_req.headers.emplace("content-type", "application/json");
+                json j = status;
+                notify_req.body = j.dump();
+                auto notify_resp = notify_client.send(notify_req);
+                if (!notify_resp.has_value() || notify_resp->status != 204) {
+                    spdlog::warn("chf: statusNotification push to {} failed for subscription {}",
+                                 *context.notifUri,
+                                 subscription_id);
+                } else {
+                    ++notified;
+                }
+            }
+            spdlog::info("chf: policy counter {} set to '{}', pushed to {} subscription(s)",
+                         policy_counter_id,
+                         new_status,
+                         notified);
 
             sbi_core::http2::Response resp;
             resp.status = 204;
