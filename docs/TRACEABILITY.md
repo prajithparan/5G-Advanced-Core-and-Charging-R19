@@ -1190,3 +1190,46 @@ success metric is specifically about `Nchf` round-trips. No genuine "N% fewer Up
 metric is claimed -- the synthetic bootstrap model exists only to prove the pipeline is real and
 functional; a real measurement needs real production usage data this lab environment doesn't have
 yet.
+
+## Gap-closure task #100 (part 1) -- AMF real ServiceRequest, 5G-GUTI, persistent NAS security context (ADR-0076)
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| `ServiceRequest`/`ServiceAccept`/`ServiceReject` (TS 24.501 §5.6.1, §9.11.3.50) | Integrity-protected-but-not-ciphered decode (peek plaintext TMSI, then MAC-verify once the context is looked up); real `ServiceReject` on unknown TMSI/ngKSI mismatch | `tests/conformance/test_nas_codec.cpp`: `PeekServiceRequestTmsiExtractsTmsiWithoutAnyKey`, `PeekServiceRequestTmsiRejectsWrongSecurityHeaderType`, `DecodeServiceRequestAcceptsGenuineMessageAndExtractsFields`, `DecodeServiceRequestRejectsTamperedMac`, `EncodesServiceAcceptWithCorrectEnvelopeAndDecryptsToExpectedInner`, `EncodesServiceRejectPlainWithCorrectEnvelope` -- 6 new, all pass |
+| 5G-GUTI assignment in `RegistrationAccept` (TS 24.501 §9.11.3.4) | Real PLMN + AMF Region/Set/Pointer + 5G-TMSI wire structure, consistent with this AMF's own broadcast GUAMI | `EncodesRegistrationAcceptWithCorrectEnvelopeAndDecryptsToExpectedInner` (updated: asserts full 26-byte envelope incl. GUTI IE bytes); real interop: UERANSIM `nr-ue` log shows correct GUTI receipt |
+| `RegistrationComplete` handling, now reachable (TS 24.501 §5.5.1.2.4) | A UE that received a GUTI sends `RegistrationComplete`; NAS uplink COUNT must stay in sync for the PDU Session Establishment Request that follows | Real interop: UERANSIM `nr-ue` log "Sending Registration Complete"; AMF log "RegistrationComplete verified OK"; full chain through real PDU Session Establishment succeeded (`uplink_count` correctly shifted 1->2) |
+| Persistent NAS security context across NG associations (TS 24.501 §4.4.3.1, TS 33.501 root-key model) | Survive SCTP association teardown -- ServiceRequest's entire premise | New `nfs/amf/src/ue_security_context_store.{hpp,cpp}`, Redis-backed, keyed by 5G-TMSI; exercised indirectly by all 6 `ServiceRequest` tests above plus the live interop run |
+
+**Real bugs found and fixed via the new unit tests, NOT caught by the live interop run** (interop
+only exercised the GUTI/encode side, not `ServiceRequest`'s own decode side):
+1. TMSI byte extraction off-by-one (`plain_inner[off+2..off+5]` instead of `off+3..off+6]`).
+2. Short TMSI-identity value length miscounted as 6 octets instead of the real 7
+   (identity-type + 2 packed octets + 4-octet TMSI), confirmed against UERANSIM's own
+   `IE5gsMobileIdentity::Encode`.
+
+**Real, disclosed scope boundary, not silently dropped**: N2 handover (NGAP
+`HandoverRequired`/`HandoverRequestAcknowledge`/etc.) and NGAP `UEContextRelease{Request,Complete}`
+decode (found to be a real, concrete blocker while attempting live interop for this same pass --
+see `docs/CAPABILITY_GAP_ANALYSIS.md`'s AMF section) remain open, tracked as the rest of task
+#100/#101. SMF's own `UpdateSMContext` N2SmInfo dispatch (task #101) -- needed for `ServiceRequest`
+to drive real N2 PDU Session Resource Setup when `uplinkDataStatus` reports a pending session --
+also remains open.
+
+Full `conformance_tests`: 261/261 pass (up from 255). `ctest` full-suite regression check: two
+failures observed (`SmfIntegration.FullSmContextLifecycleOverRealHttp2`,
+`SubscriberManagementPostgresTest.SubscriberIsFindableBySupi`), both confirmed NOT caused by this
+change -- re-run in isolation after killing leftover manually-started lab processes (the first) and
+independently reproduced with a pre-existing stale-row `psql` duplicate-key error unrelated to any
+file touched this pass (the second, a real, disclosed, pre-existing test-isolation gap in
+`SubscriberManagementPostgresTest`, not fixed here).
+
+## ADR-0077 -- config-file retrofit, AMF (part 1 of project-wide task #109)
+
+| Requirement | Test |
+|---|---|
+| AMF's `port`, `metrics_bind_address`, `nrf_base_url`, `redis_url`, `ngap_bind_address`, `ngap_bind_port`, `amf_region_id`, `amf_set_id`, `amf_pointer` all load from `config/amf.json` (env var override per key still available), not from in-source literals | Manual smoke test: `AMF_REDIS_URL=tcp://127.0.0.1:6379 ./nfs/amf/amf` -- real log output confirms all values match the pre-refactor hardcoded ones exactly (port 7778, metrics 9465, NGAP 127.0.0.5:38412); full `conformance_tests` (261/261) and a targeted `ctest` re-run both pass unchanged after the refactor |
+| `docker compose`'s `amf` service can reach `nrf`/`redis` by compose DNS name, not the (real, pre-existing, newly-surfaced) broken `127.0.0.1` default | Not yet live-verified via an actual `docker compose up` run this pass (deferred -- config/Dockerfile/compose wiring done, live containerized verification not yet performed) |
+
+No behavioral change to AMF's already-tested procedures -- this is a pure refactor of where
+configuration values come from, verified via the smoke test's exact-match log output plus the
+unchanged 261/261 conformance pass.

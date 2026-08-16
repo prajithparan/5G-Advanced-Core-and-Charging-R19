@@ -122,6 +122,12 @@ struct UeAuthState {
     // aka_crypto/kdf.hpp's derive_knas_int/derive_knas_enc.
     std::optional<aka_crypto::NasIntKey> knas_int;
     std::optional<aka_crypto::NasEncKey> knas_enc;
+    // KAMF itself (TS 33.501 Annex A.6), stored alongside its two derived keys above -- gap-
+    // closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075) needs the real root key
+    // persisted (UeSecurityContextStore) once registration completes, not just its two derived
+    // children, so a later ServiceRequest can re-derive knas_int/knas_enc the same way this
+    // struct's own Stage 4 does today.
+    std::optional<aka_crypto::Kamf> kamf;
     // The RAND from the most recently sent AuthenticationRequest -- needed if THIS attempt itself
     // gets an AuthenticationFailure+AUTS back (SQN resync, ADR-0037): decoding AUTS only works
     // with the exact RAND the UE used, which the AuthenticationFailure message itself doesn't
@@ -137,13 +143,17 @@ struct UeAuthState {
     enum class Phase {
         AwaitingAuthenticationResponse,
         AwaitingSecurityModeComplete,
-        // No AwaitingRegistrationComplete phase: TS 24.501's real UE behavior (confirmed via
-        // source, simulators/ransim/vendor/UERANSIM/src/ue/nas/mm/register.cpp:346-426) only
-        // sends RegistrationComplete if RegistrationAccept carried a 5G-GUTI, an NSSCI=CHANGED
-        // indication, or a configuredNSSAI -- this build's encode_registration_accept sends none
-        // of those (disclosed simplification, see its own comment), so a real UE never sends
-        // RegistrationComplete in response. Confirmed via real interop: AMF proceeds straight to
-        // AwaitingPduSessionEstablishmentRequest once RegistrationAccept is sent.
+        // UPDATE (gap-closure, docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075): this phase
+        // now genuinely exists, where it previously didn't. TS 24.501's real UE behavior
+        // (confirmed via source, simulators/ransim/vendor/UERANSIM/src/ue/nas/mm/
+        // register.cpp:346-426) sends RegistrationComplete if RegistrationAccept carried a
+        // 5G-GUTI, an NSSCI=CHANGED indication, or a configuredNSSAI -- encode_registration_accept
+        // now sends a real 5G-GUTI (the ServiceRequest gap-closure's own real prerequisite), so a
+        // real UE now genuinely sends RegistrationComplete in response, and this AMF must consume
+        // it (real, load-bearing: skipping it would desync the NAS uplink COUNT this UE's every
+        // later secured uplink message's own MAC verification depends on, not just a missed log
+        // line).
+        AwaitingRegistrationComplete,
         AwaitingPduSessionEstablishmentRequest,
         Done,
     };
@@ -479,9 +489,123 @@ bool initiate_5g_aka_authentication(
 // AuthenticationRequest (RAND/AUTN from AUSF's 5G-AKA vector) wrapped in DownlinkNASTransport.
 // Stage 3 picks up from there (decoding the UE's AuthenticationResponse, confirming with AUSF,
 // deriving KAMF) -- not handled here.
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075): real ServiceRequest handling
+// (TS 24.501 §5.6.1) -- a UE reconnecting on a FRESH NG association (this function is only ever
+// reached from handle_initial_ue_message, i.e. a NEW association, exactly the real scenario
+// ServiceRequest exists for), reusing an EXISTING, persisted NAS security context instead of
+// running the full authentication procedure again. Real, disclosed scope boundary: this closes
+// the CM-IDLE->CM-CONNECTED transition itself; it does NOT drive real N2 PDU Session Resource
+// Setup for any PDU session `uplinkDataStatus` reports as having pending data -- that's SMF's own
+// `UpdateSMContext` real N2SmInfo dispatch, a separate, already-tracked gap
+// (docs/CAPABILITY_GAP_ANALYSIS.md task #101), not fabricated here just because this function
+// could technically send SOMETHING.
+void handle_service_request(ngap_core::SctpSocket& assoc,
+                            UeSecurityContextStore& ue_security_contexts,
+                            NgapUeRegistry& ue_ngap_registry,
+                            UeAuthState& auth_state,
+                            unsigned long ran_ue_id,
+                            const std::vector<std::uint8_t>& nas_pdu_bytes) {
+    const auto tmsi = amf::nas::peek_service_request_tmsi(nas_pdu_bytes);
+    if (!tmsi.has_value()) {
+        spdlog::warn("amf-ngap: InitialUEMessage's NAS-PDU is neither a supported "
+                     "RegistrationRequest nor a ServiceRequest, ignoring");
+        return;
+    }
+
+    const auto ctx = ue_security_contexts.get(*tmsi);
+    const auto fresh_amf_ue_id = g_next_amf_ue_ngap_id.fetch_add(1);
+    if (!ctx.has_value()) {
+        spdlog::warn("amf-ngap: ServiceRequest for unknown tmsi={:08x} (no persisted security "
+                     "context -- unknown UE, or this AMF restarted since it was issued), "
+                     "rejecting",
+                     *tmsi);
+        const auto reject_nas = amf::nas::encode_service_reject_plain(
+            0x09 /* TS 24.501 5GMM cause: UE_IDENTITY_CANNOT_BE_DERIVED_FROM_NETWORK */);
+        send_downlink_nas_transport(assoc, fresh_amf_ue_id, ran_ue_id, reject_nas);
+        return;
+    }
+
+    const auto knas_int =
+        aka_crypto::derive_knas_int(ctx->kamf, aka_crypto::kNia2AlgorithmIdentity);
+    const auto knas_enc =
+        aka_crypto::derive_knas_enc(ctx->kamf, aka_crypto::kNea2AlgorithmIdentity);
+    const auto uplink_count = ue_security_contexts.next_uplink_count(*tmsi);
+    const auto info = amf::nas::decode_service_request(knas_int, uplink_count, nas_pdu_bytes);
+    if (!info.has_value()) {
+        spdlog::warn("amf-ngap: NAS-PDU matched ServiceRequest's own envelope shape but failed to "
+                     "parse for tmsi={:08x} (SUPI {}), ignoring",
+                     *tmsi,
+                     ctx->supi);
+        return;
+    }
+    if (!info->mac_valid) {
+        spdlog::warn("amf-ngap: ServiceRequest MAC verification FAILED for SUPI {} -- wrong keys, "
+                     "a tampered/replayed message, or a NAS COUNT desync",
+                     ctx->supi);
+        return;
+    }
+    if (info->ngksi != ctx->ngksi) {
+        spdlog::warn("amf-ngap: ServiceRequest ngKSI mismatch for SUPI {} (got {}, persisted "
+                     "context has {}) -- real TS 24.501 security-context-desync case, rejecting",
+                     ctx->supi,
+                     info->ngksi,
+                     ctx->ngksi);
+        return;
+    }
+
+    spdlog::info("amf-ngap: ServiceRequest verified OK for SUPI {} (serviceType={}), CM-IDLE -> "
+                 "CM-CONNECTED",
+                 ctx->supi,
+                 info->service_type);
+
+    auth_state.amf_ue_id = fresh_amf_ue_id;
+    auth_state.ran_ue_id = ran_ue_id;
+    auth_state.supi = ctx->supi;
+    auth_state.knas_int = knas_int;
+    auth_state.knas_enc = knas_enc;
+    auth_state.kamf = ctx->kamf;
+    auth_state.ue_security_capability = ctx->ue_security_capability;
+
+    const auto downlink_count = ue_security_contexts.next_downlink_count(*tmsi);
+    const auto accept_nas = amf::nas::encode_service_accept(
+        knas_int, knas_enc, downlink_count, info->pdu_session_status.value_or(0));
+    send_downlink_nas_transport(assoc, auth_state.amf_ue_id, auth_state.ran_ue_id, accept_nas);
+    spdlog::info(
+        "amf-ngap: sent DownlinkNASTransport with ServiceAccept ({} bytes), AMF-UE-NGAP-ID={}",
+        accept_nas.size(),
+        auth_state.amf_ue_id);
+
+    // Re-register this UE's now-live (new) association -- the old one's own registry entry is
+    // long gone (unregister_ue fires when an association's socket closes, see handle_association's
+    // own disconnect path), so without this a UE that reconnects via ServiceRequest would be
+    // silently invisible to any later Namf_Communication N1N2MessageTransfer call, same real
+    // mechanism the original registration flow's own registry entry exists for (ADR-0038).
+    ue_ngap_registry.register_ue(
+        auth_state.supi,
+        NgapUeRegistry::Entry{&assoc,
+                              static_cast<std::uint32_t>(auth_state.amf_ue_id),
+                              static_cast<std::uint32_t>(auth_state.ran_ue_id),
+                              knas_int,
+                              knas_enc,
+                              downlink_count + 1});
+
+    auth_state.phase = UeAuthState::Phase::Done;
+
+    if (info->uplink_data_status.has_value() && *info->uplink_data_status != 0) {
+        spdlog::warn("amf-ngap: ServiceRequest for SUPI {} reports uplinkDataStatus={:#06x} (PDU "
+                     "session(s) with pending uplink data) -- real N2 PDU Session Resource Setup "
+                     "triggered by this is a separate, disclosed gap (SMF's own real N2SmInfo "
+                     "dispatch, docs/CAPABILITY_GAP_ANALYSIS.md task #101), not implemented here",
+                     ctx->supi,
+                     *info->uplink_data_status);
+    }
+}
+
 void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
                                sbi_core::http2::Client& ausf_client,
                                sbi_core::OAuth2Client& ausf_oauth,
+                               UeSecurityContextStore& ue_security_contexts,
+                               NgapUeRegistry& ue_ngap_registry,
                                UeAuthState& auth_state,
                                const InitiatingMessage_t& msg) {
     const auto& container = msg.value.choice.InitialUEMessage.protocolIEs;
@@ -517,8 +641,12 @@ void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
 
     const auto reg_info = amf::nas::decode_registration_request(nas_pdu_bytes);
     if (!reg_info.has_value()) {
-        spdlog::warn("amf-ngap: InitialUEMessage's NAS-PDU is not a supported RegistrationRequest "
-                     "(plain, null-scheme SUCI), ignoring");
+        // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075): not every
+        // InitialUEMessage is a RegistrationRequest -- a UE resuming from CM-IDLE on a fresh
+        // association sends ServiceRequest instead, real, dominant, previously entirely
+        // unhandled traffic this project's own gap-analysis sweep found missing.
+        handle_service_request(
+            assoc, ue_security_contexts, ue_ngap_registry, auth_state, ran_ue_id, nas_pdu_bytes);
         return;
     }
     spdlog::info(
@@ -656,6 +784,7 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc,
     const aka_crypto::Abba abba{0x00, 0x00};
     const auto kamf = aka_crypto::derive_kamf(*kseaf, strip_imsi_prefix(auth_state.supi), abba);
     spdlog::info("amf-ngap: authentication SUCCESSFUL for SUPI {}, KAMF derived", auth_state.supi);
+    auth_state.kamf = kamf;
 
     // Stage 4: activate NAS security. KNASenc/KNASint (TS 33.501 Annex A.8) for this project's
     // only implemented algorithm pair, 128-NEA2/128-NIA2 -- see aka_crypto/nas_security.hpp.
@@ -676,18 +805,18 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc,
 // Stage 4 continued: decodes+verifies the NAS-PDU carried in the UplinkNASTransport that follows
 // a sent SecurityModeCommand, expected to be a SecurityModeComplete (TS 24.501 §8.2.26). This is
 // this project's first NAS message secured end-to-end (128-NIA2 MAC verified, 128-NEA2
-// deciphered). On success, immediately continues into Stage 5: sends RegistrationAccept (the
-// first message secured with the now-confirmed normal context, downlink_count=1), then -- since a
-// real UE never acknowledges with RegistrationComplete for this build's minimal RegistrationAccept
-// content (see UeAuthState::Phase's own comment) -- makes the real call this whole staged NGAP/NAS
-// effort was for: Npcf_AMPolicyControl's CreateIndividualAMPolicyAssociation (TS 29.507), closing
-// the loop ADR-0025->ADR-0029 left open. The resulting PolicyAssociation is stored in
-// `ue_contexts` under this UE's SUPI.
+// deciphered). On success, immediately continues into Stage 5: allocates a real 5G-TMSI, persists
+// this UE's NAS security context (UeSecurityContextStore -- gap-closure,
+// docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075, the real prerequisite a later ServiceRequest
+// needs), and sends RegistrationAccept carrying the real 5G-GUTI (the first message secured with
+// the now-confirmed normal context, downlink_count=1). Real, load-bearing consequence of sending a
+// GUTI (see UeAuthState::Phase's own updated comment): a real UE now sends RegistrationComplete in
+// response, handled by handle_uplink_nas_transport_registration_complete below, NOT here anymore.
 void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
-                                              sbi_core::http2::Client& pcf_client,
-                                              sbi_core::OAuth2Client& pcf_oauth,
-                                              UeContextStore& ue_contexts,
-                                              NgapUeRegistry& ue_ngap_registry,
+                                              UeSecurityContextStore& ue_security_contexts,
+                                              std::uint8_t amf_region_id,
+                                              std::uint16_t amf_set_id,
+                                              std::uint8_t amf_pointer,
                                               UeAuthState& auth_state,
                                               const InitiatingMessage_t& msg) {
     const auto nas_pdu_bytes_opt = extract_uplink_nas_pdu(msg);
@@ -720,20 +849,76 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
                  "active",
                  auth_state.supi);
 
+    const auto tmsi = ue_security_contexts.allocate_tmsi();
     const auto reg_accept_nas = amf::nas::encode_registration_accept(*auth_state.knas_int,
                                                                      *auth_state.knas_enc,
-                                                                     /*downlink_count=*/1);
+                                                                     /*downlink_count=*/1,
+                                                                     tmsi,
+                                                                     amf_region_id,
+                                                                     amf_set_id,
+                                                                     amf_pointer);
     send_downlink_nas_transport(assoc, auth_state.amf_ue_id, auth_state.ran_ue_id, reg_accept_nas);
-    spdlog::info("amf-ngap: sent DownlinkNASTransport with RegistrationAccept ({} bytes), "
-                 "AMF-UE-NGAP-ID={}",
+    spdlog::info("amf-ngap: sent DownlinkNASTransport with RegistrationAccept ({} bytes, "
+                 "tmsi={:08x}), AMF-UE-NGAP-ID={}",
                  reg_accept_nas.size(),
+                 tmsi,
                  auth_state.amf_ue_id);
 
+    // Real, persistent security context (gap-closure task #100/ADR-0075) -- uplink_count=1 and
+    // downlink_count=2 are the NEXT expected values (SecurityModeComplete already consumed
+    // uplink_count=0; RegistrationAccept just consumed downlink_count=1), matching
+    // UeSecurityContextStore::next_uplink_count/next_downlink_count's own "allocate then use"
+    // pre-increment convention -- the value stored here is what the NEXT real message on either
+    // side will use.
+    amf::UeSecurityContext ctx;
+    ctx.supi = auth_state.supi;
+    ctx.kamf = *auth_state.kamf;
+    ctx.ngksi = 0; // this project's only security context per UE, ADR-0031 -- same fixed ngKSI=0
+                   // SecurityModeCommand itself used.
+    ctx.uplink_count = 1;
+    ctx.downlink_count = 2;
+    ctx.ue_security_capability = auth_state.ue_security_capability;
+    ue_security_contexts.put(tmsi, ctx);
+
+    auth_state.phase = UeAuthState::Phase::AwaitingRegistrationComplete;
+}
+
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075): real RegistrationComplete
+// handling -- see UeAuthState::Phase's own comment for why this now genuinely fires (a real UE
+// acknowledging the 5G-GUTI RegistrationAccept just assigned). uplink_count=1: the first secured
+// uplink message after SecurityModeComplete's own uplink_count=0.
+void handle_uplink_nas_transport_registration_complete(sbi_core::http2::Client& pcf_client,
+                                                       sbi_core::OAuth2Client& pcf_oauth,
+                                                       UeContextStore& ue_contexts,
+                                                       NgapUeRegistry& ue_ngap_registry,
+                                                       ngap_core::SctpSocket& assoc,
+                                                       UeAuthState& auth_state,
+                                                       const InitiatingMessage_t& msg) {
+    const auto nas_pdu_bytes_opt = extract_uplink_nas_pdu(msg);
+    if (!nas_pdu_bytes_opt.has_value()) {
+        return;
+    }
+    if (!auth_state.knas_int.has_value() || !auth_state.knas_enc.has_value()) {
+        spdlog::warn("amf-ngap: received a post-RegistrationAccept UplinkNASTransport with no NAS "
+                     "security context, ignoring");
+        return;
+    }
+    const auto outcome = amf::nas::decode_registration_complete(
+        *auth_state.knas_int, *auth_state.knas_enc, /*uplink_count=*/1, *nas_pdu_bytes_opt);
+    if (!outcome.has_value()) {
+        spdlog::warn("amf-ngap: UplinkNASTransport's NAS-PDU is not shaped like a "
+                     "RegistrationComplete, ignoring");
+        return;
+    }
+    if (!outcome->mac_valid) {
+        spdlog::warn("amf-ngap: RegistrationComplete MAC verification FAILED for SUPI {} -- wrong "
+                     "keys, a tampered/replayed message, or a NAS COUNT desync",
+                     auth_state.supi);
+        return;
+    }
+
+    spdlog::info("amf-ngap: RegistrationComplete verified OK for SUPI {}", auth_state.supi);
     auth_state.phase = UeAuthState::Phase::AwaitingPduSessionEstablishmentRequest;
-    spdlog::info("amf-ngap: registration procedure complete for SUPI {} (no RegistrationComplete "
-                 "expected -- this build's RegistrationAccept carries no GUTI/NSSAI change, see "
-                 "UeAuthState::Phase's comment), requesting AM Policy Association from PCF",
-                 auth_state.supi);
 
     // Register this UE's live association so a later Namf_Communication N1N2MessageTransfer call
     // (arriving on the SBI HTTP/2 server's thread, from SMF once it has a real PDU Session
@@ -832,13 +1017,13 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
         return;
     }
 
-    // uplink_count=1: SecurityModeComplete was uplink_count=0, and (per UeAuthState::Phase's
-    // comment) a real UE never sends RegistrationComplete for this build's minimal
-    // RegistrationAccept, so this UlNasTransport is genuinely the second secured uplink message,
-    // not the third -- confirmed via real interop.
+    // UPDATE (gap-closure task #100/ADR-0075): uplink_count=2, not 1 -- SecurityModeComplete was
+    // uplink_count=0, and RegistrationComplete (now genuinely sent by a real UE, see
+    // UeAuthState::Phase's own updated comment) consumed uplink_count=1, so this UlNasTransport is
+    // genuinely the THIRD secured uplink message now, not the second.
     const auto outcome = amf::nas::decode_ul_nas_transport(*auth_state.knas_int,
                                                            *auth_state.knas_enc,
-                                                           /*uplink_count=*/1,
+                                                           /*uplink_count=*/2,
                                                            *nas_pdu_bytes_opt);
     if (!outcome.has_value()) {
         spdlog::warn("amf-ngap: UplinkNASTransport's NAS-PDU is not shaped like a UlNasTransport "
@@ -949,7 +1134,11 @@ void handle_association(ngap_core::SctpSocket assoc,
                         sbi_core::OAuth2Client& smf_oauth,
                         const std::string& amf_instance_id,
                         UeContextStore& ue_contexts,
-                        NgapUeRegistry& ue_ngap_registry) {
+                        NgapUeRegistry& ue_ngap_registry,
+                        UeSecurityContextStore& ue_security_contexts,
+                        std::uint8_t amf_region_id,
+                        std::uint16_t amf_set_id,
+                        std::uint8_t amf_pointer) {
     spdlog::info("amf-ngap: gNB association established");
     UeAuthState auth_state{}; // this association's single UE, see UeAuthState's own comment
     while (true) {
@@ -980,8 +1169,13 @@ void handle_association(ngap_core::SctpSocket assoc,
             handle_ng_setup_request(assoc, *pdu->choice.initiatingMessage);
         } else if (pdu->present == NGAP_PDU_PR_initiatingMessage &&
                    pdu->choice.initiatingMessage->procedureCode == 15 /* id-InitialUEMessage */) {
-            handle_initial_ue_message(
-                assoc, ausf_client, ausf_oauth, auth_state, *pdu->choice.initiatingMessage);
+            handle_initial_ue_message(assoc,
+                                      ausf_client,
+                                      ausf_oauth,
+                                      ue_security_contexts,
+                                      ue_ngap_registry,
+                                      auth_state,
+                                      *pdu->choice.initiatingMessage);
         } else if (pdu->present == NGAP_PDU_PR_initiatingMessage &&
                    pdu->choice.initiatingMessage->procedureCode == 46 /* id-UplinkNASTransport */) {
             switch (auth_state.phase) {
@@ -991,12 +1185,22 @@ void handle_association(ngap_core::SctpSocket assoc,
                     break;
                 case UeAuthState::Phase::AwaitingSecurityModeComplete:
                     handle_uplink_nas_transport_smc_complete(assoc,
-                                                             pcf_client,
-                                                             pcf_oauth,
-                                                             ue_contexts,
-                                                             ue_ngap_registry,
+                                                             ue_security_contexts,
+                                                             amf_region_id,
+                                                             amf_set_id,
+                                                             amf_pointer,
                                                              auth_state,
                                                              *pdu->choice.initiatingMessage);
+                    break;
+                case UeAuthState::Phase::AwaitingRegistrationComplete:
+                    handle_uplink_nas_transport_registration_complete(
+                        pcf_client,
+                        pcf_oauth,
+                        ue_contexts,
+                        ue_ngap_registry,
+                        assoc,
+                        auth_state,
+                        *pdu->choice.initiatingMessage);
                     break;
                 case UeAuthState::Phase::AwaitingPduSessionEstablishmentRequest:
                     handle_uplink_nas_transport_pdu_session_establishment(
@@ -1057,7 +1261,11 @@ void run_ngap_lifecycle(const std::string& bind_address,
                         const std::string& amf_instance_id,
                         const std::string& nrf_base,
                         UeContextStore& ue_contexts,
-                        NgapUeRegistry& ue_ngap_registry) {
+                        NgapUeRegistry& ue_ngap_registry,
+                        UeSecurityContextStore& ue_security_contexts,
+                        std::uint8_t amf_region_id,
+                        std::uint16_t amf_set_id,
+                        std::uint8_t amf_pointer) {
     ngap_core::SctpSocket listener;
     listener.bind_and_listen(bind_address, bind_port);
     spdlog::info("amf-ngap: listening for NGAP/N2 (SCTP) on {}:{}", bind_address, bind_port);
@@ -1110,7 +1318,11 @@ void run_ngap_lifecycle(const std::string& bind_address,
                            smf_oauth,
                            amf_instance_id,
                            ue_contexts,
-                           ue_ngap_registry);
+                           ue_ngap_registry,
+                           ue_security_contexts,
+                           amf_region_id,
+                           amf_set_id,
+                           amf_pointer);
     }
 }
 

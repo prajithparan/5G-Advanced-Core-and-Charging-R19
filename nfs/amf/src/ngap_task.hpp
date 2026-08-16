@@ -9,6 +9,7 @@
 
 #include "aka_crypto/kdf.hpp"
 #include "ue_context_store.hpp"
+#include "ue_security_context_store.hpp"
 
 // AMF's NGAP/N2 termination (TS 38.413) + minimal NAS-5GS (TS 24.501), per docs/DECISIONS.md's
 // staged NGAP/NAS plan (Stage 1: NG Setup; Stage 2: InitialUEMessage -> RegistrationRequest ->
@@ -62,14 +63,24 @@ private:
 // each one -- making real SBI calls to AUSF (Stage 2/3) and, once registration completes, to PCF
 // (Stage 5, storing the resulting PolicyAssociation in `ue_contexts`). amf_instance_id and
 // nrf_base are needed to build those clients' own OAuth2Client. Call from a dedicated std::thread.
-// `ue_contexts`/`ue_ngap_registry` must outlive this call (it runs forever) -- same
-// shared-by-reference-across-threads convention as main()'s other stores already use with the
-// HTTP/2 server's route handlers.
+// `ue_contexts`/`ue_ngap_registry`/`ue_security_contexts` must outlive this call (it runs
+// forever) -- same shared-by-reference-across-threads convention as main()'s other stores
+// already use with the HTTP/2 server's route handlers.
+//
+// ue_security_contexts/amf_region_id/amf_set_id/amf_pointer: gap-closure (
+// docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075) -- the real, persistent NAS security
+// context store ServiceRequest needs, plus this AMF instance's own real, disclosed lab 5G-GUTI
+// identity (see main.cpp's own kAmfRegionId/kAmfSetId/kAmfPointer comment), threaded through so
+// RegistrationAccept can assign a real GUTI and a later ServiceRequest can be routed back here.
 void run_ngap_lifecycle(const std::string& bind_address,
                         unsigned short bind_port,
                         const std::string& amf_instance_id,
                         const std::string& nrf_base,
                         UeContextStore& ue_contexts,
-                        NgapUeRegistry& ue_ngap_registry);
+                        NgapUeRegistry& ue_ngap_registry,
+                        UeSecurityContextStore& ue_security_contexts,
+                        std::uint8_t amf_region_id,
+                        std::uint16_t amf_set_id,
+                        std::uint8_t amf_pointer);
 
 } // namespace amf::ngap

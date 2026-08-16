@@ -42,6 +42,19 @@ services:
         condition: service_completed_successfully
       nrf:
         condition: service_started
+      redis:
+        condition: service_healthy
+    # docs/DECISIONS.md ADR-0077: config/amf.json's own defaults (127.0.0.1) are for direct
+    # binary/lab runs; these two env vars override per-key for compose's own bridge-network
+    # DNS names, same pattern CHF's own CHF_REDIS_URL already used below. Real, pre-existing
+    # latent bug found while wiring this (not introduced by this change, and not fixed for the
+    # other already-composed NFs yet -- see task #109): every other NF's own hardcoded
+    # "127.0.0.1:7777" NRF base URL would not actually resolve across separate compose
+    # containers either, since compose's default bridge network gives each container its own
+    # loopback.
+    environment:
+      AMF_NRF_BASE_URL: https://nrf:7777
+      AMF_REDIS_URL: tcp://redis:6379
     volumes:
       - certs_data:/build/certs
     ports:

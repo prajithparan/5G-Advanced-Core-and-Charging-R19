@@ -57,6 +57,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 COPY --from=builder /build/build/nfs/amf/amf /build/amf
+# CONFIG_DIR is baked in at compile time as /build/config (docs/DECISIONS.md ADR-0077) --
+# config/amf.json is checked-in, non-secret lab default config, so it's copied into the runtime
+# image directly rather than volume-mounted like certs_data (which must come from pki-init).
+COPY config/amf.json /build/config/amf.json
 
 EXPOSE 7778/tcp 9465/tcp
 

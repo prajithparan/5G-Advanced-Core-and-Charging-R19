@@ -1,5 +1,7 @@
 #include "nas_codec.hpp"
 
+#include <cstring>
+
 #include "aka_crypto/nas_security.hpp"
 
 namespace amf::nas {
@@ -23,11 +25,18 @@ constexpr std::uint8_t kMessageTypeRegistrationAccept = 0x42;
 constexpr std::uint8_t kMessageTypeRegistrationComplete = 0x43;
 constexpr std::uint8_t kMessageTypeUlNasTransport = 0x67;
 constexpr std::uint8_t kMessageTypeDlNasTransport = 0x68;
+// TS 24.501 §9.7 message type values, confirmed against
+// simulators/ransim/vendor/UERANSIM/src/lib/nas/enums.hpp's EMessageType (SERVICE_REQUEST=
+// 0b01001100, SERVICE_REJECT=0b01001101, SERVICE_ACCEPT=0b01001110) -- not guessed.
+constexpr std::uint8_t kMessageTypeServiceRequest = 0x4C;
+constexpr std::uint8_t kMessageTypeServiceReject = 0x4D;
+constexpr std::uint8_t kMessageTypeServiceAccept = 0x4E;
 
 // TS 24.501 §9.1.1 security header type values (the byte carried in the outer secured envelope,
 // distinct from the inner plaintext message's own header, which always carries
 // kSecurityHeaderNotProtected). Confirmed against
 // simulators/ransim/vendor/UERANSIM/src/lib/nas/enums.hpp's ESecurityHeaderType.
+constexpr std::uint8_t kShtIntegrityProtected = 0x01;
 constexpr std::uint8_t kShtIntegrityProtectedAndCiphered = 0x02;
 constexpr std::uint8_t kShtIntegrityProtectedWithNewSecurityContext = 0x03;
 constexpr std::uint8_t kShtIntegrityProtectedAndCipheredWithNewSecurityContext = 0x04;
@@ -50,6 +59,31 @@ constexpr std::uint8_t kIeiUlNasAdditionalInformation = 0x24;
 // not full-byte equality, unlike the Type-3/4 IEIs above.
 constexpr std::uint8_t kIeiNibbleUlNasRequestType = 0x8;
 
+// ServiceRequest's real optional IEs (TS 24.501 §8.2.20 / msg.cpp's own onBuild order:
+// uplinkDataStatus, pduSessionStatus, allowedPduSessionStatus, nasMessageContainer) -- confirmed
+// against simulators/ransim/vendor/UERANSIM/src/lib/nas/msg.cpp's real
+// `ServiceRequest::onBuild`, not guessed. ServiceAccept reuses the same 0x50 pduSessionStatus IEI
+// (msg.cpp's own `ServiceAccept::onBuild`) -- the same real IEI value UlNasTransport/UlNasTransport
+// never touches, TS 24.501's own IEI namespace is per-message, not global.
+constexpr std::uint8_t kIeiServiceUplinkDataStatus = 0x40;
+constexpr std::uint8_t kIeiServicePduSessionStatus = 0x50;
+
+// RegistrationAccept's real optional 5G-GUTI IE (TS 24.501 §9.11.3.4, confirmed against
+// simulators/ransim/vendor/UERANSIM/src/lib/nas/msg.cpp's own `RegistrationAccept::onBuild`).
+constexpr std::uint8_t kIeiRegistrationAcceptGuti = 0x77;
+// TS 24.501 §9.11.3.4 Table 9.11.3.4.1's own "Type of identity" field value for 5G-GUTI (010),
+// packed into the low 3 bits of a byte whose upper 5 bits are all spare/1 (0xF2 = 1111 0 010,
+// confirmed against simulators/ransim/vendor/UERANSIM/src/lib/nas/ie6.cpp's own
+// `IE5gsMobileIdentity::Encode`'s GUTI case: `stream.appendOctet(0xf2)`).
+constexpr std::uint8_t kGutiIdentityTypeByte = 0xF2;
+
+// This project's own real, disclosed lab PLMN identity -- the SAME fixed MCC=999/MNC=70 already
+// used throughout this codebase (e.g. ngap_task.cpp's own kMcc/kMnc for GUAMI), duplicated here
+// rather than shared across files, matching this project's existing convention for small,
+// NF-local, fixed lab constants (e.g. each NF's own Diameter origin-host constant).
+constexpr const char* kGutiMcc = "999";
+constexpr const char* kGutiMnc = "70";
+
 // TS 24.501 §9.11.3.5 Payload container type -- Type-1 half-octet, low nibble of its own byte
 // (no paired field, so the high nibble is spare/0). Confirmed against
 // simulators/ransim/vendor/UERANSIM/src/lib/nas/enums.hpp's EPayloadContainerType.
@@ -66,6 +100,23 @@ constexpr std::uint8_t kDirectionDownlink = 1;
 // (odd-length terminator), matching UERANSIM's own DecodeBcdString digit table.
 char bcd_digit(std::uint8_t nibble) {
     return (nibble <= 9) ? static_cast<char>('0' + nibble) : '?';
+}
+
+// Same real MCC/MNC BCD-packing convention as ngap_task.cpp's own encode_plmn_identity
+// (3 octets: mcc2|mcc1, mnc3|mcc3, mnc2|mnc1 -- mnc3=0xF for a real 2-digit MNC, this project's
+// own kGutiMnc="70" case), duplicated locally per this file's own "hand-rolled, standalone"
+// convention rather than reaching across NF-private files.
+void append_plmn(std::vector<std::uint8_t>& out, const char* mcc, const char* mnc) {
+    const int mcc1 = mcc[0] - '0';
+    const int mcc2 = mcc[1] - '0';
+    const int mcc3 = mcc[2] - '0';
+    const bool mnc_is_3_digit = std::strlen(mnc) == 3;
+    const int mnc1 = mnc[0] - '0';
+    const int mnc2 = mnc[1] - '0';
+    const int mnc3 = mnc_is_3_digit ? (mnc[2] - '0') : 0xF;
+    out.push_back(static_cast<std::uint8_t>((mcc2 << 4) | mcc1));
+    out.push_back(static_cast<std::uint8_t>((mnc3 << 4) | mcc3));
+    out.push_back(static_cast<std::uint8_t>((mnc2 << 4) | mnc1));
 }
 
 // Shared secured-NAS-message envelope logic (TS 24.501 §9.1.1: EPD + SHT + MAC(4) + SeqNo(1) +
@@ -430,16 +481,17 @@ decode_security_mode_complete(const aka_crypto::NasIntKey& knas_int,
 
 std::vector<std::uint8_t> encode_registration_accept(const aka_crypto::NasIntKey& knas_int,
                                                      const aka_crypto::NasEncKey& knas_enc,
-                                                     std::uint32_t downlink_count) {
+                                                     std::uint32_t downlink_count,
+                                                     std::uint32_t tmsi,
+                                                     std::uint8_t amf_region_id,
+                                                     std::uint16_t amf_set_id,
+                                                     std::uint8_t amf_pointer) {
     // Inner plaintext message (TS 24.501 §8.2.7): own header, then the ONLY mandatory IE,
     // registrationResult (Type-4, 1 octet: smsOverNasAllowed bit3 | registrationResult bits0-2,
     // confirmed against
     // simulators/ransim/vendor/UERANSIM/src/lib/nas/ie4.cpp's IE5gsRegistrationResult::Encode).
     // Fixed to THREEGPP_ACCESS (this project's only access type, ADR-0031) and
-    // smsOverNasAllowed=NOT_ALLOWED (no SMSF integration). No optional IEs sent -- disclosed
-    // simplification: a real deployment normally also reassigns a 5G-GUTI here, which this
-    // project doesn't track/allocate (single-registration-per-association scope makes GUTI
-    // reassignment moot for what this build proves).
+    // smsOverNasAllowed=NOT_ALLOWED (no SMSF integration).
     constexpr std::uint8_t kRegistrationResultThreeGppAccess = 0b001;
     constexpr std::uint8_t kSmsOverNasNotAllowed = 0;
     std::vector<std::uint8_t> inner;
@@ -449,6 +501,32 @@ std::vector<std::uint8_t> encode_registration_accept(const aka_crypto::NasIntKey
     inner.push_back(0x01); // registrationResult IE length
     inner.push_back(static_cast<std::uint8_t>((kSmsOverNasNotAllowed << 3) |
                                               kRegistrationResultThreeGppAccess));
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075): real optional 5G-GUTI IE
+    // -- see this function's own header comment for why this was a real, load-bearing
+    // prerequisite for ServiceRequest, not an independent addition. Type-6 IE: IEI, 2-octet
+    // big-endian length, then value (same TLV shape decode_registration_request's own SUCI
+    // parsing already uses, just in the encode direction). Value layout confirmed against
+    // simulators/ransim/vendor/UERANSIM/src/lib/nas/ie6.cpp's real
+    // `IE5gsMobileIdentity::Encode`'s GUTI case: identity-type byte, PLMN (3 octets), AMF Region
+    // ID (1 octet), AMF Set ID (10 bits) + AMF Pointer (6 bits) packed into 2 octets, then the
+    // 5G-TMSI (4 octets).
+    std::vector<std::uint8_t> guti_value;
+    guti_value.push_back(kGutiIdentityTypeByte);
+    append_plmn(guti_value, kGutiMcc, kGutiMnc);
+    guti_value.push_back(amf_region_id);
+    guti_value.push_back(static_cast<std::uint8_t>((amf_set_id >> 2) & 0xFF));
+    guti_value.push_back(
+        static_cast<std::uint8_t>(((amf_set_id & 0b11) << 6) | (amf_pointer & 0b111111)));
+    guti_value.push_back(static_cast<std::uint8_t>((tmsi >> 24) & 0xFF));
+    guti_value.push_back(static_cast<std::uint8_t>((tmsi >> 16) & 0xFF));
+    guti_value.push_back(static_cast<std::uint8_t>((tmsi >> 8) & 0xFF));
+    guti_value.push_back(static_cast<std::uint8_t>(tmsi & 0xFF));
+
+    inner.push_back(kIeiRegistrationAcceptGuti);
+    inner.push_back(static_cast<std::uint8_t>((guti_value.size() >> 8) & 0xFF));
+    inner.push_back(static_cast<std::uint8_t>(guti_value.size() & 0xFF));
+    inner.insert(inner.end(), guti_value.begin(), guti_value.end());
 
     return encode_secured_downlink(knas_int,
                                    knas_enc,
@@ -635,6 +713,194 @@ encode_dl_nas_transport(const aka_crypto::NasIntKey& knas_int,
                                    /*ciphered=*/true,
                                    downlink_count,
                                    inner);
+}
+
+namespace {
+
+// Shared by peek_service_request_tmsi and decode_service_request -- both need to walk the SAME
+// real plaintext structure (inner header + byte3 serviceType/ngKSI + Type-6 TMSI IE), just at
+// different points (before vs. after MAC verification is even possible). Returns std::nullopt if
+// the bytes don't even match ServiceRequest's own inner shape.
+struct ParsedServiceRequestInner {
+    std::uint8_t ngksi = 0;
+    std::uint8_t service_type = 0;
+    std::uint32_t tmsi = 0;
+    std::size_t offset_after_tmsi = 0;
+};
+
+std::optional<ParsedServiceRequestInner>
+parse_service_request_inner(const std::vector<std::uint8_t>& plain_inner) {
+    if (plain_inner.size() < 4 || plain_inner[0] != kEpdMobilityManagement ||
+        plain_inner[1] != kSecurityHeaderNotProtected ||
+        plain_inner[2] != kMessageTypeServiceRequest) {
+        return std::nullopt;
+    }
+
+    ParsedServiceRequestInner out;
+    // byte3: serviceType (high nibble) | ngKSI (low nibble) -- TS 24.501's own "IE1" half-octet
+    // convention, confirmed against
+    // simulators/ransim/vendor/UERANSIM/src/lib/nas/msg.hpp's own mandatoryIE1(ptr1, ptr2)
+    // template: `*ptr1 = T::Decode((octet >> 4) & 0xF); *ptr2 = U::Decode(octet & 0xF)` where
+    // ptr1=serviceType, ptr2=ngKSI (matching msg.cpp's own
+    // `b.mandatoryIE1(&serviceType, &ngKSI)`).
+    out.service_type = static_cast<std::uint8_t>((plain_inner[3] >> 4) & 0x0F);
+    out.ngksi = static_cast<std::uint8_t>(plain_inner[3] & 0x0F);
+
+    // Mandatory TMSI (TS 24.501 §9.11.3.4, real 5GSMobileIdentity Type-6 IE: 2-octet big-endian
+    // length then value). A real UE's ServiceRequest always encodes this in the SHORT "TMSI" form
+    // (identity-type byte 0xf4, no PLMN/AMF-Region prefix -- confirmed against
+    // simulators/ransim/vendor/UERANSIM/src/ue/nas/mm/service.cpp's own
+    // `request->tmsi.type = nas::EIdentityType::TMSI`, the real UE-side construction, not the
+    // longer GUTI form RegistrationAccept's own encode_registration_accept sends). Value layout:
+    // identity-type byte, AMF Set ID (10 bits) + AMF Pointer (6 bits) packed into 2 octets, then
+    // the 5G-TMSI itself (4 octets) -- this project only needs the TMSI to look up a persisted
+    // UeSecurityContext, so AMF Set ID/Pointer are walked past, not surfaced (this project's own
+    // single-AMF-instance lab scope, same disclosed-narrowing precedent every other optional/
+    // multi-variant IE in this file already uses).
+    std::size_t off = 4;
+    if (off + 2 > plain_inner.size())
+        return std::nullopt;
+    const std::size_t tmsi_ie_len =
+        (static_cast<std::size_t>(plain_inner[off]) << 8) | plain_inner[off + 1];
+    off += 2;
+    // Real bug found and fixed via this file's own unit test: the short TMSI-form value is 7
+    // bytes (identity-type byte + amfSetId-high + packed amfSetId-low|amfPointer + 4-octet
+    // 5G-TMSI = 1+1+1+4), confirmed against
+    // simulators/ransim/vendor/UERANSIM/src/lib/nas/ie6.cpp's real `IE5gsMobileIdentity::Encode`
+    // TMSI case -- an earlier version assumed 6, one short.
+    if (tmsi_ie_len != 7 || off + tmsi_ie_len > plain_inner.size() ||
+        plain_inner[off] != 0xF4 /* identity type: TMSI */) {
+        return std::nullopt;
+    }
+    // Real bug found and fixed via this file's own unit test
+    // (PeekServiceRequestTmsiExtractsTmsiWithoutAnyKey): off+0=identity-type byte,
+    // off+1=amfSetId>>2, off+2=packed(amfSetId-low|amfPointer), off+3..off+6=the real 5G-TMSI --
+    // an earlier version read off+2..off+5 (one byte too early, folding the packed
+    // amfSetId/pointer byte into the TMSI's own high byte and silently dropping the real last
+    // TMSI byte). Never reached this project's own real interop verification (UERANSIM's
+    // RegistrationAccept-with-GUTI path only exercises the ENCODE side of this IE shape, not this
+    // DECODE side -- exactly why this needed its own unit test, not just live interop).
+    out.tmsi = (static_cast<std::uint32_t>(plain_inner[off + 3]) << 24) |
+               (static_cast<std::uint32_t>(plain_inner[off + 4]) << 16) |
+               (static_cast<std::uint32_t>(plain_inner[off + 5]) << 8) |
+               static_cast<std::uint32_t>(plain_inner[off + 6]);
+    off += tmsi_ie_len;
+    out.offset_after_tmsi = off;
+    return out;
+}
+
+} // namespace
+
+std::optional<std::uint32_t> peek_service_request_tmsi(const std::vector<std::uint8_t>& p) {
+    // Real, load-bearing property this function relies on (see this section's own header
+    // comment): ServiceRequest's outer envelope is ALWAYS security-header-type 0x01
+    // (integrity-protected, never ciphered, TS 24.501 §4.4.4.3), so wire_inner == plain_inner --
+    // no decryption is needed (or possible without a key this function deliberately doesn't take)
+    // to reach the real plaintext bytes below.
+    if (p.size() < 7 || p[0] != kEpdMobilityManagement || p[1] != kShtIntegrityProtected)
+        return std::nullopt;
+
+    const std::vector<std::uint8_t> plain_inner(p.begin() + 7, p.end());
+    const auto parsed = parse_service_request_inner(plain_inner);
+    if (!parsed.has_value())
+        return std::nullopt;
+    return parsed->tmsi;
+}
+
+std::optional<ServiceRequestInfo> decode_service_request(const aka_crypto::NasIntKey& knas_int,
+                                                         std::uint32_t uplink_count,
+                                                         const std::vector<std::uint8_t>& p) {
+    const auto result = decode_secured_uplink(
+        knas_int, {}, kShtIntegrityProtected, /*ciphered=*/false, uplink_count, p);
+    if (!result.has_value())
+        return std::nullopt;
+
+    ServiceRequestInfo out;
+    out.mac_valid = result->mac_valid;
+    if (!out.mac_valid)
+        return out;
+
+    const auto parsed = parse_service_request_inner(result->plain_inner);
+    if (!parsed.has_value()) {
+        out.mac_valid = false;
+        return out;
+    }
+    out.ngksi = parsed->ngksi;
+    out.service_type = parsed->service_type;
+
+    // Optional IEs (TS 24.501 §8.2.20 / msg.cpp's own onBuild order: uplinkDataStatus IEI 0x40,
+    // pduSessionStatus IEI 0x50, allowedPduSessionStatus IEI 0x25, nasMessageContainer IEI 0x71).
+    // Only the two this project's real N2-PDU-session-resource-setup-on-ServiceRequest use needs
+    // are decoded; allowedPduSessionStatus/nasMessageContainer are walked past if present, not
+    // surfaced -- disclosed, not silently misparsed (a real, valid TLV is still skipped by its
+    // own length, so a later IE isn't corrupted by an earlier one being ignored).
+    const auto& plain_inner = result->plain_inner;
+    std::size_t off = parsed->offset_after_tmsi;
+    while (off < plain_inner.size()) {
+        const std::uint8_t iei = plain_inner[off];
+        if (iei == kIeiServiceUplinkDataStatus || iei == kIeiServicePduSessionStatus) {
+            if (off + 2 > plain_inner.size())
+                break;
+            const std::uint8_t len = plain_inner[off + 1];
+            if (len != 2 || off + 2 + len > plain_inner.size())
+                break;
+            const std::uint16_t bitmap = static_cast<std::uint16_t>(
+                (static_cast<std::uint16_t>(plain_inner[off + 3]) << 8) | plain_inner[off + 2]);
+            if (iei == kIeiServiceUplinkDataStatus)
+                out.uplink_data_status = bitmap;
+            else
+                out.pdu_session_status = bitmap;
+            off += 2 + len;
+        } else if (off + 2 <= plain_inner.size()) {
+            // Any other Type-4/6 IE this stage doesn't decode (allowedPduSessionStatus,
+            // nasMessageContainer) -- skip by its own real length so parsing doesn't desync.
+            const std::uint8_t len = plain_inner[off + 1];
+            off += 2 + len;
+        } else {
+            break;
+        }
+    }
+
+    return out;
+}
+
+std::vector<std::uint8_t> encode_service_accept(const aka_crypto::NasIntKey& knas_int,
+                                                const aka_crypto::NasEncKey& knas_enc,
+                                                std::uint32_t downlink_count,
+                                                std::uint16_t pdu_session_status) {
+    // Inner plaintext message (TS 24.501 §8.2.19): own header, no mandatory IEs (ServiceAccept
+    // has none -- confirmed against
+    // simulators/ransim/vendor/UERANSIM/src/lib/nas/msg.hpp's own `struct ServiceAccept` having
+    // no non-optional members), then the real optional pduSessionStatus IE (Type-4, IEI 0x50,
+    // same 2-octet bitmap layout ServiceRequest's own uplinkDataStatus/pduSessionStatus use --
+    // confirmed against ie4.cpp's real IEPduSessionStatus::Encode).
+    std::vector<std::uint8_t> inner;
+    inner.push_back(kEpdMobilityManagement);
+    inner.push_back(kSecurityHeaderNotProtected);
+    inner.push_back(kMessageTypeServiceAccept);
+    inner.push_back(kIeiServicePduSessionStatus);
+    inner.push_back(0x02); // length
+    inner.push_back(static_cast<std::uint8_t>(pdu_session_status & 0xFF));
+    inner.push_back(static_cast<std::uint8_t>((pdu_session_status >> 8) & 0xFF));
+
+    return encode_secured_downlink(knas_int,
+                                   knas_enc,
+                                   kShtIntegrityProtectedAndCiphered,
+                                   /*ciphered=*/true,
+                                   downlink_count,
+                                   inner);
+}
+
+std::vector<std::uint8_t> encode_service_reject_plain(std::uint8_t mm_cause) {
+    // Plain NAS message (TS 24.501 §8.2.21): own header, then the one mandatory IE, 5GMM cause
+    // (Type-3, 1 octet, no IEI at mandatory position -- same convention every other mandatory
+    // Type-3/4 IE in this file already uses).
+    std::vector<std::uint8_t> out;
+    out.push_back(kEpdMobilityManagement);
+    out.push_back(kSecurityHeaderNotProtected);
+    out.push_back(kMessageTypeServiceReject);
+    out.push_back(mm_cause);
+    return out;
 }
 
 } // namespace amf::nas

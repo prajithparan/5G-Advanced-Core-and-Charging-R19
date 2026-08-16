@@ -136,9 +136,21 @@ decode_security_mode_complete(const aka_crypto::NasIntKey& knas_int,
 // Encodes a RegistrationAccept (TS 24.501 §8.2.7, network->UE), integrity-protected AND ciphered
 // (the normal secured-message case, not SecurityModeCommand's "new security context" variant --
 // by this point the NAS security context is established and confirmed, not being bootstrapped).
-// Only the one mandatory IE (registrationResult) this stage's minimal happy path needs is
-// encoded -- see encode_registration_accept's own definition comment for the disclosed IEs left
-// out (GUTI reassignment, allowed NSSAI, etc.).
+// Encodes the one mandatory IE (registrationResult) plus, as of the ServiceRequest gap-closure
+// (docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075), the real optional 5G-GUTI IE (TS 24.501
+// §9.11.3.4, IEI 0x77, confirmed against
+// simulators/ransim/vendor/UERANSIM/src/lib/nas/msg.cpp's own RegistrationAccept::onBuild) --
+// without a GUTI, a UE has no TMSI to identify itself with on a later ServiceRequest, so this was
+// a real, load-bearing prerequisite, not an independent nice-to-have. Still-disclosed IEs left
+// out: allowed NSSAI, TAI list, network feature support, etc. -- out of this project's scope.
+//
+// tmsi: the fresh 5G-TMSI this AMF is assigning (allocated by the caller, e.g. via a Redis INCR --
+// see ngap_task.cpp -- so it's unique across this AMF instance's own lifetime, matching
+// ChargingDataStore's own real ID-allocation precedent). amf_region_id/amf_set_id/amf_pointer:
+// this AMF instance's own real, disclosed lab identity (TS 24.501 §9.11.3.4's own GUTI structure
+// needs all three to let a UE's later ServiceRequest be routed back to the AMF that issued the
+// GUTI -- this project's own single-AMF-instance lab scope means these are fixed, disclosed
+// constants, not a real multi-AMF-set deployment's dynamically-assigned values).
 //
 // downlink_count: this association's second secured downlink message (the first was
 // SecurityModeCommand's downlink_count=0) -- callers always pass 1 in this project's current
@@ -146,7 +158,11 @@ decode_security_mode_complete(const aka_crypto::NasIntKey& knas_int,
 // encode_security_mode_command's downlink_count parameter is.
 std::vector<std::uint8_t> encode_registration_accept(const aka_crypto::NasIntKey& knas_int,
                                                      const aka_crypto::NasEncKey& knas_enc,
-                                                     std::uint32_t downlink_count);
+                                                     std::uint32_t downlink_count,
+                                                     std::uint32_t tmsi,
+                                                     std::uint8_t amf_region_id,
+                                                     std::uint16_t amf_set_id,
+                                                     std::uint8_t amf_pointer);
 
 struct RegistrationCompleteOutcome {
     // Same split as SecurityModeCompleteOutcome::mac_valid -- see that struct's own comment.
@@ -238,5 +254,84 @@ std::vector<std::uint8_t> encode_dl_nas_transport(const aka_crypto::NasIntKey& k
                                                   std::uint32_t downlink_count,
                                                   std::uint8_t pdu_session_id,
                                                   const std::vector<std::uint8_t>& n1_sm_container);
+
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075): ServiceRequest (TS 24.501
+// §8.2.20/§5.6.1), the real, dominant CM-IDLE->CM-CONNECTED NAS procedure this project never
+// implemented. Real, load-bearing protocol property confirmed against
+// simulators/ransim/vendor/UERANSIM/src/ue/nas/mm/... call sites and TS 24.501 §4.4.4.3:
+// ServiceRequest is sent "integrity protected" but NEVER ciphered (security header type 0x01),
+// specifically so the network can read the plaintext 5G-TMSI IT CARRIES to look up which UE's
+// security context to verify the MAC against -- solving the real chicken-and-egg problem of
+// "we don't know who this is until we decrypt it, but we can't decrypt it until we know who this
+// is." This is why decode is split into two real steps below rather than one function taking a
+// pre-known knas_int the way every other decode_* in this file does.
+
+// Step 1: reads the 5G-TMSI directly from the message's own plaintext region (real per the
+// non-ciphered property above -- this is not "peeking before decryption succeeds", it's reading
+// bytes TS 24.501 itself never encrypts). Returns std::nullopt if the envelope doesn't even match
+// ServiceRequest's own shape (wrong EPD/security-header-type/message-type) -- no MAC is checked
+// yet, so this alone must never be treated as authenticating the UE.
+std::optional<std::uint32_t> peek_service_request_tmsi(const std::vector<std::uint8_t>& nas_pdu);
+
+struct ServiceRequestInfo {
+    // False means the MAC genuinely didn't verify against the security context the caller looked
+    // up using peek_service_request_tmsi's own result -- same real, caller-visible-outcome split
+    // as SecurityModeCompleteOutcome::mac_valid. A wrong TMSI (no matching persisted context) is
+    // the caller's own problem, handled before this function is even called.
+    bool mac_valid = false;
+    // TS 24.501 §9.11.3.32, the ngKSI the UE believes is current -- checked by the caller against
+    // UeSecurityContext::ngksi (a real mismatch is TS 24.501's own security-context-desync case).
+    std::uint8_t ngksi = 0;
+    // TS 24.501 §9.11.3.50, real values 0=SIGNALLING/1=DATA/2=MOBILE_TERMINATED_SERVICES/
+    // 3=EMERGENCY_SERVICES/4=EMERGENCY_SERVICES_FALLBACK/5=HIGH_PRIORITY_ACCESS/
+    // 6=ELEVATED_SIGNALLING (confirmed against
+    // simulators/ransim/vendor/UERANSIM/src/lib/nas/enums.hpp's EServiceType, not guessed).
+    std::uint8_t service_type = 0;
+    // TS 24.501 §9.11.3.56 Uplink data status -- a real bitmap of which PDU session IDs (1-15,
+    // bit N-1 for PDU session N) have uplink data pending, the real signal that drives N2 PDU
+    // session resource setup as part of this same procedure (TS 23.502 §4.2.3.2). Only present
+    // (and only meaningfully non-empty) for serviceType=DATA. std::nullopt if the UE didn't
+    // include the optional IE.
+    std::optional<std::uint16_t> uplink_data_status;
+    // TS 24.501 §9.11.3.44 PDU session status -- same real bitmap shape as uplink_data_status,
+    // reporting which PDU sessions the UE itself still considers active (lets AMF/SMF detect and
+    // clean up a session the UE already silently dropped). std::nullopt if absent.
+    std::optional<std::uint16_t> pdu_session_status;
+};
+
+// Step 2: called once the caller has looked up a UeSecurityContext for peek_service_request_tmsi's
+// own returned TMSI -- verifies the MAC (never deciphers, see this section's own header comment)
+// using that context's knas_int and the NEXT expected uplink_count
+// (UeSecurityContextStore::next_uplink_count's own return value for this same TMSI).
+std::optional<ServiceRequestInfo> decode_service_request(const aka_crypto::NasIntKey& knas_int,
+                                                         std::uint32_t uplink_count,
+                                                         const std::vector<std::uint8_t>& nas_pdu);
+
+// Encodes a ServiceAccept (TS 24.501 §8.2.19, network->UE) responding to a real ServiceRequest --
+// integrity-protected AND ciphered (TS 24.501 §4.4.4.3: unlike the request itself, the network's
+// response uses full protection since by this point the existing security context is already
+// confirmed valid, the same "normal secured message" case RegistrationAccept uses). Only the
+// mandatory-in-practice pduSessionStatus IE this project's real UE-context-cleanup use needs is
+// encoded (TS 24.501 defines it optional; every other optional IE --
+// pduSessionReactivationResult/ErrorCause, eapMessage -- is out of scope, disclosed, not silently
+// dropped support for a case this build hits). pdu_session_status: the real, current bitmap AMF
+// itself tracks (mirrors the UE's own IE shape), so the UE can reconcile.
+std::vector<std::uint8_t> encode_service_accept(const aka_crypto::NasIntKey& knas_int,
+                                                const aka_crypto::NasEncKey& knas_enc,
+                                                std::uint32_t downlink_count,
+                                                std::uint16_t pdu_session_status);
+
+// Encodes a PLAIN (unprotected) ServiceReject (TS 24.501 §8.2.21, network->UE) -- real, disclosed
+// scope: only the plain/unprotected case is encoded (used for the real "no matching persisted
+// security context for this TMSI" reject case, TS 24.501 §5.6.1's own "if the UE... is not known"
+// outcome, where a network doesn't have a security context to protect the reject WITH in the
+// first place). A real security-context-mismatch reject (known TMSI, wrong ngKSI/failed MAC)
+// would use the SECURED form instead -- not implemented this pass, disclosed rather than silently
+// sent unprotected when a real context does exist.
+// mm_cause: TS 24.501 §9.11.3.2 5GMM cause -- e.g. 0x03 ILLEGAL_UE, 0x09
+// UE_IDENTITY_CANNOT_BE_DERIVED_FROM_NETWORK (confirmed against
+// simulators/ransim/vendor/UERANSIM/src/lib/nas/enums.hpp's EMmCause, same real source this
+// file's other cause values already cite).
+std::vector<std::uint8_t> encode_service_reject_plain(std::uint8_t mm_cause);
 
 } // namespace amf::nas

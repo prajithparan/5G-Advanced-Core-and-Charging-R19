@@ -1,0 +1,11 @@
+{
+  "port": 7778,
+  "metrics_bind_address": "0.0.0.0:9465",
+  "nrf_base_url": "https://127.0.0.1:7777",
+  "redis_url": "tcp://127.0.0.1:6379",
+  "ngap_bind_address": "127.0.0.5",
+  "ngap_bind_port": 38412,
+  "amf_region_id": 0,
+  "amf_set_id": 0,
+  "amf_pointer": 0
+}

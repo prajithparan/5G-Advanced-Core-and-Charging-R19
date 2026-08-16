@@ -42,12 +42,15 @@
 
 #include <chrono>
 #include <optional>
+#include <sw/redis++/redis++.h>
 #include <thread>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "nf_config/nf_config.hpp"
 #include "ngap_task.hpp"
 #include "subscriptions.hpp"
 #include "ue_context_store.hpp"
+#include "ue_security_context_store.hpp"
 
 namespace {
 
@@ -56,18 +59,19 @@ using nlohmann::json;
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see nfs/amf/CMakeLists.txt)"
 #endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see nfs/amf/CMakeLists.txt)"
+#endif
 
-constexpr unsigned short kPort = 7778;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9465";
 constexpr const char* kNfType = "AMF";
-constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kApiRoot = "/namf-comm/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018 for
 // why NRF's identity is a fixed constant rather than randomly generated per run (any NF other than
 // NRF itself needs to know NRF's nfInstanceId in advance to construct a working
 // sbi_core::jwt::Verifier, since the `iss` claim on every token NRF issues is NRF's own
-// nfInstanceId).
+// nfInstanceId). This is a fixed protocol-identity constant, not a deployment parameter, so
+// ADR-0077 (no hardcoded DB URL/config params -- see below) doesn't apply to it.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
 
 sbi_core::http2::Response
@@ -158,7 +162,7 @@ std::optional<T> parse_multipart_json_body(const sbi_core::http2::Request& req,
 // while a heartbeat call is in flight. A dedicated thread with its own Client instance is a
 // minimal, disclosed resolution -- not the full curl_multi/Asio integration ADR-0006 names as the
 // eventual real fix, which remains future work.
-void run_nrf_lifecycle(const std::string& amf_instance_id) {
+void run_nrf_lifecycle(const std::string& amf_instance_id, const std::string& nrf_base) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/amf/cert.pem",
         .key_path = CERTS_DIR "/amf/key.pem",
@@ -169,8 +173,7 @@ void run_nrf_lifecycle(const std::string& amf_instance_id) {
     for (int attempt = 0; attempt < 300; ++attempt) {
         sbi_core::http2::ClientRequest probe;
         probe.method = "GET";
-        probe.url = std::string(kNrfBase) +
-                    "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
+        probe.url = nrf_base + "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
         if (http_client.send(probe).has_value()) {
             break;
         }
@@ -178,7 +181,7 @@ void run_nrf_lifecycle(const std::string& amf_instance_id) {
     }
 
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", amf_instance_id, "nnrf-nfm", "NRF");
+        http_client, nrf_base + "/oauth2/token", amf_instance_id, "nnrf-nfm", "NRF");
 
     constexpr int kHeartbeatSeconds = 30;
     json profile{
@@ -199,7 +202,7 @@ void run_nrf_lifecycle(const std::string& amf_instance_id) {
 
         sbi_core::http2::ClientRequest put_req;
         put_req.method = "PUT";
-        put_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + amf_instance_id;
+        put_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + amf_instance_id;
         put_req.headers.emplace("content-type", "application/json");
         put_req.headers.emplace("authorization", "Bearer " + *token);
         put_req.headers.emplace(
@@ -227,7 +230,7 @@ void run_nrf_lifecycle(const std::string& amf_instance_id) {
 
         sbi_core::http2::ClientRequest patch_req;
         patch_req.method = "PATCH";
-        patch_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + amf_instance_id;
+        patch_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + amf_instance_id;
         patch_req.headers.emplace("content-type", "application/json-patch+json");
         patch_req.headers.emplace("authorization", "Bearer " + *token);
         patch_req.body =
@@ -246,7 +249,29 @@ void run_nrf_lifecycle(const std::string& amf_instance_id) {
 int main() {
     sbi_core::init_logging("amf");
     sbi_core::init_tracing("amf");
-    sbi_core::init_metrics(kMetricsBindAddress);
+
+    // ADR-0077 (user-directed, mandatory, project-wide): no DB URL/connection/deployment
+    // parameter may be a hardcoded literal default in source -- real values live in the
+    // checked-in config/amf.json, with an env var override per key still available for
+    // deployment-time substitution (e.g. AMF_REDIS_URL, matching every other NF's own existing
+    // override convention).
+    const auto config = nf_config::load("amf", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto nrf_base =
+        nf_config::require<std::string>(config, "nrf_base_url", "AMF_NRF_BASE_URL");
+    const auto redis_url = nf_config::require<std::string>(config, "redis_url", "AMF_REDIS_URL");
+    const auto ngap_bind_address = nf_config::require<std::string>(config, "ngap_bind_address");
+    const auto ngap_bind_port = nf_config::require<std::uint16_t>(config, "ngap_bind_port");
+    // Real, disclosed lab AMF identity (TS 24.501 §9.11.3.4's own 5G-GUTI structure) -- MUST
+    // match ngap_task.cpp's own build_ng_setup_response, which broadcasts this same AMF
+    // Region/Set/Pointer to the gNB via NGSetupResponse's own GUAMI (docs/DECISIONS.md ADR-0076).
+    const auto amf_region_id = nf_config::require<std::uint8_t>(config, "amf_region_id");
+    const auto amf_set_id = nf_config::require<std::uint16_t>(config, "amf_set_id");
+    const auto amf_pointer = nf_config::require<std::uint8_t>(config, "amf_pointer");
+
+    sbi_core::init_metrics(metrics_bind_address);
 
     const std::string amf_instance_id = sbi_core::generate_uuid_v4();
     spdlog::info("amf: starting, nfInstanceId={}", amf_instance_id);
@@ -261,6 +286,15 @@ int main() {
 
     amf::UeContextStore ue_contexts;
     amf::ngap::NgapUeRegistry ue_ngap_registry;
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075): real, persistent NAS
+    // security context -- see ue_security_context_store.hpp's own header for why this was a
+    // real, load-bearing prerequisite for ServiceRequest support. Same real, fail-fast PING
+    // discipline every other NF's own Redis connection already uses (e.g. CHF's own).
+    auto redis = std::make_shared<sw::redis::Redis>(redis_url);
+    redis->ping();
+    spdlog::info("amf: connected to Redis/Valkey");
+    amf::UeSecurityContextStore ue_security_contexts(redis);
     amf::UeN1N2SubscriptionStore ue_n1n2_subs("n1n2sub-");
     amf::NonUeN2SubscriptionStore non_ue_n2_subs("nonuen2sub-");
     amf::AmfStatusSubscriptionStore amf_status_subs("amfstatussub-");
@@ -287,7 +321,7 @@ int main() {
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     server.add_route(
         "PUT",
@@ -720,22 +754,27 @@ int main() {
             return sbi_core::http2::Response::json(200, j.dump());
         });
 
-    std::thread(run_nrf_lifecycle, amf_instance_id).detach();
+    std::thread(run_nrf_lifecycle, amf_instance_id, nrf_base).detach();
     // NGAP/N2 (SCTP), its own dedicated thread -- see docs/DECISIONS.md ADR-0030/ADR-0031.
-    // 127.0.0.5:38412 matches simulators/ransim/config/gnb.yaml's pre-agreed AMF target exactly
-    // (ADR-0016), not an arbitrary choice.
+    // ngap_bind_address/ngap_bind_port default (config/amf.json) to 127.0.0.5:38412, matching
+    // simulators/ransim/config/gnb.yaml's pre-agreed AMF target exactly (ADR-0016) -- now a real
+    // config value (ADR-0077), not an in-source literal.
     std::thread(amf::ngap::run_ngap_lifecycle,
-                "127.0.0.5",
-                38412,
+                ngap_bind_address,
+                ngap_bind_port,
                 amf_instance_id,
-                std::string(kNrfBase),
+                nrf_base,
                 std::ref(ue_contexts),
-                std::ref(ue_ngap_registry))
+                std::ref(ue_ngap_registry),
+                std::ref(ue_security_contexts),
+                amf_region_id,
+                amf_set_id,
+                amf_pointer)
         .detach();
 
     server.start();
-    spdlog::info("amf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
-    spdlog::info("amf: Prometheus metrics at http://{}/metrics", kMetricsBindAddress);
+    spdlog::info("amf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
+    spdlog::info("amf: Prometheus metrics at http://{}/metrics", metrics_bind_address);
     ioc.run();
     return 0;
 }

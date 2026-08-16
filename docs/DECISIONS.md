@@ -8072,3 +8072,199 @@ The gap-analysis sweep itself is still in progress (`docs/CAPABILITY_GAP_ANALYSI
 sections complete as of this ADR; AUSF, PCF, SMF, UDM, UDR, UPF, CHF still pending). No
 implementation against any found gap has started yet -- this ADR records the mandate itself, not
 a completed body of work.
+
+## ADR-0076: gap-closure task #100 (part 1) -- real ServiceRequest, real persistent NAS security context, real 5G-GUTI assignment
+
+### Context
+
+`docs/CAPABILITY_GAP_ANALYSIS.md`'s AMF section named the single highest-impact finding of the
+whole free5GC/open5GS sweep: `ServiceRequest` (TS 24.501 §5.6.1), the dominant real NAS procedure
+for CM-IDLE -> CM-CONNECTED transitions, was entirely unimplemented, and this project's AMF had
+zero N2 handover support. This ADR closes the `ServiceRequest` half of task #100. N2 handover
+(NGAP `HandoverRequired`/`HandoverRequestAcknowledge`/etc., SMF's own coupled `UpdateSMContext`
+gap, task #101) is NOT addressed here -- a separate, still-larger piece of work, disclosed as
+still open.
+
+### The real, load-bearing architectural prerequisite this surfaced
+
+Every NAS security context this project had built until now (`ngap_task.cpp`'s own `UeAuthState`)
+lived ONLY in per-NG-association memory, destroyed the moment the SCTP association tore down --
+correct for the single-registration-per-association scope every prior NGAP/NAS stage disclosed,
+but it meant a UE reconnecting on a FRESH association (exactly what `ServiceRequest` is for) had
+nothing to reconnect to. Closing `ServiceRequest` therefore required building real, persistent
+security-context storage first, not just a new decode function:
+
+1. **`nfs/amf/src/ue_security_context_store.hpp`/`.cpp`** (new): `UeSecurityContextStore`,
+   Redis-backed (AMF's first-ever real Redis dependency -- `AMF_REDIS_URL`, same getenv/fail-fast
+   pattern as every other NF's own Redis connection), keyed by 5G-TMSI. Stores KAMF (the real
+   TS 33.501 root key; KNASint/KNASenc are re-derived from it on load, not separately persisted)
+   plus a real, PERSISTENT, monotonically-incrementing NAS uplink/downlink COUNT (TS 24.501
+   §4.4.3.1) -- replacing every prior stage's own hardcoded per-association literal
+   (`downlink_count=0/1/2`) now that a security context genuinely survives across multiple NG
+   associations.
+2. **Real 5G-GUTI assignment** (`encode_registration_accept`, extended): a UE has no TMSI to
+   present in a later `ServiceRequest` without one. Real TS 24.501 §9.11.3.4 GUTI structure (PLMN
+   + AMF Region ID + AMF Set ID (10 bit) + AMF Pointer (6 bit) + 5G-TMSI), byte layout confirmed
+   against UERANSIM's own `IE5gsMobileIdentity::Encode` (arms-length reference, ADR-0016/-0031).
+   **Real consistency bug caught before it shipped**: the AMF Region/Set/Pointer values initially
+   chosen for the GUTI didn't match the all-zero AMF Region/Set/Pointer this AMF's own
+   `NGSetupResponse` GUAMI already broadcasts to the gNB (existing, live code) -- fixed to `0/0/0`
+   to match, not an independently-chosen value.
+3. **Real, cascading consequence of adding a GUTI, found and handled correctly, not
+   discovered-and-ignored**: TS 24.501's real UE behavior (confirmed via UERANSIM source, already
+   cited in this project's own prior comments) is that a UE sends `RegistrationComplete` if
+   `RegistrationAccept` carries a 5G-GUTI. This project's own `RegistrationAccept` never had before
+   -- meaning a real UE now sends a message this AMF previously had no phase/handler for at all.
+   Skipping it would have desynchronized the NAS uplink COUNT every later secured message's MAC
+   verification depends on, not just missed a log line. Fixed properly: a new
+   `AwaitingRegistrationComplete` phase, a new `handle_uplink_nas_transport_registration_complete`
+   handler (reusing the already-built, already-tested-but-previously-unreachable
+   `decode_registration_complete`, ADR-0031's own "kept for when a future turn adds GUTI
+   reassignment" -- that turn is this one), and the PDU Session Establishment Request's own
+   `uplink_count` shifted from `1` to `2` to account for the new message in between.
+
+### `ServiceRequest`/`ServiceAccept`/`ServiceReject` codec (`nfs/amf/src/nas_codec.hpp`/`.cpp`)
+
+Real, load-bearing protocol property (TS 24.501 §4.4.4.3, confirmed against UERANSIM source):
+`ServiceRequest` is integrity-protected but NEVER ciphered, specifically so the network can read
+the plaintext 5G-TMSI it carries to look up which security context to verify the MAC against --
+solving the real "can't decrypt until we know who this is, can't know who this is until we
+decrypt" problem. Decode is split into two real steps: `peek_service_request_tmsi` (no key
+needed, reads the always-plaintext TMSI) then `decode_service_request` (real MAC verification
+once the caller has looked up a context). `encode_service_accept`/`encode_service_reject_plain`
+close the response side. Full real handling wired into `ngap_task.cpp`'s
+`handle_service_request`: unknown TMSI -> real `ServiceReject` (cause
+`UE_IDENTITY_CANNOT_BE_DERIVED_FROM_NETWORK`); ngKSI mismatch -> real, disclosed
+security-context-desync rejection; success -> `ServiceAccept`, CM-IDLE->CM-CONNECTED, UE
+re-registered in `NgapUeRegistry` (so a later `Namf_Communication` N1N2 delivery can still reach
+it after a reconnect). Real, disclosed scope boundary: closes the CM-IDLE->CM-CONNECTED
+transition itself; does NOT drive real N2 PDU Session Resource Setup for any PDU session
+`uplinkDataStatus` reports as pending -- that's SMF's own `UpdateSMContext` real N2SmInfo
+dispatch, task #101, a separate, already-tracked gap, logged as a warning when observed rather
+than fabricated.
+
+### Testing and verification -- both real interop AND a real bug caught by unit tests, neither alone would have been enough
+
+**Real, live interop** (full lab stack + UERANSIM's real `nr-gnb`/`nr-ue`, not simulated): the
+core registration-flow changes (the highest-risk part -- modifying already-working, already-tested
+sequencing) were verified end-to-end against a genuinely interoperating UE. Real UE log: "Sending
+Registration Complete" (confirming the GUTI-triggered behavior change actually happens with real
+UE software, not just in theory); real AMF log: "RegistrationComplete verified OK", "AM Policy
+Association established with PCF", "SM context established with SMF" -- the full chain held
+through the new `RegistrationComplete` step and the shifted `uplink_count=2` for PDU Session
+Establishment. `RegistrationAccept`'s own real wire size (26 bytes, `tmsi=00000001`) matched this
+ADR's own byte-count math exactly, independent corroboration. A real, separate finding: gNB-side
+`ue-release` (the natural way to test `ServiceRequest` via idle-mode re-entry) sends a real NGAP
+`UEContextReleaseRequest` this AMF cannot yet decode at all -- itself part of the still-open N2
+gap (task #101's own NGAP-coverage half) -- so `ServiceRequest` specifically could not be
+naturally exercised via this same interop run.
+
+**Real unit tests, added because the interop run above could not reach this code path**
+(`tests/conformance/test_nas_codec.cpp`, 6 new + 1 updated): found and fixed two real bugs neither
+self-consistency nor the interop run would have caught:
+1. An off-by-one in the short TMSI-identity decode: read `off+2..off+5` instead of `off+3..off+6`,
+   silently folding the packed AMF-Set-ID/Pointer byte into the TMSI's own high byte and dropping
+   the real last TMSI byte.
+2. The short TMSI-identity value length itself was wrong -- assumed 6 octets, the real value
+   (confirmed against UERANSIM's own `IE5gsMobileIdentity::Encode` TMSI case) is 7
+   (identity-type + 2 packed octets + 4-octet TMSI). Both bugs were in the DECODE path
+   specifically -- the ENCODE path (GUTI in `RegistrationAccept`) that the real interop run did
+   exercise uses a different, longer value shape and was unaffected, which is exactly why the
+   interop run's success didn't also prove the decode path correct.
+
+Full `conformance_tests` suite: 261/261 pass (up from 255, the 6 new `ServiceRequest`/
+`ServiceAccept`/`ServiceReject` tests), zero regressions. `AmfIntegration.*` (5 tests, HTTP/SBI
+level): pass unchanged -- confirms the new hard Redis dependency (AMF's `redis->ping()`
+fail-fast-at-startup, same pattern as CHF/PCF) doesn't break the existing test harness, since the
+same Redis instance CHF's own tests already use satisfies it.
+
+### What this ADR does NOT include
+
+N2 handover (NGAP `HandoverRequired`/`HandoverRequestAcknowledge`/`HandoverCommand`/
+`HandoverNotify`/`PathSwitchRequest`, SMF's own coupled `UpdateSMContext` N2SmInfo dispatch) --
+task #101, a separate, still-larger piece of gap-closure #100 work, not started. Real N2 PDU
+Session Resource Setup triggered by a `ServiceRequest`'s own `uplinkDataStatus` -- logged when
+observed, not implemented (couples to the same task #101 gap). NGAP `UEContextRelease{Request,
+Complete}` -- found, during this ADR's own live-verification attempt, to be a real, additional gap
+this AMF cannot decode at all; not fixed here, flagged for task #101's own NGAP-coverage scope.
+Rate-limiting/replay-window enforcement on the persisted NAS COUNT (a real TS 24.501 concern for
+a long-lived context) -- this project's own single-registration-per-UE lab scope, same disclosed
+simplification every prior NGAP/NAS stage already carries.
+
+## ADR-0077: no hardcoded DB URL/config parameters in source -- separate config files, mandatory project-wide (user-directed)
+
+### The decision
+
+User-directed, standing, mandatory coding decision, given mid-turn while ADR-0076's AMF work
+above was still uncommitted: **no NF or BSS service may hardcode a DB URL, connection string, or
+other deployment parameter as a literal default inside a `.cpp` file.** The real value belongs in
+a separate, checked-in config file; an env var may still override a given key at deployment time
+(container/k8s convenience -- the same override mechanism this project already used piecemeal,
+e.g. `AMF_REDIS_URL`, `CHF_REDIS_URL`), but there is no third, in-source literal fallback.
+
+This is a real, standing engineering-practice decision (a coding *decision*, in the same durable
+category as ADR-0001's greenfield rule or ADR-0006's synchronous-client debt), not scoped to AMF
+specifically. A sweep run while implementing it found the pattern this decision targets already
+present, unaddressed, in every NF and BSS service built so far: `grep -rl "tcp://\|postgresql://
+\|127.0.0.1\|localhost" nfs/*/src/main.cpp bss/*/src/main.cpp` matched all of `amf`, `ausf`,
+`chf`, `hello-nf`, `nrf`, `pcf`, `smf`, `udm`, `udr`, `upf`, and all four `bss/*` services --
+i.e. this was universal project practice up to this point, not an isolated oversight.
+
+### What's built and applied this turn (AMF only -- see task #109 for the rest)
+
+- **`libs/nf-config`** (new, header-only): `nf_config::load(service_name, config_dir)` resolves
+  and parses `<config_dir>/<service_name>.json` (or the path in a `<SERVICE_NAME>_CONFIG_FILE`
+  env var, for the rare case a deployment needs a wholesale different file, not just one key).
+  `nf_config::require<T>(config, key, env_name = nullptr)` returns the env var's value if
+  `env_name` is given and set, else the config file's own value for `key`, else throws --
+  deliberately no third fallback, so a missing key fails loudly at startup rather than silently
+  reverting to an undocumented default.
+- **`config/amf.json`** (new, checked in, non-secret lab defaults -- same class of file as
+  `simulators/ransim/config/{gnb,ue}.yaml`, already an established precedent for checked-in lab
+  config): `port`, `metrics_bind_address`, `nrf_base_url`, `redis_url`, `ngap_bind_address`,
+  `ngap_bind_port`, `amf_region_id`, `amf_set_id`, `amf_pointer` -- every one of these was a
+  `constexpr`/hardcoded-`getenv`-default literal in `nfs/amf/src/main.cpp` before this ADR.
+- **`nfs/amf/src/main.cpp`**: loads `config/amf.json` at the top of `main()`, threads the real
+  values through to the HTTP/2 server bind, the metrics exporter, `run_nrf_lifecycle`, and
+  `run_ngap_lifecycle` (all previously hardcoded `constexpr` values or a single getenv-with-
+  literal-default helper, `amf_redis_conninfo()`, now removed). `redis_url` keeps its
+  `AMF_REDIS_URL` env-var override name (unchanged behavior for anyone already using it);
+  `nrf_base_url` gained a new `AMF_NRF_BASE_URL` override for the same reason (see next
+  paragraph). `kNrfInstanceId` (a fixed protocol-identity constant, ADR-0018) and `CERTS_DIR` (a
+  CMake-supplied build-time path, same class as the new `CONFIG_DIR`) are explicitly NOT in
+  scope -- neither is a runtime deployment parameter in the sense this ADR targets.
+- **`nfs/amf/CMakeLists.txt`**: new `CONFIG_DIR="${CMAKE_SOURCE_DIR}/config"` compile definition
+  (same pattern as the existing `CERTS_DIR`), links the new `nf_config` interface library.
+- **`deploy/docker/amf.Dockerfile`**: `COPY config/amf.json /build/config/amf.json` into the
+  runtime stage (checked-in, non-secret, so copied at build time -- unlike `certs_data`, which
+  must come from the shared `pki-init` volume since it's generated, not checked in).
+- **Real, additional bug found and fixed while wiring this, not part of the original ask**:
+  `config/amf.json`'s own default `nrf_base_url` (`https://127.0.0.1:7777`, carried over
+  unchanged from the pre-existing hardcoded value) does not actually work across separate
+  `docker compose` containers -- compose's default bridge network gives each container its own
+  loopback, so AMF's container could never have reached NRF's container this way. This was
+  **already broken before this ADR's own change** (the literal was `127.0.0.1` in source before
+  today too); it surfaced only because implementing the override mechanism made it visible.
+  Fixed for AMF specifically: `deploy/docker/docker-compose.yml`'s `amf` service now sets
+  `AMF_NRF_BASE_URL: https://nrf:7777` and `AMF_REDIS_URL: tcp://redis:6379` (compose DNS names),
+  plus a new `redis: {condition: service_healthy}` entry in `depends_on` (AMF's Redis dependency,
+  ADR-0076, had no compose wiring at all yet). **Every other already-composed NF
+  (`smf`/`udm`/`udr`/`ausf`/`pcf`, all confirmed via grep to hardcode the identical
+  `https://127.0.0.1:7777`) likely has the same latent bug** -- not fixed here, not silently
+  dropped either: recorded as a real, concrete finding in task #109's own description, to be
+  fixed as each of those services gets its own config-file retrofit turn.
+
+### What this ADR does NOT include
+
+The other 9 NF main.cpp files and 4 `bss/*` main.cpp files identified by the same-session grep
+sweep -- CHF, UDR, AUSF, NRF, PCF, SMF, UDM, UPF, `hello-nf`, and all four BSS services still
+hardcode DB URLs/connection parameters exactly as they did before this ADR. This is deliberate
+staging, not scope-narrowing after the fact: CLAUDE.md's own "one NF/subsystem per turn" working
+style applies here the same as everywhere else in this project -- retrofitting 13 more files in
+the same turn as AMF's `ServiceRequest`/GUTI work (ADR-0076) would be an unreviewable, unrelated
+wall of changes. Tracked as task #109, to be closed one service (or small batch) per turn. A YAML
+config format was considered (matches `simulators/ransim/config/*.yaml`'s existing precedent) but
+JSON was chosen instead specifically to avoid adding a new dependency (`yaml-cpp`) when
+`nlohmann-json` is already a project-mandated dependency (CLAUDE.md's "Mandated tech stack") used
+everywhere else in this codebase -- revisit only if a real need for YAML-specific features (e.g.
+comments, anchors) surfaces later.

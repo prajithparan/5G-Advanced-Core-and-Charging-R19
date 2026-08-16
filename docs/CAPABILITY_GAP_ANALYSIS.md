@@ -110,18 +110,28 @@ explicit GMM state machine (`internal/gmm/sm.go`: `DeRegistered`, `Registered`,
 `DeregisteredInitiated`, plus `Authentication`/`SecurityMode` sub-states, `internal/gmm/init.go`).
 
 This project's `nas_codec.hpp` decodes/handles: `RegistrationRequest`, `AuthenticationOutcome`,
-`SecurityModeComplete`, `RegistrationComplete`, `ULNASTransport`. Grep-confirmed absent, entirely:
-`ServiceRequest`, `IdentityResponse`, `NotificationResponse`, `ConfigurationUpdateComplete`,
-`AuthenticationError` (distinct from `AuthenticationFailure` -- resync vs. abort),
-`SecurityModeReject`, `DeregistrationRequest`/`DeregistrationAccept`, `Status5GMM`. No explicit
-GMM state machine exists in this project -- registration/mobility state is tracked, but not as a
-named, real RM/CM state machine matching TS 24.501's own model.
+`SecurityModeComplete`, `RegistrationComplete`, `ULNASTransport`, and (closed, docs/DECISIONS.md
+ADR-0076) **`ServiceRequest`/`ServiceAccept`/`ServiceReject`**, backed by a real, persistent
+(Redis-backed) NAS security context (`UeSecurityContextStore`) keyed by 5G-GUTI/5G-TMSI, so it
+survives across NG associations rather than living only in per-association memory as every other
+procedure here still does. Grep-confirmed still absent, entirely: `IdentityResponse`,
+`NotificationResponse`, `ConfigurationUpdateComplete`, `AuthenticationError` (distinct from
+`AuthenticationFailure` -- resync vs. abort), `SecurityModeReject`,
+`DeregistrationRequest`/`DeregistrationAccept`, `Status5GMM`. No explicit GMM state machine
+exists in this project -- registration/mobility state is tracked, but not as a named, real RM/CM
+state machine matching TS 24.501's own model.
 
-**`ServiceRequest`'s absence is the single highest-impact finding in this whole analysis.** It is
-the dominant real NAS procedure for CM-IDLE -> CM-CONNECTED transitions (a UE resuming from idle
-after paging, or UE-triggered uplink data resume) -- in real network traffic it fires far more
-often than full Registration. Its complete absence means this project's AMF has no real idle-mode
-resume path at all today.
+**`ServiceRequest`'s absence was the single highest-impact finding in this whole analysis --
+closed as of ADR-0076.** It is the dominant real NAS procedure for CM-IDLE -> CM-CONNECTED
+transitions (a UE resuming from idle after paging, or UE-triggered uplink data resume) -- in real
+network traffic it fires far more often than full Registration. Real-interop-verified for the
+RegistrationAccept/GUTI-assignment/RegistrationComplete side (a full UERANSIM run through PDU
+Session Establishment); the decode path itself (peek-TMSI-then-verify-MAC) is verified by 6 new
+hand-built-genuine-message unit tests, not by interop, since no reachable trigger for a real
+`ServiceRequest` from UERANSIM was found this pass (see the NGAP `UEContextRelease` finding
+below). What `ServiceRequest` does NOT yet do: drive real N2 PDU Session Resource Setup for any
+PDU session its own `uplinkDataStatus` reports pending -- that requires SMF's own `UpdateSMContext`
+N2SmInfo dispatch, still a gap (see next section).
 
 ### Real NGAP (N2) procedure coverage
 
@@ -143,7 +153,18 @@ entirely -- not even encodable/decodable, not just unhandled: `Handover*`, `Path
 **This project's AMF has zero N2 handover support** -- no `HandoverRequired`, no
 `PathSwitchRequest`, nothing. A UE cannot be handed over between gNBs in this implementation
 today; only initial attach + PDU session establishment on a single gNB is real. This is a
-structural gap, not a missing edge case.
+structural gap, not a missing edge case. **Not addressed by ADR-0076** (that pass closed
+`ServiceRequest`/GMM specifically, not this NGAP-side gap) -- still fully open, tracked as the
+remaining scope of task #100/#101.
+
+**Real, additional NGAP gap found this pass, via live interop, not grep alone**: attempting to
+trigger a real `ServiceRequest` naturally (gNB-initiated idle-mode re-entry via UERANSIM's
+`nr-cli <gnb> --exec 'ue-release <id>'`) sends a real NGAP `UEContextReleaseRequest` this AMF
+cannot decode at all -- `amf-ngap: failed to decode NGAP PDU (25 bytes), ignoring: 002a4015...`.
+`UEContextRelease{Request,Complete}` was already named above as part of free5GC's ~39-procedure
+NGAP coverage this project lacks, but this pass is the first time its absence was confirmed to
+concretely block testing a DIFFERENT, already-built procedure (`ServiceRequest`) via the most
+natural real-UE trigger path, not just an abstract line-count gap.
 
 ### Real finding, not yet checked further
 
