@@ -26,6 +26,11 @@ template <size_t N> std::string to_hex(const std::array<uint8_t, N>& data) {
 
 std::string to_hex(const std::vector<uint8_t>& data);
 
+// Variable-length counterpart to from_hex<N> above -- needed for real ECIES scheme-output byte
+// strings (aka_crypto/suci.hpp), which vary in length with the plaintext they carry, unlike every
+// other fixed-length AKA field this file's template already covers.
+std::optional<std::vector<uint8_t>> from_hex(const std::string& text);
+
 template <size_t N> std::optional<std::array<uint8_t, N>> from_hex(const std::string& text) {
     if (text.size() != N * 2) {
         return std::nullopt;

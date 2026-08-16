@@ -25,9 +25,11 @@
 // this caller. That wiring is a real design decision of its own (sync-in-the-response-path vs.
 // fire-and-forget, what to do if UDM is unreachable at that point) that wasn't part of the scope
 // agreed for this turn -- left for a dedicated future turn, not silently done or silently skipped.
-// SUCI de-concealment is also NOT implemented, same disclosed gap as UDM's GenerateAuthData
-// (ADR-0026): AuthenticationInfo.supiOrSuci is passed straight through to UDM, so a real
-// SUCI-formatted id 404s exactly like it does calling UDM directly.
+// UPDATE (ADR-0070, gap-closure Tier 1c): AuthenticationInfo.supiOrSuci is still passed straight
+// through to UDM unchanged -- that remains correct, since UDM is the real home of the
+// Subscription Identifier De-concealing Function (SIDF, TS 33.501 clause 6.12.5) and now performs
+// real SUCI de-concealment itself before generating auth data. A real SUCI-formatted id no longer
+// 404s; it round-trips through UDM's own real ECIES Profile A/B decryption.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"

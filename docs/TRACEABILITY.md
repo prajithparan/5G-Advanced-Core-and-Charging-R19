@@ -1042,3 +1042,20 @@ provisioning path); `SmfSelectionSubscriptionData.subscribedSnssaiInfos`/
 `SessionManagementSubscriptionData.dnnConfigurations` (`OPAQUE FALLBACK` codegen types) left
 unpopulated, real nested shape not confirmed with confidence in the time available; UDM's own
 UECM registration stores remain NOT wired to UDR (separate, still-open gap).
+
+## `libs/aka-crypto/suci`: real SUCI de-concealment (ECIES Profile A/B, gap-closure Tier 1c, ADR-0070)
+
+Both free5GC and open5gs genuinely decrypt SUCI to recover SUPI; this project's UDM/AUSF
+previously passed `supiOrSuci` straight through untouched. Closed with a real ECIES Profile A
+(Curve25519)/Profile B (secp256r1) implementation per TS 33.501 (`specs/TS_33_501.pdf` V19.6.0,
+Annex C), independently verified against the spec's own real, officially-published test vectors.
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| `deconceal_profile_a`/`deconceal_profile_b` recover the real spec plaintext | TS_33_501.pdf Annex C.4.3.1/C.4.3.2 (Profile A, IMSI/NAI), C.4.4.1/C.4.4.2 (Profile B, IMSI/NAI) -- all four real, officially-published test vectors | `Suci.ProfileADeconcealsRealImsiTestVector`, `Suci.ProfileADeconcealsRealNaiTestVector`, `Suci.ProfileBDeconcealsRealImsiTestVector`, `Suci.ProfileBDeconcealsRealNaiTestVector` (`tests/conformance/test_suci.cpp`) |
+| A tampered MAC-tag / too-short input fails closed (no partial plaintext) | real ECIES authenticated-encryption guarantee | `Suci.ProfileARejectsTamperedMac`, `Suci.ProfileARejectsTooShortSchemeOutput` |
+| UDM's `GenerateAuthData` recovers the real SUPI from a real `suci-`-formatted id | TS29571_CommonData.yaml's own `SupiOrSuci` pattern (IMSI-type form) | manual real end-to-end `curl` verification against a real running UDM (ADR-0070's own section): `suci-0-274-012-0000-1-1-<scheme output>` -> `imsi-274012001002086`, exact match; tampered MAC -> real 400; existing plain-SUPI passthrough re-verified unchanged |
+
+**Disclosed gaps**: NAI/GCI/GLI-based SUCI (`supiType` 1-7) parsing not implemented (real, cited,
+deferred -- see ADR-0070); Home Network private key is real spec test-vector material reused as
+lab-only key material, no real production key-provisioning path exists.

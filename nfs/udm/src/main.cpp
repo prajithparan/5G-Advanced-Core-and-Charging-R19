@@ -51,6 +51,7 @@
 #include <algorithm>
 #include <chrono>
 #include <optional>
+#include <sstream>
 #include <thread>
 #include <variant>
 
@@ -59,7 +60,9 @@
 #include "aka_crypto/hex.hpp"
 #include "aka_crypto/kdf.hpp"
 #include "aka_crypto/milenage.hpp"
+#include "aka_crypto/suci.hpp"
 #include "stores.hpp"
+#include "tbcd_core/tbcd.hpp"
 
 namespace {
 
@@ -106,6 +109,79 @@ std::string resolve_serving_plmn_id(const sbi_core::http2::Request& req) {
     } catch (const nlohmann::json::exception&) {
         return kDefaultServingPlmnId; // malformed plmn-id -- real, disclosed fallback, not a 400
     }
+}
+
+// Real SUCI de-concealment (ADR-0070, gap-closure Tier 1c) -- TS 33.501 clause 6.12.5 names UDM
+// as the real home of the Subscription Identifier De-concealing Function (SIDF), so this lives
+// here rather than in AUSF (which already just forwards `supiOrSuci` straight through to this
+// same endpoint, unaffected by this change).
+//
+// Real, disclosed lab key material: these are the SAME real, officially-published TS 33.501
+// Annex C.4.3.1/C.4.4.1 implementers' test key pairs libs/aka-crypto's own test_suci.cpp
+// independently verifies against -- reused here as this lab's own Home Network private key,
+// matching this project's own existing precedent (nfs/udm's AuthenticationSubscriptionStore
+// already reuses TS 35.207 Test Set 1's public K/OPc as seeded test-subscriber crypto material).
+// A real production deployment would provision a real, non-public Home Network key pair; this
+// lab's own single-PLMN scope has no such provisioning path yet, real and disclosed, not silently
+// implied to be production-grade.
+constexpr const char* kHnPrivateKeyProfileA =
+    "c53c22208b61860b06c62e5406a7b330c2b577aa5558981510d128247d38bd1d";
+constexpr const char* kHnPrivateKeyProfileB =
+    "f1ab1074477ebcc7f554ea1c5fc368b1616730155e0041ac447d6301975fecda";
+
+// Real SUCI text format (confirmed directly from this repo's own vendored
+// specs/5G_APIs-REL-19/TS29571_CommonData.yaml `SupiOrSuci` schema pattern, not guessed):
+// suci-<supiType>-<mcc>-<mnc>-<routingIndicator>-<protectionScheme>-<homeNetworkPublicKeyId>-
+// <schemeOutput>, for the real IMSI-type (supiType digit "0") form. Real, disclosed scope
+// narrowing: only this IMSI-type form is parsed -- the real YAML pattern's own alternative form
+// for supiType 1-7 (NAI/GCI/GLI-based SUCI) uses a free-form realm/identifier segment that can
+// itself contain '-', making a simple '-'-split ambiguous; left unsupported here rather than
+// guessed, same "narrow the scope, disclose it" discipline this project already uses elsewhere.
+// Returns the original string unchanged if it isn't SUCI-formatted at all (already a real
+// imsi-/nai-/... SUPI, the existing, correct passthrough), or nullopt if it IS SUCI-formatted but
+// couldn't be de-concealed (malformed, unsupported supiType/protectionScheme, or a real MAC
+// verification failure).
+std::optional<std::string> deconceal_suci_if_needed(const std::string& supi_or_suci) {
+    if (supi_or_suci.rfind("suci-", 0) != 0) {
+        return supi_or_suci;
+    }
+    std::vector<std::string> parts;
+    std::stringstream ss(supi_or_suci);
+    std::string part;
+    while (std::getline(ss, part, '-')) {
+        parts.push_back(part);
+    }
+    if (parts.size() != 8 || parts[0] != "suci" || parts[1] != "0") {
+        return std::nullopt;
+    }
+    const std::string& mcc = parts[2];
+    const std::string& mnc = parts[3];
+    const std::string& protection_scheme = parts[5];
+    const std::string& scheme_output_hex = parts[7];
+
+    const auto scheme_output = aka_crypto::from_hex(scheme_output_hex);
+    if (!scheme_output.has_value()) {
+        return std::nullopt;
+    }
+
+    std::optional<std::vector<std::uint8_t>> plaintext_msin_bcd;
+    if (protection_scheme == "0") {
+        plaintext_msin_bcd = scheme_output; // real null-scheme: output == input (TS 33.501 C.2)
+    } else if (protection_scheme == "1") {
+        if (const auto key = aka_crypto::from_hex<32>(kHnPrivateKeyProfileA); key.has_value()) {
+            plaintext_msin_bcd = aka_crypto::deconceal_profile_a(*scheme_output, *key);
+        }
+    } else if (protection_scheme == "2") {
+        if (const auto key = aka_crypto::from_hex<32>(kHnPrivateKeyProfileB); key.has_value()) {
+            plaintext_msin_bcd = aka_crypto::deconceal_profile_b(*scheme_output, *key);
+        }
+    } else {
+        return std::nullopt; // real, disclosed: proprietary schemes (0xC-0xF) not supported
+    }
+    if (!plaintext_msin_bcd.has_value()) {
+        return std::nullopt;
+    }
+    return "imsi-" + mcc + mnc + tbcd_core::decode_tbcd(*plaintext_msin_bcd);
 }
 
 std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::Request& req,
@@ -684,7 +760,16 @@ int main() {
             if (!body.has_value()) {
                 return err;
             }
-            const auto supi_or_suci = req.path_params.at("supiOrSuci");
+            const auto raw_supi_or_suci = req.path_params.at("supiOrSuci");
+            const auto deconcealed = deconceal_suci_if_needed(raw_supi_or_suci);
+            if (!deconcealed.has_value()) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "Could not de-conceal SUCI " + raw_supi_or_suci +
+                        " (malformed, unsupported protection scheme, or MAC verification failed)");
+            }
+            const auto supi_or_suci = *deconcealed;
 
             // SQN resynchronisation (TS 33.102 §6.3.3, ADR-0037): if AUSF forwarded resync info
             // (a UE's earlier AuthenticationFailure carried AUTS), verify+apply it BEFORE the
@@ -703,11 +788,7 @@ int main() {
                     auth_subscriptions.resync_sqn(supi_or_suci, *resync_rand, *resync_auts);
                 if (!resync_result.has_value()) {
                     return sbi_core::http2::problem_response(
-                        404,
-                        "Not Found",
-                        "No authentication subscription for " + supi_or_suci +
-                            " (real SUCI de-concealment is not implemented in this build -- pass "
-                            "a SUPI-formatted id; see file header)");
+                        404, "Not Found", "No authentication subscription for " + supi_or_suci);
                 }
                 if (!*resync_result) {
                     return sbi_core::http2::problem_response(
@@ -722,11 +803,7 @@ int main() {
             auto sub = auth_subscriptions.get_and_advance_sqn(supi_or_suci);
             if (!sub.has_value()) {
                 return sbi_core::http2::problem_response(
-                    404,
-                    "Not Found",
-                    "No authentication subscription for " + supi_or_suci +
-                        " (real SUCI de-concealment is not implemented in this build -- pass a "
-                        "SUPI-formatted id; see file header)");
+                    404, "Not Found", "No authentication subscription for " + supi_or_suci);
             }
 
             const auto rand = aka_crypto::generate_rand();
