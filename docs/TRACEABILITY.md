@@ -1233,3 +1233,31 @@ file touched this pass (the second, a real, disclosed, pre-existing test-isolati
 No behavioral change to AMF's already-tested procedures -- this is a pure refactor of where
 configuration values come from, verified via the smoke test's exact-match log output plus the
 unchanged 261/261 conformance pass.
+
+## Gap-closure task #100 (part 2) -- AMF real NGAP UEContextRelease{Request,Command,Complete} (ADR-0078)
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| `UEContextReleaseRequest` decode (TS 38.413 §9.2.1.9, RAN-initiated) | Real AMF-UE-NGAP-ID/RAN-UE-NGAP-ID/Cause IEs, per a real, newly-patched `ConcreteProtocolIE-Container` in `specs/NGAP/ngap-17.9.asn` (asn1c IOC-resolution workaround, ADR-0031, extended from 6 to 9 message types) | Full real UERANSIM interop: `nr-cli UERANSIM-gnb-999-70-1 --exec 'ue-release 1'` -> gNB log "Sending UE Context release request (NG-RAN node initiated)"; AMF log "UEContextReleaseRequest for AMF-UE-NGAP-ID=1, RAN-UE-NGAP-ID=1, cause group=1" |
+| `UEContextReleaseCommand` encode (TS 38.413 §9.2.1.10) | Real `UE-NGAP-IDs` CHOICE (aMF-UE-NGAP-ID arm) + `Cause` (nas/normal-release) | AMF log "sent UEContextReleaseCommand (18 bytes) ... Cause=nas/normal-release"; gNB log "UE Context Release Command received" -> "Releasing RRC connection for UE[1]" |
+| `UEContextReleaseComplete` decode (TS 38.413 §9.2.1.11) + real cleanup | `NgapUeRegistry` unregister, `UeAuthState` reset so the association survives for a new UE context | AMF log "UEContextReleaseComplete received ... UE context released, association ready for a new UE context"; UE log "RRC Release received" -> "UE switches to state [CM-IDLE]"; `nr-cli ... ue-list` before: 1 entry, after: empty |
+
+**Real ASN.1 module change**: `specs/NGAP/ngap-17.9.asn`'s `UEContextReleaseRequest`/
+`UEContextReleaseCommand`/`UEContextReleaseComplete` definitions repointed at the project's own
+`ConcreteProtocolIE-Container` (same ADR-0031 asn1c-IOC-limitation workaround already used for 6
+other message types), extending the patched set to 9. Confirmed via a real `asn1c` regeneration
+(`ngap_generated` target) that the patch compiles cleanly and produces usable, non-empty IE
+containers -- not assumed.
+
+This is the exact gap ADR-0076's own live-interop pass hit and could not work around (AMF
+couldn't decode `UEContextReleaseRequest` at all, blocking that pass's attempt to exercise
+`ServiceRequest` via the most natural real-UE trigger). Closed and re-verified via the identical
+scenario: full lab stack + real `nr-gnb`/`nr-ue` through Initial Registration + PDU Session
+Establishment, then `ue-release`. `cmake --build . --target amf` succeeded with zero errors on
+the first real build (asn1c regeneration + new handler code together). Full `conformance_tests`
+and `integration_tests` both rebuilt clean with no changes needed elsewhere.
+
+**Real, disclosed scope boundary**: only the RAN-initiated direction is implemented (a real gNB's
+own trigger); the AMF-initiated direction (AMF deciding on its own to release, e.g. after
+Deregistration) is not. Full N2 handover remains entirely open, tracked as the rest of task
+#100/#101.

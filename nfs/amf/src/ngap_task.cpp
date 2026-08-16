@@ -26,6 +26,8 @@ extern "C" {
 #include <AMFPointer.h>
 #include <AMFRegionID.h>
 #include <AMFSetID.h>
+#include <Cause.h>
+#include <CauseNas.h>
 #include <DownlinkNASTransport.h>
 #include <GUAMI.h>
 #include <InitialUEMessage.h>
@@ -48,6 +50,10 @@ extern "C" {
 #include <SliceSupportItem.h>
 #include <SliceSupportList.h>
 #include <SuccessfulOutcome.h>
+#include <UE-NGAP-IDs.h>
+#include <UEContextReleaseCommand.h>
+#include <UEContextReleaseComplete.h>
+#include <UEContextReleaseRequest.h>
 #include <UplinkNASTransport.h>
 }
 
@@ -599,6 +605,145 @@ void handle_service_request(ngap_core::SctpSocket& assoc,
                      ctx->supi,
                      *info->uplink_data_status);
     }
+}
+
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100/ADR-0075, part 2/ADR-0078): NGAP
+// UEContextRelease{Request,Command,Complete} (TS 38.413 §8.3.3/§9.2.1.9-11) -- found blocking a
+// live-interop attempt to trigger a real ServiceRequest via UERANSIM's own
+// `nr-cli <gnb> --exec 'ue-release <id>'`, which sends a real, previously entirely undecoded
+// UEContextReleaseRequest ("failed to decode NGAP PDU ... ignoring"). RAN-initiated: the gNB
+// sends UEContextReleaseRequest (a real cause -- O&M intervention, radio-link failure, etc.);
+// this AMF replies with UEContextReleaseCommand (Cause=nas/normal-release, this lab's own
+// network-triggered-release choice, not a value taken from the request's own cause); the gNB
+// then confirms with UEContextReleaseComplete, decoded by handle_ue_context_release_complete
+// below to actually clean up. Real, disclosed scope boundary: this does NOT implement the
+// AMF-INITIATED direction (an AMF that decides on its own, e.g. after a Deregistration, to send
+// UEContextReleaseCommand unprompted) -- this lab has no such trigger yet; only the RAN-initiated
+// request/command/complete round trip a real gNB actually exercises today.
+void handle_ue_context_release_request(ngap_core::SctpSocket& assoc,
+                                       UeAuthState& auth_state,
+                                       const InitiatingMessage_t& msg) {
+    const auto& container = msg.value.choice.UEContextReleaseRequest.protocolIEs;
+
+    const auto* amf_ue_id_ie = ::ngap::find_ie(container, 10 /* id-AMF-UE-NGAP-ID */);
+    const auto* ran_ue_id_ie = ::ngap::find_ie(container, 85 /* id-RAN-UE-NGAP-ID */);
+    const auto* cause_ie = ::ngap::find_ie(container, 15 /* id-Cause */);
+    if (amf_ue_id_ie == nullptr || ran_ue_id_ie == nullptr) {
+        spdlog::warn("amf-ngap: UEContextReleaseRequest missing mandatory AMF-UE-NGAP-ID/"
+                     "RAN-UE-NGAP-ID IE, ignoring");
+        return;
+    }
+
+    auto* amf_ue_id = static_cast<AMF_UE_NGAP_ID_t*>(
+        ::ngap::decode_ie_value(&asn_DEF_AMF_UE_NGAP_ID, *amf_ue_id_ie));
+    auto* ran_ue_id = static_cast<RAN_UE_NGAP_ID_t*>(
+        ::ngap::decode_ie_value(&asn_DEF_RAN_UE_NGAP_ID, *ran_ue_id_ie));
+    if (amf_ue_id == nullptr || ran_ue_id == nullptr) {
+        spdlog::warn("amf-ngap: UEContextReleaseRequest's AMF-UE-NGAP-ID/RAN-UE-NGAP-ID failed to "
+                     "PER-decode, ignoring");
+        if (amf_ue_id != nullptr)
+            ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_ue_id);
+        if (ran_ue_id != nullptr)
+            ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, ran_ue_id);
+        return;
+    }
+    long amf_ue_id_value = 0;
+    asn_INTEGER2long(amf_ue_id, &amf_ue_id_value);
+
+    // Cause is real and mandatory per spec, but this build only logs it -- a full real
+    // cause-driven response (e.g. skipping the release for a transport-only cause) is out of
+    // scope. Best-effort decode, not fatal if it fails to parse.
+    if (cause_ie != nullptr) {
+        auto* cause = static_cast<Cause_t*>(::ngap::decode_ie_value(&asn_DEF_Cause, *cause_ie));
+        if (cause != nullptr) {
+            spdlog::info("amf-ngap: UEContextReleaseRequest for AMF-UE-NGAP-ID={}, "
+                         "RAN-UE-NGAP-ID={}, cause group={}",
+                         amf_ue_id_value,
+                         *ran_ue_id,
+                         static_cast<int>(cause->present));
+            ASN_STRUCT_FREE(asn_DEF_Cause, cause);
+        }
+    } else {
+        spdlog::info("amf-ngap: UEContextReleaseRequest for AMF-UE-NGAP-ID={}, RAN-UE-NGAP-ID={} "
+                     "(no Cause IE)",
+                     amf_ue_id_value,
+                     *ran_ue_id);
+    }
+    ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_ue_id);
+    ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, ran_ue_id);
+
+    UEContextReleaseCommand_t cmd{};
+    UE_NGAP_IDs_t ue_ngap_ids{};
+    ue_ngap_ids.present = UE_NGAP_IDs_PR_aMF_UE_NGAP_ID;
+    asn_ulong2INTEGER(&ue_ngap_ids.choice.aMF_UE_NGAP_ID,
+                      static_cast<unsigned long>(auth_state.amf_ue_id));
+    ::ngap::add_ie(
+        cmd.protocolIEs,
+        ::ngap::make_ie(
+            114 /* id-UE-NGAP-IDs */, Criticality_reject, &asn_DEF_UE_NGAP_IDs, &ue_ngap_ids));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_UE_NGAP_IDs, &ue_ngap_ids);
+
+    Cause_t cause_out{};
+    cause_out.present = Cause_PR_nas;
+    cause_out.choice.nas = CauseNas_normal_release;
+    ::ngap::add_ie(
+        cmd.protocolIEs,
+        ::ngap::make_ie(15 /* id-Cause */, Criticality_ignore, &asn_DEF_Cause, &cause_out));
+
+    NGAP_PDU_t pdu{};
+    pdu.present = NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage =
+        static_cast<InitiatingMessage_t*>(std::calloc(1, sizeof(InitiatingMessage_t)));
+    pdu.choice.initiatingMessage->procedureCode = 41 /* id-UEContextRelease */;
+    pdu.choice.initiatingMessage->criticality = Criticality_reject;
+    pdu.choice.initiatingMessage->value.present =
+        InitiatingMessage__value_PR_UEContextReleaseCommand;
+    pdu.choice.initiatingMessage->value.choice.UEContextReleaseCommand = cmd;
+
+    const auto bytes = ::ngap::encode_pdu(pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
+    if (bytes.empty()) {
+        spdlog::error("amf-ngap: failed to PER-encode UEContextReleaseCommand");
+        return;
+    }
+    assoc.send(bytes);
+    spdlog::info("amf-ngap: sent UEContextReleaseCommand ({} bytes), AMF-UE-NGAP-ID={}, "
+                 "Cause=nas/normal-release",
+                 bytes.size(),
+                 auth_state.amf_ue_id);
+}
+
+// SuccessfulOutcome for id-UEContextRelease (TS 38.413 §9.2.1.11) -- confirms the release this
+// AMF itself requested via UEContextReleaseCommand above. Real, disclosed behavior: resets
+// auth_state to its default value so this same SCTP association can serve a brand-new UE context
+// afterward, matching a real gNB's own behavior of keeping one association open across many UE
+// contexts rather than tearing down the whole association per release -- this lab's "one UE at a
+// time per association" scope (ADR-0031) becomes "one at a time, but the association itself now
+// survives a release" as of this fix.
+void handle_ue_context_release_complete(NgapUeRegistry& ue_ngap_registry,
+                                        UeAuthState& auth_state,
+                                        const SuccessfulOutcome_t& msg) {
+    const auto& container = msg.value.choice.UEContextReleaseComplete.protocolIEs;
+    const auto* amf_ue_id_ie = ::ngap::find_ie(container, 10 /* id-AMF-UE-NGAP-ID */);
+    long amf_ue_id_value = static_cast<long>(auth_state.amf_ue_id);
+    if (amf_ue_id_ie != nullptr) {
+        auto* amf_ue_id = static_cast<AMF_UE_NGAP_ID_t*>(
+            ::ngap::decode_ie_value(&asn_DEF_AMF_UE_NGAP_ID, *amf_ue_id_ie));
+        if (amf_ue_id != nullptr) {
+            asn_INTEGER2long(amf_ue_id, &amf_ue_id_value);
+            ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_ue_id);
+        }
+    }
+
+    spdlog::info("amf-ngap: UEContextReleaseComplete received for AMF-UE-NGAP-ID={}, SUPI={} -- "
+                 "UE context released, association ready for a new UE context",
+                 amf_ue_id_value,
+                 auth_state.supi.empty() ? "(none)" : auth_state.supi);
+
+    if (!auth_state.supi.empty()) {
+        ue_ngap_registry.unregister_ue(auth_state.supi);
+    }
+    auth_state = UeAuthState{};
 }
 
 void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
@@ -1219,6 +1364,14 @@ void handle_association(ngap_core::SctpSocket assoc,
                         auth_state.supi);
                     break;
             }
+        } else if (pdu->present == NGAP_PDU_PR_initiatingMessage &&
+                   pdu->choice.initiatingMessage->procedureCode ==
+                       42 /* id-UEContextReleaseRequest */) {
+            handle_ue_context_release_request(assoc, auth_state, *pdu->choice.initiatingMessage);
+        } else if (pdu->present == NGAP_PDU_PR_successfulOutcome &&
+                   pdu->choice.successfulOutcome->procedureCode == 41 /* id-UEContextRelease */) {
+            handle_ue_context_release_complete(
+                ue_ngap_registry, auth_state, *pdu->choice.successfulOutcome);
         } else {
             spdlog::warn("amf-ngap: received NGAP PDU (present={}) with no handler yet, ignoring",
                          static_cast<int>(pdu->present));

@@ -144,27 +144,30 @@ free5GC's `internal/ngap/handler.go` implements ~39 real NGAP procedure handlers
 `RRCInactiveTransitionReport`, `RANConfigurationUpdate`, `ErrorIndication`, `CellTrafficTrace`,
 NRPPa transport (positioning) relay, and more.
 
-This project's `ngap_task.cpp` handles 4 real procedures (grep-confirmed, `void handle_*`):
+This project's `ngap_task.cpp` handles 7 real procedures (grep-confirmed, `void handle_*`):
 `NGSetupRequest`, `InitialUEMessage`, `UplinkNASTransport` (+ 2 internal sub-variants for
-SMC-complete and PDU-session-establishment relay). Grep-confirmed absent from `ngap_codec.hpp`
-entirely -- not even encodable/decodable, not just unhandled: `Handover*`, `PathSwitchRequest`,
-`UEContextRelease*`, `NGReset`, `InitialContextSetup*`.
+SMC-complete and PDU-session-establishment relay), and (closed, docs/DECISIONS.md ADR-0078)
+`UEContextReleaseRequest`/`UEContextReleaseComplete` (RAN-initiated direction only). Grep-confirmed
+still absent from `ngap_codec.hpp` entirely -- not even encodable/decodable, not just unhandled:
+`Handover*`, `PathSwitchRequest`, `NGReset`, `InitialContextSetup*`.
 
 **This project's AMF has zero N2 handover support** -- no `HandoverRequired`, no
 `PathSwitchRequest`, nothing. A UE cannot be handed over between gNBs in this implementation
 today; only initial attach + PDU session establishment on a single gNB is real. This is a
-structural gap, not a missing edge case. **Not addressed by ADR-0076** (that pass closed
-`ServiceRequest`/GMM specifically, not this NGAP-side gap) -- still fully open, tracked as the
-remaining scope of task #100/#101.
+structural gap, not a missing edge case. **Not addressed by ADR-0076 or ADR-0078** (those passes
+closed `ServiceRequest`/GMM and `UEContextRelease` specifically, not this NGAP-side gap) -- still
+fully open, tracked as the remaining scope of task #100/#101.
 
-**Real, additional NGAP gap found this pass, via live interop, not grep alone**: attempting to
+**Real NGAP gap found via live interop, closed the same way it was found**: attempting to
 trigger a real `ServiceRequest` naturally (gNB-initiated idle-mode re-entry via UERANSIM's
-`nr-cli <gnb> --exec 'ue-release <id>'`) sends a real NGAP `UEContextReleaseRequest` this AMF
-cannot decode at all -- `amf-ngap: failed to decode NGAP PDU (25 bytes), ignoring: 002a4015...`.
-`UEContextRelease{Request,Complete}` was already named above as part of free5GC's ~39-procedure
-NGAP coverage this project lacks, but this pass is the first time its absence was confirmed to
-concretely block testing a DIFFERENT, already-built procedure (`ServiceRequest`) via the most
-natural real-UE trigger path, not just an abstract line-count gap.
+`nr-cli <gnb> --exec 'ue-release <id>'`) sent a real NGAP `UEContextReleaseRequest` this AMF could
+not decode at all -- `amf-ngap: failed to decode NGAP PDU (25 bytes), ignoring: 002a4015...`.
+Closed as of ADR-0078: real `UEContextReleaseRequest`/`UEContextReleaseCommand`/
+`UEContextReleaseComplete` (RAN-initiated direction), live-verified via the identical interop
+scenario -- gNB's own `ue-list` went from one entry to empty, UE transitioned to CM-IDLE, real
+NGAP bytes exchanged both directions. The AMF-initiated `UEContextRelease` direction (an AMF
+deciding on its own to release, e.g. after Deregistration) remains unimplemented, disclosed as a
+real, deliberate scope boundary in ADR-0078, not silently dropped.
 
 ### Real finding, not yet checked further
 

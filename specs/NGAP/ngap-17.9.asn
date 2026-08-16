@@ -1731,7 +1731,7 @@ InitialContextSetupFailureIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 UEContextReleaseRequest ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ {UEContextReleaseRequest-IEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per UEContextReleaseRequest-IEs below, ADR-0031/ADR-0078
 	...
 }
 
@@ -1756,7 +1756,7 @@ UEContextReleaseRequest-IEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 UEContextReleaseCommand ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ {UEContextReleaseCommand-IEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per UEContextReleaseCommand-IEs below, ADR-0031/ADR-0078
 	...
 }
 
@@ -1773,7 +1773,7 @@ UEContextReleaseCommand-IEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 UEContextReleaseComplete ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ {UEContextReleaseComplete-IEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per UEContextReleaseComplete-IEs below, ADR-0031/ADR-0078
 	...
 }
 
@@ -11967,12 +11967,12 @@ ProtocolIE-Field {NGAP-PROTOCOL-IES : IEsSetParam} ::= SEQUENCE {
 -- the compiler warnings alone. This is not a different wire format. Per X.691 clause 10.9's rule
 -- that an ASN.1 open type's PER encoding is byte for byte an octet string wrapped blob, the
 -- "value OCTET STRING" field below produces identical bytes to what a correctly IOC resolving
--- compiler would emit for "value NGAP-PROTOCOL-IES.&Value". Only the six NGSetupRequest,
--- NGSetupResponse, NGSetupFailure, InitialUEMessage, DownlinkNASTransport, and
--- UplinkNASTransport message definitions below are repointed at this type (see each definition's
--- own comment); every other procedure in this file is untouched, still exactly as published, for
--- any future stage that needs full IOC resolution to work correctly. See docs/DECISIONS.md
--- ADR-0031.
+-- compiler would emit for "value NGAP-PROTOCOL-IES.&Value". Only the nine NGSetupRequest,
+-- NGSetupResponse, NGSetupFailure, InitialUEMessage, DownlinkNASTransport, UplinkNASTransport,
+-- UEContextReleaseRequest, UEContextReleaseCommand, and UEContextReleaseComplete message
+-- definitions below are repointed at this type (see each definition's own comment); every other
+-- procedure in this file is untouched, still exactly as published, for any future stage that
+-- needs full IOC resolution to work correctly. See docs/DECISIONS.md ADR-0031/ADR-0078.
 --
 -- **************************************************************
 
