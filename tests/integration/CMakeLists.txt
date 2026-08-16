@@ -15,7 +15,7 @@ add_executable(integration_tests
     test_roaming_interconnect_postgres.cpp
 )
 target_link_libraries(integration_tests PRIVATE sbi_core sbi_generated aka_crypto product_catalog_store subscriber_management_store roaming_interconnect_store GTest::gtest GTest::gtest_main)
-add_dependencies(integration_tests nrf amf smf udm udr ausf pcf hello-nf)
+add_dependencies(integration_tests nrf amf smf udm udr ausf pcf chf hello-nf)
 target_compile_definitions(integration_tests PRIVATE
     NRF_PATH="$<TARGET_FILE:nrf>"
     AMF_PATH="$<TARGET_FILE:amf>"
@@ -24,6 +24,7 @@ target_compile_definitions(integration_tests PRIVATE
     UDR_PATH="$<TARGET_FILE:udr>"
     AUSF_PATH="$<TARGET_FILE:ausf>"
     PCF_PATH="$<TARGET_FILE:pcf>"
+    CHF_PATH="$<TARGET_FILE:chf>"
     HELLO_NF_PATH="$<TARGET_FILE:hello-nf>"
     CERTS_DIR="${CMAKE_SOURCE_DIR}/certs"
 )

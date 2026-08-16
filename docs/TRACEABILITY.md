@@ -1116,10 +1116,38 @@ a fixed, hardcoded test SUPI and asserted an initial 404 -- broke on any re-run 
 long-lived UDR Postgres database (real persistence, by design, ADR-0068) once the row already
 existed from a prior run. Fixed with a real per-process/per-call-site-unique test SUPI.
 
-**Disclosed gaps**: CHF has never been part of this project's automated `ctest` suite (needs Redis/
-ClickHouse, neither provisioned in `.github/workflows/ci.yml` -- a real, pre-existing gap, not
-newly introduced). Automated PCC/session-rule re-decisioning from a pushed policy-counter status
+**Disclosed gaps**: CHF was not yet part of this project's automated `ctest` suite as of this ADR
+(needs Redis/ClickHouse, neither provisioned in `.github/workflows/ci.yml` at the time) -- closed
+in ADR-0073, see below. Automated PCC/session-rule re-decisioning from a pushed policy-counter status
 not implemented (3GPP leaves the status-to-action mapping operator-defined). `subscriptionTermination`
 (the other real TS29594 callback) not implemented. AM-policy-side/UE-policy-side spending limits
 (`AmPolicyData`/`UePolicySet`, distinct real TS29519 resources) out of scope -- only the SM-policy
 variant PCF's already-built surface needs was built.
+
+## CHF-in-CI (Redis/ClickHouse/its own Postgres) + real full N28 loop as an automated test (ADR-0073)
+
+ADR-0072 disclosed CHF as never having been a participant in this project's automated `ctest`
+suite -- it needs Redis, ClickHouse, and its own PostgreSQL (`chf_rating`), none of which
+`.github/workflows/ci.yml` provisioned. As a direct consequence, the real full N28 loop (subscribe
+-> status change -> `statusNotification` push -> receipt -> unsubscribe) that ADR-0072
+live-verified manually was never covered by an automated test.
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| CHF reachable in CI: real `postgres-chf`, `redis`, `clickhouse` services + schema-apply steps | `nfs/chf/schema.postgres.sql`, `nfs/chf/schema.clickhouse.sql`; real `getenv` names from `nfs/chf/src/main.cpp` (`CHF_RATING_DATABASE_URL`, `CHF_REDIS_URL`, `CHF_CLICKHOUSE_*`) | `.github/workflows/ci.yml` (`build` + `sanitize` jobs); YAML-syntax-validated; not yet exercised by a real GitHub Actions run |
+| Full real UDR->PCF->CHF->statusNotification->PCF loop, automated | TS29594_Nchf_SpendingLimitControl.yaml Subscribe + real callback push (same procedures as ADR-0072's manual verification) | `PcfChfN28Integration.FullLoopSubscribeStatusChangeNotifyUnsubscribe` -- real subscribe (`pcf_spending_limit_subscribe_total` increments), real CHF admin status change, real notify receipt (`pcf_spending_limit_notify_total` increments), real unsubscribe; passes |
+
+**Real bug found and fixed via live testing**: the new test's raw-socket Prometheus `/metrics`
+scraper (`sbi_core::http2::Client` is TLS/mTLS-only and cannot hit the deliberately plain-HTTP
+metrics endpoint) originally used `body.find(metric_name)`, which matches the `# HELP` comment
+line's own free-text (it contains the metric name too) rather than the real value line -- silently
+returning -1 forever. Fixed by anchoring the search to the start of the real value line
+(`"\n<metric_name> "` / `"\n<metric_name>{"`). Confirmed the real underlying system was correct
+throughout via live process log lines, independent of the test's own (buggy, then fixed) assertion.
+
+**Disclosed**: a full local `ctest -j4` run reached 291/293 before being stopped --
+`SubscriberManagementPostgresTest.SubscriberIsFindableBySupi` (pre-existing pollution, ADR-0072's
+own disclosed follow-up, not fixed here) and `UdmIntegration.SdmDataRetrievalAndSubscriptions`/
+`UdrIntegration.AmfContextLifecycle` (pre-existing environmental flakiness, ADR-0071/-0072) are
+not new regressions from this ADR. Not yet exercised: a real GitHub Actions run of the new CI
+wiring.

@@ -76,6 +76,54 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # ADR-0073: real CHF-in-CI. Real PostgreSQL for CHF's own E5 RatingDecision audit
+      # (ADR-0060) -- port 5434 and POSTGRES_HOST_AUTH_METHOD=trust match
+      # deploy/docker/docker-compose.yml's own already-established real postgres-chf service
+      # exactly (same real conninfo CHF_RATING_DATABASE_URL below points at), not a new
+      # convention invented for CI.
+      postgres-chf:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: chf_rating
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # ADR-0073: real Redis/Valkey for CHF's own E3 session-state persistence (ADR-0055).
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # ADR-0073: real ClickHouse for CHF's own CDR generation (ADR-0058). A real, non-empty
+      # CLICKHOUSE_PASSWORD is required -- confirmed by direct live testing, not assumed: the
+      # official image's own shipped users.d/default-user.xml restricts the `default` user to
+      # 127.0.0.1/::1 only even with an explicit empty password set, so a genuinely different
+      # container (this job's own steps, reaching it over the Docker bridge network) is rejected
+      # regardless of password correctness -- same real finding and same real fix
+      # deploy/docker/docker-compose.yml's own clickhouse service comment already documents.
+      clickhouse:
+        image: clickhouse/clickhouse-server:latest
+        env:
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: chf_clickhouse_lab
+          CLICKHOUSE_DB: default
+        ports:
+          - 8123:8123
+          - 9000:9000
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -146,6 +194,17 @@ jobs:
       - name: Apply UDR PostgreSQL schema (ADR-0068)
         run: PGPASSWORD=udr psql -h localhost -p 5437 -U udr -d udr -f nfs/udr/schema.postgres.sql
 
+      - name: Apply CHF PostgreSQL schema (ADR-0060)
+        run: PGPASSWORD= psql -h localhost -p 5434 -U postgres -d chf_rating -f nfs/chf/schema.postgres.sql
+
+      - name: Apply CHF ClickHouse schema (ADR-0058)
+        # GitHub Actions service containers don't support the docker-compose-style
+        # /docker-entrypoint-initdb.d/ auto-init volume mount (services start before checkout even
+        # happens) -- applied explicitly via ClickHouse's own real HTTP interface instead, same
+        # "explicit apply step" pattern the postgres schemas above already use for the identical
+        # real reason.
+        run: curl -sf -u default:chf_clickhouse_lab http://localhost:8123/ --data-binary @nfs/chf/schema.clickhouse.sql
+
       - name: Test
         # --timeout 120: defense in depth. A single spawned-NF-process crash/hang (real one hit
         # here: missing certs killed AMF on startup, which left ctest waiting its full default
@@ -155,12 +214,22 @@ jobs:
         # instead of its local-dev default, so CI exercises the real DB path (ADR-0054) instead of
         # GTEST_SKIP()-ing it. TEST_SUBSCRIBER_MANAGEMENT_POSTGRES_URL/
         # TEST_ROAMING_INTERCONNECT_POSTGRES_URL do the same for P4.7's own two new store test
-        # files.
+        # files. CHF_RATING_DATABASE_URL/CHF_REDIS_URL/CHF_CLICKHOUSE_* (ADR-0073) do the same for
+        # CHF -- real conninfo values matching the services above, not CHF's own same-host-only
+        # local-dev defaults (nfs/chf/src/main.cpp's own chf_rating_postgres_conninfo/
+        # chf_redis_conninfo/chf_clickhouse_options comments).
         env:
           TEST_POSTGRES_URL: postgresql://product_catalog:product_catalog@localhost:5432/product_catalog
           TEST_SUBSCRIBER_MANAGEMENT_POSTGRES_URL: postgresql://subscriber_management:subscriber_management@localhost:5435/subscriber_management
           TEST_ROAMING_INTERCONNECT_POSTGRES_URL: postgresql://roaming_interconnect:roaming_interconnect@localhost:5436/roaming_interconnect
           UDR_DATABASE_URL: postgresql://udr:udr@localhost:5437/udr
+          CHF_RATING_DATABASE_URL: postgresql://postgres@localhost:5434/chf_rating
+          CHF_REDIS_URL: tcp://127.0.0.1:6379
+          CHF_CLICKHOUSE_HOST: 127.0.0.1
+          CHF_CLICKHOUSE_PORT: "9000"
+          CHF_CLICKHOUSE_USER: default
+          CHF_CLICKHOUSE_PASSWORD: chf_clickhouse_lab
+          CHF_CLICKHOUSE_DATABASE: default
         run: ctest --test-dir build --output-on-failure --timeout 120
 
   sanitize:
@@ -225,6 +294,54 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # ADR-0073: real CHF-in-CI. Real PostgreSQL for CHF's own E5 RatingDecision audit
+      # (ADR-0060) -- port 5434 and POSTGRES_HOST_AUTH_METHOD=trust match
+      # deploy/docker/docker-compose.yml's own already-established real postgres-chf service
+      # exactly (same real conninfo CHF_RATING_DATABASE_URL below points at), not a new
+      # convention invented for CI.
+      postgres-chf:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: chf_rating
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # ADR-0073: real Redis/Valkey for CHF's own E3 session-state persistence (ADR-0055).
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # ADR-0073: real ClickHouse for CHF's own CDR generation (ADR-0058). A real, non-empty
+      # CLICKHOUSE_PASSWORD is required -- confirmed by direct live testing, not assumed: the
+      # official image's own shipped users.d/default-user.xml restricts the `default` user to
+      # 127.0.0.1/::1 only even with an explicit empty password set, so a genuinely different
+      # container (this job's own steps, reaching it over the Docker bridge network) is rejected
+      # regardless of password correctness -- same real finding and same real fix
+      # deploy/docker/docker-compose.yml's own clickhouse service comment already documents.
+      clickhouse:
+        image: clickhouse/clickhouse-server:latest
+        env:
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: chf_clickhouse_lab
+          CLICKHOUSE_DB: default
+        ports:
+          - 8123:8123
+          - 9000:9000
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 

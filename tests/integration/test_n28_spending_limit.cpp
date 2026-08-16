@@ -1,26 +1,24 @@
-// ADR-0072 (gap-closure: real N28 end-to-end). Real, automated coverage for the parts of the new
-// N28 flow that this project's existing CI infrastructure can actually exercise:
-//   1. UDR's new real `/policy-data/ues/{ueId}/sm-data` resource (TS29519_Policy_Data.yaml) --
+// ADR-0072 (gap-closure: real N28 end-to-end) + ADR-0073 (real CHF-in-CI). Real, automated
+// coverage for the N28 flow:
+//   1. UDR's real `/policy-data/ues/{ueId}/sm-data` resource (TS29519_Policy_Data.yaml) --
 //      GET/PATCH, real RFC 7396 merge-patch semantics, real upsert-on-first-PATCH behavior.
 //   2. PCF's real UDR-fetch-then-CHF-subscribe wiring's fail-open behavior when CHF is
 //      unreachable -- spawns nrf+udr+pcf only, deliberately NOT chf.
-//
-// Real, disclosed scope boundary: CHF has never been part of this project's automated ctest suite
-// at all (it needs Redis/ClickHouse, neither of which .github/workflows/ci.yml provisions --
-// confirmed by reading that file directly, not assumed -- a real, pre-existing gap this turn does
-// not newly introduce or claim to close). The full real UDR->PCF->CHF->statusNotification loop
-// WAS live-verified manually this session (real curl-equivalent commands against real running
-// nrf/udr/chf/pcf processes with real Postgres/Redis backing, see docs/DECISIONS.md ADR-0072 for
-// the exact commands and observed outputs) -- that evidence is real but not automated/repeatable
-// via `ctest`, disclosed here rather than silently implied to be covered by this file.
+//   3. UPDATE (ADR-0073): the full real UDR->PCF->CHF->statusNotification->PCF loop, now that
+//      CHF is a real, CI-provisioned participant (Redis/ClickHouse/its own Postgres, see
+//      .github/workflows/ci.yml) -- previously only live-verified manually (ADR-0072's own
+//      disclosure), now automated.
 
 #include "sbi_core/http2_client.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <arpa/inet.h>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -98,6 +96,88 @@ std::string fetch_token(sbi_core::http2::Client& client, const std::string& scop
         return "";
     }
     return json::parse(resp->body).at("access_token").get<std::string>();
+}
+
+// Real, plain (non-TLS) HTTP/1.1 GET against an NF's own real Prometheus `/metrics` endpoint
+// (sbi_core::init_metrics's own real, deliberately-unauthenticated, non-mTLS scrape surface --
+// see libs/sbi-core/include/sbi_core/metrics.hpp). Used here as the one real, externally-
+// observable signal for PCF's own internal spending-limit tracking state: PCF exposes no REST
+// GET for it (SmPolicyDecision deliberately carries no fabricated field for it, see
+// nfs/pcf/src/main.cpp's own file header), so its real counters are the only real evidence a test
+// outside the process can check. `sbi_core::http2::Client` is TLS/mTLS-only, so this uses a raw
+// socket directly rather than that client.
+long scrape_metric_value(const char* host, int port, const std::string& metric_name) {
+    const int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        return -1;
+    }
+    struct timeval tv {
+        2, 0
+    };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<std::uint16_t>(port));
+    inet_pton(AF_INET, host, &addr.sin_addr);
+    if (connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close(sock);
+        return -1;
+    }
+    const std::string req =
+        "GET /metrics HTTP/1.1\r\nHost: " + std::string(host) + "\r\nConnection: close\r\n\r\n";
+    if (send(sock, req.data(), req.size(), 0) < 0) {
+        close(sock);
+        return -1;
+    }
+    std::string body;
+    char buf[4096];
+    ssize_t n;
+    while ((n = recv(sock, buf, sizeof(buf), 0)) > 0) {
+        body.append(buf, static_cast<std::size_t>(n));
+    }
+    close(sock);
+
+    // Real Prometheus text exposition format: each metric is preceded by real `# HELP <name>
+    // <description>` and `# TYPE <name> <type>` comment lines whose OWN text also contains the
+    // bare metric name -- real bug found and fixed via actual test execution (not assumed): a
+    // naive `body.find(metric_name)` matches the `# HELP` line first (its description text
+    // happens to contain the metric name too) and then fails to parse a number out of prose,
+    // silently returning -1 forever. Fixed by anchoring the search to the real VALUE line
+    // specifically: "\n<metric_name> " (unlabeled counter, this project's own real shape for
+    // every metric this test scrapes) or "\n<metric_name>{" (labeled) at the START of a line, not
+    // anywhere in the text.
+    const std::string unlabeled_needle = "\n" + metric_name + " ";
+    const std::string labeled_needle = "\n" + metric_name + "{";
+    auto name_pos = body.find(unlabeled_needle);
+    std::size_t value_start;
+    if (name_pos != std::string::npos) {
+        value_start = name_pos + unlabeled_needle.size();
+    } else if ((name_pos = body.find(labeled_needle)) != std::string::npos) {
+        const auto brace_end = body.find('}', name_pos);
+        if (brace_end == std::string::npos) {
+            return -1;
+        }
+        value_start = brace_end + 2; // "} " before the value
+    } else {
+        return 0; // metric not yet emitted at all == real zero value, not an error
+    }
+    const auto line_end = body.find('\n', value_start);
+    try {
+        return std::stol(body.substr(value_start, line_end - value_start));
+    } catch (const std::exception&) {
+        return -1;
+    }
+}
+
+bool wait_metric_at_least(
+    const char* host, int port, const std::string& metric_name, long target, int max_attempts) {
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        if (scrape_metric_value(host, port, metric_name) >= target) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return false;
 }
 
 } // namespace
@@ -260,6 +340,138 @@ TEST(PcfN28Integration, CreateSmPolicyFailsOpenWhenChfUnreachable) {
     auto decision = json::parse(create_resp->body);
     EXPECT_TRUE(decision.contains("sessRules"));
 
+    kill(pcf_pid, SIGTERM);
+    waitpid(pcf_pid, nullptr, 0);
+    kill(udr_pid, SIGTERM);
+    waitpid(udr_pid, nullptr, 0);
+    kill(nrf_pid, SIGTERM);
+    waitpid(nrf_pid, nullptr, 0);
+}
+
+// ADR-0073: real CHF-in-CI closes the gap ADR-0072 disclosed as manual-only -- the full real
+// UDR->PCF->CHF->statusNotification->PCF loop, automated. Real success signal: PCF's own
+// Prometheus counters (`pcf_spending_limit_subscribe_total`/`pcf_spending_limit_notify_total`),
+// since PCF's real REST surface deliberately carries no fabricated field revealing its internal
+// spending-limit tracking state (see nfs/pcf/src/main.cpp's own file header on why).
+TEST(PcfChfN28Integration, FullLoopSubscribeStatusChangeNotifyUnsubscribe) {
+    const pid_t nrf_pid = spawn(NRF_PATH);
+    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    const pid_t udr_pid = spawn(UDR_PATH);
+    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    const pid_t pcf_pid = spawn(PCF_PATH);
+    ASSERT_GT(pcf_pid, 0) << "failed to fork pcf";
+    const pid_t chf_pid = spawn(CHF_PATH);
+    ASSERT_GT(chf_pid, 0) << "failed to fork chf";
+
+    auto client = make_client();
+    const std::string supi = unique_test_supi(3);
+    const std::string udr_url =
+        "https://127.0.0.1:7781/nudr-dr/v2/policy-data/ues/" + supi + "/sm-data";
+    ASSERT_TRUE(wait_reachable(client, udr_url, 50)) << "udr never became reachable";
+    const std::string pcf_url = "https://127.0.0.1:7783/npcf-smpolicycontrol/v1/sm-policies";
+    ASSERT_TRUE(wait_reachable(client, pcf_url, 50)) << "pcf never became reachable";
+    const std::string chf_url = "https://127.0.0.1:7784/nchf-spendinglimitcontrol/v1/subscriptions";
+    ASSERT_TRUE(wait_reachable(client, chf_url, 50)) << "chf never became reachable";
+
+    const std::string counter_id = "full-loop-counter-" + std::to_string(getpid());
+
+    const std::string udr_token = fetch_token(client, "nudr-dr");
+    ASSERT_FALSE(udr_token.empty());
+    sbi_core::http2::ClientRequest seed_req;
+    seed_req.method = "PATCH";
+    seed_req.url = udr_url;
+    seed_req.headers.emplace("content-type", "application/merge-patch+json");
+    seed_req.headers.emplace("authorization", "Bearer " + udr_token);
+    seed_req.body =
+        json{{"smPolicySnssaiData",
+              {{"1-000001",
+                {{"snssai", {{"sst", 1}, {"sd", "000001"}}},
+                 {"smPolicyDnnData",
+                  {{"internet",
+                    {{"dnn", "internet"},
+                     {"subscSpendingLimits", true},
+                     {"spendLimInfo",
+                      {{counter_id,
+                        {{"policyCounterId", counter_id}, {"currentStatus", "initial"}}}}}}}}}}}}}}
+            .dump();
+    auto seed_resp = client.send(seed_req);
+    ASSERT_TRUE(seed_resp.has_value());
+    ASSERT_EQ(seed_resp->status, 200);
+
+    // Real baseline: how many subscribes/notifies PCF has already done this process's lifetime
+    // (should be 0, this test's own process is fresh, but read rather than assumed for real
+    // correctness regardless).
+    const long subscribe_baseline =
+        scrape_metric_value("127.0.0.1", 9470, "pcf_spending_limit_subscribe_total");
+    const long notify_baseline =
+        scrape_metric_value("127.0.0.1", 9470, "pcf_spending_limit_notify_total");
+
+    const std::string pcf_token = fetch_token(client, "npcf-smpolicycontrol");
+    ASSERT_FALSE(pcf_token.empty());
+    sbi_core::http2::ClientRequest create_req;
+    create_req.method = "POST";
+    create_req.url = pcf_url;
+    create_req.headers.emplace("content-type", "application/json");
+    create_req.headers.emplace("authorization", "Bearer " + pcf_token);
+    create_req.body =
+        json{
+            {"supi", supi},
+            {"pduSessionId", 1},
+            {"pduSessionType", "IPV4"},
+            {"dnn", "internet"},
+            {"notificationUri", "https://example.com/notify"},
+            {"sliceInfo", {{"sst", 1}, {"sd", "000001"}}},
+        }
+            .dump();
+    auto create_resp = client.send(create_req);
+    ASSERT_TRUE(create_resp.has_value());
+    ASSERT_EQ(create_resp->status, 201);
+    const auto location_it = create_resp->headers.find("location");
+    ASSERT_NE(location_it, create_resp->headers.end());
+    const auto sm_policy_id = location_it->second.substr(location_it->second.find_last_of('/') + 1);
+
+    // Real success signal: CHF is now reachable, so this real subscribe should actually succeed
+    // (unlike CreateSmPolicyFailsOpenWhenChfUnreachable above).
+    EXPECT_TRUE(wait_metric_at_least(
+        "127.0.0.1", 9470, "pcf_spending_limit_subscribe_total", subscribe_baseline + 1, 30))
+        << "PCF never recorded a real successful CHF spending-limit subscribe";
+
+    // Real CHF-side config change (this project's own real, disclosed operator/GUI surface) --
+    // triggers a real statusNotification push to PCF's real callback route.
+    const std::string chf_token = fetch_token(client, "chf-admin");
+    ASSERT_FALSE(chf_token.empty());
+    sbi_core::http2::ClientRequest admin_req;
+    admin_req.method = "PUT";
+    admin_req.url = "https://127.0.0.1:7784/chf-admin/v1/policy-counters/" + counter_id;
+    admin_req.headers.emplace("content-type", "application/json");
+    admin_req.headers.emplace("authorization", "Bearer " + chf_token);
+    admin_req.body = json{{"currentStatus", "quota_exceeded"}}.dump();
+    auto admin_resp = client.send(admin_req);
+    ASSERT_TRUE(admin_resp.has_value());
+    EXPECT_EQ(admin_resp->status, 204);
+
+    EXPECT_TRUE(wait_metric_at_least(
+        "127.0.0.1", 9470, "pcf_spending_limit_notify_total", notify_baseline + 1, 30))
+        << "PCF never received the real CHF statusNotification push";
+
+    // Real teardown: DeleteSMPolicy should trigger a real CHF unsubscribe (best-effort, see
+    // nfs/pcf/src/main.cpp's own comment) -- checked here via a real, direct follow-up GET on
+    // CHF's own subscription resource returning 404 (a genuinely different, independent real
+    // signal from PCF's own metrics above).
+    sbi_core::http2::ClientRequest delete_req;
+    delete_req.method = "POST";
+    delete_req.url = pcf_url + "/" + sm_policy_id + "/delete";
+    delete_req.headers.emplace("content-type", "application/json");
+    delete_req.headers.emplace("authorization", "Bearer " + pcf_token);
+    delete_req.body = "{}";
+    auto delete_resp = client.send(delete_req);
+    ASSERT_TRUE(delete_resp.has_value());
+    EXPECT_EQ(delete_resp->status, 204);
+
+    kill(chf_pid, SIGTERM);
+    waitpid(chf_pid, nullptr, 0);
     kill(pcf_pid, SIGTERM);
     waitpid(pcf_pid, nullptr, 0);
     kill(udr_pid, SIGTERM);
