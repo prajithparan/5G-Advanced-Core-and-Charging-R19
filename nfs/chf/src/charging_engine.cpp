@@ -52,7 +52,10 @@ std::optional<nlohmann::json> find_characteristic_value(
 }
 
 RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client,
-                                std::int64_t rating_group) {
+                                std::int64_t rating_group,
+                                const std::string& supi,
+                                AiQuotaSizer* ai_quota_sizer,
+                                QuotaFeatureStore* quota_feature_store) {
     sbi_core::http2::ClientRequest offerings_req;
     offerings_req.method = "GET";
     offerings_req.url = product_catalog_base() + kProductCatalogApiRoot + "/productOffering";
@@ -151,6 +154,69 @@ RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client,
                 find_characteristic_value(price.prodSpecCharValueUse, "unitQuotaThreshold");
             v.has_value() && v->is_number_integer()) {
             result.unitQuotaThreshold = v->get<std::int64_t>();
+        }
+
+        // P4.8 (CHARGING_PROMPT.md Angle 1a, ADR-0074): predictive quota sizing. Real, disclosed
+        // scope: only totalVolume (GB/MB) grants are AI-adjustable -- serviceSpecificUnits has no
+        // meaningful "predicted usage" quantity to compare against in this project's own schema.
+        // "This model informs the decision. The deterministic rating engine makes it." -- the
+        // model below only ever SUGGESTS a usage figure; the actual grant is always the
+        // price-configured base multiplied by a clamp to [0.5x, 2.0x], never the raw prediction.
+        if (grant.totalVolume.has_value() && *grant.totalVolume > 0 && !supi.empty() &&
+            ai_quota_sizer != nullptr && ai_quota_sizer->is_enabled() &&
+            quota_feature_store != nullptr) {
+            if (const auto snapshot = quota_feature_store->get(supi, rating_group);
+                snapshot.has_value() && !snapshot->recentUsedVolumes.empty()) {
+                QuotaSizingFeatures features{};
+                double sum = 0.0;
+                for (const auto v : snapshot->recentUsedVolumes) {
+                    sum += v;
+                }
+                features[0] = sum / static_cast<double>(snapshot->recentUsedVolumes.size());
+                features[1] = snapshot->recentUsedVolumes.size() >= 2
+                                  ? snapshot->recentUsedVolumes[0] - snapshot->recentUsedVolumes[1]
+                                  : 0.0;
+                const auto now_unix = static_cast<std::int64_t>(
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count());
+                features[2] = snapshot->lastInvocationUnixSec.has_value()
+                                  ? static_cast<double>(now_unix - *snapshot->lastInvocationUnixSec)
+                                  : 0.0;
+                features[3] = snapshot->lastGrantedTotalVolume.value_or(0.0);
+
+                if (const auto predicted = ai_quota_sizer->predict(features);
+                    predicted.has_value()) {
+                    const double base = static_cast<double>(*grant.totalVolume);
+                    const double raw_multiplier = *predicted / base;
+                    const double multiplier = std::clamp(raw_multiplier, 0.5, 2.0);
+                    grant.totalVolume = static_cast<std::uint64_t>(base * multiplier);
+                    result.grant = grant;
+                    result.aiAdvisory = json{
+                        {"model_version", ai_quota_sizer->model_version()},
+                        {"features",
+                         json{{kQuotaSizingFeatureNames[0], features[0]},
+                              {kQuotaSizingFeatureNames[1], features[1]},
+                              {kQuotaSizingFeatureNames[2], features[2]},
+                              {kQuotaSizingFeatureNames[3], features[3]}}},
+                        {"predicted_usage_octets", *predicted},
+                        {"base_grant_octets", base},
+                        {"raw_multiplier", raw_multiplier},
+                        {"applied_multiplier", multiplier},
+                        {"clamped_low", raw_multiplier < 0.5},
+                        {"clamped_high", raw_multiplier > 2.0},
+                        {"deterministic_bound", "[0.5x, 2.0x] of price-configured grant"},
+                    };
+                    spdlog::info("chf: AI quota sizing adjusted grant for SUPI={} ratingGroup={} "
+                                 "by {:.3f}x (raw {:.3f}x, base {} octets -> {} octets)",
+                                 supi,
+                                 rating_group,
+                                 multiplier,
+                                 raw_multiplier,
+                                 static_cast<std::uint64_t>(base),
+                                 *grant.totalVolume);
+                }
+            }
         }
 
         spdlog::info(
@@ -362,6 +428,7 @@ void write_rating_decision(chf::RatingDecisionStore& rating_decision_store,
     }
     decision.ruleFiredId = *rating.tariffId;
     decision.acbrType = "appliedBillingCharge";
+    decision.aiAdvisory = rating.aiAdvisory;
     rating_decision_store.record(decision);
 }
 
@@ -378,10 +445,15 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
                  const std::string& supi,
                  const std::string& node_functionality,
                  std::int64_t invocation_sequence_number,
-                 const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage) {
+                 const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
+                 chf::AiQuotaSizer* ai_quota_sizer,
+                 chf::QuotaFeatureStore* quota_feature_store) {
     ChargeUsageResult result;
-    result.rating =
-        build_rating_grant(catalog_client, static_cast<std::int64_t>(usage.ratingGroup));
+    result.rating = build_rating_grant(catalog_client,
+                                       static_cast<std::int64_t>(usage.ratingGroup),
+                                       supi,
+                                       ai_quota_sizer,
+                                       quota_feature_store);
 
     if (result.rating.cost.has_value() && !supi.empty()) {
         result.reserved =
@@ -409,6 +481,30 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
                                  result.rating,
                                  result.reserved);
     write_rating_decision(rating_decision_store, ref, usage, result.rating, result.reserved);
+
+    // P4.8 (ADR-0074): record this request's own real reported usage as history for the NEXT
+    // prediction -- only when usage was actually reported (Create has none yet, real TS 32.291
+    // state) and a QuotaFeatureStore was actually supplied (Diameter/CAP callers pass nullptr,
+    // see this function's own header comment).
+    if (quota_feature_store != nullptr && !supi.empty() && usage.usedUnitContainer.has_value() &&
+        !usage.usedUnitContainer->empty()) {
+        const auto now_unix =
+            static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count());
+        std::optional<double> granted_total_volume;
+        if (result.reserved && result.rating.grant.has_value() &&
+            result.rating.grant->totalVolume.has_value()) {
+            granted_total_volume = static_cast<double>(*result.rating.grant->totalVolume);
+        }
+        quota_feature_store->record_usage(
+            supi,
+            static_cast<std::int64_t>(usage.ratingGroup),
+            static_cast<double>(usage.usedUnitContainer->front().totalVolume.value_or(0)),
+            granted_total_volume,
+            now_unix);
+    }
+
     return result;
 }
 

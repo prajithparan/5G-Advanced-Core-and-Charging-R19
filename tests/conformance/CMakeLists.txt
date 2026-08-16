@@ -1,10 +1,19 @@
 find_package(GTest CONFIG REQUIRED)
+# P4.8/ADR-0074: real ONNX Runtime in-process inference, needed to compile
+# nfs/chf/src/ai_inference.cpp directly into this test binary (same precedent as
+# nfs/amf/src/nas_codec.cpp / nfs/smf/src/nas_5gsm_codec.cpp below). ONNX::onnx needs
+# whole-archive linking -- see nfs/chf/CMakeLists.txt's own comment for the real static-linking
+# bug this works around (found via this exact test binary).
+find_package(onnxruntime CONFIG REQUIRED)
+find_package(ONNX CONFIG REQUIRED)
 
-add_executable(conformance_tests test_round_trip.cpp test_multipart.cpp test_milenage.cpp test_eap_aka_prime.cpp test_nas_codec.cpp test_nas_security.cpp test_nas_5gsm_codec.cpp test_pfcp_core.cpp test_bss_sid.cpp test_bss_sid_product.cpp test_diameter_core.cpp test_ss7_core.cpp test_tcap_core.cpp test_ss7_tcap_stack.cpp test_cap_core.cpp test_map_core.cpp test_tbcd_core.cpp test_tap3_core.cpp test_roaming_interconnect_tap3.cpp test_suci.cpp
+add_executable(conformance_tests test_round_trip.cpp test_multipart.cpp test_milenage.cpp test_eap_aka_prime.cpp test_nas_codec.cpp test_nas_security.cpp test_nas_5gsm_codec.cpp test_pfcp_core.cpp test_bss_sid.cpp test_bss_sid_product.cpp test_diameter_core.cpp test_ss7_core.cpp test_tcap_core.cpp test_ss7_tcap_stack.cpp test_cap_core.cpp test_map_core.cpp test_tbcd_core.cpp test_tap3_core.cpp test_roaming_interconnect_tap3.cpp test_suci.cpp test_ai_inference.cpp
     ${CMAKE_SOURCE_DIR}/nfs/amf/src/nas_codec.cpp
-    ${CMAKE_SOURCE_DIR}/nfs/smf/src/nas_5gsm_codec.cpp)
-target_link_libraries(conformance_tests PRIVATE GTest::gtest GTest::gtest_main sbi_generated aka_crypto pfcp_core bss_sid diameter_core ss7_core tcap_core cap_core map_core tbcd_core tap3_core roaming_interconnect_store)
-target_include_directories(conformance_tests PRIVATE ${CMAKE_SOURCE_DIR}/nfs/amf/src ${CMAKE_SOURCE_DIR}/nfs/smf/src)
+    ${CMAKE_SOURCE_DIR}/nfs/smf/src/nas_5gsm_codec.cpp
+    ${CMAKE_SOURCE_DIR}/nfs/chf/src/ai_inference.cpp)
+target_link_libraries(conformance_tests PRIVATE GTest::gtest GTest::gtest_main sbi_generated aka_crypto pfcp_core bss_sid diameter_core ss7_core tcap_core cap_core map_core tbcd_core tap3_core roaming_interconnect_store onnxruntime::onnxruntime "$<LINK_LIBRARY:WHOLE_ARCHIVE,ONNX::onnx>")
+target_include_directories(conformance_tests PRIVATE ${CMAKE_SOURCE_DIR}/nfs/amf/src ${CMAKE_SOURCE_DIR}/nfs/smf/src ${CMAKE_SOURCE_DIR}/nfs/chf/src)
+target_compile_definitions(conformance_tests PRIVATE QUOTA_MODEL_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/test_quota_model.onnx")
 target_compile_features(conformance_tests PRIVATE cxx_std_23)
 
 set(SBI_CONFORMANCE_SAMPLES_DIR ${CMAKE_CURRENT_BINARY_DIR}/samples)

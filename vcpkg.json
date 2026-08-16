@@ -17,6 +17,7 @@
     "libpqxx",
     "redis-plus-plus",
     "clickhouse-cpp",
+    "onnxruntime",
     {
       "name": "curl",
       "features": [

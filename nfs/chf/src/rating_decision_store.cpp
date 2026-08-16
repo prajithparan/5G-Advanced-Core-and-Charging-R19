@@ -33,11 +33,17 @@ void RatingDecisionStore::record(const RatingDecisionRecord& decision) {
         // (see rating.hpp's own AppliedBillingTaxRate, modeled but not populated from any real
         // rate table), so the two real TMF678 fields are not yet meaningfully distinguished, not
         // fabricated as more sophisticated than they are.
+        // P4.8 (ADR-0074): ai_advisory is a nullable jsonb column -- pqxx::params binds
+        // std::optional<std::string> as SQL NULL when empty, same convention already used for
+        // tariffVersion/currency/acbrType above.
+        const std::optional<std::string> ai_advisory_json =
+            decision.aiAdvisory.has_value() ? std::make_optional(decision.aiAdvisory->dump())
+                                            : std::nullopt;
         txn.exec("INSERT INTO rating_decision "
                  "(id, tariff_id, tariff_version, rating_group, input_snapshot, rated_amount, "
-                 "currency, rule_fired_id, acbr_type, acbr_is_billed, acbr_tax_excluded, "
-                 "acbr_tax_included) "
-                 "VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,false,$10,$10)",
+                 "currency, rule_fired_id, ai_advisory, acbr_type, acbr_is_billed, "
+                 "acbr_tax_excluded, acbr_tax_included) "
+                 "VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9::jsonb,$10,false,$11,$11)",
                  pqxx::params{id,
                               decision.tariffId,
                               decision.tariffVersion,
@@ -46,6 +52,7 @@ void RatingDecisionStore::record(const RatingDecisionRecord& decision) {
                               decision.ratedAmount,
                               decision.currency,
                               decision.ruleFiredId,
+                              ai_advisory_json,
                               decision.acbrType,
                               decision.ratedAmount});
 
@@ -55,10 +62,18 @@ void RatingDecisionStore::record(const RatingDecisionRecord& decision) {
         const auto audit_id = txn.exec("SELECT nextval('audit_record_id_seq')::text AS id")
                                   .one_row()["id"]
                                   .as<std::string>();
+        // P4.8 (ADR-0074): ai_advisory_ref carries the model id/version (MLflow run id) an AI
+        // advisory came from, when one was present -- audit_record's own real, separate
+        // governance-traceability field (schema.postgres.sql), distinct from rating_decision's own
+        // full ai_advisory JSON blob.
+        const std::optional<std::string> ai_advisory_ref =
+            decision.aiAdvisory.has_value() && decision.aiAdvisory->contains("model_version")
+                ? std::make_optional(decision.aiAdvisory->at("model_version").get<std::string>())
+                : std::nullopt;
         txn.exec("INSERT INTO audit_record (id, entity_type, entity_id, action, actor, "
-                 "after_snapshot) VALUES ($1,'RATING_DECISION',$2,'ratingDecision.record',"
-                 "'chf',$3::jsonb)",
-                 pqxx::params{audit_id, id, decision.inputSnapshot.dump()});
+                 "after_snapshot, ai_advisory_ref) VALUES ($1,'RATING_DECISION',$2,"
+                 "'ratingDecision.record','chf',$3::jsonb,$4)",
+                 pqxx::params{audit_id, id, decision.inputSnapshot.dump(), ai_advisory_ref});
 
         txn.commit();
     } catch (const std::exception& e) {

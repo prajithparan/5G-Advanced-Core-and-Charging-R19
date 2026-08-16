@@ -141,4 +141,40 @@ private:
     std::shared_ptr<sw::redis::Redis> redis_;
 };
 
+// P4.8 (CHARGING_PROMPT.md Angle 1a, ADR-0074): rolling per-SUPI/per-ratingGroup consumption
+// history -- the real feature source for AiQuotaSizer::predict (nfs/chf/src/ai_inference.hpp).
+// Deliberately Redis-backed, not a live ClickHouse query per charging request: querying
+// ClickHouse synchronously inside the real-time Nchf_ConvergedCharging path would add
+// unpredictable latency to the exact path P4.8's own hard-latency-budget requirement protects --
+// this rolling window is the same cheap, already-established hot-path-state pattern every other
+// store in this file uses (ChargingDataStore, SpendingLimitSubscriptionStore).
+struct QuotaHistorySnapshot {
+    std::vector<double> recentUsedVolumes; // most-recent-first, up to 3 entries (octets)
+    std::optional<std::int64_t> lastInvocationUnixSec;
+    std::optional<double> lastGrantedTotalVolume; // octets
+};
+
+class QuotaFeatureStore {
+public:
+    explicit QuotaFeatureStore(std::shared_ptr<sw::redis::Redis> redis)
+        : redis_(std::move(redis)) {}
+
+    // std::nullopt only when there is truly no prior history for this SUPI+ratingGroup (the
+    // real, disclosed cold-start case: charging_engine.cpp skips AI-adjusted sizing entirely and
+    // falls back to the plain deterministic grant, same as AiQuotaSizer being disabled).
+    std::optional<QuotaHistorySnapshot> get(const std::string& supi, std::int64_t rating_group);
+
+    // Call once real usage (usedUnitContainer) has actually been reported for this request --
+    // shifts the rolling window and records this request's own granted volume as the baseline
+    // the NEXT prediction's multiplier will be measured against.
+    void record_usage(const std::string& supi,
+                      std::int64_t rating_group,
+                      double used_total_volume,
+                      std::optional<double> granted_total_volume,
+                      std::int64_t invocation_unix_sec);
+
+private:
+    std::shared_ptr<sw::redis::Redis> redis_;
+};
+
 } // namespace chf

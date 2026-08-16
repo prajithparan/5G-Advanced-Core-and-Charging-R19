@@ -318,8 +318,16 @@ services:
       # this override once they became separate containers.
       CHF_PRODUCT_CATALOG_BASE: https://product-catalog:7785
       CHF_BALANCE_MANAGEMENT_BASE: https://balance-management:7786
+      # P4.8/ADR-0074: real kill switch, defaults OFF -- a fresh checkout has no trained model
+      # until nfs/chf/training/train_quota_sizing.py is actually run (see .gitignore's own
+      # comment on nfs/chf/training/models/), so this must not silently default to "on" against a
+      # model file that doesn't exist. Override via `CHF_AI_QUOTA_SIZING_ENABLED=true docker
+      # compose up` once a real model has been trained into the mounted models/ directory below.
+      CHF_AI_QUOTA_SIZING_ENABLED: "${CHF_AI_QUOTA_SIZING_ENABLED:-false}"
+      CHF_QUOTA_MODEL_PATH: /build/models/quota_sizing.onnx
     volumes:
       - certs_data:/build/certs
+      - ../../nfs/chf/training/models:/build/models:ro
     ports:
       - "7784:7784" # Nchf_ConvergedCharging + Nchf_OfflineOnlyCharging + Nchf_SpendingLimitControl
       - "3868:3868" # Diameter Gy + Rf + Sy (ADR-0059)

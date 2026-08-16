@@ -1151,3 +1151,42 @@ own disclosed follow-up, not fixed here) and `UdmIntegration.SdmDataRetrievalAnd
 `UdrIntegration.AmfContextLifecycle` (pre-existing environmental flakiness, ADR-0071/-0072) are
 not new regressions from this ADR. Not yet exercised: a real GitHub Actions run of the new CI
 wiring.
+
+## P4.8 Stage 2a -- AI-native CHF online path, predictive quota sizing (ADR-0074)
+
+Real ONNX Runtime in-process C++ inference for predictive quota sizing (CHARGING_PROMPT.md Angle
+1a), the first of P4.8's six named capabilities, plus the shared substrate (latency budget, kill
+switch, governance logging, MLflow-versioned Python training sidecar) the other five will reuse.
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| `AiQuotaSizer`: kill switch, cold-start/missing-model handling, real ONNX inference | CHARGING_PROMPT.md Section B governance rules ("charging must never block on a model") | `tests/conformance/test_ai_inference.cpp`, 6 tests: disabled/no-path/missing-file all correctly disabled; real model loads and predicts an exactly-known value; model-version sidecar file read correctly |
+| `build_rating_grant`: AI-predicted usage -> deterministic `[0.5x, 2.0x]` clamp -> bounded grant adjustment | "This model informs the decision. The deterministic rating engine makes it." (CHARGING_PROMPT.md Section B) | live: cold-start Create/Update #1 unaffected (exactly 1,000,000,000 octets); history-informed Update #2 = 975,951,616 octets (0.976x, unclamped); a rising-usage scenario produced a real upward adjustment (1.731x, 1,731,488,000 octets) |
+| Governance logging: model id/version, feature vector, predicted usage, applied multiplier, clamp state | `rating_decision.ai_advisory` (reserved since ADR-0049), `audit_record.ai_advisory_ref` | live: direct Postgres query confirmed `ai_advisory` populated with the real MLflow run id and full real feature vector for an AI-adjusted decision, and correctly absent (NULL) for the two cold-start decisions in the same session |
+
+**Real bugs found and fixed via live testing, not assumed correct**:
+1. MLflow 3.x's filesystem tracking store (`file://./mlruns`) is now in maintenance mode and
+   refuses writes -- fixed with a local SQLite backend (`sqlite:///mlflow.db`).
+2. The synthetic bootstrap dataset's feature ranges (`[1e6, 5e8]` octets) were far below a
+   realistic GB-scale base grant (`1e9`) -- caught because a live 1GB test scenario produced a
+   materially-shrunk grant (0.518x) that traced back to the model extrapolating outside its
+   training range. Fixed by widening the ranges to `[1e7, 1e10]`.
+3. ONNX Runtime requires exactly ONE `Ort::Env` per process -- the first version constructed one
+   per `AiQuotaSizer`, invisible in production CHF (one instance) but breaking immediately in the
+   5-instance unit test with real "Schema error: already registered" failures. Fixed with a
+   function-local-static `Env` singleton.
+4. A deeper vcpkg static-linking bug: `ONNX::onnx`'s operator-schema self-registration object
+   files were silently dropped by default static linking (fixed with CMake's
+   `$<LINK_LIBRARY:WHOLE_ARCHIVE,...>`), AND the vcpkg `onnx` port itself never sets
+   `ONNX_DISABLE_STATIC_REGISTRATION=ON`, which `onnxruntime`'s own portfile explicitly warns is
+   required -- fixed with a new `overlay-ports/onnx/` + `vcpkg-configuration.json` (a standard
+   vcpkg mechanism, not a hack). Confirmed fixed via both the unit tests and live model loading.
+
+**Disclosed, real scope limits**: only predictive quota sizing (capability 1 of 6) is built --
+adaptive reauth triggers, fraud scoring, bill-shock prediction, TPS spike prediction, and
+mediation error prediction are separate, approved follow-on turns. AI adjustment only applies to
+the real HTTP `Nchf_ConvergedCharging` path (Diameter Gy, CAP gsmSCF unchanged) -- P4.8's own
+success metric is specifically about `Nchf` round-trips. No genuine "N% fewer Update calls"
+metric is claimed -- the synthetic bootstrap model exists only to prove the pipeline is real and
+functional; a real measurement needs real production usage data this lab environment doesn't have
+yet.

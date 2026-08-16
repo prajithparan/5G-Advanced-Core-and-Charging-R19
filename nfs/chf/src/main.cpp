@@ -379,6 +379,23 @@ int main() {
         spdlog::warn("chf: PostgreSQL unavailable, RatingDecision audit disabled for this process");
     }
 
+    // P4.8 (CHARGING_PROMPT.md Angle 1a, ADR-0074): real ONNX Runtime in-process inference for
+    // predictive quota sizing. Real kill switch (CHF_AI_QUOTA_SIZING_ENABLED, default OFF until
+    // proven -- see this project's own procedure-list approval) and real model path
+    // (CHF_QUOTA_MODEL_PATH, produced by nfs/chf/training/train_quota_sizing.py) -- both getenv-
+    // based, same never-hardcode-config precedent as chf_redis_conninfo/chf_clickhouse_options
+    // above. Only main.cpp's real HTTP Nchf_ConvergedCharging Create/Update handlers below use
+    // this -- Diameter Gy and CAP gsmSCF stay deterministic-only (charging_engine.hpp's own
+    // header comment explains why).
+    const bool ai_quota_sizing_enabled = [] {
+        const char* env = std::getenv("CHF_AI_QUOTA_SIZING_ENABLED");
+        return env != nullptr && std::string(env) == "true";
+    }();
+    const std::string quota_model_path =
+        std::getenv("CHF_QUOTA_MODEL_PATH") ? std::getenv("CHF_QUOTA_MODEL_PATH") : "";
+    chf::AiQuotaSizer ai_quota_sizer(quota_model_path, ai_quota_sizing_enabled);
+    chf::QuotaFeatureStore quota_feature_store(redis);
+
     // CHF's own client to bss/product-catalog (ADR-0048) -- mTLS only, no OAuth2 (product-catalog
     // has no NRF-issued token source, see ADR-0047). Only ever touched from route handlers, which
     // all run on ioc's single thread -- same "second client safe on the shared ioc thread" pattern
@@ -565,7 +582,9 @@ int main() {
          &grant_counter,
          &reserve_rejected_counter,
          &cdr_writer,
-         &rating_decision_store](const sbi_core::http2::Request& req) {
+         &rating_decision_store,
+         &ai_quota_sizer,
+         &quota_feature_store](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -625,7 +644,9 @@ int main() {
                         supi,
                         body->nfConsumerIdentification.nodeFunctionality.value,
                         body->invocationSequenceNumber,
-                        usage);
+                        usage,
+                        &ai_quota_sizer,
+                        &quota_feature_store);
                     if (charged.reserved && charged.rating.grant.has_value()) {
                         info.grantedUnit = charged.rating.grant;
                         // ADR-0072 (gap-closure: real N40 product-configurability): real
@@ -664,7 +685,9 @@ int main() {
          &grant_counter,
          &reserve_rejected_counter,
          &cdr_writer,
-         &rating_decision_store](const sbi_core::http2::Request& req) {
+         &rating_decision_store,
+         &ai_quota_sizer,
+         &quota_feature_store](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -733,7 +756,9 @@ int main() {
                         supi,
                         body->nfConsumerIdentification.nodeFunctionality.value,
                         body->invocationSequenceNumber,
-                        usage);
+                        usage,
+                        &ai_quota_sizer,
+                        &quota_feature_store);
                     if (charged.reserved && charged.rating.grant.has_value()) {
                         info.grantedUnit = charged.rating.grant;
                         // ADR-0072 (gap-closure: real N40 product-configurability): real

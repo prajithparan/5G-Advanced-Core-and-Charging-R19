@@ -34,3 +34,13 @@ __pycache__/
 # not vendored into this repo. See docs/DECISIONS.md ADR-0016.
 /simulators/ransim/vendor/
 /simulators/ransim/logs/
+
+# P4.8/ADR-0074: nfs/chf/training/train_quota_sizing.py's own venv, local MLflow tracking DB, and
+# trained model artifacts -- regenerable, not vendored (same "not a secret, just regenerable dev
+# output" reasoning as /certs/ above). Real, disclosed: this means a fresh checkout has NO trained
+# model until someone actually runs the training script -- CHF_AI_QUOTA_SIZING_ENABLED defaults to
+# false for exactly this reason, not silently degrading a "should be working" feature.
+nfs/chf/training/.venv/
+nfs/chf/training/mlflow.db
+nfs/chf/training/models/
+nfs/chf/training/mlruns/

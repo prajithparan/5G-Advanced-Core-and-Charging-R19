@@ -30,6 +30,11 @@ std::string policy_counter_config_key(const std::string& policy_counter_id) {
     return std::string(kPolicyCounterConfigKeyPrefix) + policy_counter_id;
 }
 
+// P4.8 (ADR-0074): real per-SUPI/per-ratingGroup rolling feature key.
+std::string quota_feature_key(const std::string& supi, std::int64_t rating_group) {
+    return "chf:quotafeat:" + supi + ":" + std::to_string(rating_group);
+}
+
 std::string charging_data_content_key(const std::string& ref) {
     return "chf:cdr:content:" + ref;
 }
@@ -160,6 +165,62 @@ PolicyCounterConfigStore::get_status(const std::string& policy_counter_id) {
         return std::nullopt;
     }
     return std::make_optional(*value);
+}
+
+std::optional<QuotaHistorySnapshot> QuotaFeatureStore::get(const std::string& supi,
+                                                           std::int64_t rating_group) {
+    const auto key = quota_feature_key(supi, rating_group);
+    std::vector<sw::redis::OptionalString> values;
+    redis_->hmget(key, {"u1", "u2", "u3", "ts", "g"}, std::back_inserter(values));
+    // hmget returns one entry per requested field, nullopt when unset -- a hash with no "u1" at
+    // all means this SUPI+ratingGroup has never reported usage before (real cold start).
+    // sw::redis::Optional<T> is redis-plus-plus's own pre-C++17 Optional, not std::optional --
+    // real, disclosed API mismatch found via actual compilation: it has `explicit operator
+    // bool()`/`operator*()`, not `.has_value()`.
+    if (!values[0]) {
+        return std::nullopt;
+    }
+    QuotaHistorySnapshot snapshot;
+    for (const std::size_t idx : {std::size_t{0}, std::size_t{1}, std::size_t{2}}) {
+        if (values[idx]) {
+            snapshot.recentUsedVolumes.push_back(std::stod(*values[idx]));
+        }
+    }
+    if (values[3]) {
+        snapshot.lastInvocationUnixSec = std::stoll(*values[3]);
+    }
+    if (values[4]) {
+        snapshot.lastGrantedTotalVolume = std::stod(*values[4]);
+    }
+    return snapshot;
+}
+
+void QuotaFeatureStore::record_usage(const std::string& supi,
+                                     std::int64_t rating_group,
+                                     double used_total_volume,
+                                     std::optional<double> granted_total_volume,
+                                     std::int64_t invocation_unix_sec) {
+    const auto key = quota_feature_key(supi, rating_group);
+    // Shift the rolling window: this request's own used_total_volume becomes the new "most
+    // recent" (u1); the old u1/u2 slide down. Real, disclosed non-atomicity: this is a
+    // read-then-write (hmget then hset), same concurrency-simplification level as
+    // SpendingLimitSubscriptionStore::update's own check-then-act -- acceptable at this project's
+    // real lab scale, not claimed to be race-free under concurrent Updates for the same
+    // SUPI+ratingGroup.
+    std::vector<sw::redis::OptionalString> prior;
+    redis_->hmget(key, {"u1", "u2"}, std::back_inserter(prior));
+
+    redis_->hset(key, "u1", std::to_string(used_total_volume));
+    if (prior[0]) {
+        redis_->hset(key, "u2", *prior[0]);
+    }
+    if (prior[1]) {
+        redis_->hset(key, "u3", *prior[1]);
+    }
+    redis_->hset(key, "ts", std::to_string(invocation_unix_sec));
+    if (granted_total_volume.has_value()) {
+        redis_->hset(key, "g", std::to_string(*granted_total_volume));
+    }
 }
 
 } // namespace chf

@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS rating_decision (
     currency             TEXT,
     rule_fired_id         TEXT,          -- which ProductOffering/ProductOfferingPrice fired
                                         -- (principle 2: "every charge is explainable")
-    ai_advisory           JSONB,          -- nullable; not populated until P4.8 (AI layer)
+    ai_advisory           JSONB,          -- nullable; populated by P4.8's real AiQuotaSizer when
+                                        -- it actually adjusted this decision's grant (ADR-0074)
     decided_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- Real TMF678 AppliedCustomerBillingRate fields (E5's own real SID mapping):
     acbr_type             TEXT,          -- appliedBillingCharge | appliedBillingCredit | appliedPenaltyCharge

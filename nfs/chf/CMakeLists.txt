@@ -31,7 +31,22 @@ target_link_libraries(clickhouse_cpp INTERFACE absl::int128 cityhash lz4::lz4 zs
 # assignment) -- CHF's first real PostgreSQL connection.
 find_package(libpqxx CONFIG REQUIRED)
 
-add_executable(chf src/main.cpp src/stores.cpp src/cdr.cpp src/diameter_server.cpp src/rating_decision_store.cpp src/charging_engine.cpp src/cap_server.cpp)
-target_link_libraries(chf PRIVATE sbi_core sbi_generated bss_sid redis++::redis++_static clickhouse_cpp diameter_core libpqxx::pqxx ss7_core tcap_core cap_core tbcd_core)
+# onnxruntime (P4.8/ADR-0074: real in-process C++ inference for predictive quota sizing).
+# find_package(onnxruntime CONFIG) genuinely works for this port (unlike clickhouse-cpp above) --
+# confirmed by successful compilation. Real, disclosed static-linking bug found via this ADR's own
+# unit tests (tests/conformance/test_ai_inference.cpp): a plain static link of ONNX::onnx (pulled
+# in transitively by onnxruntime::onnxruntime) drops most of its operator-schema
+# self-registration object files, since nothing in this executable directly references their
+# symbols (ar-style static archives only pull in .o files that resolve an undefined symbol) --
+# ONNX Runtime then fails to load ANY real model with "SchemasRegisterer" assertion failures ("4
+# schema were exposed... 741 were expected"). Fixed with CMake's portable whole-archive link-library
+# generator expression, forcing every object file in libonnx.a into the final binary regardless of
+# whether anything references it directly -- the standard real fix for self-registering-global
+# static libraries, not a workaround specific to this project.
+find_package(onnxruntime CONFIG REQUIRED)
+find_package(ONNX CONFIG REQUIRED)
+
+add_executable(chf src/main.cpp src/stores.cpp src/cdr.cpp src/diameter_server.cpp src/rating_decision_store.cpp src/charging_engine.cpp src/cap_server.cpp src/ai_inference.cpp)
+target_link_libraries(chf PRIVATE sbi_core sbi_generated bss_sid redis++::redis++_static clickhouse_cpp diameter_core libpqxx::pqxx ss7_core tcap_core cap_core tbcd_core onnxruntime::onnxruntime "$<LINK_LIBRARY:WHOLE_ARCHIVE,ONNX::onnx>")
 # See nfs/hello-nf/CMakeLists.txt for why this is a compile-time absolute path.
 target_compile_definitions(chf PRIVATE CERTS_DIR="${CMAKE_SOURCE_DIR}/certs")

@@ -25,6 +25,7 @@
 // TS29594_Nchf_SpendingLimitControl's own types now live in TS29122_CommonData_grp.hpp -- see
 // stores.hpp's own comment (ADR-0072).
 #include "TS29122_CommonData_grp.hpp"
+#include "ai_inference.hpp"
 #include "bss_sid/balance.hpp"
 #include "bss_sid/product.hpp"
 #include "cdr.hpp"
@@ -76,6 +77,12 @@ struct RatingResult {
     std::optional<std::int64_t> volumeQuotaThreshold;
     std::optional<std::int64_t> timeQuotaThreshold;
     std::optional<std::int64_t> unitQuotaThreshold;
+    // P4.8 (ADR-0074): present only when AiQuotaSizer actually adjusted this grant -- model
+    // id/version, input feature vector, predicted usage, and the deterministic clamp that was
+    // applied. std::nullopt in every other case (AI disabled, cold start, non-volume grant,
+    // latency budget exceeded) -- a real, valid "no advisory" state, not an error. Flows straight
+    // into RatingDecisionRecord::aiAdvisory (write_rating_decision below) for governance logging.
+    std::optional<nlohmann::json> aiAdvisory;
 };
 
 // UPDATE (ADR-0072, gap-closure: real N40 product-configurability). Real, fixed correctness gap:
@@ -104,7 +111,21 @@ struct RatingResult {
 // matching 3GPP's own octet-counting convention, not binary GiB/MiB) convert to totalVolume; any
 // other unit string falls back to serviceSpecificUnits carrying the raw amount unconverted --
 // disclosed as a real but narrow conversion, not a general unit-aware rating engine.
-RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client, std::int64_t rating_group);
+//
+// P4.8 (ADR-0074): supi/ai_quota_sizer/quota_feature_store are all optional (default empty/
+// nullptr -- every existing caller before this ADR keeps compiling and behaving identically).
+// When all three are real (non-empty supi, an enabled AiQuotaSizer, a QuotaFeatureStore with
+// prior history for this SUPI+ratingGroup) AND the matched price grants totalVolume (the
+// "narrow conversion" case above -- serviceSpecificUnits grants are not AI-adjusted, a real,
+// disclosed scope choice, not an oversight), the AI-predicted usage is turned into a
+// DETERMINISTIC multiplier clamped to [0.5x, 2.0x] of the price-configured grant and applied to
+// it -- see charging_engine.cpp's own implementation comment for the exact deterministic rule.
+// "This model informs the decision. The deterministic rating engine makes it."
+RatingResult build_rating_grant(sbi_core::http2::Client& catalog_client,
+                                std::int64_t rating_group,
+                                const std::string& supi = "",
+                                AiQuotaSizer* ai_quota_sizer = nullptr,
+                                QuotaFeatureStore* quota_feature_store = nullptr);
 
 // P4.3 (ADR-0057): CHF as a real HTTP client of bss/balance-management (ADR-0056) -- reserves
 // `cost` against the real per-subscriber Bucket keyed by SUPI (this project's own disclosed
@@ -162,6 +183,12 @@ struct ChargeUsageResult {
 // The single, shared code path: rating, balance reservation, CDR write, RatingDecision audit --
 // called identically by Nchf_ConvergedCharging's real HTTP Create/Update handlers (main.cpp) and
 // the real Diameter Gy CCR handler (diameter_server.cpp).
+//
+// P4.8 (ADR-0074): ai_quota_sizer/quota_feature_store default to nullptr -- the Diameter Gy
+// (diameter_server.cpp) and CAP gsmSCF (cap_server.cpp) call sites are left unchanged and stay
+// deterministic-only, a real, disclosed scope choice: P4.8's own success metric (reduction in
+// Nchf round-trips) is specifically about the HTTP Nchf_ConvergedCharging path, so only main.cpp's
+// real Create/Update handlers pass the real pointers.
 ChargeUsageResult
 charge_one_usage(sbi_core::http2::Client& catalog_client,
                  sbi_core::http2::Client& balance_client,
@@ -175,7 +202,9 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
                  const std::string& supi,
                  const std::string& node_functionality,
                  std::int64_t invocation_sequence_number,
-                 const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage);
+                 const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
+                 chf::AiQuotaSizer* ai_quota_sizer = nullptr,
+                 chf::QuotaFeatureStore* quota_feature_store = nullptr);
 
 // P4.2/ADR-0055, TS 29.594 (Nchf_SpendingLimitControl): builds the real SpendingLimitStatus both
 // Subscribe/Update return, per the real confirmed schema. Extracted from main.cpp (was anonymous-

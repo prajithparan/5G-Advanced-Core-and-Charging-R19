@@ -30,6 +30,12 @@ struct RatingDecisionRecord {
     std::string ruleFiredId;
     std::optional<std::string>
         acbrType; // appliedBillingCharge | appliedBillingCredit | appliedPenaltyCharge
+    // P4.8 (ADR-0074): real governance logging per CHARGING_PROMPT.md's mandatory model-
+    // governance rules -- model id/version, input feature vector, output score, and which
+    // deterministic bound actually applied. std::nullopt when AI quota sizing didn't run for this
+    // decision (kill switch off, cold start, latency budget exceeded, or this rating_group's
+    // price simply wasn't AI-adjustable) -- a real, valid "no advisory" state, not an error.
+    std::optional<nlohmann::json> aiAdvisory;
 };
 
 class RatingDecisionStore {
