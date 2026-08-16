@@ -14,14 +14,19 @@
 // SmfRegistrationStore are NOT wired to call UDR yet; that remains a separate, deliberate future
 // turn touching already-committed UDM code, not silently done here.
 //
-// Deliberately deferred, not dropped: the `provisioned-data` group (am-data/smf-selection-
-// subscription-data/sm-data -- GET-only in this spec, no way to provision it through this API at
-// all, so implementing it now would just be another permanently-empty stub, no more useful than
-// nfs/udm's existing disclosed GetAmData/GetSmfSelData/GetSmData stub); authentication-data
-// (AUSF doesn't exist yet); ue-update-confirmation-data (SoR/UPU); context-data's other sub-
-// resources (non-3gpp-access, smsf-3gpp/non-3gpp, ip-sm-gw, mwd, roaming-information, pei-info,
-// ee-subscriptions, sdm-subscriptions, nidd-authorizations); operator-specific-data; lcs-*;
-// pp-data; group-data; shared-data; subs-to-notify; all of TS29504_Nudr_GroupIDmap.yaml.
+// UPDATE (ADR-0069, gap-closure Tier 1b): the `provisioned-data` group (am-data/smf-selection-
+// subscription-data/sm-data) is now implemented -- real GET routes, keyed by (ueId,
+// servingPlmnId) per the real path shape. Still real, disclosed: this group is genuinely GET-only
+// in the spec (no create/update operation exists at all), so there is no live provisioning path;
+// data is seeded at startup instead (see main() below), and nfs/udm's own GetAmData/GetSmfSelData/
+// GetSmData now call these real routes instead of returning the old permanently-empty stub.
+//
+// Deliberately still deferred, not dropped: authentication-data (real AUSF/UDM auth flow exists
+// now, but this UDR resource group itself is separate, still not implemented here);
+// ue-update-confirmation-data (SoR/UPU); context-data's other sub-resources (non-3gpp-access,
+// smsf-3gpp/non-3gpp, ip-sm-gw, mwd, roaming-information, pei-info, ee-subscriptions,
+// sdm-subscriptions, nidd-authorizations); operator-specific-data; lcs-*; pp-data; group-data;
+// shared-data; subs-to-notify; all of TS29504_Nudr_GroupIDmap.yaml.
 //
 // RFC 6902 JSON Patch, not RFC 7396 Merge Patch: AmfContext3gpp and UpdateSmfContext both use
 // application/json-patch+json (confirmed by reading the YAML directly), unlike UDM's
@@ -210,6 +215,34 @@ int main() {
     const auto conninfo = database_conninfo();
     udr::AmfContextStore amf_contexts(conninfo);
     udr::SmfRegistrationStore smf_registrations(conninfo);
+    udr::ProvisionedDataStore provisioned_data(conninfo);
+
+    // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
+    // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
+    // header), so there is no live provisioning path yet; seeded here for the same two real test
+    // SUPIs nfs/udm/src/main.cpp's own AuthenticationSubscriptionStore already seeds
+    // ("imsi-999700000000001"/"...002", UERANSIM's own real test values), so a real end-to-end
+    // AUSF->UDM->UDR chain has real, non-empty data to return for at least these subscribers.
+    // servingPlmnId "99970" = this project's own real lab PLMN, mcc=999/mnc=70 (ADR-0016),
+    // VarPlmnId's real format per TS29505_Subscription_Data.yaml (mcc+mnc concatenated).
+    // sst=1/sd="000001" matches that same ADR-0016 lab S-NSSAI. dnn="internet" is the real,
+    // standard default DNN/APN name used industry-wide (free5gc/open5gs both default to it too),
+    // not invented for this project. SmfSelectionSubscriptionData.subscribedSnssaiInfos and
+    // SessionManagementSubscriptionData.dnnConfigurations are real, cited, opaque-JSON fields this
+    // codegen couldn't strongly type (OPAQUE FALLBACK) -- left unpopulated here, a real, disclosed
+    // gap rather than a guessed nested shape.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json am_data;
+        am_data["nssai"]["defaultSingleNssais"] = json::array({json{{"sst", 1}, {"sd", "000001"}}});
+        json sm_data;
+        sm_data["singleNssai"] = json{{"sst", 1}, {"sd", "000001"}};
+        provisioned_data.seed(supi,
+                              "99970",
+                              std::make_optional(am_data),
+                              std::make_optional(json::object()),
+                              std::make_optional(sm_data));
+    }
 
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
@@ -219,6 +252,9 @@ int main() {
                                    "Total CreateOrUpdateSmfRegistration/UpdateSmfContext calls");
     auto smf_reg_delete_counter = meter->CreateUInt64Counter("udr_smf_registration_delete_total",
                                                              "Total DeleteSmfRegistration calls");
+    auto provisioned_data_get_counter = meter->CreateUInt64Counter(
+        "udr_provisioned_data_get_total",
+        "Total provisioned-data am-data/smf-selection-subscription-data/sm-data GET calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -431,6 +467,72 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Nudr_DataRepository: provisioned-data group (ADR-0069, gap-closure Tier 1b) -- real,
+    // GET-only per spec (see this file's own header), keyed by (ueId, servingPlmnId) per the real
+    // path shape TS29505_Subscription_Data.yaml defines. ---
+
+    const std::string provisioned_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/{servingPlmnId}/provisioned-data";
+
+    server.add_route(
+        "GET",
+        provisioned_data_path_pattern + "/am-data",
+        [&verifier, &provisioned_data, &provisioned_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto serving_plmn_id = req.path_params.at("servingPlmnId");
+            auto data = provisioned_data.get_am_data(ue_id, serving_plmn_id);
+            provisioned_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No provisioned am-data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "GET",
+        provisioned_data_path_pattern + "/smf-selection-subscription-data",
+        [&verifier, &provisioned_data, &provisioned_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto serving_plmn_id = req.path_params.at("servingPlmnId");
+            auto data = provisioned_data.get_smf_sel_data(ue_id, serving_plmn_id);
+            provisioned_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No provisioned smf-selection-subscription-data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "GET",
+        provisioned_data_path_pattern + "/sm-data",
+        [&verifier, &provisioned_data, &provisioned_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto serving_plmn_id = req.path_params.at("servingPlmnId");
+            auto data = provisioned_data.get_sm_data(ue_id, serving_plmn_id);
+            provisioned_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No provisioned sm-data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id).detach();

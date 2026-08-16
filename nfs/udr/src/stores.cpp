@@ -110,6 +110,71 @@ bool SmfRegistrationStore::remove(const std::string& ue_id, const std::string& p
     return result.affected_rows() > 0;
 }
 
+ProvisionedDataStore::ProvisionedDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void ProvisionedDataStore::seed(const std::string& ue_id,
+                                const std::string& serving_plmn_id,
+                                std::optional<nlohmann::json> am_data,
+                                std::optional<nlohmann::json> smf_sel_data,
+                                std::optional<nlohmann::json> sm_data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_provisioned_data "
+             "(ue_id, serving_plmn_id, am_data, smf_sel_data, sm_data) "
+             "VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb) "
+             "ON CONFLICT (ue_id, serving_plmn_id) DO UPDATE SET "
+             "am_data = EXCLUDED.am_data, smf_sel_data = EXCLUDED.smf_sel_data, "
+             "sm_data = EXCLUDED.sm_data",
+             pqxx::params{
+                 ue_id,
+                 serving_plmn_id,
+                 am_data.has_value() ? std::optional<std::string>(am_data->dump()) : std::nullopt,
+                 smf_sel_data.has_value() ? std::optional<std::string>(smf_sel_data->dump())
+                                          : std::nullopt,
+                 sm_data.has_value() ? std::optional<std::string>(sm_data->dump()) : std::nullopt});
+    txn.commit();
+}
+
+namespace {
+
+std::optional<nlohmann::json> get_provisioned_column(pqxx::connection& conn,
+                                                     std::mutex& mutex,
+                                                     const std::string& column,
+                                                     const std::string& ue_id,
+                                                     const std::string& serving_plmn_id) {
+    std::lock_guard<std::mutex> lock(mutex);
+    pqxx::work txn(conn);
+    const auto result = txn.exec(
+        "SELECT " + column + " FROM udr_provisioned_data WHERE ue_id = $1 AND serving_plmn_id = $2",
+        pqxx::params{ue_id, serving_plmn_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    const auto value = result.front()[0].as<std::optional<std::string>>();
+    if (!value.has_value()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(*value));
+}
+
+} // namespace
+
+std::optional<nlohmann::json>
+ProvisionedDataStore::get_am_data(const std::string& ue_id, const std::string& serving_plmn_id) {
+    return get_provisioned_column(conn_, mutex_, "am_data", ue_id, serving_plmn_id);
+}
+
+std::optional<nlohmann::json>
+ProvisionedDataStore::get_smf_sel_data(const std::string& ue_id,
+                                       const std::string& serving_plmn_id) {
+    return get_provisioned_column(conn_, mutex_, "smf_sel_data", ue_id, serving_plmn_id);
+}
+
+std::optional<nlohmann::json>
+ProvisionedDataStore::get_sm_data(const std::string& ue_id, const std::string& serving_plmn_id) {
+    return get_provisioned_column(conn_, mutex_, "sm_data", ue_id, serving_plmn_id);
+}
+
 std::vector<nlohmann::json> SmfRegistrationStore::list_for_ue(const std::string& ue_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(conn_);

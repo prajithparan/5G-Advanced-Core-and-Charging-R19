@@ -1023,3 +1023,22 @@ replacing `std::unordered_map` with real `pqxx::connection`-backed PostgreSQL st
 UDR (Tier 1b, separate turn). No MongoDB-specific behavior (transactions, replica sets) was
 replicated -- only the real persistence property both references share, via this project's own
 mandated PostgreSQL stack.
+
+## `nfs/udm` <-> `nfs/udr`: real Nudm_SDM provisioned-data wiring (gap-closure Tier 1b, ADR-0069)
+
+open5gs's own UDM (`src/udm/nudr-build.c`/`nudr-handler.c`) genuinely fetches subscriber data from
+UDR; this project's UDM previously always returned an empty stub. Closed by adding UDR's real
+`provisioned-data` group (GET-only per spec, seeded at startup) and wiring UDM's three SDM GET
+handlers to real `Nudr_DataRepository` calls.
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| `GetAmData`/`GetSmfSelData`/`GetSmData` return real, non-empty data for a real subscriber | real cross-NF SBI call to UDR, not a stub | `UdmIntegration.SdmDataRetrievalAndSubscriptions` (updated to spawn a real `udr` process and assert real `nssai` content); manual real end-to-end `curl` verification this ADR's own section describes |
+| A genuinely unprovisioned SUPI returns real `404`, not a schema-valid empty body | -- | same test, added case for `imsi-999999999999999` |
+| UDR's own real `provisioned-data` GET routes | TS29505_Subscription_Data.yaml `/subscription-data/{ueId}/{servingPlmnId}/provisioned-data/*` | exercised transitively by the same `UdmIntegration.SdmDataRetrievalAndSubscriptions` test (no separate UDR-side test file -- this group has no create/update operation to test independently of a real consumer) |
+
+**Disclosed gaps**: `provisioned-data` remains seed-data-only (spec is GET-only, no live
+provisioning path); `SmfSelectionSubscriptionData.subscribedSnssaiInfos`/
+`SessionManagementSubscriptionData.dnnConfigurations` (`OPAQUE FALLBACK` codegen types) left
+unpopulated, real nested shape not confirmed with confidence in the time available; UDM's own
+UECM registration stores remain NOT wired to UDR (separate, still-open gap).

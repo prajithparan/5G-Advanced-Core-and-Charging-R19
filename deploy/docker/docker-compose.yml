@@ -72,6 +72,11 @@ services:
         condition: service_completed_successfully
       nrf:
         condition: service_started
+      # ADR-0069 (gap-closure Tier 1b): GetAmData/GetSmfSelData/GetSmData now make real
+      # Nudr_DataRepository calls -- same "depends_on the NF it real-calls" pattern ausf's own
+      # dependency on udm already established.
+      udr:
+        condition: service_started
     volumes:
       - certs_data:/build/certs
     ports:

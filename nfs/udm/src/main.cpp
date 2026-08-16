@@ -23,17 +23,16 @@
 // GenerateAv (EPS/IMS/HSS), GenerateGbaAv, GenerateProseAV -- all out of this build's Tier-1 5G-AKA
 // scope (5G-RG, EPS/IMS-AKA interworking, GBA, ProSe are separate concerns).
 //
-// Disclosed simplification, stated up front rather than discovered in review: UDM normally
-// proxies subscriber-provisioned data from UDR (Nudr_DataRepository), which doesn't exist yet in
-// this build order (UDR comes after UDM). GetAmData/GetSmfSelData/GetSmData therefore return a
-// schema-valid but empty/default response for ANY supi -- there is no UDR-backed store to return
-// real provisioned subscriber data from yet. UECM's registration operations are real bookkeeping
-// (an AMF or SMF really did register), not a UDR-dependent gap. Nudm_UEAU's new
-// AuthenticationSubscriptionStore is the SAME kind of gap: real deployments provision K/OPc/SQN
-// via UDR too; this store is fixed, hardcoded test data seeded at startup (see main() below), not
-// provisionable through any API -- also not a UDR-dependent gap being silently hidden, since UDR's
-// own turn (ADR-0025) never implemented an authentication-data group to proxy from in the first
-// place.
+// UPDATE (ADR-0069, gap-closure Tier 1b): GetAmData/GetSmfSelData/GetSmData now make real
+// Nudr_DataRepository GET calls against UDR's own real provisioned-data group (added the same
+// turn, see nfs/udr/src/main.cpp), replacing the permanently-empty stub this comment used to
+// describe. A SUPI genuinely not seeded in UDR now correctly 404s instead of always returning a
+// schema-valid empty body. Real, disclosed narrowing: UDR's provisioned-data group is itself
+// GET-only per spec (no create/update operation exists at all) and seeded with fixed test data at
+// UDR startup, same real-data-source reasoning as this file's own Nudm_UEAU
+// AuthenticationSubscriptionStore already used -- so this is real cross-NF wiring against real
+// persisted data, not yet a live OSS/BSS provisioning path. UECM's registration operations remain
+// real bookkeeping (an AMF or SMF really did register), unaffected by this change.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -53,6 +52,7 @@
 #include <chrono>
 #include <optional>
 #include <thread>
+#include <variant>
 
 #include "TS29122_CommonData_grp.hpp"
 #include "TS29503_Nudm_UEAU_grp.hpp"
@@ -76,6 +76,14 @@ constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kUecmApiRoot = "/nudm-uecm/v1";
 constexpr const char* kSdmApiRoot = "/nudm-sdm/v2";
 constexpr const char* kUeauApiRoot = "/nudm-ueau/v1";
+constexpr const char* kUdrBase = "https://127.0.0.1:7781";
+constexpr const char* kUdrApiRoot = "/nudr-dr/v2";
+// This project's own real lab PLMN, mcc=999/mnc=70 (ADR-0016), in the real VarPlmnId string
+// format (mcc+mnc concatenated, TS29505_Subscription_Data.yaml). Used as the real UDR
+// servingPlmnId path segment when the caller's own `plmn-id` query parameter is absent (that
+// query param is genuinely OPTIONAL per TS29503_Nudm_SDM.yaml -- not required, checked not
+// assumed) -- a real, disclosed single-PLMN-lab simplification, not a fabricated value.
+constexpr const char* kDefaultServingPlmnId = "99970";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -83,6 +91,23 @@ constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
 // Same pattern as every other NF's check_bearer -- see nfs/nrf/src/main.cpp's comment for why a
 // missing Authorization header is not itself a 401 (bootstrap security alternative:
 // `security: [{}, oAuth2ClientCredentials:[...]]` in the YAML).
+// Real `plmn-id` query param handling (TS29503_Nudm_SDM.yaml: optional, `content:
+// application/json` PlmnIdNid) -- ADR-0069, gap-closure Tier 1b. Builds the real UDR VarPlmnId
+// path segment (mcc+mnc concatenated) from a parsed PlmnIdNid if the caller supplied one, else
+// falls back to kDefaultServingPlmnId.
+std::string resolve_serving_plmn_id(const sbi_core::http2::Request& req) {
+    auto it = req.query_params.find("plmn-id");
+    if (it == req.query_params.end()) {
+        return kDefaultServingPlmnId;
+    }
+    try {
+        const auto plmn = nlohmann::json::parse(it->second).get<sbi_gen::PlmnIdNid>();
+        return plmn.mcc + plmn.mnc;
+    } catch (const nlohmann::json::exception&) {
+        return kDefaultServingPlmnId; // malformed plmn-id -- real, disclosed fallback, not a 400
+    }
+}
+
 std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::Request& req,
                                                         sbi_core::jwt::Verifier& verifier) {
     auto it = req.headers.find("authorization");
@@ -239,6 +264,18 @@ int main() {
                                     .authentication_method = "EAP_AKA_PRIME",
                                 });
     }
+
+    // UDM's own client identity + token source for calling UDR (ADR-0069, gap-closure Tier 1b) --
+    // same separate-http2::Client-per-target-NF pattern nfs/ausf/src/main.cpp's own udm_client
+    // already established for its AUSF->UDM call.
+    sbi_core::http2::TlsConfig udr_client_tls{
+        .cert_path = CERTS_DIR "/udm/cert.pem",
+        .key_path = CERTS_DIR "/udm/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client udr_client(std::move(udr_client_tls));
+    sbi_core::OAuth2Client udr_oauth(
+        udr_client, std::string(kNrfBase) + "/oauth2/token", udm_instance_id, "nudr-dr", "UDR");
 
     auto meter = sbi_core::get_meter("udm");
     auto amf_reg_counter =
@@ -481,45 +518,103 @@ int main() {
             return resp;
         });
 
-    // --- Nudm_SDM: subscriber data retrieval (disclosed stub -- no UDR yet, see file header) ---
+    // --- Nudm_SDM: subscriber data retrieval (ADR-0069, gap-closure Tier 1b: real UDR calls,
+    // replacing the permanently-empty stub the file header originally disclosed) ---
+
+    // Shared real-UDR-GET helper -- ue_id + servingPlmnId + the real provisioned-data sub-
+    // resource segment ("am-data"/"smf-selection-subscription-data"/"sm-data") in, either a real
+    // parsed JSON body or a real ProblemDetails Response out. A UE genuinely not seeded in UDR
+    // (any SUPI other than this slice's own two real seeded test subscribers) now correctly 404s,
+    // instead of the old stub's always-200-empty-body behavior.
+    auto fetch_from_udr =
+        [&udr_client,
+         &udr_oauth](const std::string& ue_id,
+                     const std::string& serving_plmn_id,
+                     const std::string& segment) -> std::variant<json, sbi_core::http2::Response> {
+        auto token = udr_oauth.get_bearer_token();
+        if (!token.has_value()) {
+            return sbi_core::http2::problem_response(500,
+                                                     "Internal Server Error",
+                                                     "UDM could not obtain a token for UDR: " +
+                                                         token.error());
+        }
+        sbi_core::http2::ClientRequest udr_req;
+        udr_req.method = "GET";
+        udr_req.url = std::string(kUdrBase) + kUdrApiRoot + "/subscription-data/" + ue_id + "/" +
+                      serving_plmn_id + "/provisioned-data/" + segment;
+        udr_req.headers.emplace("authorization", "Bearer " + *token);
+        auto udr_resp = udr_client.send(udr_req);
+        if (!udr_resp.has_value()) {
+            return sbi_core::http2::problem_response(
+                500, "Internal Server Error", "UDM could not reach UDR: " + udr_resp.error());
+        }
+        if (udr_resp->status == 404) {
+            return sbi_core::http2::problem_response(
+                404, "Not Found", "No provisioned " + segment + " for ueId " + ue_id);
+        }
+        if (udr_resp->status != 200) {
+            return sbi_core::http2::problem_response(500,
+                                                     "Internal Server Error",
+                                                     "UDR returned unexpected status " +
+                                                         std::to_string(udr_resp->status));
+        }
+        try {
+            return json::parse(udr_resp->body);
+        } catch (const json::exception& e) {
+            return sbi_core::http2::problem_response(500,
+                                                     "Internal Server Error",
+                                                     "UDR returned malformed JSON: " +
+                                                         std::string(e.what()));
+        }
+    };
 
     server.add_route(
         "GET",
         std::string(kSdmApiRoot) + "/{supi}/am-data",
-        [&verifier, &sdm_get_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &sdm_get_counter, &fetch_from_udr](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             sdm_get_counter->Add(1);
-            sbi_gen::AccessAndMobilitySubscriptionData resp_data{};
-            json j = resp_data;
-            return sbi_core::http2::Response::json(200, j.dump());
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "am-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
         });
 
     server.add_route(
         "GET",
         std::string(kSdmApiRoot) + "/{supi}/smf-select-data",
-        [&verifier, &sdm_get_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &sdm_get_counter, &fetch_from_udr](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             sdm_get_counter->Add(1);
-            sbi_gen::SmfSelectionSubscriptionData resp_data{};
-            json j = resp_data;
-            return sbi_core::http2::Response::json(200, j.dump());
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr(
+                supi, resolve_serving_plmn_id(req), "smf-selection-subscription-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
         });
 
     server.add_route(
         "GET",
         std::string(kSdmApiRoot) + "/{supi}/sm-data",
-        [&verifier, &sdm_get_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &sdm_get_counter, &fetch_from_udr](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             sdm_get_counter->Add(1);
-            sbi_gen::SessionManagementSubscriptionData resp_data{};
-            json j = resp_data;
-            return sbi_core::http2::Response::json(200, j.dump());
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "sm-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
         });
 
     // --- Nudm_SDM: notification subscriptions ---

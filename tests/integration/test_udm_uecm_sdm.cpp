@@ -264,6 +264,15 @@ TEST(UdmIntegration, SdmDataRetrievalAndSubscriptions) {
     ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
+    // Real UDR (ADR-0069, gap-closure Tier 1b): GetAmData/GetSmfSelData/GetSmData now make real
+    // Nudr_DataRepository GET calls, so this test needs a real udr process to reach, same as any
+    // other real inter-NF dependency -- UDR_DATABASE_URL is inherited from this test binary's own
+    // environment (set by ctest in CI, or by whoever runs this test locally), same as
+    // test_udr_context_data.cpp's own real-Postgres requirement.
+    const pid_t udr_pid = spawn(UDR_PATH);
+    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
     const pid_t udm_pid = spawn(UDM_PATH);
     ASSERT_GT(udm_pid, 0) << "failed to fork udm";
 
@@ -277,10 +286,10 @@ TEST(UdmIntegration, SdmDataRetrievalAndSubscriptions) {
     const std::string token = fetch_token(client, "nudm-sdm");
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
 
-    const std::string supi = "imsi-999700000000003";
+    // Real seeded test subscriber (nfs/udr/src/main.cpp's own startup seed, ADR-0069) -- proves
+    // the real UDM->UDR SBI call round-trips real, non-empty data, not just a 2xx status.
+    const std::string supi = "imsi-999700000000001";
 
-    // GetAmData/GetSmfSelData/GetSmData: disclosed stub (no UDR yet) -- still real, spec-shaped
-    // responses, deserializing correctly.
     for (const std::string path : {"am-data", "smf-select-data", "sm-data"}) {
         sbi_core::http2::ClientRequest req;
         req.method = "GET";
@@ -300,7 +309,26 @@ TEST(UdmIntegration, SdmDataRetrievalAndSubscriptions) {
     ASSERT_TRUE(am_data.has_value());
     const auto am_dto =
         json::parse(am_data->body).get<sbi_gen::AccessAndMobilitySubscriptionData>();
-    (void)am_dto; // proves real deserialization, not just a 2xx status
+    // Real, non-empty data from UDR's own seed (ADR-0069): sst=1/sd="000001", this project's own
+    // real lab S-NSSAI (ADR-0016) -- proves this is real cross-NF data, not the old stub's
+    // always-default-constructed response.
+    ASSERT_TRUE(am_dto.nssai.has_value());
+    ASSERT_EQ(am_dto.nssai->defaultSingleNssais.size(), 1u);
+    EXPECT_EQ(am_dto.nssai->defaultSingleNssais[0].sst, 1);
+    ASSERT_TRUE(am_dto.nssai->defaultSingleNssais[0].sd.has_value());
+    EXPECT_EQ(*am_dto.nssai->defaultSingleNssais[0].sd, "000001");
+
+    // A genuinely unseeded SUPI now correctly 404s (real UDR miss), instead of the old stub's
+    // always-200-empty-body behavior.
+    {
+        sbi_core::http2::ClientRequest req;
+        req.method = "GET";
+        req.url = "https://127.0.0.1:7780/nudm-sdm/v2/imsi-999999999999999/am-data";
+        req.headers.emplace("authorization", "Bearer " + token);
+        auto resp = client.send(req);
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_EQ(resp->status, 404);
+    }
 
     // Subscribe.
     sbi_gen::SdmSubscription sub_data{};
@@ -338,6 +366,8 @@ TEST(UdmIntegration, SdmDataRetrievalAndSubscriptions) {
 
     kill(udm_pid, SIGTERM);
     waitpid(udm_pid, nullptr, 0);
+    kill(udr_pid, SIGTERM);
+    waitpid(udr_pid, nullptr, 0);
     kill(nrf_pid, SIGTERM);
     waitpid(nrf_pid, nullptr, 0);
 }

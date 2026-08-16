@@ -26,3 +26,21 @@ CREATE TABLE IF NOT EXISTS udr_smf_registration (
     registration   JSONB NOT NULL,
     PRIMARY KEY (ue_id, pdu_session_id)
 );
+
+-- ADR-0069 (gap-closure Tier 1b): the real Nudr_DataRepository `provisioned-data` group
+-- (TS29505_Subscription_Data.yaml's /subscription-data/{ueId}/{servingPlmnId}/provisioned-data/
+-- am-data|smf-selection-subscription-data|sm-data) -- confirmed by direct read of the real YAML
+-- this resource group is GET-only, no create/update operation exists in the spec at all (the real
+-- provisioning path for this data in a production deployment is an out-of-band OSS/BSS tool
+-- writing directly into UDR's backing store, not this public API) -- same real reasoning
+-- nfs/udr/src/main.cpp's own file header already gave for deferring this group originally. Row
+-- keyed by (ue_id, serving_plmn_id) per the real path shape; one JSONB column per real sub-
+-- resource since all three are always read/seeded together per UE in this slice.
+CREATE TABLE IF NOT EXISTS udr_provisioned_data (
+    ue_id            TEXT NOT NULL,
+    serving_plmn_id  TEXT NOT NULL,
+    am_data          JSONB,
+    smf_sel_data     JSONB,
+    sm_data          JSONB,
+    PRIMARY KEY (ue_id, serving_plmn_id)
+);
