@@ -5,13 +5,17 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <pqxx/pqxx>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 // Private to nfs/udr -- not shared with any other NF, per CLAUDE.md's "no NF includes another NF's
-// private headers" rule. In-memory only, no persistence across restarts -- same disclosed
-// simplification as every other NF's store so far (ADR-0015).
+// private headers" rule. Real PostgreSQL persistence (libpqxx), same "one shared connection, one
+// mutex" discipline every other PostgreSQL-backed store in this project already uses (see
+// bss/product-catalog/src/store.hpp) -- ADR-0068, gap-closure Tier 1a from the free5GC/open5gs
+// source comparison (both real references treat UDR as a genuinely persistent repository; this
+// project's own in-memory std::unordered_map version did not survive a restart, unlike either
+// reference's own real store).
 //
 // Deliberately NOT the same class as nfs/udm/src/stores.hpp's AmfRegistrationStore/
 // SmfRegistrationStore, even though the shape is similar: UDR's context-data group uses RFC 6902
@@ -28,6 +32,8 @@ namespace udr {
 // spec (checked, not assumed) -- disclosed in nfs/udr/src/main.cpp's file header.
 class AmfContextStore {
 public:
+    explicit AmfContextStore(const std::string& conninfo);
+
     // Returns true if this was a new entry (for 201-vs-204 response selection).
     bool put(const std::string& ue_id, nlohmann::json context);
     std::optional<nlohmann::json> get(const std::string& ue_id);
@@ -40,15 +46,17 @@ public:
 
 private:
     std::mutex mutex_;
-    std::unordered_map<std::string, nlohmann::json> contexts_;
+    pqxx::connection conn_;
 };
 
 // Backs the SMF registration context group (QuerySmfRegList, QuerySmfRegistration,
 // CreateOrUpdateSmfRegistration, UpdateSmfContext, DeleteSmfRegistration). Keyed by
-// (ueId, pduSessionId), same nested-map shape as nfs/udm's SmfRegistrationStore and for the same
+// (ueId, pduSessionId), same nested-key shape as nfs/udm's SmfRegistrationStore and for the same
 // reason (QuerySmfRegList needs to list every registration for a given ueId).
 class SmfRegistrationStore {
 public:
+    explicit SmfRegistrationStore(const std::string& conninfo);
+
     bool
     put(const std::string& ue_id, const std::string& pdu_session_id, nlohmann::json registration);
     std::optional<nlohmann::json> get(const std::string& ue_id, const std::string& pdu_session_id);
@@ -60,7 +68,7 @@ public:
 
 private:
     std::mutex mutex_;
-    std::unordered_map<std::string, std::unordered_map<std::string, nlohmann::json>> registrations_;
+    pqxx::connection conn_;
 };
 
 } // namespace udr

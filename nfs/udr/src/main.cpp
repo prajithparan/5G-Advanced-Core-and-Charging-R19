@@ -71,6 +71,19 @@ constexpr const char* kApiRoot = "/nudr-dr/v2";
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
 
+// Real PostgreSQL persistence (ADR-0068, gap-closure Tier 1a) -- same getenv-based config pattern
+// as bss/product-catalog's own database_conninfo(). Deliberately NOT try-catch-degraded the way
+// CHF's RatingDecisionStore is (that's a best-effort audit trail; UDR's context-data group IS this
+// NF's entire purpose, so a Postgres it can't reach means UDR has nothing meaningful to serve --
+// fail fast at startup instead of silently degrading, same "hard-require" choice
+// bss/product-catalog's own ProductOfferingStore already makes).
+std::string database_conninfo() {
+    if (const char* env = std::getenv("UDR_DATABASE_URL")) {
+        return env;
+    }
+    return "postgresql://udr:udr@localhost:5432/udr";
+}
+
 // Same pattern as every other NF's check_bearer -- see nfs/nrf/src/main.cpp's comment for why a
 // missing Authorization header is not itself a 401 (bootstrap security alternative:
 // `security: [{}, oAuth2ClientCredentials:[...]]` in the YAML).
@@ -194,8 +207,9 @@ int main() {
 
     sbi_core::jwt::Verifier verifier(CERTS_DIR "/nrf-jwt/public.pem", kNrfInstanceId);
 
-    udr::AmfContextStore amf_contexts;
-    udr::SmfRegistrationStore smf_registrations;
+    const auto conninfo = database_conninfo();
+    udr::AmfContextStore amf_contexts(conninfo);
+    udr::SmfRegistrationStore smf_registrations(conninfo);
 
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(

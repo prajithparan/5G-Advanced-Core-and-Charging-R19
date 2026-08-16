@@ -60,6 +60,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # Real PostgreSQL for tests/integration/test_udr_context_data.cpp (ADR-0068, gap-closure
+      # Tier 1a) -- this test spawns the real udr binary, which now hard-requires PostgreSQL to
+      # start at all (see nfs/udr/src/main.cpp's own database_conninfo() comment).
+      postgres-udr:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: udr
+          POSTGRES_PASSWORD: udr
+          POSTGRES_DB: udr
+        ports:
+          - 5437:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -127,6 +143,9 @@ jobs:
           PGPASSWORD=subscriber_management psql -h localhost -p 5435 -U subscriber_management -d subscriber_management -f bss/subscriber-management/schema.sql
           PGPASSWORD=roaming_interconnect psql -h localhost -p 5436 -U roaming_interconnect -d roaming_interconnect -f bss/roaming-interconnect/schema.sql
 
+      - name: Apply UDR PostgreSQL schema (ADR-0068)
+        run: PGPASSWORD=udr psql -h localhost -p 5437 -U udr -d udr -f nfs/udr/schema.postgres.sql
+
       - name: Test
         # --timeout 120: defense in depth. A single spawned-NF-process crash/hang (real one hit
         # here: missing certs killed AMF on startup, which left ctest waiting its full default
@@ -141,6 +160,7 @@ jobs:
           TEST_POSTGRES_URL: postgresql://product_catalog:product_catalog@localhost:5432/product_catalog
           TEST_SUBSCRIBER_MANAGEMENT_POSTGRES_URL: postgresql://subscriber_management:subscriber_management@localhost:5435/subscriber_management
           TEST_ROAMING_INTERCONNECT_POSTGRES_URL: postgresql://roaming_interconnect:roaming_interconnect@localhost:5436/roaming_interconnect
+          UDR_DATABASE_URL: postgresql://udr:udr@localhost:5437/udr
         run: ctest --test-dir build --output-on-failure --timeout 120
 
   sanitize:
@@ -184,6 +204,22 @@ jobs:
           POSTGRES_DB: roaming_interconnect
         ports:
           - 5436:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # Real PostgreSQL for tests/integration/test_udr_context_data.cpp (ADR-0068, gap-closure
+      # Tier 1a) -- this test spawns the real udr binary, which now hard-requires PostgreSQL to
+      # start at all (see nfs/udr/src/main.cpp's own database_conninfo() comment).
+      postgres-udr:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: udr
+          POSTGRES_PASSWORD: udr
+          POSTGRES_DB: udr
+        ports:
+          - 5437:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -258,6 +294,9 @@ jobs:
           PGPASSWORD=subscriber_management psql -h localhost -p 5435 -U subscriber_management -d subscriber_management -f bss/subscriber-management/schema.sql
           PGPASSWORD=roaming_interconnect psql -h localhost -p 5436 -U roaming_interconnect -d roaming_interconnect -f bss/roaming-interconnect/schema.sql
 
+      - name: Apply UDR PostgreSQL schema (ADR-0068)
+        run: PGPASSWORD=udr psql -h localhost -p 5437 -U udr -d udr -f nfs/udr/schema.postgres.sql
+
       - name: Test
         # --timeout 120: defense in depth. A single spawned-NF-process crash/hang (real one hit
         # here: missing certs killed AMF on startup, which left ctest waiting its full default
@@ -270,6 +309,7 @@ jobs:
           TEST_POSTGRES_URL: postgresql://product_catalog:product_catalog@localhost:5432/product_catalog
           TEST_SUBSCRIBER_MANAGEMENT_POSTGRES_URL: postgresql://subscriber_management:subscriber_management@localhost:5435/subscriber_management
           TEST_ROAMING_INTERCONNECT_POSTGRES_URL: postgresql://roaming_interconnect:roaming_interconnect@localhost:5436/roaming_interconnect
+          UDR_DATABASE_URL: postgresql://udr:udr@localhost:5437/udr
         run: ctest --test-dir build --output-on-failure --timeout 120
 
   lint:

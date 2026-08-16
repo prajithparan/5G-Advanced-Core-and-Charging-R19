@@ -1006,3 +1006,20 @@ comments and ADR-0067. No genuine external TAP3 sample file exists to cross-chec
 violating the same GSMA confidentiality boundary this codec was built to respect -- verification
 is internal round-trip correctness plus per-field tag citations, not conformance against a real
 third-party file.
+
+## `nfs/udr`: real PostgreSQL persistence (gap-closure Tier 1a, ADR-0068)
+
+A real, three-way source comparison against free5GC and open5gs (both have genuinely persistent
+UDR backends -- MongoDB in both cases) found this project's own UDR was in-memory only. Closed by
+replacing `std::unordered_map` with real `pqxx::connection`-backed PostgreSQL storage.
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| `CreateAmfContext3gpp`/`QueryAmfContext3gpp` (PUT/GET), real persistence | data must survive a process restart, per both real references' own architecture | `UdrIntegration.AmfContextLifecycle` (`tests/integration/test_udr_context_data.cpp`, pre-existing, re-verified unchanged against real Postgres); manual real restart-survival check this ADR's own verification section describes (`kill -9` + fresh process + `GET` returns the same real data) |
+| `CreateOrUpdateSmfRegistration`/`QuerySmfRegistration`/`QuerySmfRegList`/`UpdateSmfContext`/`DeleteSmfRegistration`, real persistence | same | `UdrIntegration.SmfRegistrationLifecycle` |
+| 404/401 error handling unchanged by the storage-layer swap | -- | `UdrIntegration.MissingResourceIs404AndTamperedTokenIs401` |
+
+**Disclosed gaps**: UDM's `GetAmData`/`GetSmfSelData`/`GetSmData` still don't call this now-real
+UDR (Tier 1b, separate turn). No MongoDB-specific behavior (transactions, replica sets) was
+replicated -- only the real persistence property both references share, via this project's own
+mandated PostgreSQL stack.
