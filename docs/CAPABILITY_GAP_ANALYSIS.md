@@ -318,15 +318,16 @@ free5GC's real UDM processors: `subscriber_data_management.go` (`Nudm_SDM`),
 auth-events) -- route-for-route matching free5GC's own core surface, already covered by this
 project's own live-verified integration tests.
 
-**Real gap, entirely missing, both references**: `Nudm_EE` (Event Exposure -- `CreateEe
-Subscription`/`UpdateEeSubscription`/`DeleteEeSubscription`, real subscription-based UDM event
-notifications, e.g. reachability-for-data or location-report events sourced from subscription
-data changes) and `Nudm_PP` (Parameter Provisioning -- `UpdateProcedure`, real
-operator/OAM-driven subscriber parameter updates, e.g. MSISDN or external-ID provisioning).
-Grep-confirmed absent from this project's UDM entirely (no `event-exposure`/`parameter-provision`
-route anywhere). **Grep-confirmed absent from open5GS's UDM too** (`src/udm/` has no EE/PP
-resource-name handling) -- both are free5GC-only capabilities, still real gaps per ADR-0075, but
-lower relative priority than a both-references gap.
+**Real gap, entirely missing, both references -- closed, docs/DECISIONS.md ADR-0082**: `Nudm_EE`
+(Event Exposure -- `CreateEeSubscription`/`UpdateEeSubscription`/`DeleteEeSubscription`, real
+subscription-based UDM event notifications) and `Nudm_PP` (Parameter Provisioning -- the real
+`Get`/`Update` `pp-data` operation the analysis named). Both free5GC-only (grep-confirmed absent
+from open5GS's UDM too), still real gaps per ADR-0075, now closed and live-verified. Real,
+newly-discovered additional `Nudm_PP` scope found while implementing this (not in the original
+finding above): three larger, more specialized resource groups -- `/5g-vn-groups/{extGroupId}`
+(5G LAN/VN group CRUD), `/{ueId}/pp-data-store/{afInstanceId}` (PP Data Entry CRUD),
+`/mbs-group-membership/{extGroupId}` (5G MBS group CRUD) -- flagged for a future turn, not built
+or silently dropped.
 
 ---
 

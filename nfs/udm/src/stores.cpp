@@ -186,4 +186,68 @@ bool AuthEventStore::remove(const std::string& supi, const std::string& auth_eve
     return true;
 }
 
+std::string EeSubscriptionStore::create(EeSubscriptionEntry entry) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "eesub-" + std::to_string(next_id_++);
+    subscriptions_.emplace(id, std::move(entry));
+    return id;
+}
+
+std::optional<EeSubscriptionEntry> EeSubscriptionStore::get(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(subscription_id);
+    if (it == subscriptions_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+std::optional<nlohmann::json> EeSubscriptionStore::apply_patch(const std::string& subscription_id,
+                                                               const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(subscription_id);
+    if (it == subscriptions_.end()) {
+        return std::nullopt;
+    }
+    it->second.data = it->second.data.patch(patch_ops);
+    return std::make_optional(it->second.data);
+}
+
+bool EeSubscriptionStore::remove(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return subscriptions_.erase(subscription_id) > 0;
+}
+
+void PpDataStore::put(const std::string& ue_id, nlohmann::json pp_data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pp_data_[ue_id] = std::move(pp_data);
+}
+
+std::optional<nlohmann::json> PpDataStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = pp_data_.find(ue_id);
+    if (it == pp_data_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+std::optional<nlohmann::json> PpDataStore::merge_patch(const std::string& ue_id,
+                                                       const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = pp_data_.find(ue_id);
+    if (it == pp_data_.end()) {
+        // Real spec behavior: PpData is nullable and the resource is a singular per-UE document
+        // that may not exist yet -- a merge-patch onto "no document" starts from an empty object,
+        // same real RFC 7396 semantics as PATCHing a not-yet-existing resource elsewhere in this
+        // project (e.g. AMF's own N1N2 subscription creation-on-demand shape).
+        nlohmann::json doc = nlohmann::json::object();
+        doc.merge_patch(patch);
+        pp_data_[ue_id] = doc;
+        return std::make_optional(doc);
+    }
+    it->second.merge_patch(patch);
+    return std::make_optional(it->second);
+}
+
 } // namespace udm

@@ -25,6 +25,8 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29503_Nudm_UECM.yaml
     TS29503_Nudm_SDM.yaml
     TS29503_Nudm_UEAU.yaml
+    TS29503_Nudm_EE.yaml
+    TS29503_Nudm_PP.yaml
     TS29505_Subscription_Data.yaml
     TS29509_Nausf_UEAuthentication.yaml
     TS29507_Npcf_AMPolicyControl.yaml
@@ -46,6 +48,8 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29503_Nudm_UECM.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29503_Nudm_SDM.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29503_Nudm_UEAU.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29503_Nudm_EE.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29503_Nudm_PP.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29505_Subscription_Data.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29509_Nausf_UEAuthentication.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29507_Npcf_AMPolicyControl.yaml

@@ -79,6 +79,9 @@ constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kUecmApiRoot = "/nudm-uecm/v1";
 constexpr const char* kSdmApiRoot = "/nudm-sdm/v2";
 constexpr const char* kUeauApiRoot = "/nudm-ueau/v1";
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #105, ADR-0082).
+constexpr const char* kEeApiRoot = "/nudm-ee/v1";
+constexpr const char* kPpApiRoot = "/nudm-pp/v1";
 constexpr const char* kUdrBase = "https://127.0.0.1:7781";
 constexpr const char* kUdrApiRoot = "/nudr-dr/v2";
 // This project's own real lab PLMN, mcc=999/mnc=70 (ADR-0016), in the real VarPlmnId string
@@ -309,6 +312,8 @@ int main() {
     udm::SdmSubscriptionStore sdm_subscriptions;
     udm::AuthenticationSubscriptionStore auth_subscriptions;
     udm::AuthEventStore auth_events;
+    udm::EeSubscriptionStore ee_subscriptions;
+    udm::PpDataStore pp_data;
 
     // Fixed test subscribers, seeded at startup -- not provisionable through any API (see file
     // header). K/OP/OPc/SQN/AMF are the real, cross-checked 3GPP TS 35.207 Test Set 1 values (the
@@ -372,6 +377,16 @@ int main() {
         meter->CreateUInt64Counter("udm_confirm_auth_total", "Total ConfirmAuth calls");
     auto delete_auth_counter =
         meter->CreateUInt64Counter("udm_delete_auth_total", "Total DeleteAuth calls");
+    auto ee_subscribe_counter =
+        meter->CreateUInt64Counter("udm_ee_subscribe_total", "Total CreateEeSubscription calls");
+    auto ee_update_counter =
+        meter->CreateUInt64Counter("udm_ee_update_total", "Total UpdateEeSubscription calls");
+    auto ee_delete_counter =
+        meter->CreateUInt64Counter("udm_ee_delete_total", "Total DeleteEeSubscription calls");
+    auto pp_get_counter =
+        meter->CreateUInt64Counter("udm_pp_data_get_total", "Total Get PP Data calls");
+    auto pp_update_counter =
+        meter->CreateUInt64Counter("udm_pp_data_update_total", "Total PP Data Update calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -899,6 +914,139 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Nudm_EE (ADR-0082, gap-closure task #105) ---
+
+    server.add_route(
+        "POST",
+        std::string(kEeApiRoot) + "/{ueIdentity}/ee-subscriptions",
+        [&verifier, &ee_subscriptions, &ee_subscribe_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::EeSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_identity = req.path_params.at("ueIdentity");
+            json j = *body;
+            const auto id = ee_subscriptions.create(
+                udm::EeSubscriptionEntry{.ue_identity = ue_identity, .data = j});
+            ee_subscribe_counter->Add(1);
+
+            j["subscriptionId"] = id;
+            sbi_gen::CreatedEeSubscription created{};
+            created.eeSubscription = j.get<sbi_gen::EeSubscription>();
+            json resp_j = created;
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kEeApiRoot) + "/" + ue_identity +
+                                     "/ee-subscriptions/" + id);
+            resp.body = resp_j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kEeApiRoot) + "/{ueIdentity}/ee-subscriptions/{subscriptionId}",
+        [&verifier, &ee_subscriptions, &ee_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_identity = req.path_params.at("ueIdentity");
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            auto existing = ee_subscriptions.get(subscription_id);
+            if (!existing.has_value() || existing->ue_identity != ue_identity) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No such EE subscription");
+            }
+            ee_subscriptions.remove(subscription_id);
+            ee_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kEeApiRoot) + "/{ueIdentity}/ee-subscriptions/{subscriptionId}",
+        [&verifier, &ee_subscriptions, &ee_update_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_identity = req.path_params.at("ueIdentity");
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            auto existing = ee_subscriptions.get(subscription_id);
+            if (!existing.has_value() || existing->ue_identity != ue_identity) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No such EE subscription");
+            }
+            // Real spec: application/json-patch+json (RFC 6902) -- see stores.hpp's own comment
+            // for why this differs from PP Data's own RFC 7396 merge-patch below.
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            std::optional<json> patched;
+            try {
+                patched = ee_subscriptions.apply_patch(subscription_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No such EE subscription");
+            }
+            ee_update_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched->dump());
+        });
+
+    // --- Nudm_PP (ADR-0082, gap-closure task #105) ---
+
+    server.add_route(
+        "GET",
+        std::string(kPpApiRoot) + "/{ueId}/pp-data",
+        [&verifier, &pp_data, &pp_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = pp_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No PP data for ueId " + ue_id);
+            }
+            pp_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kPpApiRoot) + "/{ueId}/pp-data",
+        [&verifier, &pp_data, &pp_update_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            // Real spec: application/merge-patch+json (RFC 7396) -- confirmed by reading
+            // TS29503_Nudm_PP.yaml's own Update requestBody content type directly, same real
+            // distinction PCF's own ModAppSession (ADR-0080) already established for this
+            // project.
+            json patch_doc;
+            try {
+                patch_doc = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            auto patched = pp_data.merge_patch(ue_id, patch_doc);
+            pp_update_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched->dump());
         });
 
     std::thread(run_nrf_lifecycle, udm_instance_id).detach();

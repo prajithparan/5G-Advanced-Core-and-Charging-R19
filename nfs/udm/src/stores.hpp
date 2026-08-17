@@ -142,4 +142,51 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #105, ADR-0082): backs Nudm_EE's
+// CreateEeSubscription/UpdateEeSubscription/DeleteEeSubscription
+// (`/{ueIdentity}/ee-subscriptions`). Same assign-id/store/remove shape as SdmSubscriptionStore
+// above (this file's own established precedent for a UE-scoped subscription resource), kept as a
+// distinct type rather than reused -- EE and SDM subscriptions are real, separate TS 29.503
+// resources with their own real schemas, same "don't share state across distinct resource types
+// even when the shape matches" precedent PCF's own AmPolicyStore/SmPolicyStore already set.
+struct EeSubscriptionEntry {
+    std::string ue_identity;
+    nlohmann::json data;
+};
+
+class EeSubscriptionStore {
+public:
+    std::string create(EeSubscriptionEntry entry);
+    std::optional<EeSubscriptionEntry> get(const std::string& subscription_id);
+    // Applies an RFC 6902 JSON Patch (already parsed, UpdateEeSubscription's own real
+    // application/json-patch+json content type -- confirmed by reading TS29503_Nudm_EE.yaml
+    // directly, NOT the RFC 7396 merge-patch AmfRegistrationStore/PpDataStore below use).
+    // Returns nullopt if subscription_id doesn't exist.
+    std::optional<nlohmann::json> apply_patch(const std::string& subscription_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& subscription_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, EeSubscriptionEntry> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #105, ADR-0082): backs Nudm_PP's Get/Update
+// (`/{ueId}/pp-data`) -- one PpData document per UE, same put/get/merge_patch/remove shape as
+// AmfRegistrationStore above (a singular per-UE document resource, not a collection). Update's
+// own real content type is application/merge-patch+json (RFC 7396), confirmed by reading
+// TS29503_Nudm_PP.yaml directly.
+class PpDataStore {
+public:
+    void put(const std::string& ue_id, nlohmann::json pp_data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    std::optional<nlohmann::json> merge_patch(const std::string& ue_id,
+                                              const nlohmann::json& patch);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> pp_data_;
+};
+
 } // namespace udm

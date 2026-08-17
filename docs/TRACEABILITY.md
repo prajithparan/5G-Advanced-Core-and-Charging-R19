@@ -1354,3 +1354,23 @@ the same pass, since Redis was its first new DB dependency.
 own separate real crypto (`KNR_ProSe`, TS 33.503) not yet supplied; `Nausf_UPUProtection` (a
 related AUSF service found while researching this gap, FC values now independently confirmed)
 was not part of this task's scope and is not built.
+
+## Gap-closure task #105 -- UDM real Nudm_EE + Nudm_PP (ADR-0082)
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| `CreateEeSubscription` (`POST /{ueIdentity}/ee-subscriptions`) | 201 + real `Location`, `CreatedEeSubscription` wrapping the stored `EeSubscription` | Live HTTP: real `callbackReference`+`monitoringConfigurations` body -> 201, `Location: .../ee-subscriptions/eesub-1` |
+| `UpdateEeSubscription` (`PATCH .../{subscriptionId}`) | `application/json-patch+json` (RFC 6902) -- confirmed by reading the YAML, same standard NRF's own `UpdateNFInstance` uses | Live HTTP: `[{"op":"replace","path":"/callbackReference",...}]` -> 200, field genuinely changed |
+| `DeleteEeSubscription` (`DELETE .../{subscriptionId}`) | Real ueIdentity-ownership check, not just subscriptionId lookup | Live HTTP: wrong `ueIdentity` -> 404; correct `ueIdentity` -> 204 |
+| `Get PP Data` (`GET /{ueId}/pp-data`) | 404 when nothing provisioned (not a fabricated empty 200) | Live HTTP: 404 before any `PATCH` |
+| `Update` (`PATCH /{ueId}/pp-data`) | `application/merge-patch+json` (RFC 7396) -- confirmed by reading the YAML, same real distinction PCF's `ModAppSession` (ADR-0080) established; creates the document on demand per real RFC 7396 semantics | Live HTTP: merge-patch on a nonexistent resource -> 200, document created; subsequent `GET` -> 200 with the change persisted |
+
+`specs/5G_APIs-REL-19/TS29503_Nudm_EE.yaml`/`TS29503_Nudm_PP.yaml` added to the sbi-codegen pilot
+set -- clean regeneration (2136 types, up from 2091), no schema-name collisions this time. Full
+`conformance_tests` (268/268) unaffected; no new unit tests (coverage via live HTTP verification).
+
+**Real, disclosed, not yet done**: `Nudm_PP`'s three larger resource groups (5G VN Group, PP Data
+Entry, 5G MBS group), found while reading the YAML but not part of the original gap-analysis
+finding -- flagged for a future turn. Real event-notification delivery for `Nudm_EE`
+subscriptions -- no trigger path exists in this lab yet, same disclosed shape as every other
+proactive-callback gap already named elsewhere in this project.
