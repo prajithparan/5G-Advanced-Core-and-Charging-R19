@@ -1,10 +1,12 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "aka_crypto/kdf.hpp"
 #include "aka_crypto/milenage.hpp"
@@ -56,6 +58,40 @@ public:
 private:
     std::mutex mutex_;
     std::unordered_map<std::string, AuthContext> contexts_;
+    std::uint64_t next_id_ = 1;
+};
+
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091): a real, distinct resource
+// type from AuthContext above -- Nausf_UEAuthentication's own `/prose-authentications` group has
+// a distinct real security scope (`nausf-auth:prose-authentications`) and produces different key
+// material (CP-PRUK/KNR_ProSe, TS 33.503, not KSEAF/KAMF) -- kept as its own store rather than
+// widening AuthContext with ProSe-only fields.
+struct ProSeAuthContext {
+    std::string supi;
+    std::string serving_network_name;
+    // TS 33.503's own real KDF inputs (Nonce_1 from the request, relay service code) -- both
+    // needed again at prose-auth time (CP-PRUK/CP-PRUK-ID*/KNR_ProSe derivation), not just at
+    // creation.
+    std::int64_t relay_service_code = 0;
+    std::vector<std::uint8_t> nonce1;
+
+    // Same real EAP-AKA' verification material generate-auth-data's own EAP-AKA' branch already
+    // uses (k_aut/xres) -- ProSe always uses EAP-AKA' (TS 33.503 clause 6.1.3.2), reusing the
+    // exact same challenge/response verification, not a parallel implementation.
+    std::array<std::uint8_t, 32> k_aut{};
+    aka_crypto::Res64 xres{};
+    aka_crypto::Kausf kausf_p{}; // real KAUSF from this EAP-AKA' run, relabeled KAUSF_P per spec
+};
+
+class ProSeAuthContextStore {
+public:
+    std::string create(ProSeAuthContext ctx);
+    std::optional<ProSeAuthContext> get(const std::string& auth_ctx_id);
+    bool remove(const std::string& auth_ctx_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, ProSeAuthContext> contexts_;
     std::uint64_t next_id_ = 1;
 };
 

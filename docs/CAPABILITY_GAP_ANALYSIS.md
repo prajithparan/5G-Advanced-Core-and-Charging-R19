@@ -225,10 +225,15 @@ EAP-AKA' paths, confirmed already live-tested in this project's own integration 
    parameter is also out of scope for the same reason.
 2. **ProSe (Proximity Services / D2D) authentication** (`POST /prose-authentications`, `DELETE
    .../prose-auth`, a real R17+ extension). Real in free5GC. **Grep-confirmed absent from
-   open5GS's AUSF** as well -- same free5GC-only status as SoR protection. **Still open** -- found,
-   while scoping this pass, to need its own separate real cryptographic derivation (`KNR_ProSe`,
-   TS 33.503, a different spec document from TS 33.501's own SoR-MAC derivations) this project
-   doesn't have material for either. Tracked as task #104's remaining scope.
+   open5GS's AUSF** as well -- same free5GC-only status as SoR protection. **Closed, docs/
+   DECISIONS.md ADR-0091**: real TS 33.503 Annex A.2/A.3/A.4 CP-PRUK/CP-PRUK-ID*/KNR_ProSe
+   derivations (`libs/aka-crypto`), a new UDM `GenerateProseAV` route reusing the existing
+   EAP-AKA' Milenage path, a new AUSF `ProSeAuthContext` store, all live-verified cross-process
+   (a hand-crafted UE-role client independently recomputed RES/K_aut from real TS 35.207 Test Set
+   1 public vectors). Real, disclosed narrower scope than free5GC's: only the first-time/new-
+   CP-PRUK path is built -- the `5gPrukId`-based returning-UE path and CP-PRUK's own real
+   cross-session persistence both need a live PAnF (ProSe Anchor Function) this project doesn't
+   have (a whole separate, unbuilt NF), and return a real, disclosed `501 Not Implemented`.
 
 Per ADR-0075's capability-completeness mandate, both are real gaps to close eventually regardless
 of being free5GC-only -- "superior to both, never behind either" doesn't stop at whichever

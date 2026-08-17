@@ -1489,3 +1489,26 @@ Real, disclosed scope: `PDUSessionResourceToBeSwitchedDLList` is parsed but not 
 `Cancel` (the real N2-based handover chain) remain fully open. See ADR-0090 in
 `docs/DECISIONS.md` for full disclosure -- **task #100 remains open**, this closes one real slice
 of its remainder.
+
+## ADR-0091 -- gap-closure task #104: AUSF/UDM real TS 33.503 5G ProSe authentication
+
+| Requirement | Test |
+|---|---|
+| UDM's new `POST /{supiOrSuci}/prose-security-information/generate-av` (`GenerateProseAV`) produces a real `AvEapAkaPrime` vector (real Milenage, reusing the existing EAP-AKA' generation path) | Live: real curl `POST /prose-authentications` (AUSF, `imsi-999700000000001`) -> real `201` with a real EAP-AKA' Challenge Request payload (proves the AUSF->UDM call round-tripped a real vector) |
+| AUSF's `POST /prose-authentications/{authCtxId}/prose-auth` verifies a real EAP-AKA' Challenge Response and, on success, derives real CP-PRUK/KNR_ProSe (TS 33.503 Annex A.2/A.4) | A hand-crafted UE-role scratch client (`prose_ue_client.cpp`) independently recomputed RES/CK'/IK'/K_aut from the real, public TS 35.207 Test Set 1 K/OP values (not trusting round-tripped state) -- real `200`, `authResult=AUTHENTICATION_SUCCESS`, a real 32-byte `knrProSe` and `nonce2` |
+| Real bug found in the verification script (not the server): first attempt used the bare-digit SUPI form for `derive_keys`'s identity, producing a real `AUTHENTICATION_FAILURE` | Root-caused by reading `main.cpp`'s own `supi` variable (the "imsi-"-prefixed form), fixed the script, re-ran -> real success (see row above) |
+| `DELETE /prose-authentications/{authCtxId}/prose-auth` genuinely removes the stored context | Real `204`, then a second `DELETE` on the same id -> real `404` |
+| The disclosed `5gPrukId`-based returning-UE path (needs a live PAnF this project doesn't have) is a real, disclosed `501`, not silently accepted or fabricated | Real curl `POST /prose-authentications` with `5gPrukId` (no `supiOrSuci`) -> real `501 Not Implemented` with the disclosed PAnF-dependency reason |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed conformance test this ADR, same disclosed manual-verification precedent ADR-0090 established), zero regressions; `udm`/`ausf` both built clean on the first attempt |
+
+Real, previously-missing scope investigation done before writing code: TS 33.503's own sequence
+diagram names two real external AUSF calls (`Nudm_UEAuthentication_GetProseAV`,
+`Npanf_ProseKey_Register`/`get`) -- the first was found to already be vendored in this project's
+own R19 YAML (`GenerateProseAV`, `specs/5G_APIs-REL-19/TS29503_Nudm_UEAU.yaml`) with a response
+type (`ProSeAuthenticationVectors = vector<AvEapAkaPrime>`) structurally identical to this
+project's existing EAP-AKA' path, confirming real, large-scale code reuse was possible; the second
+(PAnF) does not exist as an NF in this project, driving the real, disclosed scope narrowing above.
+Both relevant YAML files' ProSe DTOs were already codegen-generated from earlier turns --
+confirmed by direct `grep` before writing any application code, so this ADR needed zero codegen
+work. See ADR-0091 in `docs/DECISIONS.md` for full disclosure -- **this closes task #104's ProSe
+half** (AUSF ProSe auth was the task's remaining scope after SoR Protection closed in ADR-0081).

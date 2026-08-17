@@ -15,9 +15,16 @@
 //   DELETE /ue-authentications/{authCtxId}/eap-session          (DeleteEapAuthenticationResult)
 //   POST   /ue-authentications/deregister                       (UEAuthenticationsDeregister)
 //
-// Deliberately deferred, not dropped: /rg-authentications (5G-RG) and /prose-authentications +
-// /prose-authentications/{authCtxId}/prose-auth (ProSe) -- same Tier-1 5G-AKA-for-a-normal-UE
-// boundary ADR-0026 already drew for UDM's Nudm_UEAU turn.
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091), real TS 33.503 5G ProSe:
+//   POST   /prose-authentications                                (ProseAuthenticate; calls UDM)
+//   POST   /prose-authentications/{authCtxId}/prose-auth          (proseAuth)
+//   DELETE /prose-authentications/{authCtxId}/prose-auth          (DeleteProSeAuthenticationResult)
+// Real, disclosed scope narrowing -- see the "prose-authentications" section below, near the
+// route registrations themselves, for the full disclosure (the 5gPrukId-returning-UE path and
+// CP-PRUK/PAnF persistence are both out of scope, no PAnF NF exists in this project).
+//
+// Still deliberately deferred, not dropped: /rg-authentications (5G-RG) -- same Tier-1
+// 5G-AKA-for-a-normal-UE boundary ADR-0026 already drew for UDM's Nudm_UEAU turn.
 //
 // Disclosed simplification, stated up front rather than discovered in review: AUSF does NOT call
 // UDM's ConfirmAuth/DeleteAuth (Nudm_UEAuthentication_ResultConfirmation) after an authentication
@@ -232,6 +239,9 @@ int main() {
         udm_client, nrf_base + "/oauth2/token", ausf_instance_id, "nudm-ueau", "UDM");
 
     ausf::AuthContextStore auth_contexts;
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091): see stores.hpp's own
+    // header comment for why this is a distinct store from auth_contexts above.
+    ausf::ProSeAuthContextStore prose_auth_contexts;
 
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0081): real, persistent
     // per-SUPI KAUSF + CounterSoR state -- see kausf_store.hpp's own header for why this was a
@@ -253,6 +263,11 @@ int main() {
                                                          "Total UEAuthenticationsDeregister calls");
     auto sor_protection_counter = meter->CreateUInt64Counter(
         "ausf_sor_protection_total", "Total Nausf_SoRProtection ue-sor calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091).
+    auto prose_authenticate_counter = meter->CreateUInt64Counter(
+        "ausf_prose_authenticate_total", "Total POST /prose-authentications calls");
+    auto prose_auth_counter =
+        meter->CreateUInt64Counter("ausf_prose_auth_total", "Total proseAuth calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -604,6 +619,244 @@ int main() {
                     404, "Not Found", "No authentication context for supi " + body->supi);
             }
             deregister_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nausf_UEAuthentication: prose-authentications (ADR-0091, gap-closure task #104) ---
+    //
+    // Real, disclosed scope: only the "new CP-PRUK" first-time-relay-connection path (real
+    // SUCI/SUPI in the request) is built -- the "returning UE with an existing 5gPrukId" path
+    // (a direct 200 response from POST /prose-authentications, TS 33.503's own CP-PRUK-ID-based
+    // reuse case) is NOT built, since it structurally needs a live PAnF (ProSe Anchor Function,
+    // Npanf_ProseKey_get) lookup this project doesn't have -- PAnF is a whole separate NF
+    // (CLAUDE.md's own Tier 2 scope, not built). For the same reason, CP-PRUK's own real
+    // persistence/registration step (Npanf_ProseKey_Register) is skipped: CP-PRUK is derived and
+    // consumed for KNR_ProSe within the SAME request (real crypto, not a fabricated shortcut --
+    // the KDF outputs are exactly what the spec defines, only the cross-session PERSISTENCE of
+    // CP-PRUK via PAnF is out of scope). /rg-authentications (5G-RG) remains deferred, same as
+    // this file's own pre-existing disclosure.
+
+    server.add_route(
+        "POST",
+        std::string(kApiRoot) + "/prose-authentications",
+        [&verifier,
+         &udm_client,
+         &udm_oauth,
+         &udm_base,
+         &prose_auth_contexts,
+         &prose_authenticate_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::ProSeAuthenticationInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            if (!body->supiOrSuci.has_value()) {
+                // Real, disclosed scope boundary -- see this section's own header comment: the
+                // n5gPrukId-based returning-UE path needs a live PAnF this project doesn't have.
+                return sbi_core::http2::problem_response(
+                    501,
+                    "Not Implemented",
+                    "5gPrukId-based ProSe re-authentication is not implemented (needs a live "
+                    "PAnF/Npanf_ProseKey_get this project doesn't have) -- supply supiOrSuci for "
+                    "a real first-time authentication instead");
+            }
+            const auto nonce1_bytes = aka_crypto::eap::base64_decode(body->nonce1);
+            if (!nonce1_bytes.has_value()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "nonce1 is not valid base64");
+            }
+
+            auto token = udm_oauth.get_bearer_token();
+            if (!token.has_value()) {
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "AUSF could not obtain a token for UDM: " +
+                                                             token.error());
+            }
+
+            sbi_gen::ProSeAuthenticationInfoRequest udm_req{};
+            udm_req.servingNetworkName = body->servingNetworkName;
+            udm_req.relayServiceCode = body->relayServiceCode;
+
+            sbi_core::http2::ClientRequest udm_http_req;
+            udm_http_req.method = "POST";
+            udm_http_req.url = udm_base + "/nudm-ueau/v1/" + *body->supiOrSuci +
+                               "/prose-security-information/generate-av";
+            udm_http_req.headers.emplace("content-type", "application/json");
+            udm_http_req.headers.emplace("authorization", "Bearer " + *token);
+            udm_http_req.body = json(udm_req).dump();
+
+            auto udm_resp = udm_client.send(udm_http_req);
+            if (!udm_resp.has_value()) {
+                return sbi_core::http2::problem_response(
+                    500, "Internal Server Error", "AUSF could not reach UDM: " + udm_resp.error());
+            }
+            if (udm_resp->status == 404) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "User does not exist in the HPLMN");
+            }
+            if (udm_resp->status != 200) {
+                return sbi_core::http2::problem_response(
+                    500,
+                    "Internal Server Error",
+                    "UDM GenerateProseAV returned unexpected status " +
+                        std::to_string(udm_resp->status));
+            }
+
+            sbi_gen::ProSeAuthenticationInfoResult udm_result;
+            try {
+                udm_result =
+                    json::parse(udm_resp->body).get<sbi_gen::ProSeAuthenticationInfoResult>();
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(
+                    500,
+                    "Internal Server Error",
+                    "UDM returned a malformed ProSeAuthenticationInfoResult: " +
+                        std::string(e.what()));
+            }
+            if (!udm_result.proseAuthenticationVectors.has_value() ||
+                udm_result.proseAuthenticationVectors->empty()) {
+                return sbi_core::http2::problem_response(
+                    500, "Internal Server Error", "UDM returned no proseAuthenticationVectors");
+            }
+            const std::string supi = udm_result.supi.value_or(*body->supiOrSuci);
+            const auto& av = (*udm_result.proseAuthenticationVectors)[0];
+
+            const auto rand = aka_crypto::from_hex<16>(av.rand);
+            const auto autn = aka_crypto::from_hex<16>(av.autn);
+            const auto xres = aka_crypto::from_hex<8>(av.xres);
+            const auto ck_prime = aka_crypto::from_hex<16>(av.ckPrime);
+            const auto ik_prime = aka_crypto::from_hex<16>(av.ikPrime);
+            if (!rand || !autn || !xres || !ck_prime || !ik_prime) {
+                return sbi_core::http2::problem_response(
+                    500, "Internal Server Error", "UDM returned malformed hex in AvEapAkaPrime");
+            }
+
+            const auto keys = aka_crypto::eap::derive_keys(*ck_prime, *ik_prime, supi);
+            // KAUSF_P: real KAUSF (TS 33.501 Annex A.2, FC=0x6A), from a real EAP-AKA' run, per
+            // TS 33.503's own clause 6.1.3.2 -- same real derivation as the normal
+            // ue-authentications EAP-AKA' path above, just relabeled at the point of use (see
+            // aka_crypto/kdf.hpp's own header comment).
+            aka_crypto::Ak48 sqn_xor_ak{};
+            std::copy(autn->begin(), autn->begin() + 6, sqn_xor_ak.begin());
+            const auto kausf_p = aka_crypto::derive_kausf(
+                *ck_prime, *ik_prime, body->servingNetworkName, sqn_xor_ak);
+
+            const uint8_t identifier = (*rand)[0];
+            const auto packet = aka_crypto::eap::build_challenge_request(
+                identifier, *rand, *autn, body->servingNetworkName, keys.k_aut);
+            const auto eap_payload_b64 = aka_crypto::eap::base64_encode(packet);
+
+            ausf::ProSeAuthContext store_ctx{};
+            store_ctx.supi = supi;
+            store_ctx.serving_network_name = body->servingNetworkName;
+            store_ctx.relay_service_code = body->relayServiceCode;
+            store_ctx.nonce1 = *nonce1_bytes;
+            store_ctx.k_aut = keys.k_aut;
+            store_ctx.xres = *xres;
+            store_ctx.kausf_p = kausf_p;
+            const auto auth_ctx_id = prose_auth_contexts.create(std::move(store_ctx));
+
+            sbi_gen::ProSeAuthenticationCtx ctx{};
+            ctx.authType.value = sbi_gen::AuthType_Nausf_UEAuthentication::EAP_AKA_PRIME;
+            ctx.proSeAuthData = eap_payload_b64;
+            ctx._links = json{{"prose-auth",
+                               json{{"href",
+                                     std::string(kApiRoot) + "/prose-authentications/" +
+                                         auth_ctx_id + "/prose-auth"}}}};
+
+            prose_authenticate_counter->Add(1);
+            json j = ctx;
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/3gppHal+json");
+            resp.headers.emplace("location",
+                                 std::string(kApiRoot) + "/prose-authentications/" + auth_ctx_id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kApiRoot) + "/prose-authentications/{authCtxId}/prose-auth",
+        [&verifier, &prose_auth_contexts, &prose_auth_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::ProSeEapSession>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto auth_ctx_id = req.path_params.at("authCtxId");
+            auto ctx = prose_auth_contexts.get(auth_ctx_id);
+            if (!ctx.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No ProSe authentication context " + auth_ctx_id);
+            }
+            auto packet = aka_crypto::eap::base64_decode(body->eapPayload);
+            if (!packet.has_value() || packet->size() < 2) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "eapPayload is not valid base64 EAP data");
+            }
+            const uint8_t identifier = (*packet)[1];
+
+            prose_auth_counter->Add(1);
+            sbi_gen::ProSeEapSession resp_data{};
+
+            const bool mac_ok = aka_crypto::eap::verify_mac(*packet, ctx->k_aut);
+            const auto parsed = aka_crypto::eap::parse_challenge_response(*packet);
+            const bool res_ok =
+                mac_ok && parsed.has_value() && parsed->res.size() == ctx->xres.size() &&
+                std::equal(parsed->res.begin(), parsed->res.end(), ctx->xres.begin());
+
+            if (res_ok) {
+                // Real TS 33.503 Annex A.2/A.4 derivations (gap-closure task #104, ADR-0091) --
+                // see aka_crypto/kdf.hpp's own header comment. Nonce_2: freshly generated here,
+                // TS 33.503's own step 11 "AUSF...shall generate Nonce_2".
+                const auto cp_pruk =
+                    aka_crypto::derive_cp_pruk(ctx->kausf_p, ctx->supi, ctx->relay_service_code);
+                const auto nonce2_bytes = aka_crypto::generate_rand();
+                const std::vector<std::uint8_t> nonce2_vec(nonce2_bytes.begin(),
+                                                           nonce2_bytes.end());
+                const auto knr_prose =
+                    aka_crypto::derive_knr_prose(cp_pruk, ctx->nonce1, nonce2_vec);
+
+                resp_data.eapPayload =
+                    aka_crypto::eap::base64_encode(aka_crypto::eap::build_success(identifier));
+                resp_data.authResult = sbi_gen::AuthResult{};
+                resp_data.authResult->value = sbi_gen::AuthResult::AUTHENTICATION_SUCCESS;
+                resp_data.knrProSe = aka_crypto::to_hex(knr_prose);
+                resp_data.nonce2 = aka_crypto::eap::base64_encode(nonce2_vec);
+            } else {
+                resp_data.eapPayload =
+                    aka_crypto::eap::base64_encode(aka_crypto::eap::build_failure(identifier));
+                resp_data.authResult = sbi_gen::AuthResult{};
+                resp_data.authResult->value = sbi_gen::AuthResult::AUTHENTICATION_FAILURE;
+            }
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kApiRoot) + "/prose-authentications/{authCtxId}/prose-auth",
+        [&verifier, &prose_auth_contexts](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto auth_ctx_id = req.path_params.at("authCtxId");
+            if (!prose_auth_contexts.remove(auth_ctx_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No ProSe authentication context " + auth_ctx_id);
+            }
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

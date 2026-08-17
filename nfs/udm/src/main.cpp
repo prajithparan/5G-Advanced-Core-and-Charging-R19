@@ -13,15 +13,18 @@
 // Nudm_SDM -- GetAmData, GetSmfSelData, GetSmData, Subscribe, Unsubscribe.
 // Nudm_UEAU -- GenerateAuthData (5G-AKA and EAP-AKA' authentication vector generation, real
 // Milenage + TS 33.501 Annex A key derivation via libs/aka-crypto, see ADR-0026), ConfirmAuth,
-// DeleteAuth.
+// DeleteAuth, and (gap-closure, docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091)
+// GenerateProseAV -- real TS 33.503 5G ProSe authentication vector generation, structurally the
+// same EAP-AKA' Milenage path as GenerateAuthData's own EAP-AKA' branch (real, deliberate code
+// reuse, not a parallel implementation).
 //
 // Deliberately deferred, not dropped: Nudm_EE, Nudm_MT, Nudm_NIDDAU, Nudm_PP, Nudm_RSDS,
 // Nudm_SSAU, Nudm_UEID (separate Nudm services); UECM's non-3GPP-AMF, SMSF (3GPP and non-3GPP),
 // IP-SM-GW, and NWDAF registration groups; SDM's remaining ~25 GET operations (GetNSSAI,
 // GetEcrData, GetUeCtxInAmfData, GetUeCtxInSmfData, LCS/V2X/ProSe/MBS/UC data, shared-data
 // operations, GetSupiOrGpsi, Sor/Upu Ack, GetGroupIdentifiers, ...); UEAU's GetRgAuthData,
-// GenerateAv (EPS/IMS/HSS), GenerateGbaAv, GenerateProseAV -- all out of this build's Tier-1 5G-AKA
-// scope (5G-RG, EPS/IMS-AKA interworking, GBA, ProSe are separate concerns).
+// GenerateAv (EPS/IMS/HSS), GenerateGbaAv -- out of this build's Tier-1 5G-AKA scope (5G-RG,
+// EPS/IMS-AKA interworking, GBA are separate concerns).
 //
 // UPDATE (ADR-0069, gap-closure Tier 1b): GetAmData/GetSmfSelData/GetSmData now make real
 // Nudr_DataRepository GET calls against UDR's own real provisioned-data group (added the same
@@ -383,6 +386,10 @@ int main() {
         meter->CreateUInt64Counter("udm_sdm_subscribe_total", "Total SDM Subscribe calls");
     auto generate_auth_data_counter =
         meter->CreateUInt64Counter("udm_generate_auth_data_total", "Total GenerateAuthData calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091): real, previously-deferred
+    // GenerateProseAV.
+    auto generate_prose_av_counter =
+        meter->CreateUInt64Counter("udm_generate_prose_av_total", "Total GenerateProseAV calls");
     auto confirm_auth_counter =
         meter->CreateUInt64Counter("udm_confirm_auth_total", "Total ConfirmAuth calls");
     auto delete_auth_counter =
@@ -872,6 +879,76 @@ int main() {
             }
 
             generate_auth_data_counter->Add(1);
+            json j = result;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091): real GenerateProseAV --
+    // real 3GPP R17+ extension (5G ProSe, TS 33.503), free5GC-only per the original capability
+    // sweep, previously deferred (this file's own header comment above). Structurally almost
+    // identical to generate-auth-data's EAP-AKA' branch above (same Milenage vectors, same real
+    // AvEapAkaPrime shape) -- TS 33.503's own clause 6.1.3.2 states the ProSe Remote UE's KAUSF_P
+    // "is obtained in the same way as KAUSF is obtained for EAP-AKA' in clause 6.1.3.1 in
+    // TS 33.501", i.e. ProSe always uses EAP-AKA' regardless of this subscriber's own configured
+    // authentication_method -- real, deliberate difference from generate-auth-data's own
+    // method-dependent branch above.
+    server.add_route(
+        "POST",
+        std::string(kUeauApiRoot) + "/{supiOrSuci}/prose-security-information/generate-av",
+        [&verifier, &auth_subscriptions, &generate_prose_av_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::ProSeAuthenticationInfoRequest>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto raw_supi_or_suci = req.path_params.at("supiOrSuci");
+            const auto deconcealed = deconceal_suci_if_needed(raw_supi_or_suci);
+            if (!deconcealed.has_value()) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "Could not de-conceal SUCI " + raw_supi_or_suci +
+                        " (malformed, unsupported protection scheme, or MAC verification failed)");
+            }
+            const auto supi_or_suci = *deconcealed;
+
+            auto sub = auth_subscriptions.get_and_advance_sqn(supi_or_suci);
+            if (!sub.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No authentication subscription for " + supi_or_suci);
+            }
+
+            const auto rand = aka_crypto::generate_rand();
+            const auto mac_a = aka_crypto::f1(sub->opc, sub->k, rand, sub->sqn, sub->amf);
+            const auto out = aka_crypto::f2345(sub->opc, sub->k, rand);
+            const auto sqn_xor_ak_value = aka_crypto::sqn_xor_ak(sub->sqn, out.ak);
+
+            std::array<uint8_t, 16> autn{};
+            std::copy(sqn_xor_ak_value.begin(), sqn_xor_ak_value.end(), autn.begin());
+            std::copy(sub->amf.begin(), sub->amf.end(), autn.begin() + 6);
+            std::copy(mac_a.begin(), mac_a.end(), autn.begin() + 8);
+
+            const auto ck_ik_prime = aka_crypto::derive_ck_ik_prime(
+                out.ck, out.ik, body->servingNetworkName, sqn_xor_ak_value);
+            sbi_gen::AvEapAkaPrime av{};
+            av.avType.value = sbi_gen::AvType::EAP_AKA_PRIME;
+            av.rand = aka_crypto::to_hex(rand);
+            av.xres = aka_crypto::to_hex(out.res);
+            av.autn = aka_crypto::to_hex(autn);
+            av.ckPrime = aka_crypto::to_hex(ck_ik_prime.first);
+            av.ikPrime = aka_crypto::to_hex(ck_ik_prime.second);
+
+            sbi_gen::ProSeAuthenticationInfoResult result{};
+            result.authType.value = sbi_gen::AuthType_Nudm_UEAU::EAP_AKA_PRIME;
+            result.supi = supi_or_suci;
+            result.proseAuthenticationVectors = sbi_gen::ProSeAuthenticationVectors{av};
+
+            generate_prose_av_counter->Add(1);
             json j = result;
             return sbi_core::http2::Response::json(200, j.dump());
         });

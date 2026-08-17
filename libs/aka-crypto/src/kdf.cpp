@@ -185,4 +185,36 @@ NextHopKey derive_nh(const Kamf& kamf, const std::array<uint8_t, 32>& sync_input
     return generic_kdf(to_bytes(kamf), 0x6F, {to_bytes(sync_input)});
 }
 
+namespace {
+
+// TS 33.503 Annex A.5's own explicit citation for RSC's KDF-parameter width ("i.e. 0x00 0x03") --
+// see kdf.hpp's own header comment.
+std::vector<uint8_t> relay_service_code_bytes(int64_t rsc) {
+    return {static_cast<uint8_t>((rsc >> 16) & 0xff),
+            static_cast<uint8_t>((rsc >> 8) & 0xff),
+            static_cast<uint8_t>(rsc & 0xff)};
+}
+
+} // namespace
+
+CpPruk derive_cp_pruk(const Kausf& kausf_p, const std::string& supi, int64_t relay_service_code) {
+    return generic_kdf(
+        to_bytes(kausf_p), 0x85, {to_bytes(supi), relay_service_code_bytes(relay_service_code)});
+}
+
+CpPrukIdStar
+derive_cp_pruk_id_star(const Kausf& kausf_p, const std::string& supi, int64_t relay_service_code) {
+    return generic_kdf(to_bytes(kausf_p),
+                       0x86,
+                       {to_bytes(std::string("PRUK-ID")),
+                        relay_service_code_bytes(relay_service_code),
+                        to_bytes(supi)});
+}
+
+KnrProse derive_knr_prose(const CpPruk& cp_pruk,
+                          const std::vector<uint8_t>& nonce1,
+                          const std::vector<uint8_t>& nonce2) {
+    return generic_kdf(to_bytes(cp_pruk), 0x87, {nonce2, nonce1});
+}
+
 } // namespace aka_crypto

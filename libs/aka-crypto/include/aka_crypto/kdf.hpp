@@ -71,6 +71,24 @@
 //                        call this project makes derives chain position 0 (SYNC-input=KgNB,
 //                        NCC=0), never a later position; see nfs/amf/src/ngap_task.cpp's own
 //                        handle_path_switch_request for the real, disclosed caller-side detail.
+//
+// TS 33.503 Annex A (5G ProSe, a DIFFERENT spec document from TS 33.501 above -- gap-closure
+// docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091). Real citations, confirmed 2026-08-17
+// against a real local copy of 3GPP TS 33.503 v19.3.0 (Release 19, matching this project's own
+// target release -- the FIRST spec citation in this file that needed no version-gap disclosure):
+//   A.2  CP-PRUK          FC=0x85  KDF(KAUSF_P, SUPI, relay service code), page 71. KAUSF_P is
+//                         real KAUSF (aka_crypto::derive_kausf, TS 33.501 Annex A.2, FC=0x6A) from
+//                         a normal EAP-AKA' run -- TS 33.503's own clause 6.1.3.2 (paraphrased,
+//                         not the KDF itself) states KAUSF_P "is obtained in the same way as
+//                         KAUSF is obtained for EAP-AKA' in clause 6.1.3.1 in TS 33.501" -- no new
+//                         primary-authentication crypto, just a new label for an existing
+//                         derivation's output when used for ProSe.
+//   A.3  CP-PRUK ID*      FC=0x86  KDF(KAUSF_P, "PRUK-ID", relay service code, SUPI), page 71.
+//   A.4  KNR_ProSe        FC=0x87  KDF(CP-PRUK, Nonce_2, Nonce_1), page 72.
+// relay service code is encoded as 3 bytes (big-endian), the real, explicit width TS 33.503's own
+// Annex A.5 states for the same parameter ("L1 = length of RSC (i.e. 0x00 0x03)") -- A.2/A.3
+// don't restate the byte count themselves, so A.5's own explicit citation is used rather than
+// guessed.
 
 namespace aka_crypto {
 
@@ -178,5 +196,29 @@ Kgnb derive_kgnb(const Kamf& kamf, uint32_t uplink_nas_count, uint8_t access_typ
 // first NH in a chain, or the previous NH (32 bytes) for every subsequent one -- see this file's
 // own header comment for this project's own disclosed real scope (chain position 0 only).
 NextHopKey derive_nh(const Kamf& kamf, const std::array<uint8_t, 32>& sync_input);
+
+using CpPruk = std::array<uint8_t, 32>;
+using CpPrukIdStar = std::array<uint8_t, 32>;
+using KnrProse = std::array<uint8_t, 32>;
+
+// TS 33.503 Annex A.2 (real citation, see this file's own header comment). kausf_p: real KAUSF
+// (aka_crypto::derive_kausf) from a normal EAP-AKA' run, relabeled per TS 33.503's own clause
+// 6.1.3.2. supi: the bare identity digits (same convention as derive_kamf's own supi parameter --
+// see its comment). relay_service_code: TS 24.554's RSC, encoded as 3 bytes big-endian (real
+// width, TS 33.503 Annex A.5's own explicit citation, see this file's header comment).
+CpPruk derive_cp_pruk(const Kausf& kausf_p, const std::string& supi, int64_t relay_service_code);
+
+// TS 33.503 Annex A.3 (real citation). Same kausf_p/relay_service_code/supi as derive_cp_pruk
+// above -- a distinct KDF output (FC=0x86, different P0/P-order), not a truncation of CP-PRUK.
+CpPrukIdStar
+derive_cp_pruk_id_star(const Kausf& kausf_p, const std::string& supi, int64_t relay_service_code);
+
+// TS 33.503 Annex A.4 (real citation). nonce1/nonce2: the real Nonce_1 (from the ProSe
+// authentication requester's own ProSeAuthenticationInfo.nonce1) and Nonce_2 (freshly generated
+// by this AUSF, TS 33.503's own step 11 "AUSF...shall generate Nonce_2") -- both caller-supplied
+// opaque byte strings, this function does not construct or interpret them further.
+KnrProse derive_knr_prose(const CpPruk& cp_pruk,
+                          const std::vector<uint8_t>& nonce1,
+                          const std::vector<uint8_t>& nonce2);
 
 } // namespace aka_crypto
