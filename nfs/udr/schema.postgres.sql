@@ -62,3 +62,44 @@ CREATE TABLE IF NOT EXISTS udr_sm_policy_data (
     ue_id       TEXT PRIMARY KEY,
     policy_data JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0083). Real Nudr_DataRepository
+-- Authentication Data group (TS29505_Subscription_Data.yaml,
+-- /subscription-data/{ueId}/authentication-data/authentication-subscription, real schema
+-- AuthenticationSubscription) -- genuinely distinct from udm's own in-process
+-- AuthenticationSubscriptionStore (which independently holds this project's own seeded 5G-AKA
+-- test-subscriber K/OPc/SQN for the real authentication VECTOR-GENERATION crypto path); this
+-- table is the real Nudr_DR-exposed COPY of that same conceptual data, per spec, not yet wired as
+-- UDM's actual source of truth for GenerateAuthData -- see this task's own ADR for the real,
+-- disclosed architectural note on why the two aren't merged in this pass. Real GET (query) + real
+-- PATCH (RFC 6902 JSON Patch, ModifyAuthenticationSubscription -- confirmed by reading the YAML's
+-- own requestBody content type, same standard as udr_amf_context's own AmfContextStore above, NOT
+-- udr_sm_policy_data's RFC 7396 merge-patch).
+CREATE TABLE IF NOT EXISTS udr_authentication_subscription (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
+
+-- Real Nudr_DataRepository Authentication Status document
+-- (/subscription-data/{ueId}/authentication-data/authentication-status, real schema AuthEvent --
+-- TS29503_Nudm_UEAU.yaml's own AuthEvent, reused directly since the real spec cites it verbatim
+-- for this resource, not a distinct type). Real PUT (create/replace) + GET + DELETE, unlike
+-- authentication-subscription's own GET+PATCH shape -- confirmed per-operation from the YAML, not
+-- assumed uniform across the Authentication Data group.
+CREATE TABLE IF NOT EXISTS udr_authentication_status (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
+
+-- Real Nudr_DataRepository `policy-data` group's AM Policy resource
+-- (TS29519_Policy_Data.yaml's /policy-data/ues/{ueId}/am-data, real schema AmPolicyData) --
+-- genuinely DIFFERENT real resource from udr_provisioned_data's own `am_data` column (that one is
+-- AccessAndMobilitySubscriptionData, TS29503_Nudm_SDM/TS29505_Subscription_Data, GET-only; this
+-- one is AmPolicyData, the real UDR-side backing for PCF's own Npcf_AMPolicyControl, TS 29.519,
+-- real GET+PATCH). Same real RFC 7396 merge-patch + upsert-on-PATCH precedent as
+-- udr_sm_policy_data above, confirmed by reading this resource's own YAML directly
+-- (application/merge-patch+json, AmPolicyDataPatch).
+CREATE TABLE IF NOT EXISTS udr_am_policy_data (
+    ue_id       TEXT PRIMARY KEY,
+    policy_data JSONB NOT NULL
+);

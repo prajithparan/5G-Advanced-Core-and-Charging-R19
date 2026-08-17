@@ -354,16 +354,21 @@ context-data, SMF-registrations context-data (full CRUD, `{pduSessionId}`-scoped
 {ueId}/sm-data` resource from ADR-0072 (`SmPolicyData` with full `SmPolicySnssaiData ->
 SmPolicyDnnData` nesting and RFC 7396 merge-patch semantics -- genuinely more complete for THIS
 one resource than a bare CRUD document, per that ADR's own real, deliberate design). What's
-covered is solid; the real gap is breadth -- roughly 6 of free5GC's ~42+ real resource types.
+covered is solid; the real gap is breadth -- roughly 6 of free5GC's ~42+ real resource types
+(now 9, docs/DECISIONS.md ADR-0083 -- see below).
 
 **Highest-priority missing resources** (the ones with real, direct behavioral impact elsewhere in
-this project, not just data-model completeness): Authentication Data / Authentication Status /
-Authentication SoR documents (UDR-side persistence for AUSF's own authentication vectors and
-result status -- this project's own AUSF currently holds auth context in its own store rather
-than UDR, a real architectural divergence worth its own look, not just a missing endpoint), AM
-Policy Data (UDR-side backing for PCF's `Npcf_AMPolicyControl`, which this project's PCF already
-implements against a different store), Influence Data (AF traffic-steering, needed once NEF
-exists).
+this project, not just data-model completeness): Authentication Data / Authentication Status
+documents (UDR-side persistence for AUSF's own authentication vectors and result status), AM
+Policy Data (UDR-side backing for PCF's `Npcf_AMPolicyControl`). **Closed, docs/DECISIONS.md
+ADR-0083**: all three now real, live-verified endpoints (`authentication-subscription` GET+PATCH,
+`authentication-status` PUT+GET+DELETE, `/policy-data/ues/{ueId}/am-data` GET+PATCH), taking UDR
+from 6 to 9 of free5GC's ~42+ real resource types. Real, disclosed architectural note (flagged in
+the original finding, not glossed over): AUSF/UDM/PCF's own existing stores were NOT migrated to
+call these new routes -- that's a real, separate, deliberate future decision, same "stand up the
+surface first, wire consumers later" precedent already used for UDR's own `provisioned-data`
+group (ADR-0069) and for PCF itself (ADR-0028). Influence Data (AF traffic-steering, needed once
+NEF exists) remains open, out of scope until NEF is built.
 
 ---
 

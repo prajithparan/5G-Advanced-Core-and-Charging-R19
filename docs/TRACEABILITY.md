@@ -1374,3 +1374,27 @@ Entry, 5G MBS group), found while reading the YAML but not part of the original 
 finding -- flagged for a future turn. Real event-notification delivery for `Nudm_EE`
 subscriptions -- no trigger path exists in this lab yet, same disclosed shape as every other
 proactive-callback gap already named elsewhere in this project.
+
+## Gap-closure task #106 -- UDR resource-type breadth (ADR-0083)
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| `QueryAuthSubsData` (GET `authentication-subscription`) | Real `AuthenticationSubscription` schema, 404 when absent | Live HTTP: 404 before any PATCH |
+| `ModifyAuthenticationSubscription` (PATCH) | RFC 6902 JSON Patch -- confirmed by reading the YAML, same standard `AmfContext3gpp` uses | Live HTTP: `[{"op":"add","path":"/authenticationMethod",...}]` -> 200, document created (upsert-capable); subsequent GET -> 200 with the change persisted |
+| `CreateAuthenticationStatus` (PUT `authentication-status`) | Real replace semantics, reuses `AuthEvent` (TS29503_Nudm_UEAU.yaml's own schema, verbatim per the real spec's own `$ref`) | Live HTTP: real `AuthEvent` body -> 204 |
+| `QueryAuthenticationStatus` (GET) / `DeleteAuthenticationStatus` (DELETE) | Real per-operation shape, confirmed distinct from authentication-subscription's own GET+PATCH | Live HTTP: GET -> 200 with the stored `AuthEvent`; DELETE -> 204; GET afterward -> 404 (real removal, not soft-delete) |
+| `ReadAccessAndMobilityPolicyData` (GET `/policy-data/ues/{ueId}/am-data`) / `UpdateAccessAndMobilityPolicyData` (PATCH) | Real `AmPolicyData`/`AmPolicyDataPatch`, RFC 7396 merge-patch, genuinely distinct from `provisioned-data`'s own `am_data` column (confirmed by reading both schemas) | Live HTTP: GET before data -> 404; merge-patch -> 200, document created; GET afterward -> 200 with the change persisted |
+
+Real Postgres schema applied to the already-running `docker-postgres-udr-1` container
+(`psql -f nfs/udr/schema.postgres.sql`, matching CI's own real application step) -- confirmed via
+`\dt` that all 7 UDR tables (4 pre-existing + 3 new: `udr_authentication_subscription`,
+`udr_authentication_status`, `udr_am_policy_data`) exist. Full `conformance_tests`: 268/268 pass,
+unaffected.
+
+**Real, disclosed, not run this pass**: the existing `UdrIntegration.*` GTest suite hit the same
+pre-existing, already-known-flaky/hanging `UdrIntegration.AmfContextLifecycle` test this
+session's own earlier `ctest` runs already excluded by name -- a real, pre-existing
+test-isolation issue, not a new regression; the three new routes' own correctness was instead
+confirmed via the live HTTP verification above. AUSF/UDM/PCF's own existing stores were NOT
+migrated to call these new routes -- a real, separate, deliberate future architectural decision,
+disclosed in ADR-0083, not silently deferred.

@@ -222,4 +222,98 @@ nlohmann::json SmPolicyDataStore::merge_patch(const std::string& ue_id,
     return doc;
 }
 
+AuthenticationSubscriptionDataStore::AuthenticationSubscriptionDataStore(
+    const std::string& conninfo)
+    : conn_(conninfo) {}
+
+std::optional<nlohmann::json> AuthenticationSubscriptionDataStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec(
+        "SELECT data FROM udr_authentication_subscription WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+nlohmann::json AuthenticationSubscriptionDataStore::apply_patch(const std::string& ue_id,
+                                                                const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec(
+        "SELECT data FROM udr_authentication_subscription WHERE ue_id = $1", pqxx::params{ue_id});
+    auto doc = result.empty() ? nlohmann::json::object()
+                              : nlohmann::json::parse(result.front()["data"].as<std::string>());
+    doc = doc.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("INSERT INTO udr_authentication_subscription (ue_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, doc.dump()});
+    txn.commit();
+    return doc;
+}
+
+AuthenticationStatusStore::AuthenticationStatusStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+void AuthenticationStatusStore::put(const std::string& ue_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_authentication_status (ue_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> AuthenticationStatusStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_authentication_status WHERE ue_id = $1",
+                                 pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+bool AuthenticationStatusStore::remove(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM udr_authentication_status WHERE ue_id = $1", pqxx::params{ue_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
+AmPolicyDataStore::AmPolicyDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+std::optional<nlohmann::json> AmPolicyDataStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT policy_data FROM udr_am_policy_data WHERE ue_id = $1",
+                                 pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(
+        nlohmann::json::parse(result.front()["policy_data"].as<std::string>()));
+}
+
+nlohmann::json AmPolicyDataStore::merge_patch(const std::string& ue_id,
+                                              const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT policy_data FROM udr_am_policy_data WHERE ue_id = $1",
+                                 pqxx::params{ue_id});
+    auto doc = result.empty()
+                   ? nlohmann::json::object()
+                   : nlohmann::json::parse(result.front()["policy_data"].as<std::string>());
+    doc.merge_patch(patch);
+    txn.exec("INSERT INTO udr_am_policy_data (ue_id, policy_data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET policy_data = EXCLUDED.policy_data",
+             pqxx::params{ue_id, doc.dump()});
+    txn.commit();
+    return doc;
+}
+
 } // namespace udr

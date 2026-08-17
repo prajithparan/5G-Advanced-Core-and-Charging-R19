@@ -122,4 +122,57 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0083). Backs the real
+// Authentication Data group's `authentication-subscription` document (QueryAuthSubsData,
+// ModifyAuthenticationSubscription -- RFC 6902 JSON Patch, same standard AmfContextStore above
+// uses, NOT SmPolicyDataStore's RFC 7396 merge-patch). See schema.postgres.sql's own comment for
+// why this is a real, genuinely distinct table from UDM's own in-process
+// AuthenticationSubscriptionStore. No create/delete operation exists in the real spec for this
+// resource (checked, not assumed) -- `apply_patch` is upsert-capable (same disclosed,
+// deliberate divergence SmPolicyDataStore's own header already established) so this store still
+// has a real way to originate a document.
+class AuthenticationSubscriptionDataStore {
+public:
+    explicit AuthenticationSubscriptionDataStore(const std::string& conninfo);
+
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    nlohmann::json apply_patch(const std::string& ue_id, const nlohmann::json& patch_ops);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
+// Backs the real Authentication Data group's `authentication-status` document
+// (CreateAuthenticationStatus/QueryAuthenticationStatus/DeleteAuthenticationStatus -- real PUT
+// (replace, not patch) + GET + DELETE, confirmed per-operation from the YAML).
+class AuthenticationStatusStore {
+public:
+    explicit AuthenticationStatusStore(const std::string& conninfo);
+
+    void put(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    bool remove(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
+// Backs the real `policy-data` group's AM Policy resource (ReadAccessAndMobilityPolicyData,
+// UpdateAccessAndMobilityPolicyData -- real GET + RFC 7396 merge-patch, the real UDR-side backing
+// for PCF's own Npcf_AMPolicyControl). Same real upsert-on-PATCH shape as SmPolicyDataStore
+// above.
+class AmPolicyDataStore {
+public:
+    explicit AmPolicyDataStore(const std::string& conninfo);
+
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    nlohmann::json merge_patch(const std::string& ue_id, const nlohmann::json& patch);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

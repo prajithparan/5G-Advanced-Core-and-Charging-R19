@@ -31,15 +31,24 @@
 // subscriber's subscSpendingLimits/policyCounterIds per DNN to decide whether to subscribe to
 // CHF's Nchf_SpendingLimitControl.
 //
-// Deliberately still deferred, not dropped: authentication-data (real AUSF/UDM auth flow exists
-// now, but this UDR resource group itself is separate, still not implemented here);
-// ue-update-confirmation-data (SoR/UPU); context-data's other sub-resources (non-3gpp-access,
-// smsf-3gpp/non-3gpp, ip-sm-gw, mwd, roaming-information, pei-info, ee-subscriptions,
-// sdm-subscriptions, nidd-authorizations); operator-specific-data; lcs-*; pp-data; group-data;
-// shared-data; subs-to-notify; policy-data's own other resources (am-data, ue-policy-set,
-// sponsor-connectivity-data, bdt-data, slice-control-data, and others -- SM policy data is the
-// only policy-data resource this project's real N28 use case needs); all of
-// TS29504_Nudr_GroupIDmap.yaml.
+// UPDATE (ADR-0083, gap-closure task #106): the Authentication Data group's
+// authentication-subscription (real GET+PATCH, RFC 6902) and authentication-status (real
+// PUT+GET+DELETE) documents, and the policy-data group's AM policy resource (real GET+PATCH, RFC
+// 7396 -- the real UDR-side backing for PCF's own Npcf_AMPolicyControl) are now implemented.
+// Real, disclosed architectural note: neither AUSF's own AuthContextStore/KausfStore nor UDM's
+// own AuthenticationSubscriptionStore, nor PCF's own AmPolicyStore, were migrated to call these
+// new UDR routes in this pass -- that would be a real, separate architectural decision (each of
+// those NFs already has its own working, tested store; switching them to be UDR-backed is a
+// cross-cutting change touching already-committed code, not a "stand up the resource" change) --
+// same "build the surface first, wire consumers in a dedicated later turn" precedent this
+// project already used for UDR's own provisioned-data group (ADR-0069) and PCF itself (ADR-0028).
+//
+// Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
+// context-data's other sub-resources (non-3gpp-access, smsf-3gpp/non-3gpp, ip-sm-gw, mwd,
+// roaming-information, pei-info, ee-subscriptions, sdm-subscriptions, nidd-authorizations);
+// operator-specific-data; lcs-*; pp-data; group-data; shared-data; subs-to-notify; policy-data's
+// own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
+// and others); all of TS29504_Nudr_GroupIDmap.yaml.
 //
 // RFC 6902 JSON Patch, not RFC 7396 Merge Patch: AmfContext3gpp and UpdateSmfContext both use
 // application/json-patch+json (confirmed by reading the YAML directly), unlike UDM's
@@ -71,6 +80,10 @@
 // TS29505_Subscription_Data's own types now live in TS29122_CommonData_grp.hpp -- see
 // nfs/chf/src/stores.hpp's own comment (ADR-0072).
 #include "TS29122_CommonData_grp.hpp"
+// AuthEvent (real Authentication Status resource schema, TS29503_Nudm_UEAU.yaml, reused verbatim
+// per TS29505_Subscription_Data.yaml's own $ref -- ADR-0083, gap-closure task #106) lives in its
+// own generated group file, not TS29122_CommonData_grp.hpp.
+#include "TS29503_Nudm_UEAU_grp.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -231,6 +244,9 @@ int main() {
     udr::SmfRegistrationStore smf_registrations(conninfo);
     udr::ProvisionedDataStore provisioned_data(conninfo);
     udr::SmPolicyDataStore sm_policy_data(conninfo);
+    udr::AuthenticationSubscriptionDataStore auth_subscription_data(conninfo);
+    udr::AuthenticationStatusStore auth_status(conninfo);
+    udr::AmPolicyDataStore am_policy_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -274,6 +290,20 @@ int main() {
         "udr_sm_policy_data_get_total", "Total ReadSessionManagementPolicyData calls");
     auto sm_policy_data_patch_counter = meter->CreateUInt64Counter(
         "udr_sm_policy_data_patch_total", "Total UpdateSessionManagementPolicyData calls");
+    auto auth_subscription_get_counter = meter->CreateUInt64Counter(
+        "udr_auth_subscription_get_total", "Total QueryAuthSubsData calls");
+    auto auth_subscription_patch_counter = meter->CreateUInt64Counter(
+        "udr_auth_subscription_patch_total", "Total ModifyAuthenticationSubscription calls");
+    auto auth_status_put_counter = meter->CreateUInt64Counter(
+        "udr_auth_status_put_total", "Total CreateAuthenticationStatus calls");
+    auto auth_status_get_counter = meter->CreateUInt64Counter(
+        "udr_auth_status_get_total", "Total QueryAuthenticationStatus calls");
+    auto auth_status_delete_counter = meter->CreateUInt64Counter(
+        "udr_auth_status_delete_total", "Total DeleteAuthenticationStatus calls");
+    auto am_policy_data_get_counter = meter->CreateUInt64Counter(
+        "udr_am_policy_data_get_total", "Total ReadAccessAndMobilityPolicyData calls");
+    auto am_policy_data_patch_counter = meter->CreateUInt64Counter(
+        "udr_am_policy_data_patch_total", "Total UpdateAccessAndMobilityPolicyData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -600,6 +630,163 @@ int main() {
             // Real spec: 204 (no body) or 200 (with the updated SmPolicyData) are both valid --
             // this project returns 200 with the real updated document, same real information a
             // future GUI editing this resource would want back without a second GET round-trip.
+            return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    // --- Nudr_DataRepository: Authentication Data group (ADR-0083, gap-closure task #106) ---
+
+    const std::string auth_subscription_path_pattern =
+        std::string(kApiRoot) +
+        "/subscription-data/{ueId}/authentication-data/authentication-subscription";
+
+    server.add_route(
+        "GET",
+        auth_subscription_path_pattern,
+        [&verifier, &auth_subscription_data, &auth_subscription_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = auth_subscription_data.get(ue_id);
+            auth_subscription_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No authentication subscription data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        auth_subscription_path_pattern,
+        [&verifier, &auth_subscription_data, &auth_subscription_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            // Real spec: application/json-patch+json (RFC 6902) -- same standard AmfContext3gpp
+            // above uses, confirmed by reading the YAML directly.
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json patched;
+            try {
+                patched = auth_subscription_data.apply_patch(ue_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            auth_subscription_patch_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    const std::string auth_status_path_pattern =
+        std::string(kApiRoot) +
+        "/subscription-data/{ueId}/authentication-data/authentication-status";
+
+    server.add_route(
+        "PUT",
+        auth_status_path_pattern,
+        [&verifier, &auth_status, &auth_status_put_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::AuthEvent>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auth_status.put(ue_id, json(*body));
+            auth_status_put_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        auth_status_path_pattern,
+        [&verifier, &auth_status, &auth_status_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = auth_status.get(ue_id);
+            auth_status_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No authentication status for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        auth_status_path_pattern,
+        [&verifier, &auth_status, &auth_status_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!auth_status.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No authentication status for ueId " + ue_id);
+            }
+            auth_status_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: policy-data group, AM policy resource (ADR-0083, gap-closure task
+    // #106) -- real GET+PATCH per TS29519_Policy_Data.yaml, the real UDR-side backing for PCF's
+    // own Npcf_AMPolicyControl. Genuinely distinct from provisioned-data's own `am_data` column
+    // (AccessAndMobilitySubscriptionData) -- see schema.postgres.sql's own comment. ---
+
+    const std::string am_policy_data_path_pattern =
+        std::string(kApiRoot) + "/policy-data/ues/{ueId}/am-data";
+
+    server.add_route(
+        "GET",
+        am_policy_data_path_pattern,
+        [&verifier, &am_policy_data, &am_policy_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = am_policy_data.get(ue_id);
+            am_policy_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AM policy data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        am_policy_data_path_pattern,
+        [&verifier, &am_policy_data, &am_policy_data_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch;
+            try {
+                patch = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto patched = am_policy_data.merge_patch(ue_id, patch);
+            am_policy_data_patch_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched.dump());
         });
 
