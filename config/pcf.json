@@ -1,0 +1,8 @@
+{
+  "port": 7783,
+  "metrics_bind_address": "0.0.0.0:9470",
+  "nrf_base_url": "https://127.0.0.1:7777",
+  "udr_base_url": "https://127.0.0.1:7781",
+  "chf_base_url": "https://127.0.0.1:7784",
+  "self_base_url": "https://127.0.0.1:7783"
+}

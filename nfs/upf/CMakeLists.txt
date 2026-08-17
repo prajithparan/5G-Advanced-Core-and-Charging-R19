@@ -27,9 +27,11 @@ add_custom_target(gtpu_bpf_obj ALL DEPENDS ${GTPU_BPF_OBJ})
 
 add_executable(upf src/main.cpp src/datapath.cpp)
 add_dependencies(upf gtpu_bpf_obj)
-target_link_libraries(upf PRIVATE sbi_core sbi_generated pfcp_core PkgConfig::libbpf PkgConfig::libcap)
+target_link_libraries(upf PRIVATE sbi_core sbi_generated pfcp_core PkgConfig::libbpf PkgConfig::libcap nf_config)
 # See nfs/hello-nf/CMakeLists.txt for why this is a compile-time absolute path.
+# CONFIG_DIR: docs/DECISIONS.md ADR-0077 -- separate checked-in config/upf.json.
 target_compile_definitions(upf PRIVATE
     CERTS_DIR="${CMAKE_SOURCE_DIR}/certs"
+    CONFIG_DIR="${CMAKE_SOURCE_DIR}/config"
     GTPU_BPF_OBJ_PATH="${GTPU_BPF_OBJ}"
 )

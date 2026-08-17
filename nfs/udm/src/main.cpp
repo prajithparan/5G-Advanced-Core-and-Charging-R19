@@ -64,6 +64,9 @@
 #include "stores.hpp"
 #include "tbcd_core/tbcd.hpp"
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded deployment literal in source.
+#include "nf_config/nf_config.hpp"
+
 namespace {
 
 using nlohmann::json;
@@ -71,18 +74,17 @@ using nlohmann::json;
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see nfs/udm/CMakeLists.txt)"
 #endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see nfs/udm/CMakeLists.txt)"
+#endif
 
-constexpr unsigned short kPort = 7780;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9467";
 constexpr const char* kNfType = "UDM";
-constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kUecmApiRoot = "/nudm-uecm/v1";
 constexpr const char* kSdmApiRoot = "/nudm-sdm/v2";
 constexpr const char* kUeauApiRoot = "/nudm-ueau/v1";
 // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #105, ADR-0082).
 constexpr const char* kEeApiRoot = "/nudm-ee/v1";
 constexpr const char* kPpApiRoot = "/nudm-pp/v1";
-constexpr const char* kUdrBase = "https://127.0.0.1:7781";
 constexpr const char* kUdrApiRoot = "/nudr-dr/v2";
 // This project's own real lab PLMN, mcc=999/mnc=70 (ADR-0016), in the real VarPlmnId string
 // format (mcc+mnc concatenated, TS29505_Subscription_Data.yaml). Used as the real UDR
@@ -206,7 +208,7 @@ std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::R
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as
 // nfs/amf/src/main.cpp's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019).
-void run_nrf_lifecycle(const std::string& udm_instance_id) {
+void run_nrf_lifecycle(const std::string& udm_instance_id, const std::string& nrf_base) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/udm/cert.pem",
         .key_path = CERTS_DIR "/udm/key.pem",
@@ -217,8 +219,7 @@ void run_nrf_lifecycle(const std::string& udm_instance_id) {
     for (int attempt = 0; attempt < 300; ++attempt) {
         sbi_core::http2::ClientRequest probe;
         probe.method = "GET";
-        probe.url = std::string(kNrfBase) +
-                    "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
+        probe.url = nrf_base + "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
         if (http_client.send(probe).has_value()) {
             break;
         }
@@ -226,7 +227,7 @@ void run_nrf_lifecycle(const std::string& udm_instance_id) {
     }
 
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", udm_instance_id, "nnrf-nfm", "NRF");
+        http_client, nrf_base + "/oauth2/token", udm_instance_id, "nnrf-nfm", "NRF");
 
     constexpr int kHeartbeatSeconds = 30;
     json profile{
@@ -247,7 +248,7 @@ void run_nrf_lifecycle(const std::string& udm_instance_id) {
 
         sbi_core::http2::ClientRequest put_req;
         put_req.method = "PUT";
-        put_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + udm_instance_id;
+        put_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + udm_instance_id;
         put_req.headers.emplace("content-type", "application/json");
         put_req.headers.emplace("authorization", "Bearer " + *token);
         put_req.headers.emplace(
@@ -275,7 +276,7 @@ void run_nrf_lifecycle(const std::string& udm_instance_id) {
 
         sbi_core::http2::ClientRequest patch_req;
         patch_req.method = "PATCH";
-        patch_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + udm_instance_id;
+        patch_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + udm_instance_id;
         patch_req.headers.emplace("content-type", "application/json-patch+json");
         patch_req.headers.emplace("authorization", "Bearer " + *token);
         patch_req.body =
@@ -292,9 +293,18 @@ void run_nrf_lifecycle(const std::string& udm_instance_id) {
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("udm", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto nrf_base_url =
+        nf_config::require<std::string>(config, "nrf_base_url", "UDM_NRF_BASE_URL");
+    const auto udr_base_url =
+        nf_config::require<std::string>(config, "udr_base_url", "UDM_UDR_BASE_URL");
+
     sbi_core::init_logging("udm");
     sbi_core::init_tracing("udm");
-    sbi_core::init_metrics(kMetricsBindAddress);
+    sbi_core::init_metrics(metrics_bind_address);
 
     const std::string udm_instance_id = sbi_core::generate_uuid_v4();
     spdlog::info("udm: starting, nfInstanceId={}", udm_instance_id);
@@ -356,7 +366,7 @@ int main() {
     };
     sbi_core::http2::Client udr_client(std::move(udr_client_tls));
     sbi_core::OAuth2Client udr_oauth(
-        udr_client, std::string(kNrfBase) + "/oauth2/token", udm_instance_id, "nudr-dr", "UDR");
+        udr_client, nrf_base_url + "/oauth2/token", udm_instance_id, "nudr-dr", "UDR");
 
     auto meter = sbi_core::get_meter("udm");
     auto amf_reg_counter =
@@ -390,7 +400,7 @@ int main() {
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     // --- Nudm_UECM: AMF 3GPP-access registration group ---
 
@@ -618,10 +628,10 @@ int main() {
     // (any SUPI other than this slice's own two real seeded test subscribers) now correctly 404s,
     // instead of the old stub's always-200-empty-body behavior.
     auto fetch_from_udr =
-        [&udr_client,
-         &udr_oauth](const std::string& ue_id,
-                     const std::string& serving_plmn_id,
-                     const std::string& segment) -> std::variant<json, sbi_core::http2::Response> {
+        [&udr_client, &udr_oauth, &udr_base_url](
+            const std::string& ue_id,
+            const std::string& serving_plmn_id,
+            const std::string& segment) -> std::variant<json, sbi_core::http2::Response> {
         auto token = udr_oauth.get_bearer_token();
         if (!token.has_value()) {
             return sbi_core::http2::problem_response(500,
@@ -631,7 +641,7 @@ int main() {
         }
         sbi_core::http2::ClientRequest udr_req;
         udr_req.method = "GET";
-        udr_req.url = std::string(kUdrBase) + kUdrApiRoot + "/subscription-data/" + ue_id + "/" +
+        udr_req.url = udr_base_url + kUdrApiRoot + "/subscription-data/" + ue_id + "/" +
                       serving_plmn_id + "/provisioned-data/" + segment;
         udr_req.headers.emplace("authorization", "Bearer " + *token);
         auto udr_resp = udr_client.send(udr_req);
@@ -1049,11 +1059,11 @@ int main() {
             return sbi_core::http2::Response::json(200, patched->dump());
         });
 
-    std::thread(run_nrf_lifecycle, udm_instance_id).detach();
+    std::thread(run_nrf_lifecycle, udm_instance_id, nrf_base_url).detach();
 
     server.start();
-    spdlog::info("udm: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
-    spdlog::info("udm: Prometheus metrics at http://{}/metrics", kMetricsBindAddress);
+    spdlog::info("udm: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
+    spdlog::info("udm: Prometheus metrics at http://{}/metrics", metrics_bind_address);
     ioc.run();
     return 0;
 }

@@ -39,6 +39,9 @@
 
 #include "registry.hpp"
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded deployment literal in source.
+#include "nf_config/nf_config.hpp"
+
 namespace {
 
 using nlohmann::json;
@@ -46,9 +49,10 @@ using nlohmann::json;
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see nfs/nrf/CMakeLists.txt)"
 #endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see nfs/nrf/CMakeLists.txt)"
+#endif
 
-constexpr unsigned short kPort = 7777;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9464"; // see the SBI server bind for why
 constexpr const char* kNfType = "NRF";
 
 // NRF's own nfInstanceId, fixed rather than randomly generated per run (unlike every other NF's,
@@ -284,9 +288,14 @@ std::optional<std::string> validate_nf_profile(const json& profile) {
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("nrf", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+
     sbi_core::init_logging("nrf");
     sbi_core::init_tracing("nrf");
-    sbi_core::init_metrics(kMetricsBindAddress);
+    sbi_core::init_metrics(metrics_bind_address);
 
     const std::string certs_dir = CERTS_DIR;
     const sbi_core::http2::TlsConfig server_tls{
@@ -378,7 +387,7 @@ int main() {
     // since Docker's port mapping targets the container's external interface, not its loopback.
     // See docs/DECISIONS.md ADR-0014. Still reachable at 127.0.0.1 for anything running on the
     // same host/network namespace (hello-nf's local dev usage is unaffected).
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     server.add_route(
         "POST", "/oauth2/token", [&issuer, &tokens_counter](const sbi_core::http2::Request& req) {
@@ -636,8 +645,8 @@ int main() {
                      });
 
     server.start();
-    spdlog::info("nrf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
-    spdlog::info("nrf: Prometheus metrics at http://{}/metrics", kMetricsBindAddress);
+    spdlog::info("nrf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
+    spdlog::info("nrf: Prometheus metrics at http://{}/metrics", metrics_bind_address);
     ioc.run();
     return 0;
 }

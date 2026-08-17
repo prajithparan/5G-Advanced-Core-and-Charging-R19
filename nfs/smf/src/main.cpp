@@ -102,6 +102,9 @@
 #include "pfcp_peer.hpp"
 #include "sm_context_store.hpp"
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded deployment literal in source.
+#include "nf_config/nf_config.hpp"
+
 namespace {
 
 using nlohmann::json;
@@ -109,15 +112,11 @@ using nlohmann::json;
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see nfs/smf/CMakeLists.txt)"
 #endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see nfs/smf/CMakeLists.txt)"
+#endif
 
-constexpr unsigned short kPort = 7779;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9466";
 constexpr const char* kNfType = "SMF";
-constexpr const char* kNrfBase = "https://127.0.0.1:7777";
-constexpr const char* kSelfBase = "https://127.0.0.1:7779";
-constexpr const char* kPcfBase = "https://127.0.0.1:7783";
-constexpr const char* kAmfBase = "https://127.0.0.1:7778";
-constexpr const char* kChfBase = "https://127.0.0.1:7784";
 // No real service-to-rating-group mapping exists in this codebase (that's TS 32.298/32.299
 // charging-characteristics configuration, not modeled here) -- every PDU session's usage is
 // charged under this one fixed rating group, disclosed here and in ADR-0048, same category of
@@ -154,7 +153,7 @@ std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::R
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as
 // nfs/amf/src/main.cpp's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019).
-void run_nrf_lifecycle(const std::string& smf_instance_id) {
+void run_nrf_lifecycle(const std::string& smf_instance_id, const std::string& nrf_base) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/smf/cert.pem",
         .key_path = CERTS_DIR "/smf/key.pem",
@@ -165,8 +164,7 @@ void run_nrf_lifecycle(const std::string& smf_instance_id) {
     for (int attempt = 0; attempt < 300; ++attempt) {
         sbi_core::http2::ClientRequest probe;
         probe.method = "GET";
-        probe.url = std::string(kNrfBase) +
-                    "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
+        probe.url = nrf_base + "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
         if (http_client.send(probe).has_value()) {
             break;
         }
@@ -174,7 +172,7 @@ void run_nrf_lifecycle(const std::string& smf_instance_id) {
     }
 
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", smf_instance_id, "nnrf-nfm", "NRF");
+        http_client, nrf_base + "/oauth2/token", smf_instance_id, "nnrf-nfm", "NRF");
 
     constexpr int kHeartbeatSeconds = 30;
     json profile{
@@ -195,7 +193,7 @@ void run_nrf_lifecycle(const std::string& smf_instance_id) {
 
         sbi_core::http2::ClientRequest put_req;
         put_req.method = "PUT";
-        put_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + smf_instance_id;
+        put_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + smf_instance_id;
         put_req.headers.emplace("content-type", "application/json");
         put_req.headers.emplace("authorization", "Bearer " + *token);
         put_req.headers.emplace(
@@ -223,7 +221,7 @@ void run_nrf_lifecycle(const std::string& smf_instance_id) {
 
         sbi_core::http2::ClientRequest patch_req;
         patch_req.method = "PATCH";
-        patch_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + smf_instance_id;
+        patch_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + smf_instance_id;
         patch_req.headers.emplace("content-type", "application/json-patch+json");
         patch_req.headers.emplace("authorization", "Bearer " + *token);
         patch_req.body =
@@ -244,7 +242,9 @@ void run_nrf_lifecycle(const std::string& smf_instance_id) {
 // ADR-0040 (UPF's own turn) explicitly promised this stage would close that gap for real.
 // Retries forever (same "keep trying, NRF/UPF may not be up yet" discipline run_nrf_lifecycle
 // itself already uses) until at least one UPF instance with a real ipv4Addresses entry is found.
-std::string discover_upf_ipv4(sbi_core::http2::Client& http_client, sbi_core::OAuth2Client& oauth) {
+std::string discover_upf_ipv4(sbi_core::http2::Client& http_client,
+                              sbi_core::OAuth2Client& oauth,
+                              const std::string& nrf_base) {
     while (true) {
         auto token = oauth.get_bearer_token();
         if (!token.has_value()) {
@@ -254,8 +254,7 @@ std::string discover_upf_ipv4(sbi_core::http2::Client& http_client, sbi_core::OA
         }
         sbi_core::http2::ClientRequest req;
         req.method = "GET";
-        req.url = std::string(kNrfBase) +
-                  "/nnrf-disc/v1/nf-instances?target-nf-type=UPF&requester-nf-type=SMF";
+        req.url = nrf_base + "/nnrf-disc/v1/nf-instances?target-nf-type=UPF&requester-nf-type=SMF";
         req.headers.emplace("authorization", "Bearer " + *token);
         auto resp = http_client.send(req);
         if (!resp.has_value() || resp->status != 200) {
@@ -395,6 +394,7 @@ private:
 };
 
 void run_pfcp_lifecycle(const std::string& smf_instance_id,
+                        const std::string& nrf_base,
                         UpfEndpointStore& upf_endpoint_store,
                         smf::PfcpPeer& pfcp_peer) {
     sbi_core::http2::TlsConfig client_tls{
@@ -404,9 +404,9 @@ void run_pfcp_lifecycle(const std::string& smf_instance_id,
     };
     sbi_core::http2::Client http_client(std::move(client_tls));
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", smf_instance_id, "nnrf-disc", "NRF");
+        http_client, nrf_base + "/oauth2/token", smf_instance_id, "nnrf-disc", "NRF");
 
-    const std::string upf_ip = discover_upf_ipv4(http_client, oauth);
+    const std::string upf_ip = discover_upf_ipv4(http_client, oauth, nrf_base);
     spdlog::info("smf: discovered UPF at {} via Nnrf_NFDiscovery", upf_ip);
 
     const boost::asio::ip::udp::endpoint upf_endpoint(boost::asio::ip::make_address(upf_ip),
@@ -684,6 +684,7 @@ struct ChargingDataCreateResult {
 std::optional<ChargingDataCreateResult>
 perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
                                  sbi_core::OAuth2Client& chf_oauth,
+                                 const std::string& chf_base,
                                  const std::string& smf_instance_id,
                                  const std::string& supi,
                                  std::uint8_t pdu_session_id) {
@@ -718,7 +719,7 @@ perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
 
     sbi_core::http2::ClientRequest chf_http_req;
     chf_http_req.method = "POST";
-    chf_http_req.url = std::string(kChfBase) + "/nchf-convergedcharging/v3/chargingdata";
+    chf_http_req.url = chf_base + "/nchf-convergedcharging/v3/chargingdata";
     chf_http_req.headers.emplace("content-type", "application/json");
     chf_http_req.headers.emplace("authorization", "Bearer " + *token);
     chf_http_req.body = json(chf_req).dump();
@@ -796,6 +797,7 @@ perform_n40_charging_data_create(sbi_core::http2::Client& chf_client,
 // 3, ... for the same ChargingDataRef).
 bool perform_n40_charging_data_release(sbi_core::http2::Client& chf_client,
                                        sbi_core::OAuth2Client& chf_oauth,
+                                       const std::string& chf_base,
                                        const std::string& smf_instance_id,
                                        const std::string& supi,
                                        const std::string& charging_data_ref,
@@ -822,8 +824,8 @@ bool perform_n40_charging_data_release(sbi_core::http2::Client& chf_client,
 
     sbi_core::http2::ClientRequest chf_http_req;
     chf_http_req.method = "POST";
-    chf_http_req.url = std::string(kChfBase) + "/nchf-convergedcharging/v3/chargingdata/" +
-                       charging_data_ref + "/release";
+    chf_http_req.url =
+        chf_base + "/nchf-convergedcharging/v3/chargingdata/" + charging_data_ref + "/release";
     chf_http_req.headers.emplace("content-type", "application/json");
     chf_http_req.headers.emplace("authorization", "Bearer " + *token);
     chf_http_req.body = json(chf_req).dump();
@@ -874,6 +876,7 @@ struct ChargingDataUpdateResult {
 std::optional<ChargingDataUpdateResult>
 perform_n40_charging_data_update(sbi_core::http2::Client& chf_client,
                                  sbi_core::OAuth2Client& chf_oauth,
+                                 const std::string& chf_base,
                                  const std::string& smf_instance_id,
                                  const std::string& supi,
                                  const std::string& charging_data_ref,
@@ -914,8 +917,8 @@ perform_n40_charging_data_update(sbi_core::http2::Client& chf_client,
 
     sbi_core::http2::ClientRequest chf_http_req;
     chf_http_req.method = "POST";
-    chf_http_req.url = std::string(kChfBase) + "/nchf-convergedcharging/v3/chargingdata/" +
-                       charging_data_ref + "/update";
+    chf_http_req.url =
+        chf_base + "/nchf-convergedcharging/v3/chargingdata/" + charging_data_ref + "/update";
     chf_http_req.headers.emplace("content-type", "application/json");
     chf_http_req.headers.emplace("authorization", "Bearer " + *token);
     chf_http_req.body = json(chf_req).dump();
@@ -1042,9 +1045,24 @@ bool perform_n4_session_modification_update_urr(smf::PfcpPeer& pfcp_peer,
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("smf", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto nrf_base_url =
+        nf_config::require<std::string>(config, "nrf_base_url", "SMF_NRF_BASE_URL");
+    const auto self_base_url =
+        nf_config::require<std::string>(config, "self_base_url", "SMF_SELF_BASE_URL");
+    const auto pcf_base_url =
+        nf_config::require<std::string>(config, "pcf_base_url", "SMF_PCF_BASE_URL");
+    const auto amf_base_url =
+        nf_config::require<std::string>(config, "amf_base_url", "SMF_AMF_BASE_URL");
+    const auto chf_base_url =
+        nf_config::require<std::string>(config, "chf_base_url", "SMF_CHF_BASE_URL");
+
     sbi_core::init_logging("smf");
     sbi_core::init_tracing("smf");
-    sbi_core::init_metrics(kMetricsBindAddress);
+    sbi_core::init_metrics(metrics_bind_address);
 
     const std::string smf_instance_id = sbi_core::generate_uuid_v4();
     spdlog::info("smf: starting, nfInstanceId={}", smf_instance_id);
@@ -1076,11 +1094,8 @@ int main() {
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
     sbi_core::http2::Client pcf_client(std::move(pcf_client_tls));
-    sbi_core::OAuth2Client pcf_oauth(pcf_client,
-                                     std::string(kNrfBase) + "/oauth2/token",
-                                     smf_instance_id,
-                                     "npcf-smpolicycontrol",
-                                     "PCF");
+    sbi_core::OAuth2Client pcf_oauth(
+        pcf_client, nrf_base_url + "/oauth2/token", smf_instance_id, "npcf-smpolicycontrol", "PCF");
 
     // SMF's own client identity + token source for calling AMF's Namf_Communication
     // N1N2MessageTransfer (TS29518_Namf_Communication.yaml) -- the real mechanism for delivering
@@ -1093,7 +1108,7 @@ int main() {
     };
     sbi_core::http2::Client amf_client(std::move(amf_client_tls));
     sbi_core::OAuth2Client amf_oauth(
-        amf_client, std::string(kNrfBase) + "/oauth2/token", smf_instance_id, "namf-comm", "AMF");
+        amf_client, nrf_base_url + "/oauth2/token", smf_instance_id, "namf-comm", "AMF");
 
     // SMF's own client identity + token source for calling CHF's Nchf_ConvergedCharging (N40,
     // ADR-0044) -- same one-client-per-NF pattern as pcf_client/amf_client above.
@@ -1104,7 +1119,7 @@ int main() {
     };
     sbi_core::http2::Client chf_client(std::move(chf_client_tls));
     sbi_core::OAuth2Client chf_oauth(chf_client,
-                                     std::string(kNrfBase) + "/oauth2/token",
+                                     nrf_base_url + "/oauth2/token",
                                      smf_instance_id,
                                      "nchf-convergedcharging",
                                      "CHF");
@@ -1121,7 +1136,7 @@ int main() {
     };
     sbi_core::http2::Client chf_report_client(std::move(chf_report_client_tls));
     sbi_core::OAuth2Client chf_report_oauth(chf_report_client,
-                                            std::string(kNrfBase) + "/oauth2/token",
+                                            nrf_base_url + "/oauth2/token",
                                             smf_instance_id,
                                             "nchf-convergedcharging",
                                             "CHF");
@@ -1154,6 +1169,7 @@ int main() {
                                           &charging_data_invocation_seq,
                                           &chf_report_client,
                                           &chf_report_oauth,
+                                          &chf_base_url,
                                           &smf_instance_id](
                                              const pfcp_core::Header& header,
                                              const std::vector<std::uint8_t>& ie_bytes,
@@ -1241,6 +1257,7 @@ int main() {
         std::thread([&pfcp_peer,
                      &chf_report_client,
                      &chf_report_oauth,
+                     &chf_base_url,
                      &smf_instance_id,
                      info,
                      invocation_seq,
@@ -1249,6 +1266,7 @@ int main() {
             const auto update_result =
                 perform_n40_charging_data_update(chf_report_client,
                                                  chf_report_oauth,
+                                                 chf_base_url,
                                                  smf_instance_id,
                                                  info.supi,
                                                  info.charging_data_ref,
@@ -1378,7 +1396,7 @@ int main() {
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     server.add_route(
         "POST",
@@ -1388,13 +1406,17 @@ int main() {
          &create_counter,
          &pcf_client,
          &pcf_oauth,
+         &pcf_base_url,
+         &self_base_url,
          &pcf_sm_policy_create_counter,
          &amf_client,
          &amf_oauth,
+         &amf_base_url,
          &upf_endpoint_store,
          &n1n2_transfer_counter,
          &chf_client,
          &chf_oauth,
+         &chf_base_url,
          &chf_charging_data_create_counter,
          &smf_instance_id,
          &pfcp_peer,
@@ -1441,13 +1463,13 @@ int main() {
             // Disclosed fixed default, not the UE's real requested type -- see file header.
             pcf_req.pduSessionType.value = sbi_gen::PduSessionType::IPV4;
             pcf_req.dnn = *body->dnn;
-            pcf_req.notificationUri = std::string(kSelfBase) + std::string(kApiRoot) +
-                                      "/sm-contexts/" + sm_context_ref + "/pcf-notify";
+            pcf_req.notificationUri = self_base_url + std::string(kApiRoot) + "/sm-contexts/" +
+                                      sm_context_ref + "/pcf-notify";
             pcf_req.sliceInfo = *body->sNssai;
 
             sbi_core::http2::ClientRequest pcf_http_req;
             pcf_http_req.method = "POST";
-            pcf_http_req.url = std::string(kPcfBase) + "/npcf-smpolicycontrol/v1/sm-policies";
+            pcf_http_req.url = pcf_base_url + "/npcf-smpolicycontrol/v1/sm-policies";
             pcf_http_req.headers.emplace("content-type", "application/json");
             pcf_http_req.headers.emplace("authorization", "Bearer " + *token);
             pcf_http_req.body = json(pcf_req).dump();
@@ -1509,6 +1531,7 @@ int main() {
             if (const auto charging_result = perform_n40_charging_data_create(
                     chf_client,
                     chf_oauth,
+                    chf_base_url,
                     smf_instance_id,
                     *body->supi,
                     static_cast<std::uint8_t>(*body->pduSessionId));
@@ -1649,7 +1672,7 @@ int main() {
 
                         sbi_core::http2::ClientRequest amf_http_req;
                         amf_http_req.method = "POST";
-                        amf_http_req.url = std::string(kAmfBase) + "/namf-comm/v1/ue-contexts/" +
+                        amf_http_req.url = amf_base_url + "/namf-comm/v1/ue-contexts/" +
                                            *body->supi + "/n1-n2-messages";
                         amf_http_req.headers.emplace("content-type",
                                                      n1n2_encoded.content_type_header);
@@ -1755,9 +1778,11 @@ int main() {
          &release_counter,
          &pcf_client,
          &pcf_oauth,
+         &pcf_base_url,
          &pcf_sm_policy_delete_counter,
          &chf_client,
          &chf_oauth,
+         &chf_base_url,
          &chf_charging_data_release_counter,
          &smf_instance_id,
          &charging_data_invocation_seq](const sbi_core::http2::Request& req) {
@@ -1795,9 +1820,8 @@ int main() {
                     } else {
                         sbi_core::http2::ClientRequest pcf_http_req;
                         pcf_http_req.method = "POST";
-                        pcf_http_req.url = std::string(kPcfBase) +
-                                           "/npcf-smpolicycontrol/v1/sm-policies/" + sm_policy_id +
-                                           "/delete";
+                        pcf_http_req.url = pcf_base_url + "/npcf-smpolicycontrol/v1/sm-policies/" +
+                                           sm_policy_id + "/delete";
                         pcf_http_req.headers.emplace("content-type", "application/json");
                         pcf_http_req.headers.emplace("authorization", "Bearer " + *token);
                         pcf_http_req.body = json::object().dump();
@@ -1825,6 +1849,7 @@ int main() {
                     perform_n40_charging_data_release(
                         chf_client,
                         chf_oauth,
+                        chf_base_url,
                         smf_instance_id,
                         supi,
                         charging_data_ref,
@@ -1840,14 +1865,17 @@ int main() {
             return resp;
         });
 
-    std::thread(run_nrf_lifecycle, smf_instance_id).detach();
-    std::thread(
-        run_pfcp_lifecycle, smf_instance_id, std::ref(upf_endpoint_store), std::ref(pfcp_peer))
+    std::thread(run_nrf_lifecycle, smf_instance_id, nrf_base_url).detach();
+    std::thread(run_pfcp_lifecycle,
+                smf_instance_id,
+                nrf_base_url,
+                std::ref(upf_endpoint_store),
+                std::ref(pfcp_peer))
         .detach();
 
     server.start();
-    spdlog::info("smf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
-    spdlog::info("smf: Prometheus metrics at http://{}/metrics", kMetricsBindAddress);
+    spdlog::info("smf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
+    spdlog::info("smf: Prometheus metrics at http://{}/metrics", metrics_bind_address);
     ioc.run();
     return 0;
 }

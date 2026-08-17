@@ -17,24 +17,30 @@
 #include "sbi_core/sbi_headers.hpp"
 #include "sbi_core/uuid.hpp"
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded deployment literal in source.
 #include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <cstdlib>
 #include <thread>
 
+#include "nf_config/nf_config.hpp"
+
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see nfs/hello-nf/CMakeLists.txt)"
+#endif
+
 namespace {
 
 using nlohmann::json;
 
-constexpr const char* kNrfBase = "https://127.0.0.1:7777";
-
-bool wait_for_nrf(sbi_core::http2::Client& client, int max_attempts = 20) {
+bool wait_for_nrf(sbi_core::http2::Client& client,
+                  const std::string& nrf_base,
+                  int max_attempts = 20) {
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
         sbi_core::http2::ClientRequest req;
         req.method = "GET";
-        req.url = std::string(kNrfBase) +
-                  "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
+        req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
         auto resp = client.send(req);
         // Any HTTP response (even 404) means the server is up; connection failure means retry.
         if (resp.has_value()) {
@@ -48,6 +54,10 @@ bool wait_for_nrf(sbi_core::http2::Client& client, int max_attempts = 20) {
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("hello-nf", CONFIG_DIR);
+    const auto nrf_base =
+        nf_config::require<std::string>(config, "nrf_base_url", "HELLO_NF_NRF_BASE_URL");
+
     sbi_core::init_logging("hello-nf");
     sbi_core::init_tracing("hello-nf");
     auto tracer = sbi_core::get_tracer();
@@ -62,13 +72,13 @@ int main() {
     };
     sbi_core::http2::Client http_client(std::move(tls));
 
-    if (!wait_for_nrf(http_client)) {
-        spdlog::error("hello-nf: nrf never became reachable at {}", kNrfBase);
+    if (!wait_for_nrf(http_client, nrf_base)) {
+        spdlog::error("hello-nf: nrf never became reachable at {}", nrf_base);
         return 1;
     }
 
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", nf_instance_id, "nnrf-nfm", "NRF");
+        http_client, nrf_base + "/oauth2/token", nf_instance_id, "nnrf-nfm", "NRF");
 
     tl::expected<std::string, std::string> token;
     {
@@ -94,7 +104,7 @@ int main() {
 
         sbi_core::http2::ClientRequest put_req;
         put_req.method = "PUT";
-        put_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + nf_instance_id;
+        put_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + nf_instance_id;
         put_req.headers.emplace("content-type", "application/json");
         put_req.headers.emplace("authorization", "Bearer " + *token);
         put_req.headers.emplace(
@@ -120,7 +130,7 @@ int main() {
 
         sbi_core::http2::ClientRequest patch_req;
         patch_req.method = "PATCH";
-        patch_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + nf_instance_id;
+        patch_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + nf_instance_id;
         patch_req.headers.emplace("content-type", "application/json-patch+json");
         patch_req.headers.emplace("authorization", "Bearer " + *token);
         patch_req.body =
@@ -141,7 +151,7 @@ int main() {
 
     sbi_core::http2::ClientRequest del_req;
     del_req.method = "DELETE";
-    del_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + nf_instance_id;
+    del_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + nf_instance_id;
     del_req.headers.emplace("authorization", "Bearer " + *token);
 
     auto del_resp = http_client.send(del_req);

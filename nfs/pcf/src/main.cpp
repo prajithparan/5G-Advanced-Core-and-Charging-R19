@@ -82,6 +82,9 @@
 #include "TS29122_CommonData_grp.hpp"
 #include "stores.hpp"
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded deployment literal in source.
+#include "nf_config/nf_config.hpp"
+
 namespace {
 
 using nlohmann::json;
@@ -89,11 +92,11 @@ using nlohmann::json;
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see nfs/pcf/CMakeLists.txt)"
 #endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see nfs/pcf/CMakeLists.txt)"
+#endif
 
-constexpr unsigned short kPort = 7783;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9470";
 constexpr const char* kNfType = "PCF";
-constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kAmApiRoot = "/npcf-am-policy-control/v1";
 constexpr const char* kSmApiRoot = "/npcf-smpolicycontrol/v1";
 // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #103, ADR-0080).
@@ -102,14 +105,9 @@ constexpr const char* kPolicyAuthApiRoot = "/npcf-policyauthorization/v1";
 // ADR-0072 (gap-closure: real N28 end-to-end). PCF's real UDR client (fetches SmPolicyData,
 // TS29519_Policy_Data.yaml) and CHF client (Nchf_SpendingLimitControl, TS29594) -- same
 // separate-http2::Client-per-target-NF pattern nfs/udm/src/main.cpp's own udr_client already
-// established. kPcfSelfBase is this PCF's own externally-reachable base, used to build the real
-// notifUri CHF calls back on -- this lab's own loopback-only convention, same as every other NF's
-// own kNrfBase-style constant.
-constexpr const char* kUdrBase = "https://127.0.0.1:7781";
+// established.
 constexpr const char* kUdrApiRoot = "/nudr-dr/v2";
-constexpr const char* kChfBase = "https://127.0.0.1:7784";
 constexpr const char* kChfSpendingLimitApiRoot = "/nchf-spendinglimitcontrol/v1";
-constexpr const char* kPcfSelfBase = "https://127.0.0.1:7783";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -202,6 +200,7 @@ std::string snssai_map_key(const sbi_gen::Snssai& snssai) {
 // this project's own established fail-open convention for this kind of best-effort policy lookup.
 std::optional<json> fetch_sm_policy_dnn_data(sbi_core::http2::Client& udr_client,
                                              sbi_core::OAuth2Client& udr_oauth,
+                                             const std::string& udr_base,
                                              const std::string& supi,
                                              const sbi_gen::Snssai& snssai,
                                              const std::string& dnn) {
@@ -213,7 +212,7 @@ std::optional<json> fetch_sm_policy_dnn_data(sbi_core::http2::Client& udr_client
     }
     sbi_core::http2::ClientRequest req;
     req.method = "GET";
-    req.url = std::string(kUdrBase) + kUdrApiRoot + "/policy-data/ues/" + supi + "/sm-data";
+    req.url = udr_base + kUdrApiRoot + "/policy-data/ues/" + supi + "/sm-data";
     req.headers.emplace("authorization", "Bearer " + *token);
     auto resp = udr_client.send(req);
     if (!resp.has_value() || resp->status != 200) {
@@ -248,6 +247,7 @@ std::optional<json> fetch_sm_policy_dnn_data(sbi_core::http2::Client& udr_client
 std::optional<std::pair<std::string, json>>
 subscribe_spending_limit(sbi_core::http2::Client& chf_client,
                          sbi_core::OAuth2Client& chf_oauth,
+                         const std::string& chf_base,
                          const std::string& supi,
                          const std::vector<std::string>& policy_counter_ids,
                          const std::string& notif_uri) {
@@ -263,7 +263,7 @@ subscribe_spending_limit(sbi_core::http2::Client& chf_client,
     ctx.notifUri = notif_uri;
     sbi_core::http2::ClientRequest req;
     req.method = "POST";
-    req.url = std::string(kChfBase) + kChfSpendingLimitApiRoot + "/subscriptions";
+    req.url = chf_base + kChfSpendingLimitApiRoot + "/subscriptions";
     req.headers.emplace("content-type", "application/json");
     req.headers.emplace("authorization", "Bearer " + *token);
     json j = ctx;
@@ -296,6 +296,7 @@ subscribe_spending_limit(sbi_core::http2::Client& chf_client,
 // `expiry` lapses (no cleanup sweep exists in this build); logged, not retried.
 void unsubscribe_spending_limit(sbi_core::http2::Client& chf_client,
                                 sbi_core::OAuth2Client& chf_oauth,
+                                const std::string& chf_base,
                                 const std::string& subscription_id) {
     auto token = chf_oauth.get_bearer_token();
     if (!token.has_value()) {
@@ -305,8 +306,7 @@ void unsubscribe_spending_limit(sbi_core::http2::Client& chf_client,
     }
     sbi_core::http2::ClientRequest req;
     req.method = "DELETE";
-    req.url =
-        std::string(kChfBase) + kChfSpendingLimitApiRoot + "/subscriptions/" + subscription_id;
+    req.url = chf_base + kChfSpendingLimitApiRoot + "/subscriptions/" + subscription_id;
     req.headers.emplace("authorization", "Bearer " + *token);
     auto resp = chf_client.send(req);
     if (!resp.has_value() || resp->status != 204) {
@@ -318,7 +318,7 @@ void unsubscribe_spending_limit(sbi_core::http2::Client& chf_client,
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as
 // nfs/udr/src/main.cpp's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019).
-void run_nrf_lifecycle(const std::string& pcf_instance_id) {
+void run_nrf_lifecycle(const std::string& pcf_instance_id, const std::string& nrf_base) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/pcf/cert.pem",
         .key_path = CERTS_DIR "/pcf/key.pem",
@@ -329,8 +329,7 @@ void run_nrf_lifecycle(const std::string& pcf_instance_id) {
     for (int attempt = 0; attempt < 300; ++attempt) {
         sbi_core::http2::ClientRequest probe;
         probe.method = "GET";
-        probe.url = std::string(kNrfBase) +
-                    "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
+        probe.url = nrf_base + "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
         if (http_client.send(probe).has_value()) {
             break;
         }
@@ -338,7 +337,7 @@ void run_nrf_lifecycle(const std::string& pcf_instance_id) {
     }
 
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", pcf_instance_id, "nnrf-nfm", "NRF");
+        http_client, nrf_base + "/oauth2/token", pcf_instance_id, "nnrf-nfm", "NRF");
 
     constexpr int kHeartbeatSeconds = 30;
     json profile{
@@ -359,7 +358,7 @@ void run_nrf_lifecycle(const std::string& pcf_instance_id) {
 
         sbi_core::http2::ClientRequest put_req;
         put_req.method = "PUT";
-        put_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + pcf_instance_id;
+        put_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + pcf_instance_id;
         put_req.headers.emplace("content-type", "application/json");
         put_req.headers.emplace("authorization", "Bearer " + *token);
         put_req.headers.emplace(
@@ -387,7 +386,7 @@ void run_nrf_lifecycle(const std::string& pcf_instance_id) {
 
         sbi_core::http2::ClientRequest patch_req;
         patch_req.method = "PATCH";
-        patch_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + pcf_instance_id;
+        patch_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + pcf_instance_id;
         patch_req.headers.emplace("content-type", "application/json-patch+json");
         patch_req.headers.emplace("authorization", "Bearer " + *token);
         patch_req.body =
@@ -404,9 +403,22 @@ void run_nrf_lifecycle(const std::string& pcf_instance_id) {
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("pcf", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto nrf_base_url =
+        nf_config::require<std::string>(config, "nrf_base_url", "PCF_NRF_BASE_URL");
+    const auto udr_base_url =
+        nf_config::require<std::string>(config, "udr_base_url", "PCF_UDR_BASE_URL");
+    const auto chf_base_url =
+        nf_config::require<std::string>(config, "chf_base_url", "PCF_CHF_BASE_URL");
+    const auto self_base_url =
+        nf_config::require<std::string>(config, "self_base_url", "PCF_SELF_BASE_URL");
+
     sbi_core::init_logging("pcf");
     sbi_core::init_tracing("pcf");
-    sbi_core::init_metrics(kMetricsBindAddress);
+    sbi_core::init_metrics(metrics_bind_address);
 
     const std::string pcf_instance_id = sbi_core::generate_uuid_v4();
     spdlog::info("pcf: starting, nfInstanceId={}", pcf_instance_id);
@@ -434,7 +446,7 @@ int main() {
     };
     sbi_core::http2::Client udr_client(std::move(udr_client_tls));
     sbi_core::OAuth2Client udr_oauth(
-        udr_client, std::string(kNrfBase) + "/oauth2/token", pcf_instance_id, "nudr-dr", "UDR");
+        udr_client, nrf_base_url + "/oauth2/token", pcf_instance_id, "nudr-dr", "UDR");
 
     sbi_core::http2::TlsConfig chf_client_tls{
         .cert_path = CERTS_DIR "/pcf/cert.pem",
@@ -443,7 +455,7 @@ int main() {
     };
     sbi_core::http2::Client chf_client(std::move(chf_client_tls));
     sbi_core::OAuth2Client chf_oauth(chf_client,
-                                     std::string(kNrfBase) + "/oauth2/token",
+                                     nrf_base_url + "/oauth2/token",
                                      pcf_instance_id,
                                      "nchf-spendinglimitcontrol",
                                      "CHF");
@@ -477,7 +489,7 @@ int main() {
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     // --- Npcf_AMPolicyControl ---
 
@@ -596,8 +608,11 @@ int main() {
          &sm_create_counter,
          &udr_client,
          &udr_oauth,
+         &udr_base_url,
          &chf_client,
          &chf_oauth,
+         &chf_base_url,
+         &self_base_url,
          &spending_limit_tracking,
          &spending_limit_subscribe_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
@@ -626,7 +641,7 @@ int main() {
             // spending limits simply not being configured for this subscriber, fails the SM Policy
             // request itself -- this is real, additional enforcement, not a mandatory dependency.
             auto dnn_data = fetch_sm_policy_dnn_data(
-                udr_client, udr_oauth, body->supi, body->sliceInfo, body->dnn);
+                udr_client, udr_oauth, udr_base_url, body->supi, body->sliceInfo, body->dnn);
             if (dnn_data.has_value() && dnn_data->value("subscSpendingLimits", false)) {
                 std::vector<std::string> policy_counter_ids;
                 if (auto spend_it = dnn_data->find("spendLimInfo"); spend_it != dnn_data->end()) {
@@ -635,10 +650,14 @@ int main() {
                     }
                 }
                 if (!policy_counter_ids.empty()) {
-                    const std::string notif_uri = std::string(kPcfSelfBase) + kSmApiRoot +
-                                                  "/sm-policies/" + id + "/spending-limit-notify";
-                    auto subscribed = subscribe_spending_limit(
-                        chf_client, chf_oauth, body->supi, policy_counter_ids, notif_uri);
+                    const std::string notif_uri = self_base_url + kSmApiRoot + "/sm-policies/" +
+                                                  id + "/spending-limit-notify";
+                    auto subscribed = subscribe_spending_limit(chf_client,
+                                                               chf_oauth,
+                                                               chf_base_url,
+                                                               body->supi,
+                                                               policy_counter_ids,
+                                                               notif_uri);
                     if (subscribed.has_value()) {
                         pcf::SpendingLimitTrackingStore::Entry entry{};
                         entry.chf_subscription_id = subscribed->first;
@@ -723,6 +742,7 @@ int main() {
          &sm_delete_counter,
          &chf_client,
          &chf_oauth,
+         &chf_base_url,
          &spending_limit_tracking](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -738,7 +758,8 @@ int main() {
             // ADR-0072: real, best-effort CHF unsubscribe if this SM policy ever opened a real
             // spending-limit subscription -- no-op (not an error) if it never did.
             if (auto tracked = spending_limit_tracking.remove(sm_policy_id); tracked.has_value()) {
-                unsubscribe_spending_limit(chf_client, chf_oauth, tracked->chf_subscription_id);
+                unsubscribe_spending_limit(
+                    chf_client, chf_oauth, chf_base_url, tracked->chf_subscription_id);
             }
             sbi_core::http2::Response resp;
             resp.status = 204;
@@ -973,11 +994,11 @@ int main() {
             return resp;
         });
 
-    std::thread(run_nrf_lifecycle, pcf_instance_id).detach();
+    std::thread(run_nrf_lifecycle, pcf_instance_id, nrf_base_url).detach();
 
     server.start();
-    spdlog::info("pcf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
-    spdlog::info("pcf: Prometheus metrics at http://{}/metrics", kMetricsBindAddress);
+    spdlog::info("pcf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
+    spdlog::info("pcf: Prometheus metrics at http://{}/metrics", metrics_bind_address);
     ioc.run();
     return 0;
 }

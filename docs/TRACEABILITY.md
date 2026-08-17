@@ -1426,3 +1426,22 @@ closing the same real container-loopback bug class AMF's own `AMF_NRF_BASE_URL` 
 fixed, proactively rather than waiting for each one's own live reproduction. See ADR-0085 in
 `docs/DECISIONS.md` for the full disclosure of what's deliberately still deferred (CHF's remaining
 Redis/ClickHouse/AI-env fields, `bss/product-catalog`, and every other not-yet-retrofitted NF).
+
+## ADR-0088 -- config-file retrofit batch 2: NRF, hello-nf, UDM, PCF, SMF, UPF (task #109, closing)
+
+| Requirement | Test |
+|---|---|
+| NRF's `port`/`metrics_bind_address` load from `config/nrf.json` | Live start with zero env overrides: `"listening on https://0.0.0.0:7777"` |
+| hello-nf's `nrf_base_url` loads from `config/hello-nf.json` | Live run with zero env overrides: full register/heartbeat/deregister lifecycle, exit 0 |
+| UDM's `port`/`metrics_bind_address`/`nrf_base_url`/`udr_base_url` load from `config/udm.json` | Live start with zero env overrides: `"registered with NRF (HTTP 201)"`; live HTTP `GetAmData` -> real 200 (proves the real UDR cross-call still works) |
+| PCF's `port`/`metrics_bind_address`/`nrf_base_url`/`udr_base_url`/`chf_base_url`/`self_base_url` load from `config/pcf.json` | Live start with zero env overrides: `"registered with NRF (HTTP 201)"`; live HTTP reachability confirmed |
+| SMF's `port`/`metrics_bind_address`/`nrf_base_url`/`self_base_url`/`pcf_base_url`/`amf_base_url`/`chf_base_url` load from `config/smf.json` | Live start with zero env overrides: real `Nnrf_NFDiscovery` finds UPF, real PFCP Sx Association Setup succeeds -- both purely config-driven |
+| UPF's `metrics_bind_address`/`nrf_base_url` load from `config/upf.json` (no `port` -- UPF has no HTTP/SBI server) | Live start with zero env overrides: `"registered with NRF (HTTP 201)"`, real PFCP Association Setup accepted from SMF |
+| No regression | Full `conformance_tests`: 321/321 pass, run with batch 1's five `*_DATABASE_URL` env vars explicitly `env -u`-unset |
+
+Real, disclosed process incident (not a code defect): a duplicate `cmake --build` invocation raced
+an already-completed background build, truncating `TS29122_CommonData_grp.cpp.o` (`ranlib`: "file
+truncated"); fixed by deleting the corrupt object + stale archive and rebuilding once. See ADR-0088
+in `docs/DECISIONS.md` for the full disclosure, including what remains deliberately out of scope
+(`bss/product-catalog`, CHF's remaining Redis/ClickHouse/AI-env fields) -- **task #109 is now
+closed**.

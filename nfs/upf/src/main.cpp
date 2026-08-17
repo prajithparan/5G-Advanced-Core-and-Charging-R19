@@ -58,8 +58,14 @@
 #include "pfcp_core/pfd_ies.hpp"
 #include "pfcp_core/session_ies.hpp"
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded deployment literal in source.
+#include "nf_config/nf_config.hpp"
+
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see nfs/upf/CMakeLists.txt)"
+#endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see nfs/upf/CMakeLists.txt)"
 #endif
 
 namespace {
@@ -67,8 +73,6 @@ namespace {
 using nlohmann::json;
 
 constexpr const char* kNfType = "UPF";
-constexpr const char* kNrfBase = "https://127.0.0.1:7777";
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9471";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -246,7 +250,7 @@ private:
 // Same pattern as every other NF's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019), with
 // one real difference: UPF has no HTTP2 server of its own to advertise (see file header) -- this
 // is purely an outbound SBI client role.
-void run_nrf_lifecycle(const std::string& upf_instance_id) {
+void run_nrf_lifecycle(const std::string& upf_instance_id, const std::string& nrf_base) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/upf/cert.pem",
         .key_path = CERTS_DIR "/upf/key.pem",
@@ -257,8 +261,7 @@ void run_nrf_lifecycle(const std::string& upf_instance_id) {
     for (int attempt = 0; attempt < 300; ++attempt) {
         sbi_core::http2::ClientRequest probe;
         probe.method = "GET";
-        probe.url = std::string(kNrfBase) +
-                    "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
+        probe.url = nrf_base + "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
         if (http_client.send(probe).has_value()) {
             break;
         }
@@ -266,7 +269,7 @@ void run_nrf_lifecycle(const std::string& upf_instance_id) {
     }
 
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", upf_instance_id, "nnrf-nfm", "NRF");
+        http_client, nrf_base + "/oauth2/token", upf_instance_id, "nnrf-nfm", "NRF");
 
     constexpr int kHeartbeatSeconds = 30;
 
@@ -300,7 +303,7 @@ void run_nrf_lifecycle(const std::string& upf_instance_id) {
 
         sbi_core::http2::ClientRequest put_req;
         put_req.method = "PUT";
-        put_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + upf_instance_id;
+        put_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + upf_instance_id;
         put_req.headers.emplace("content-type", "application/json");
         put_req.headers.emplace("authorization", "Bearer " + *token);
         put_req.headers.emplace(
@@ -328,7 +331,7 @@ void run_nrf_lifecycle(const std::string& upf_instance_id) {
 
         sbi_core::http2::ClientRequest patch_req;
         patch_req.method = "PATCH";
-        patch_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + upf_instance_id;
+        patch_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + upf_instance_id;
         patch_req.headers.emplace("content-type", "application/json-patch+json");
         patch_req.headers.emplace("authorization", "Bearer " + *token);
         patch_req.body =
@@ -1238,13 +1241,19 @@ void run_pfcp_lifecycle(std::time_t start_time,
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("upf", CONFIG_DIR);
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto nrf_base_url =
+        nf_config::require<std::string>(config, "nrf_base_url", "UPF_NRF_BASE_URL");
+
     sbi_core::init_logging("upf");
     sbi_core::init_tracing("upf");
-    sbi_core::init_metrics(kMetricsBindAddress);
+    sbi_core::init_metrics(metrics_bind_address);
 
     const std::string upf_instance_id = sbi_core::generate_uuid_v4();
     spdlog::info("upf: starting, nfInstanceId={}", upf_instance_id);
-    spdlog::info("upf: Prometheus metrics at http://{}/metrics", kMetricsBindAddress);
+    spdlog::info("upf: Prometheus metrics at http://{}/metrics", metrics_bind_address);
 
     const std::time_t start_time = std::time(nullptr);
 
@@ -1335,7 +1344,7 @@ int main() {
                      "be decapsulated/forwarded");
     }
 
-    std::thread(run_nrf_lifecycle, upf_instance_id).detach();
+    std::thread(run_nrf_lifecycle, upf_instance_id, nrf_base_url).detach();
     run_pfcp_lifecycle(start_time,
                        datapath.has_value() ? &*datapath : nullptr,
                        teid_session_store,
