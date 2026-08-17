@@ -5,6 +5,7 @@
 #include "pfcp_core/common_ies.hpp"
 #include "pfcp_core/header.hpp"
 #include "pfcp_core/ie.hpp"
+#include "pfcp_core/pfd_ies.hpp"
 #include "pfcp_core/session_ies.hpp"
 
 #include <gtest/gtest.h>
@@ -419,4 +420,103 @@ TEST(PfcpSessionIes, MbrRoundTripsLargeValue) {
     ASSERT_TRUE(decoded.has_value());
     EXPECT_EQ(decoded->ul_kbps, 0xFFFFFFFFFFULL);
     EXPECT_EQ(decoded->dl_kbps, 1u);
+}
+
+// Gap-closure task #107 part 2 (ADR-0086): PFD Management IEs.
+
+TEST(PfcpPfdIes, ApplicationIdRoundTrips) {
+    const auto encoded = pfcp_core::encode_application_id("app-exampleapp");
+    EXPECT_EQ(pfcp_core::decode_application_id(encoded), "app-exampleapp");
+}
+
+TEST(PfcpPfdIes, PfdContentsRoundTripsAllFourFields) {
+    pfcp_core::PfdContents contents;
+    contents.flow_description =
+        std::vector<std::uint8_t>{'p', 'e', 'r', 'm', 'i', 't', ' ', 'o', 'u', 't'};
+    contents.url = std::vector<std::uint8_t>{'h', 't', 't', 'p', ':', '/', '/', 'x'};
+    contents.domain_name = std::vector<std::uint8_t>{'e', 'x', '.', 'c', 'o', 'm'};
+    contents.custom_content = std::vector<std::uint8_t>{0x01, 0x02, 0x03};
+
+    const auto decoded = pfcp_core::decode_pfd_contents(pfcp_core::encode_pfd_contents(contents));
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(decoded->flow_description.has_value());
+    EXPECT_EQ(*decoded->flow_description, *contents.flow_description);
+    ASSERT_TRUE(decoded->url.has_value());
+    EXPECT_EQ(*decoded->url, *contents.url);
+    ASSERT_TRUE(decoded->domain_name.has_value());
+    EXPECT_EQ(*decoded->domain_name, *contents.domain_name);
+    ASSERT_TRUE(decoded->custom_content.has_value());
+    EXPECT_EQ(*decoded->custom_content, *contents.custom_content);
+}
+
+TEST(PfcpPfdIes, PfdContentsRoundTripsOnlyFlowDescription) {
+    pfcp_core::PfdContents contents;
+    contents.flow_description = std::vector<std::uint8_t>{'x'};
+
+    const auto decoded = pfcp_core::decode_pfd_contents(pfcp_core::encode_pfd_contents(contents));
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(decoded->flow_description.has_value());
+    EXPECT_EQ(*decoded->flow_description, *contents.flow_description);
+    EXPECT_FALSE(decoded->url.has_value());
+    EXPECT_FALSE(decoded->domain_name.has_value());
+    EXPECT_FALSE(decoded->custom_content.has_value());
+}
+
+TEST(PfcpPfdIes, PfdContentsEmptyHasNoFieldsSet) {
+    const pfcp_core::PfdContents contents;
+    const auto encoded = pfcp_core::encode_pfd_contents(contents);
+    EXPECT_EQ(encoded.size(), 2u); // just the flags + spare octets, no fields
+    const auto decoded = pfcp_core::decode_pfd_contents(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_FALSE(decoded->flow_description.has_value());
+    EXPECT_FALSE(decoded->url.has_value());
+    EXPECT_FALSE(decoded->domain_name.has_value());
+    EXPECT_FALSE(decoded->custom_content.has_value());
+}
+
+TEST(PfcpPfdIes, PfdContentsRejectsTooShortBuffer) {
+    EXPECT_FALSE(pfcp_core::decode_pfd_contents(std::vector<std::uint8_t>{0x01}).has_value());
+}
+
+TEST(PfcpPfdIes, PfdContentsRejectsFlagSetWithTruncatedField) {
+    // FD flag set, but no length-prefixed field bytes follow.
+    const std::vector<std::uint8_t> bytes{0x01, 0x00};
+    EXPECT_FALSE(pfcp_core::decode_pfd_contents(bytes).has_value());
+}
+
+TEST(PfcpPfdIes, ApplicationIdsPfdsGroupRoundTripsViaExistingIeCodec) {
+    // "Application ID's PFDs" (58) and "PFD context" (59) are grouped IEs with no dedicated codec
+    // (same choice CreatePdr/CreateFar already made) -- this confirms the generic encode_ie/
+    // decode_ies pair round-trips a real, nested Application ID + PFD context + PFD Contents tree
+    // correctly, matching PfcpSessionIes.GroupedIeRoundTripsViaExistingIeCodec's own precedent.
+    pfcp_core::PfdContents contents;
+    contents.flow_description = std::vector<std::uint8_t>{'x'};
+
+    std::vector<std::uint8_t> pfd_context_ies;
+    pfcp_core::encode_ie(pfd_context_ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::PfdContents),
+                         pfcp_core::encode_pfd_contents(contents));
+
+    std::vector<std::uint8_t> app_pfds_ies;
+    pfcp_core::encode_ie(app_pfds_ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::ApplicationId),
+                         pfcp_core::encode_application_id("app-x"));
+    pfcp_core::encode_ie(
+        app_pfds_ies, static_cast<std::uint16_t>(pfcp_core::IeType::PfdContext), pfd_context_ies);
+
+    const auto decoded = pfcp_core::decode_ies(app_pfds_ies);
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_EQ(decoded->size(), 2u);
+    EXPECT_EQ((*decoded)[0].type, static_cast<std::uint16_t>(pfcp_core::IeType::ApplicationId));
+    EXPECT_EQ(pfcp_core::decode_application_id((*decoded)[0].value), "app-x");
+    EXPECT_EQ((*decoded)[1].type, static_cast<std::uint16_t>(pfcp_core::IeType::PfdContext));
+
+    const auto inner = pfcp_core::decode_ies((*decoded)[1].value);
+    ASSERT_TRUE(inner.has_value());
+    ASSERT_EQ(inner->size(), 1u);
+    EXPECT_EQ((*inner)[0].type, static_cast<std::uint16_t>(pfcp_core::IeType::PfdContents));
+    const auto inner_contents = pfcp_core::decode_pfd_contents((*inner)[0].value);
+    ASSERT_TRUE(inner_contents.has_value());
+    ASSERT_TRUE(inner_contents->flow_description.has_value());
+    EXPECT_EQ(*inner_contents->flow_description, *contents.flow_description);
 }

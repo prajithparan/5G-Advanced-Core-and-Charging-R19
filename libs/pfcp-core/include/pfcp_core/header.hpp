@@ -39,6 +39,10 @@ constexpr std::uint16_t kSmfCpFunctionPfcpPort = 8806;
 enum class MessageType : std::uint8_t {
     HeartbeatRequest = 1,
     HeartbeatResponse = 2,
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107 part 2, ADR-0086): real values
+    // confirmed against Table 7.3-1, same as every other MessageType value here.
+    PfdManagementRequest = 3,
+    PfdManagementResponse = 4,
     AssociationSetupRequest = 5,
     AssociationSetupResponse = 6,
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107, ADR-0084): real values confirmed

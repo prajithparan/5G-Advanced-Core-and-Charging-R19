@@ -55,6 +55,7 @@
 #include "pfcp_core/common_ies.hpp"
 #include "pfcp_core/header.hpp"
 #include "pfcp_core/ie.hpp"
+#include "pfcp_core/pfd_ies.hpp"
 #include "pfcp_core/session_ies.hpp"
 
 #ifndef CERTS_DIR
@@ -177,6 +178,42 @@ public:
 private:
     std::mutex mutex_;
     std::unordered_map<std::uint64_t, std::uint32_t> seid_to_teid_;
+};
+
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107 part 2, ADR-0086): provisioning-plane
+// storage for PFDs pushed by a real Sx PFD Management Request (TS 29.244 §7.4.3), keyed by
+// Application ID. Real, disclosed gap: this project's UPF has no Application Detection Filter
+// (ADF) traffic-classification engine yet, so nothing on the data-plane side actually reads from
+// this store today -- it exists so PFDs can be received, replaced, and deleted correctly per the
+// real spec semantics (see build_pfd_management_response_ies's own comment), a real, separate,
+// much larger gap than this message pair alone. Only ever touched by run_pfcp_lifecycle's own
+// single thread today; mutex-guarded anyway, same "don't rely on today's single-thread access
+// staying true" reasoning as SeidToTeidStore above.
+class PfdStore {
+public:
+    void put(const std::string& application_id, std::vector<pfcp_core::PfdContents> pfds) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pfds_by_app_id_[application_id] = std::move(pfds);
+    }
+
+    void remove(const std::string& application_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pfds_by_app_id_.erase(application_id);
+    }
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pfds_by_app_id_.clear();
+    }
+
+    std::size_t application_count() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return pfds_by_app_id_.size();
+    }
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::vector<pfcp_core::PfdContents>> pfds_by_app_id_;
 };
 
 // ADR-0050 Stage 2: a small, dedicated UDP socket the usage report handler uses (from Datapath's
@@ -388,6 +425,103 @@ build_association_release_response_ies(std::array<std::uint8_t, 4> node_ipv4) {
                          static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
                          pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
     return ies;
+}
+
+// Returns every top-level IE of `type` in `ies`, in wire order -- find_ie only returns the first
+// match, which every message this project decoded before this one was content with (at most one
+// real occurrence of any IE it cared about); PFD Management's own "Application ID's PFDs" and
+// "PFD" IEs are real, spec-permitted repeated groups ("Several IEs with the same IE type may be
+// present..."), so this project's first genuine need for a multi-match lookup.
+std::vector<const pfcp_core::Ie*> find_all_ies(const std::vector<pfcp_core::Ie>& ies,
+                                               std::uint16_t type) {
+    std::vector<const pfcp_core::Ie*> matches;
+    for (const auto& ie : ies) {
+        if (ie.type == type) {
+            matches.push_back(&ie);
+        }
+    }
+    return matches;
+}
+
+// Real TS 29.244 §7.4.3.1/§7.4.3.2 Sx PFD Management Request/Response -- real IE tables confirmed
+// directly against the vendored spec text. Real, replace-not-merge semantics per Table 7.4.3.1-1/
+// 7.4.3.1-2's own condition text, applied literally: if the top-level "Application ID's PFDs" IE
+// is absent from the whole message, delete every PFD stored for every Application ID; for each
+// "Application ID's PFDs" group that IS present, if its own "PFD" child is absent, delete every
+// PFD stored for just that Application ID; otherwise, the PFD Contents carried in this message
+// become that Application ID's complete new set (not an incremental add). Real, disclosed scope
+// narrowing matching this session's own AssociationUpdate/Release precedent: always responds
+// Cause=RequestAccepted, no Offending IE support -- a malformed request is logged and the offending
+// group is simply skipped rather than rejecting the whole message, since this project has no other
+// real error case to distinguish it from (no admission-control/quota reason PFD provisioning would
+// ever genuinely fail in this lab).
+std::vector<std::uint8_t>
+build_pfd_management_response_ies(const std::vector<std::uint8_t>& request_ies,
+                                  PfdStore& pfd_store) {
+    const auto ies = pfcp_core::decode_ies(request_ies);
+    const auto app_pfds_ies =
+        ies.has_value()
+            ? find_all_ies(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::ApplicationIdsPfds))
+            : std::vector<const pfcp_core::Ie*>{};
+
+    if (app_pfds_ies.empty()) {
+        pfd_store.clear();
+        spdlog::info("upf: PFD Management Request carried no Application ID's PFDs -- cleared "
+                     "all provisioned PFDs");
+    } else {
+        for (const auto* app_pfds_ie : app_pfds_ies) {
+            const auto group = pfcp_core::decode_ies(app_pfds_ie->value);
+            if (!group.has_value()) {
+                spdlog::warn("upf: PFD Management Request has a malformed Application ID's PFDs "
+                             "group, skipping it");
+                continue;
+            }
+            const auto* app_id_ie = pfcp_core::find_ie(
+                *group, static_cast<std::uint16_t>(pfcp_core::IeType::ApplicationId));
+            if (app_id_ie == nullptr) {
+                spdlog::warn("upf: PFD Management Request has an Application ID's PFDs group "
+                             "missing the mandatory Application ID, skipping it");
+                continue;
+            }
+            const auto application_id = pfcp_core::decode_application_id(app_id_ie->value);
+
+            const auto pfd_context_ies =
+                find_all_ies(*group, static_cast<std::uint16_t>(pfcp_core::IeType::PfdContext));
+            if (pfd_context_ies.empty()) {
+                pfd_store.remove(application_id);
+                spdlog::info("upf: PFD Management Request deleted all PFDs for Application ID {}",
+                             application_id);
+                continue;
+            }
+
+            std::vector<pfcp_core::PfdContents> pfds;
+            for (const auto* pfd_context_ie : pfd_context_ies) {
+                const auto pfd_context = pfcp_core::decode_ies(pfd_context_ie->value);
+                if (!pfd_context.has_value()) {
+                    continue;
+                }
+                for (const auto& pfd_ie : *pfd_context) {
+                    if (pfd_ie.type != static_cast<std::uint16_t>(pfcp_core::IeType::PfdContents)) {
+                        continue;
+                    }
+                    auto contents = pfcp_core::decode_pfd_contents(pfd_ie.value);
+                    if (contents.has_value()) {
+                        pfds.push_back(std::move(*contents));
+                    }
+                }
+            }
+            pfd_store.put(application_id, pfds);
+            spdlog::info("upf: PFD Management Request provisioned {} PFD(s) for Application ID {}",
+                         pfds.size(),
+                         application_id);
+        }
+    }
+
+    std::vector<std::uint8_t> resp_ies;
+    pfcp_core::encode_ie(resp_ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                         pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+    return resp_ies;
 }
 
 struct SessionEstablishmentResult {
@@ -921,6 +1055,7 @@ void run_pfcp_lifecycle(std::time_t start_time,
     constexpr std::array<std::uint8_t, 4> kNodeIpv4{127, 0, 0, 1}; // this lab's loopback-only scope
     std::uint64_t next_seid = 1;
     std::uint32_t next_teid = 1;
+    PfdStore pfd_store;
 
     std::vector<std::uint8_t> recv_buf(2048);
     while (true) {
@@ -1035,6 +1170,13 @@ void run_pfcp_lifecycle(std::time_t start_time,
                          "this UPF's own session state for the peer is NOT bulk-deleted as a side "
                          "effect -- see this file's own comment on Session Set Deletion)",
                          sender.address().to_string());
+        } else if (header->message_type == pfcp_core::MessageType::PfdManagementRequest) {
+            resp_header.message_type = pfcp_core::MessageType::PfdManagementResponse;
+            resp_ies = build_pfd_management_response_ies(ie_bytes, pfd_store);
+            spdlog::info("upf: Sx PFD Management processed from {}, {} Application ID(s) now "
+                         "provisioned",
+                         sender.address().to_string(),
+                         pfd_store.application_count());
         } else {
             spdlog::warn("upf: received PFCP message type {} with no handler yet, ignoring",
                          static_cast<int>(header->message_type));

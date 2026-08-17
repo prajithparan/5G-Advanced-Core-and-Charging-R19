@@ -21,6 +21,17 @@ enum class IeType : std::uint16_t {
     ForwardingParameters = 4,
     CreateUrr = 6,
     CreatedPdr = 8,
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107 part 2, ADR-0086): real IE types
+    // confirmed against TS 29.244 Table 7.4.3.1-1/7.4.3.1-2/7.4.3.1-3 and §8.2.6/§8.2.39 (same
+    // vendored spec text, specs/PFCP/29244-e30.pdf, every other IeType value here is confirmed
+    // against). "Application ID's PFDs" and "PFD" (called "PFD context" in the master IE table,
+    // Table 8.1.2-1 -- a real, disclosed naming inconsistency in the spec itself, not a typo here)
+    // are grouped IEs, decoded like CreatePdr/CreateUrr above (pfcp_core::decode_ies on the raw
+    // nested value bytes) -- no dedicated codec function needed for either.
+    ApplicationId = 24,
+    ApplicationIdsPfds = 58,
+    PfdContext = 59,
+    PfdContents = 61,
     // ADR-0050 Stage 5: real IE type confirmed against TS 29.244 Table 7.5.4.4-1 -- the grouped IE
     // a Sx Session Modification Request uses to push a real, updated Volume Threshold/Volume
     // Quota for an already-created URR (same child IEs as CreateUrr's own UrrId/VolumeThreshold/
