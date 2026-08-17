@@ -442,7 +442,7 @@ CHF has any equivalent of. **On 5G-native service breadth and legacy-protocol tr
 project is already ahead of free5GC**, consistent with ADR-0075's "superior, not just parity"
 mandate already being true in this specific area, not just aspirational.
 
-### Real gap found: TS 32.298 CDR encoding
+### Real gap, now CLOSED (task #108, ADR-0089): TS 32.298 CDR encoding
 
 free5GC's CHF has a real, substantial `cdr/` module (4,746 lines) implementing genuine TS 32.298
 ASN.1 BER CDR encoding -- confirmed by real, specific 3GPP IE-matching type names
@@ -452,16 +452,17 @@ ASN.1 BER CDR encoding -- confirmed by real, specific 3GPP IE-matching type name
 (`cdr/asn/ber_{marshal,unmarshal}.go` -- not asn1c-generated from a vendored `.asn` file, but a
 real, faithful transcription of the real TS 32.298 field layout into Go structs).
 
-This project's own `nfs/chf/schema.clickhouse.sql` already self-discloses the matching gap: "this
-is NOT a conformant TS 32.298 CDR... TS 32.298 is not vendored in this repo... proceed with TS
-32.291's already-vendored field shape instead of inventing TS 32.298's real taxonomy." Seeing
-free5GC's real implementation **confirms this is a real, substantial, closeable gap** -- but per
-ADR-0001's greenfield discipline, closing it means obtaining the real 3GPP TS 32.298 document
-directly (it's freely 3GPP-published, unlike GSMA's member-restricted TAP3 spec that blocked
-RAP/NRTRDE) and transcribing it independently -- not reading or adapting free5GC's own Go structs,
-which would violate this project's own "reference reading only, never copy" rule. Seeing free5GC's
-`CHFRecord`/IE names is confirmation the real spec artifact exists and roughly what it's shaped
-like, not a substitute for actually obtaining and citing TS 32.298 itself.
+This project's own `nfs/chf/schema.clickhouse.sql` used to self-disclose the matching gap: "this
+is NOT a conformant TS 32.298 CDR... TS 32.298 is not vendored in this repo." The user supplied
+the real spec (`specs/TS_32_298.pdf`, ETSI TS 132 298 V18.8.0/Release 18, verified genuine) and
+`nfs/chf/src/cdr_asn1.{hpp,cpp}` now implements a real, BER-encoded `[200] chargingFunctionRecord`
+transcribed independently from the spec itself -- never from free5GC's own Go structs, per
+ADR-0001's "reference reading only, never copy" rule. Real, disclosed, narrower scope than
+free5GC's: 10 of 46 real `ChargingRecord` fields are populated (the ones this project's own CHF
+has genuine data for); the rest need unvendored specs (TS 32.255, TS 32.260) or don't apply to
+this project's current scope. Live-verified via real curl + direct ClickHouse hex-decode of the
+stored `asn1_cdr` column against a real running CHF instance. Disclosed version gap: v18.8.0/
+Release 18, not yet re-verified against REL-19. Full detail in ADR-0089/`docs/TRACEABILITY.md`.
 
 ### `ccs_diameter/` -- roughly parallel to this project's own Gy/Rf, not a new gap
 
@@ -485,7 +486,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
 | UDR | ~2.5-10x | Resource-type breadth (~6 of 42+ real TS 29.504 resources) |
 | UPF | ~1x (task #107 fully closed: Association Update/Release, ADR-0084; PFD Management, ADR-0086; Node Report, ADR-0087; Session Set Deletion correctly found not applicable to this project's own N4/Sxc interface) | datapath (XDP) already ahead of both references on paper, unbenchmarked |
-| CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding; already ahead on 5G-native service breadth + AI-native charging |
+| CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding: CLOSED (task #108, ADR-0089, narrower disclosed scope than free5GC's); already ahead on 5G-native service breadth + AI-native charging |
 
 **Real, honest pattern across the sweep**: this project's "happy path" (initial attach, PDU
 session establishment, core CRUD on each NF's primary resource) is consistently real and already

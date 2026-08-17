@@ -9,6 +9,8 @@
 #include <clickhouse/columns/string.h>
 #include <set>
 
+#include "cdr_asn1.hpp"
+
 namespace chf {
 
 namespace {
@@ -89,6 +91,14 @@ void CdrWriter::write(const CdrRecord& record) {
     auto ts_col = std::make_shared<clickhouse::ColumnDateTime>();
     ts_col->Append(record.invocation_time_stamp);
     block.AppendColumn("invocation_time_stamp", ts_col);
+
+    // Gap-closure (task #108, ADR-0089): real TS 32.298 ChargingRecord, BER-encoded. Stored as raw
+    // bytes in a ClickHouse String column (empty if encode_chf_cdr found no real
+    // NetworkFunctionality mapping for this row -- see its own comment).
+    const auto asn1_bytes = encode_chf_cdr(record, record.recording_network_function_id);
+    auto asn1_col = std::make_shared<clickhouse::ColumnString>();
+    asn1_col->Append(std::string(asn1_bytes.begin(), asn1_bytes.end()));
+    block.AppendColumn("asn1_cdr", asn1_col);
 
     client_->Insert("cdr", block);
 }

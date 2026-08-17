@@ -1445,3 +1445,24 @@ truncated"); fixed by deleting the corrupt object + stale archive and rebuilding
 in `docs/DECISIONS.md` for the full disclosure, including what remains deliberately out of scope
 (`bss/product-catalog`, CHF's remaining Redis/ClickHouse/AI-env fields) -- **task #109 is now
 closed**.
+
+## ADR-0089 -- gap-closure task #108: CHF real TS 32.298 CDR (BER) encoding
+
+| Requirement | Test |
+|---|---|
+| `chf::encode_chf_cdr` produces a real `[200] chargingFunctionRecord` BER encoding per TS 32.298 §5.1.5/§5.2.5.2, using `libs/tcap-core`'s generic BER primitives | `ChfCdrAsn1.TopLevelIsRealChargingFunctionRecordTag200`; `ChfCdrAsn1.GenericReleaseRecordFieldsRoundTrip` (full field-by-field decode+assert incl. real BCD timestamp bytes) |
+| Unmapped `NetworkFunctionality` values return an empty vector (real, disclosed, not an error) | `ChfCdrAsn1.UnmappedNetworkFunctionalityEncodesEmpty` |
+| `listOfMultipleUnitUsage`/`usedUnitContainer` round-trip correctly | `ChfCdrAsn1.MultipleUnitUsageAndUsedUnitContainerRoundTrip` |
+| `recordingNetworkFunctionID` (real field [1]) is populated with CHF's real instance UUID on both HTTP Create and Release paths | Live curl Create (`chg-17`, HTTP 201) -> Release (HTTP 204) over real mTLS against a live CHF process; direct ClickHouse `hex(asn1_cdr)` decode of both stored rows shows `81 24` + 36-byte IA5String `344f52e6-7290-4be8-bf72-3f1c13ac3fea`, an exact match against CHF's own real, independently logged `nfInstanceId` |
+| No regression from the new `asn1_cdr` ClickHouse column or the `recording_network_function_id` threading through `charging_engine.cpp`'s 5 real call sites | Full `conformance_tests`: 325/325 pass (up from 321, the 4 new `ChfCdrAsn1.*` tests) |
+
+Real bug found and fixed via live verification, not self-consistency testing: the first live check
+(before the fix) found `recordingNetworkFunctionID` encoding empty (`8100`) in a real stored row --
+root-caused to a second, previously-unnoticed CDR-write path (`charging_engine.cpp`'s
+`write_converged_charging_cdr`/`charge_one_usage`, 5 real call sites) that hadn't been threaded
+with the new field. Fixed across all 5 sites; re-verified live after the fix (see table row above).
+Real, disclosed, narrower scope than free5GC's own `cdr/` module: 10 of 46 real `ChargingRecord`
+fields populated; the rest need unvendored specs (TS 32.255, TS 32.260) or don't apply to this
+project's current scope. Disclosed version gap: spec supplied is v18.8.0/Release 18, not
+re-verified against REL-19. See ADR-0089 in `docs/DECISIONS.md` for full disclosure -- **this
+closes task #108**.

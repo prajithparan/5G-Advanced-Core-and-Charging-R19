@@ -1139,6 +1139,12 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
                                           "Create",
                                           ccr->supi,
                                           "Diameter-Gy",
+                                          // Real, disclosed: same reasoning as cap_server.cpp's
+                                          // own call site -- "Diameter-Gy" is a protocol-identity
+                                          // label, not a real TS 32.298 NetworkFunctionality
+                                          // value, so this call path's own asn1_cdr blob is
+                                          // already empty regardless of this field's value.
+                                          "",
                                           static_cast<std::int64_t>(ccr->cc_request_number),
                                           usage);
                 granted.emplace_back(mscc.rating_group,
@@ -1201,6 +1207,8 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
                                           "Update",
                                           supi,
                                           "Diameter-Gy",
+                                          "", // real, disclosed -- see the Create call site's own
+                                              // comment above.
                                           static_cast<std::int64_t>(ccr->cc_request_number),
                                           usage);
                 granted.emplace_back(mscc.rating_group,

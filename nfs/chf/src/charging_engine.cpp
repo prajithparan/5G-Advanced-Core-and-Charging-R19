@@ -360,6 +360,7 @@ void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
                                   const std::string& operation,
                                   const std::string& supi,
                                   const std::string& node_functionality,
+                                  const std::string& recording_network_function_id,
                                   std::int64_t invocation_sequence_number,
                                   const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
                                   const RatingResult& rating,
@@ -371,6 +372,7 @@ void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
     cdr.operation = operation;
     cdr.subscriber_identifier = supi;
     cdr.nf_consumer_node_functionality = node_functionality;
+    cdr.recording_network_function_id = recording_network_function_id;
     cdr.rating_group = static_cast<std::int64_t>(usage.ratingGroup);
     if (reserved && rating.grant.has_value()) {
         cdr.granted_total_volume = rating.grant->totalVolume;
@@ -444,6 +446,7 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
                  const std::string& operation,
                  const std::string& supi,
                  const std::string& node_functionality,
+                 const std::string& recording_network_function_id,
                  std::int64_t invocation_sequence_number,
                  const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
                  chf::AiQuotaSizer* ai_quota_sizer,
@@ -476,6 +479,7 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
                                  operation,
                                  supi,
                                  node_functionality,
+                                 recording_network_function_id,
                                  invocation_sequence_number,
                                  usage,
                                  result.rating,

@@ -591,7 +591,8 @@ int main() {
          &cdr_writer,
          &rating_decision_store,
          &ai_quota_sizer,
-         &quota_feature_store](const sbi_core::http2::Request& req) {
+         &quota_feature_store,
+         &chf_instance_id](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -650,6 +651,7 @@ int main() {
                         "Create",
                         supi,
                         body->nfConsumerIdentification.nodeFunctionality.value,
+                        chf_instance_id,
                         body->invocationSequenceNumber,
                         usage,
                         &ai_quota_sizer,
@@ -694,7 +696,8 @@ int main() {
          &cdr_writer,
          &rating_decision_store,
          &ai_quota_sizer,
-         &quota_feature_store](const sbi_core::http2::Request& req) {
+         &quota_feature_store,
+         &chf_instance_id](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -762,6 +765,7 @@ int main() {
                         "Update",
                         supi,
                         body->nfConsumerIdentification.nodeFunctionality.value,
+                        chf_instance_id,
                         body->invocationSequenceNumber,
                         usage,
                         &ai_quota_sizer,
@@ -820,8 +824,12 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/chargingdata/{ChargingDataRef}/release",
-        [&verifier, &charging_data_store, &release_counter, &balance_client, &cdr_writer](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &charging_data_store,
+         &release_counter,
+         &balance_client,
+         &cdr_writer,
+         &chf_instance_id](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -863,6 +871,7 @@ int main() {
                 cdr.subscriber_identifier = supi.value_or("");
                 cdr.nf_consumer_node_functionality =
                     body->nfConsumerIdentification.nodeFunctionality.value;
+                cdr.recording_network_function_id = chf_instance_id;
                 if (reserved_total > 0.0) {
                     cdr.reserved_cost = reserved_total;
                 }

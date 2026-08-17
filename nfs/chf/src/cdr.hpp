@@ -44,6 +44,10 @@ struct CdrRecord {
     std::string operation;    // "Create" | "Update" | "Release" (project-internal)
     std::string subscriber_identifier;
     std::string nf_consumer_node_functionality;
+    // Gap-closure (task #108, ADR-0089): this CHF instance's own UUID -- real TS 32.298 field
+    // [1] `recordingNetworkFunctionID` needs it. Not used by the pre-existing ClickHouse columns
+    // below (unaffected); read only by cdr_asn1.cpp's own encode_chf_cdr.
+    std::string recording_network_function_id;
     std::optional<std::int64_t> rating_group;
     std::optional<std::uint64_t> granted_total_volume;
     std::optional<std::uint64_t> granted_service_specific_units;

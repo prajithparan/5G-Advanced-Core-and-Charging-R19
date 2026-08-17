@@ -363,6 +363,15 @@ void CapServer::handle_connection(ss7_core::SctpSocket socket) {
                                                    "Create",
                                                    supi,
                                                    "CAP-gsmSSF",
+                                                   // Real, disclosed: "CAP-gsmSSF" is this
+                                                   // project's own protocol-identity label, not a
+                                                   // real TS 32.298 NetworkFunctionality value, so
+                                                   // encode_chf_cdr already returns an empty blob
+                                                   // for this whole real call path regardless --
+                                                   // recording_network_function_id has no live
+                                                   // effect here, not threaded through CapServer's
+                                                   // own constructor for that reason.
+                                                   "",
                                                    invoke.invoke_id,
                                                    usage);
 
