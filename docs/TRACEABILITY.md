@@ -1400,3 +1400,26 @@ test-isolation issue, not a new regression; the three new routes' own correctnes
 confirmed via the live HTTP verification above. AUSF/UDM/PCF's own existing stores were NOT
 migrated to call these new routes -- a real, separate, deliberate future architectural decision,
 disclosed in ADR-0083, not silently deferred.
+
+## ADR-0085 -- config-file retrofit batch 1: UDR, CHF (partial), balance-management,
+## roaming-interconnect, subscriber-management (task #109, continuing ADR-0077)
+
+| Requirement | Test |
+|---|---|
+| UDR's `port`/`metrics_bind_address`/`nrf_base_url`/`database_url` load from `config/udr.json` (real port 5437 default, matching the real, currently-running `docker-postgres-udr-1` host mapping), env override still available | Live standalone start with zero env overrides: real log `"udr: connected"`-class lines (`"listening on https://0.0.0.0:7781"`, `"registered with NRF (HTTP 201)"`) |
+| CHF's `port`/`metrics_bind_address`/`nrf_base_url`/`rating_database_url` (only -- Redis/ClickHouse/AI-env fields deliberately deferred, see ADR-0085's own scope note) load from `config/chf.json` (real port 5434 rating-DB default) | Live standalone start with zero env overrides: `"chf: connected to PostgreSQL (RatingDecision audit, E5)"`, `"registered with NRF (HTTP 201)"` |
+| balance-management's `port`/`metrics_bind_address`/`self_base_url`/`database_url` load from `config/balance-management.json` (real port 5433 default) | Live standalone start with zero env overrides: `"connected to PostgreSQL"`; live HTTP GET `/tmf-api/prepayBalanceManagement/v4/bucket` over real mTLS -> real 200 |
+| roaming-interconnect's `port`/`metrics_bind_address`/`self_base_url`/`database_url` load from `config/roaming-interconnect.json` (real port 5436 default) | Live standalone start with zero env overrides: `"connected to PostgreSQL"` |
+| subscriber-management's `port`/`metrics_bind_address`/`self_base_url`/`database_url` load from `config/subscriber-management.json` (real port 5435 default) | Live standalone start with zero env overrides: `"connected to PostgreSQL"` |
+| No regression from the refactor | Full `conformance_tests`: 310/310 pass, run twice -- once with the five old `*_DATABASE_URL` env overrides still set, once with all five explicitly `env -u`-unset (proving the new config-file defaults are self-sufficient) |
+
+Root-caused via a real failing test, not assumed: `UdrIntegration.SmfRegistrationLifecycle` failed
+with `pqxx::broken_connection ... password authentication failed for user "udr"` before this fix --
+`docker ps` showed the real `docker-postgres-udr-1` container mapped to host port 5437, not the
+5432 every one of these five services' own hardcoded fallback assumed (only
+`bss/product-catalog`'s own default happens to be correct, since it claimed 5432 first). Also
+added `UDR_NRF_BASE_URL`/`CHF_NRF_BASE_URL`/`*_SELF_BASE_URL` compose env overrides for all five,
+closing the same real container-loopback bug class AMF's own `AMF_NRF_BASE_URL` (ADR-0077) already
+fixed, proactively rather than waiting for each one's own live reproduction. See ADR-0085 in
+`docs/DECISIONS.md` for the full disclosure of what's deliberately still deferred (CHF's remaining
+Redis/ClickHouse/AI-env fields, `bss/product-catalog`, and every other not-yet-retrofitted NF).

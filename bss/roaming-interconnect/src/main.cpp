@@ -45,33 +45,37 @@
 #include "bss_sid/agreement.hpp"
 #include "store.hpp"
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded DB URL/deployment literal in source.
+#include "nf_config/nf_config.hpp"
+
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see bss/roaming-interconnect/CMakeLists.txt)"
+#endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see bss/roaming-interconnect/CMakeLists.txt)"
 #endif
 
 namespace {
 
 using nlohmann::json;
 
-constexpr unsigned short kPort = 7788;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9476";
-constexpr const char* kSelfBase = "https://127.0.0.1:7788";
 constexpr const char* kApiRoot = "/tmf-api/agreementManagement/v4";
-
-std::string database_conninfo() {
-    if (const char* env = std::getenv("ROAMING_INTERCONNECT_DATABASE_URL")) {
-        return env;
-    }
-    return "postgresql://roaming_interconnect:roaming_interconnect@localhost:5432/"
-           "roaming_interconnect";
-}
 
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("roaming-interconnect", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto self_base = nf_config::require<std::string>(
+        config, "self_base_url", "ROAMING_INTERCONNECT_SELF_BASE_URL");
+    const auto conninfo = nf_config::require<std::string>(
+        config, "database_url", "ROAMING_INTERCONNECT_DATABASE_URL");
+
     sbi_core::init_logging("roaming-interconnect");
     sbi_core::init_tracing("roaming-interconnect");
-    sbi_core::init_metrics(kMetricsBindAddress);
+    sbi_core::init_metrics(metrics_bind_address);
 
     spdlog::info("roaming-interconnect: starting (TM Forum TMF651 Agreement Management, E7 "
                  "InterconnectAgreement)");
@@ -82,9 +86,8 @@ int main() {
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
 
-    const auto conninfo = database_conninfo();
     roaming_interconnect::InterconnectAgreementStore agreement_store(
-        std::string(kSelfBase) + kApiRoot + "/agreement", conninfo);
+        self_base + kApiRoot + "/agreement", conninfo);
     spdlog::info("roaming-interconnect: connected to PostgreSQL");
 
     auto meter = sbi_core::get_meter("roaming-interconnect");
@@ -93,7 +96,7 @@ int main() {
                                    "Total TMF651 InterconnectAgreement creates");
 
     boost::asio::io_context ioc;
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     server.add_route(
         "POST",
@@ -138,9 +141,9 @@ int main() {
                      });
 
     server.start();
-    spdlog::info("roaming-interconnect: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
+    spdlog::info("roaming-interconnect: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
     spdlog::info("roaming-interconnect: Prometheus metrics at http://{}/metrics",
-                 kMetricsBindAddress);
+                 metrics_bind_address);
     ioc.run();
     return 0;
 }

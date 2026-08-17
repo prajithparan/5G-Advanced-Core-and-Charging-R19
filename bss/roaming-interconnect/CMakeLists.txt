@@ -10,6 +10,7 @@ target_link_libraries(roaming_interconnect_store PUBLIC bss_sid libpqxx::pqxx ta
 target_include_directories(roaming_interconnect_store PUBLIC src)
 
 add_executable(roaming-interconnect src/main.cpp)
-target_link_libraries(roaming-interconnect PRIVATE sbi_core bss_sid roaming_interconnect_store)
+target_link_libraries(roaming-interconnect PRIVATE sbi_core bss_sid roaming_interconnect_store nf_config)
 # See nfs/hello-nf/CMakeLists.txt for why this is a compile-time absolute path.
-target_compile_definitions(roaming-interconnect PRIVATE CERTS_DIR="${CMAKE_SOURCE_DIR}/certs")
+# CONFIG_DIR: docs/DECISIONS.md ADR-0077 -- separate checked-in config/roaming-interconnect.json.
+target_compile_definitions(roaming-interconnect PRIVATE CERTS_DIR="${CMAKE_SOURCE_DIR}/certs" CONFIG_DIR="${CMAKE_SOURCE_DIR}/config")

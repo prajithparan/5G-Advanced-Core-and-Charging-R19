@@ -58,27 +58,21 @@
 #include "bss_sid/balance.hpp"
 #include "store.hpp"
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded DB URL/deployment literal in source.
+#include "nf_config/nf_config.hpp"
+
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see bss/balance-management/CMakeLists.txt)"
+#endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see bss/balance-management/CMakeLists.txt)"
 #endif
 
 namespace {
 
 using nlohmann::json;
 
-constexpr unsigned short kPort = 7786;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9474";
-constexpr const char* kSelfBase = "https://127.0.0.1:7786";
 constexpr const char* kApiRoot = "/tmf-api/prepayBalanceManagement/v4";
-
-// Same getenv-based-config precedent bss/product-catalog's PRODUCT_CATALOG_DATABASE_URL already
-// established (ADR-0054).
-std::string database_conninfo() {
-    if (const char* env = std::getenv("BALANCE_MANAGEMENT_DATABASE_URL")) {
-        return env;
-    }
-    return "postgresql://balance_management:balance_management@localhost:5432/balance_management";
-}
 
 sbi_core::http2::Response not_found(const std::string& resource, const std::string& id) {
     return sbi_core::http2::problem_response(404, "Not Found", "No " + resource + " " + id);
@@ -87,9 +81,18 @@ sbi_core::http2::Response not_found(const std::string& resource, const std::stri
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("balance-management", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto self_base = nf_config::require<std::string>(
+        config, "self_base_url", "BALANCE_MANAGEMENT_SELF_BASE_URL");
+    const auto conninfo =
+        nf_config::require<std::string>(config, "database_url", "BALANCE_MANAGEMENT_DATABASE_URL");
+
     sbi_core::init_logging("balance-management");
     sbi_core::init_tracing("balance-management");
-    sbi_core::init_metrics(kMetricsBindAddress);
+    sbi_core::init_metrics(metrics_bind_address);
 
     spdlog::info("balance-management: starting (TM Forum TMF654 Prepay Balance Management)");
 
@@ -99,7 +102,7 @@ int main() {
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
 
-    balance_management::BalanceStore store(std::string(kSelfBase) + kApiRoot, database_conninfo());
+    balance_management::BalanceStore store(self_base + kApiRoot, conninfo);
     spdlog::info("balance-management: connected to PostgreSQL");
 
     auto meter = sbi_core::get_meter("balance-management");
@@ -117,7 +120,7 @@ int main() {
         "Total ReserveBalance creates rejected for insufficient balance");
 
     boost::asio::io_context ioc;
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     // --- Bucket (GET only -- see file header) ---
 
@@ -273,9 +276,9 @@ int main() {
                      });
 
     server.start();
-    spdlog::info("balance-management: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
+    spdlog::info("balance-management: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
     spdlog::info("balance-management: Prometheus metrics at http://{}/metrics",
-                 kMetricsBindAddress);
+                 metrics_bind_address);
     ioc.run();
     return 0;
 }

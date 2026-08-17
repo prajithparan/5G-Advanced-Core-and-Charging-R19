@@ -51,37 +51,38 @@
 #include "bss_sid/party.hpp"
 #include "store.hpp"
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded DB URL/deployment literal in source.
+#include "nf_config/nf_config.hpp"
+
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see bss/subscriber-management/CMakeLists.txt)"
+#endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see bss/subscriber-management/CMakeLists.txt)"
 #endif
 
 namespace {
 
 using nlohmann::json;
 
-constexpr unsigned short kPort = 7787;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9475";
-constexpr const char* kSelfBase = "https://127.0.0.1:7787";
 constexpr const char* kPartyApiRoot = "/tmf-api/party/v4";
 constexpr const char* kProjectApiRoot = "/bss-api/subscriberManagement/v1";
-
-// getenv-based config, same disclosed departure from this repo's compile-time-constant NF
-// convention product-catalog's own main.cpp already established (a DB connection string must
-// never be hardcoded).
-std::string database_conninfo() {
-    if (const char* env = std::getenv("SUBSCRIBER_MANAGEMENT_DATABASE_URL")) {
-        return env;
-    }
-    return "postgresql://subscriber_management:subscriber_management@localhost:5432/"
-           "subscriber_management";
-}
 
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("subscriber-management", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto self_base = nf_config::require<std::string>(
+        config, "self_base_url", "SUBSCRIBER_MANAGEMENT_SELF_BASE_URL");
+    const auto conninfo = nf_config::require<std::string>(
+        config, "database_url", "SUBSCRIBER_MANAGEMENT_DATABASE_URL");
+
     sbi_core::init_logging("subscriber-management");
     sbi_core::init_tracing("subscriber-management");
-    sbi_core::init_metrics(kMetricsBindAddress);
+    sbi_core::init_metrics(metrics_bind_address);
 
     spdlog::info("subscriber-management: starting (TM Forum TMF632 Party Management + E1/E10)");
 
@@ -91,15 +92,14 @@ int main() {
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
 
-    const auto conninfo = database_conninfo();
     subscriber_management::PartyIndividualStore individual_store(
-        std::string(kSelfBase) + kPartyApiRoot + "/individual", conninfo);
+        self_base + kPartyApiRoot + "/individual", conninfo);
     subscriber_management::PartyOrganizationStore organization_store(
-        std::string(kSelfBase) + kPartyApiRoot + "/organization", conninfo);
-    subscriber_management::AccountStore account_store(
-        std::string(kSelfBase) + kProjectApiRoot + "/account", conninfo);
+        self_base + kPartyApiRoot + "/organization", conninfo);
+    subscriber_management::AccountStore account_store(self_base + kProjectApiRoot + "/account",
+                                                      conninfo);
     subscriber_management::SubscriberStore subscriber_store(
-        std::string(kSelfBase) + kProjectApiRoot + "/subscriber", conninfo);
+        self_base + kProjectApiRoot + "/subscriber", conninfo);
     spdlog::info("subscriber-management: connected to PostgreSQL");
 
     auto meter = sbi_core::get_meter("subscriber-management");
@@ -113,7 +113,7 @@ int main() {
         "subscriber_management_subscriber_create_total", "Total E1 Subscriber creates");
 
     boost::asio::io_context ioc;
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     // --- TMF632 Individual (E1) ---
 
@@ -302,9 +302,9 @@ int main() {
                      });
 
     server.start();
-    spdlog::info("subscriber-management: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
+    spdlog::info("subscriber-management: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
     spdlog::info("subscriber-management: Prometheus metrics at http://{}/metrics",
-                 kMetricsBindAddress);
+                 metrics_bind_address);
     ioc.run();
     return 0;
 }

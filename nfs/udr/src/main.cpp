@@ -77,6 +77,10 @@
 #include <optional>
 #include <thread>
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded DB URL/deployment literal in source, see
+// nf_config.hpp's own comment.
+#include "nf_config/nf_config.hpp"
+
 // TS29505_Subscription_Data's own types now live in TS29122_CommonData_grp.hpp -- see
 // nfs/chf/src/stores.hpp's own comment (ADR-0072).
 #include "TS29122_CommonData_grp.hpp"
@@ -93,28 +97,15 @@ using nlohmann::json;
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see nfs/udr/CMakeLists.txt)"
 #endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see nfs/udr/CMakeLists.txt)"
+#endif
 
-constexpr unsigned short kPort = 7781;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9468";
 constexpr const char* kNfType = "UDR";
-constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kApiRoot = "/nudr-dr/v2";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
-
-// Real PostgreSQL persistence (ADR-0068, gap-closure Tier 1a) -- same getenv-based config pattern
-// as bss/product-catalog's own database_conninfo(). Deliberately NOT try-catch-degraded the way
-// CHF's RatingDecisionStore is (that's a best-effort audit trail; UDR's context-data group IS this
-// NF's entire purpose, so a Postgres it can't reach means UDR has nothing meaningful to serve --
-// fail fast at startup instead of silently degrading, same "hard-require" choice
-// bss/product-catalog's own ProductOfferingStore already makes).
-std::string database_conninfo() {
-    if (const char* env = std::getenv("UDR_DATABASE_URL")) {
-        return env;
-    }
-    return "postgresql://udr:udr@localhost:5432/udr";
-}
 
 // Same pattern as every other NF's check_bearer -- see nfs/nrf/src/main.cpp's comment for why a
 // missing Authorization header is not itself a 401 (bootstrap security alternative:
@@ -138,7 +129,7 @@ std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::R
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as
 // nfs/amf/src/main.cpp's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019).
-void run_nrf_lifecycle(const std::string& udr_instance_id) {
+void run_nrf_lifecycle(const std::string& udr_instance_id, const std::string& nrf_base) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/udr/cert.pem",
         .key_path = CERTS_DIR "/udr/key.pem",
@@ -149,8 +140,7 @@ void run_nrf_lifecycle(const std::string& udr_instance_id) {
     for (int attempt = 0; attempt < 300; ++attempt) {
         sbi_core::http2::ClientRequest probe;
         probe.method = "GET";
-        probe.url = std::string(kNrfBase) +
-                    "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
+        probe.url = nrf_base + "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
         if (http_client.send(probe).has_value()) {
             break;
         }
@@ -158,7 +148,7 @@ void run_nrf_lifecycle(const std::string& udr_instance_id) {
     }
 
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", udr_instance_id, "nnrf-nfm", "NRF");
+        http_client, nrf_base + "/oauth2/token", udr_instance_id, "nnrf-nfm", "NRF");
 
     constexpr int kHeartbeatSeconds = 30;
     json profile{
@@ -179,7 +169,7 @@ void run_nrf_lifecycle(const std::string& udr_instance_id) {
 
         sbi_core::http2::ClientRequest put_req;
         put_req.method = "PUT";
-        put_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + udr_instance_id;
+        put_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + udr_instance_id;
         put_req.headers.emplace("content-type", "application/json");
         put_req.headers.emplace("authorization", "Bearer " + *token);
         put_req.headers.emplace(
@@ -207,7 +197,7 @@ void run_nrf_lifecycle(const std::string& udr_instance_id) {
 
         sbi_core::http2::ClientRequest patch_req;
         patch_req.method = "PATCH";
-        patch_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + udr_instance_id;
+        patch_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + udr_instance_id;
         patch_req.headers.emplace("content-type", "application/json-patch+json");
         patch_req.headers.emplace("authorization", "Bearer " + *token);
         patch_req.body =
@@ -224,9 +214,18 @@ void run_nrf_lifecycle(const std::string& udr_instance_id) {
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("udr", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto nrf_base_url =
+        nf_config::require<std::string>(config, "nrf_base_url", "UDR_NRF_BASE_URL");
+    const auto conninfo =
+        nf_config::require<std::string>(config, "database_url", "UDR_DATABASE_URL");
+
     sbi_core::init_logging("udr");
     sbi_core::init_tracing("udr");
-    sbi_core::init_metrics(kMetricsBindAddress);
+    sbi_core::init_metrics(metrics_bind_address);
 
     const std::string udr_instance_id = sbi_core::generate_uuid_v4();
     spdlog::info("udr: starting, nfInstanceId={}", udr_instance_id);
@@ -239,7 +238,6 @@ int main() {
 
     sbi_core::jwt::Verifier verifier(CERTS_DIR "/nrf-jwt/public.pem", kNrfInstanceId);
 
-    const auto conninfo = database_conninfo();
     udr::AmfContextStore amf_contexts(conninfo);
     udr::SmfRegistrationStore smf_registrations(conninfo);
     udr::ProvisionedDataStore provisioned_data(conninfo);
@@ -307,7 +305,7 @@ int main() {
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     const std::string amf_ctx_path_pattern =
         std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/amf-3gpp-access";
@@ -790,11 +788,11 @@ int main() {
             return sbi_core::http2::Response::json(200, patched.dump());
         });
 
-    std::thread(run_nrf_lifecycle, udr_instance_id).detach();
+    std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();
 
     server.start();
-    spdlog::info("udr: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
-    spdlog::info("udr: Prometheus metrics at http://{}/metrics", kMetricsBindAddress);
+    spdlog::info("udr: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
+    spdlog::info("udr: Prometheus metrics at http://{}/metrics", metrics_bind_address);
     ioc.run();
     return 0;
 }

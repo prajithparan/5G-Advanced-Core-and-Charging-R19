@@ -123,6 +123,15 @@
 #include <optional>
 #include <thread>
 
+// docs/DECISIONS.md ADR-0077 -- no hardcoded DB URL/deployment literal in source. This turn only
+// retrofits port/metrics_bind_address/nrf_base_url/rating_database_url (the field confirmed
+// actively broken this session, see ADR-0084's own disclosure) -- chf_redis_conninfo/
+// chf_clickhouse_options/CHF_AI_QUOTA_SIZING_ENABLED/CHF_QUOTA_MODEL_PATH are already
+// getenv-overridable but still deferred to a later, CHF-focused sub-turn of task #109 (a real,
+// disclosed, deliberately narrower scope than AMF/UDR's own full retrofit -- CHF's own config
+// surface is large enough to be its own increment).
+#include "nf_config/nf_config.hpp"
+
 // TS29594_Nchf_SpendingLimitControl's own types now live in TS29122_CommonData_grp.hpp -- see
 // stores.hpp's own comment (ADR-0072).
 #include "TS29122_CommonData_grp.hpp"
@@ -147,8 +156,10 @@ using nlohmann::json;
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see nfs/chf/CMakeLists.txt)"
 #endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see nfs/chf/CMakeLists.txt)"
+#endif
 
-constexpr unsigned short kPort = 7784;
 // P4.5/ADR-0059 Stage 2: real Diameter (Gy) listener, real IANA-assigned port (RFC 6733 §2.1,
 // diameter_core::kDiameterTcpPort). Lab-internal identity, disclosed -- no real registered DNS
 // realm/enterprise number, matching the same per-NF naming convention already used for TLS cert
@@ -160,9 +171,7 @@ constexpr unsigned short kDiameterPort = diameter_core::kDiameterTcpPort;
 constexpr unsigned short kCapPort = ss7_core::dictionary::kSctpPort;
 constexpr const char* kDiameterOriginHost = "chf.5gc-r19.local";
 constexpr const char* kDiameterOriginRealm = "5gc-r19.local";
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9472";
 constexpr const char* kNfType = "CHF";
-constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kApiRoot = "/nchf-convergedcharging/v3";
 // Real basePath confirmed directly from TS32291_Nchf_OfflineOnlyCharging.yaml's own `servers`
 // block (ADR-0055) -- P4.2.
@@ -208,16 +217,6 @@ clickhouse::ClientOptions chf_clickhouse_options() {
     return options;
 }
 
-// P4.5/ADR-0060 (E5, RatingDecision): CHF's first real PostgreSQL connection string -- same
-// never-hardcode-credentials, getenv-based-config precedent as chf_redis_conninfo/
-// chf_clickhouse_options above, and bss/product-catalog's PRODUCT_CATALOG_DATABASE_URL (ADR-0054).
-std::string chf_rating_postgres_conninfo() {
-    if (const char* env = std::getenv("CHF_RATING_DATABASE_URL")) {
-        return env;
-    }
-    return "postgresql://postgres@127.0.0.1:5432/chf_rating";
-}
-
 // Same pattern as every other NF's check_bearer -- see nfs/nrf/src/main.cpp's comment for why a
 // missing Authorization header is not itself a 401 (bootstrap security alternative:
 // `security: [{}, oAuth2ClientCredentials:[...]]` in the YAML).
@@ -240,7 +239,7 @@ std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::R
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as every other
 // NF's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019).
-void run_nrf_lifecycle(const std::string& chf_instance_id) {
+void run_nrf_lifecycle(const std::string& chf_instance_id, const std::string& nrf_base) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/chf/cert.pem",
         .key_path = CERTS_DIR "/chf/key.pem",
@@ -251,8 +250,7 @@ void run_nrf_lifecycle(const std::string& chf_instance_id) {
     for (int attempt = 0; attempt < 300; ++attempt) {
         sbi_core::http2::ClientRequest probe;
         probe.method = "GET";
-        probe.url = std::string(kNrfBase) +
-                    "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
+        probe.url = nrf_base + "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
         if (http_client.send(probe).has_value()) {
             break;
         }
@@ -260,7 +258,7 @@ void run_nrf_lifecycle(const std::string& chf_instance_id) {
     }
 
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", chf_instance_id, "nnrf-nfm", "NRF");
+        http_client, nrf_base + "/oauth2/token", chf_instance_id, "nnrf-nfm", "NRF");
 
     constexpr int kHeartbeatSeconds = 30;
     json profile{
@@ -281,7 +279,7 @@ void run_nrf_lifecycle(const std::string& chf_instance_id) {
 
         sbi_core::http2::ClientRequest put_req;
         put_req.method = "PUT";
-        put_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + chf_instance_id;
+        put_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + chf_instance_id;
         put_req.headers.emplace("content-type", "application/json");
         put_req.headers.emplace("authorization", "Bearer " + *token);
         put_req.headers.emplace(
@@ -309,7 +307,7 @@ void run_nrf_lifecycle(const std::string& chf_instance_id) {
 
         sbi_core::http2::ClientRequest patch_req;
         patch_req.method = "PATCH";
-        patch_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + chf_instance_id;
+        patch_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + chf_instance_id;
         patch_req.headers.emplace("content-type", "application/json-patch+json");
         patch_req.headers.emplace("authorization", "Bearer " + *token);
         patch_req.body =
@@ -326,9 +324,18 @@ void run_nrf_lifecycle(const std::string& chf_instance_id) {
 } // namespace
 
 int main() {
+    const auto config = nf_config::load("chf", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto nrf_base_url =
+        nf_config::require<std::string>(config, "nrf_base_url", "CHF_NRF_BASE_URL");
+    const auto rating_database_url =
+        nf_config::require<std::string>(config, "rating_database_url", "CHF_RATING_DATABASE_URL");
+
     sbi_core::init_logging("chf");
     sbi_core::init_tracing("chf");
-    sbi_core::init_metrics(kMetricsBindAddress);
+    sbi_core::init_metrics(metrics_bind_address);
 
     const std::string chf_instance_id = sbi_core::generate_uuid_v4();
     spdlog::info("chf: starting, nfInstanceId={}", chf_instance_id);
@@ -372,7 +379,7 @@ int main() {
     // P4.5/ADR-0060 (E5): real RatingDecision audit table -- see rating_decision_store.hpp's own
     // header for the same graceful-degradation design principle CdrWriter already established
     // (ADR-0058): a PostgreSQL outage must never crash or block real-time charging.
-    chf::RatingDecisionStore rating_decision_store(chf_rating_postgres_conninfo());
+    chf::RatingDecisionStore rating_decision_store(rating_database_url);
     if (rating_decision_store.is_connected()) {
         spdlog::info("chf: connected to PostgreSQL (RatingDecision audit, E5)");
     } else {
@@ -567,7 +574,7 @@ int main() {
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     // --- Nchf_ConvergedCharging ---
 
@@ -1151,11 +1158,11 @@ int main() {
             return resp;
         });
 
-    std::thread(run_nrf_lifecycle, chf_instance_id).detach();
+    std::thread(run_nrf_lifecycle, chf_instance_id, nrf_base_url).detach();
 
     server.start();
-    spdlog::info("chf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
-    spdlog::info("chf: Prometheus metrics at http://{}/metrics", kMetricsBindAddress);
+    spdlog::info("chf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
+    spdlog::info("chf: Prometheus metrics at http://{}/metrics", metrics_bind_address);
     ioc.run();
     return 0;
 }
