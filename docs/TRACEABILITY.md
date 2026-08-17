@@ -1313,3 +1313,44 @@ Corrected to `[{"event": "QOS_NOTIF"}]` and re-verified.
 fixes needed. Full `conformance_tests` (261/261) and a full `integration_tests` rebuild both pass
 unaffected; no new unit tests added this pass (coverage via live HTTP verification, matching this
 same session's own ADR-0079 precedent).
+
+## Gap-closure task #104 (part 1) -- AUSF real Nausf_SoRProtection (ADR-0081)
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| SoR-MAC-IAUSF derivation (TS 33.501 Annex A.17) | FC=0x77, KDF(KAUSF, SoR header, CounterSoR, [Steering Info List]), 128 LSBs -- independently confirmed against a real local TS 33.501 v19.6.0 PDF (Annex A.17, page 242) before implementation | `tests/conformance/test_sor_mac.cpp`: `IausfIsDeterministic`, `IausfMatchesDirectGenericKdfCall` (structural cross-check against `generic_kdf` called independently), `IausfChangesWithSorHeader`, `IausfChangesWithCounterSor`, `IausfWithAndWithoutSteeringInfoListDiffer` -- 5 tests, all pass |
+| SoR-MAC-IUE/SoR-XMAC-IUE derivation (Annex A.18) | FC=0x78, KDF(KAUSF, 0x01, CounterSoR), 128 LSBs -- same real citation, page 243 | `IueMatchesDirectGenericKdfCall`, `IausfAndIueAreIndependentEvenWithSameCounter` -- 2 tests, all pass |
+| CounterSoR state machine (clause 6.14.2.3) -- AUSF init 0x0001, 0x0002 after first use, monotonic increment, wrap-around suspend, reset on fresh KAUSF | Same real PDF, pages 122-123 | `nfs/ausf/src/kausf_store.cpp`'s `use_counter` (atomic Redis `HINCRBY`); live-verified below |
+| `POST /{supi}/ue-sor` (`Nausf_SoRProtection`) | Real request/response DTOs (`SorInfo_Nausf_SoRProtection`/`SorSecurityInfo`), persistent per-SUPI KAUSF lookup | Live HTTP against a real, independent AUSF process (see below) |
+
+**Real cross-process live verification** (deliberately using a SEPARATE AUSF process from the one
+that performed authentication, matching AMF's own ADR-0076 verification bar): ran the real
+`AusfIntegration.FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf` test (real MILENAGE
+RES*, real UDM round trip); confirmed via direct Redis `HGETALL ausf:sorctx:imsi-999700000000001`
+that a real 64-hex-char KAUSF and `counter_sor=1` were persisted; started a brand-new AUSF process
+against the same Redis and called the real endpoint: first call → 200, `counterSor="0001"`, real
+16-byte-hex `sorXmacIue` present (`ackInd=true`); second call → `counterSor="0002"` (Redis
+`HGETALL` between calls confirmed the real monotonic increment, and the returned MAC changed);
+`SecuredPacket`-form `steeringContainer` → 200 with a different MAC than the no-P2 case (real P2
+inclusion, confirmed indirectly since 3GPP publishes no test vectors); structured-array
+`steeringContainer` → 200 with the real disclosed "P2 omitted" warning logged; missing `sorHeader`
+→ 400; unknown SUPI → 404.
+
+**Real codegen bug found and fixed** (root-caused via a direct Python repro of `tools/sbi-codegen`'s
+own `Converter`, not guessed): `TS29509_Nausf_SoRProtection.yaml`'s real `SorInfo` schema
+collides by name with `TS29503_Nudm_SDM.yaml`'s own, different `SorInfo` (a real subscription-data
+object) -- the disambiguation logic itself (ADR-0017) was confirmed correct via the repro; the
+actual cause was that `TS29509_Nausf_SoRProtection.yaml` had never been added to the pilot-file
+list (its types were only reachable transitively). Added to `libs/sbi-generated/CMakeLists.txt`;
+regeneration then correctly produced `SorInfo_Nausf_SoRProtection`/`SorInfo_Nudm_SDM` as two
+distinct types.
+
+Full `conformance_tests`: 268/268 pass (up from 261, the 7 new `SorMac.*` tests). All 6
+pre-existing `AusfIntegration.*` tests pass unchanged with AUSF's new hard Redis dependency.
+`nfs/ausf/src/main.cpp` also retrofitted onto `libs/nf-config`/`config/ausf.json` (ADR-0077) in
+the same pass, since Redis was its first new DB dependency.
+
+**Real, disclosed, not yet done**: ProSe authentication (task #104's other named half) needs its
+own separate real crypto (`KNR_ProSe`, TS 33.503) not yet supplied; `Nausf_UPUProtection` (a
+related AUSF service found while researching this gap, FC values now independently confirmed)
+was not part of this task's scope and is not built.

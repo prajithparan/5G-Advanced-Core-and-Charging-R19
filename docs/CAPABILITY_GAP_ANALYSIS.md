@@ -200,16 +200,24 @@ EAP-AKA' paths, confirmed already live-tested in this project's own integration 
 
 ### Real gaps found -- both free5GC-only, not shared with open5GS
 
-1. **`Nausf_SoRProtection`** (`POST /:supi/ue-sor/generate-sor-data`, real TS 33.501 Annex E --
-   protects Steering-of-Roaming (SoR) list/CMCI data against tampering by a compromised VPLMN).
-   Real in free5GC (`internal/sbi/api_sorprotection.go`). **Grep-confirmed absent from open5GS's
-   AUSF too** (`src/ausf/` has no SoR-related handler at all) -- this is specifically a
-   free5GC-only capability, not something both references implement. Entirely missing from this
-   project.
+1. **`Nausf_SoRProtection`** (`POST /{supi}/ue-sor`, real TS 33.501 Annex A.17/A.18 (originally
+   miscited as "Annex E.2" -- corrected and independently verified against a real local copy of
+   TS 33.501 v19.6.0 before implementation) -- protects Steering-of-Roaming (SoR) list/CMCI data
+   against tampering by a compromised VPLMN). Real in free5GC (`internal/sbi/api_sorprotection.go`).
+   **Grep-confirmed absent from open5GS's AUSF too** -- free5GC-only capability. **Closed, docs/
+   DECISIONS.md ADR-0081**: real SoR-MAC-IAUSF/SoR-MAC-IUE crypto (`libs/aka-crypto`), a new
+   persistent per-SUPI `KausfStore` (the real architectural prerequisite this needed), and the
+   real CounterSoR freshness-counter state machine including wrap-around suspension -- all
+   live-verified cross-process. Real, disclosed scope narrowing: only the "SOR header supplied by
+   requester" branch is implemented (AUSF constructing its own header per TS 24.501 §9.11.3.51 is
+   a different spec section not in hand); the structured-array form of the optional steering-info
+   parameter is also out of scope for the same reason.
 2. **ProSe (Proximity Services / D2D) authentication** (`POST /prose-authentications`, `DELETE
    .../prose-auth`, a real R17+ extension). Real in free5GC. **Grep-confirmed absent from
-   open5GS's AUSF** as well -- same free5GC-only status as SoR protection. Entirely missing from
-   this project.
+   open5GS's AUSF** as well -- same free5GC-only status as SoR protection. **Still open** -- found,
+   while scoping this pass, to need its own separate real cryptographic derivation (`KNR_ProSe`,
+   TS 33.503, a different spec document from TS 33.501's own SoR-MAC derivations) this project
+   doesn't have material for either. Tracked as task #104's remaining scope.
 
 Per ADR-0075's capability-completeness mandate, both are real gaps to close eventually regardless
 of being free5GC-only -- "superior to both, never behind either" doesn't stop at whichever

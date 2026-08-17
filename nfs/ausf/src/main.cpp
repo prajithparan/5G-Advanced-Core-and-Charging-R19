@@ -50,14 +50,18 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <sw/redis++/redis++.h>
 #include <thread>
 #include <vector>
 
+#include "TS29122_CommonData_grp.hpp"
 #include "TS29509_Nausf_UEAuthentication.hpp"
 #include "aka_crypto/eap_aka_prime.hpp"
 #include "aka_crypto/hex.hpp"
 #include "aka_crypto/kdf.hpp"
 #include "aka_crypto/milenage.hpp"
+#include "kausf_store.hpp"
+#include "nf_config/nf_config.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -67,13 +71,14 @@ using nlohmann::json;
 #ifndef CERTS_DIR
 #error "CERTS_DIR must be defined by CMake (see nfs/ausf/CMakeLists.txt)"
 #endif
+#ifndef CONFIG_DIR
+#error "CONFIG_DIR must be defined by CMake (see nfs/ausf/CMakeLists.txt)"
+#endif
 
-constexpr unsigned short kPort = 7782;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9469";
 constexpr const char* kNfType = "AUSF";
-constexpr const char* kNrfBase = "https://127.0.0.1:7777";
-constexpr const char* kUdmBase = "https://127.0.0.1:7780";
 constexpr const char* kApiRoot = "/nausf-auth/v1";
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0081).
+constexpr const char* kSorProtectionApiRoot = "/nausf-sorprotection/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -100,7 +105,7 @@ std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::R
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as
 // nfs/udm/src/main.cpp's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019).
-void run_nrf_lifecycle(const std::string& ausf_instance_id) {
+void run_nrf_lifecycle(const std::string& ausf_instance_id, const std::string& nrf_base) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/ausf/cert.pem",
         .key_path = CERTS_DIR "/ausf/key.pem",
@@ -111,8 +116,7 @@ void run_nrf_lifecycle(const std::string& ausf_instance_id) {
     for (int attempt = 0; attempt < 300; ++attempt) {
         sbi_core::http2::ClientRequest probe;
         probe.method = "GET";
-        probe.url = std::string(kNrfBase) +
-                    "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
+        probe.url = nrf_base + "/nnrf-nfm/v1/nf-instances/00000000-0000-4000-8000-000000000000";
         if (http_client.send(probe).has_value()) {
             break;
         }
@@ -120,7 +124,7 @@ void run_nrf_lifecycle(const std::string& ausf_instance_id) {
     }
 
     sbi_core::OAuth2Client oauth(
-        http_client, std::string(kNrfBase) + "/oauth2/token", ausf_instance_id, "nnrf-nfm", "NRF");
+        http_client, nrf_base + "/oauth2/token", ausf_instance_id, "nnrf-nfm", "NRF");
 
     constexpr int kHeartbeatSeconds = 30;
     json profile{
@@ -141,7 +145,7 @@ void run_nrf_lifecycle(const std::string& ausf_instance_id) {
 
         sbi_core::http2::ClientRequest put_req;
         put_req.method = "PUT";
-        put_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + ausf_instance_id;
+        put_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + ausf_instance_id;
         put_req.headers.emplace("content-type", "application/json");
         put_req.headers.emplace("authorization", "Bearer " + *token);
         put_req.headers.emplace(
@@ -169,7 +173,7 @@ void run_nrf_lifecycle(const std::string& ausf_instance_id) {
 
         sbi_core::http2::ClientRequest patch_req;
         patch_req.method = "PATCH";
-        patch_req.url = std::string(kNrfBase) + "/nnrf-nfm/v1/nf-instances/" + ausf_instance_id;
+        patch_req.url = nrf_base + "/nnrf-nfm/v1/nf-instances/" + ausf_instance_id;
         patch_req.headers.emplace("content-type", "application/json-patch+json");
         patch_req.headers.emplace("authorization", "Bearer " + *token);
         patch_req.body =
@@ -188,7 +192,21 @@ void run_nrf_lifecycle(const std::string& ausf_instance_id) {
 int main() {
     sbi_core::init_logging("ausf");
     sbi_core::init_tracing("ausf");
-    sbi_core::init_metrics(kMetricsBindAddress);
+
+    // ADR-0077 (user-directed, mandatory, project-wide): no DB URL/connection/deployment
+    // parameter may be a hardcoded literal default in source -- real values live in the
+    // checked-in config/ausf.json, with an env var override per key still available.
+    const auto config = nf_config::load("ausf", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    const auto nrf_base =
+        nf_config::require<std::string>(config, "nrf_base_url", "AUSF_NRF_BASE_URL");
+    const auto udm_base =
+        nf_config::require<std::string>(config, "udm_base_url", "AUSF_UDM_BASE_URL");
+    const auto redis_url = nf_config::require<std::string>(config, "redis_url", "AUSF_REDIS_URL");
+
+    sbi_core::init_metrics(metrics_bind_address);
 
     const std::string ausf_instance_id = sbi_core::generate_uuid_v4();
     spdlog::info("ausf: starting, nfInstanceId={}", ausf_instance_id);
@@ -211,9 +229,18 @@ int main() {
     };
     sbi_core::http2::Client udm_client(std::move(udm_client_tls));
     sbi_core::OAuth2Client udm_oauth(
-        udm_client, std::string(kNrfBase) + "/oauth2/token", ausf_instance_id, "nudm-ueau", "UDM");
+        udm_client, nrf_base + "/oauth2/token", ausf_instance_id, "nudm-ueau", "UDM");
 
     ausf::AuthContextStore auth_contexts;
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0081): real, persistent
+    // per-SUPI KAUSF + CounterSoR state -- see kausf_store.hpp's own header for why this was a
+    // real, load-bearing prerequisite for Nausf_SoRProtection. Same real, fail-fast PING
+    // discipline every other NF's own Redis connection already uses.
+    auto redis = std::make_shared<sw::redis::Redis>(redis_url);
+    redis->ping();
+    spdlog::info("ausf: connected to Redis/Valkey");
+    ausf::KausfStore kausf_store(redis);
 
     auto meter = sbi_core::get_meter("ausf");
     auto ue_auth_counter = meter->CreateUInt64Counter("ausf_ue_authentications_total",
@@ -224,18 +251,25 @@ int main() {
         meter->CreateUInt64Counter("ausf_eap_session_total", "Total EapAuthMethod calls");
     auto deregister_counter = meter->CreateUInt64Counter("ausf_deregister_total",
                                                          "Total UEAuthenticationsDeregister calls");
+    auto sor_protection_counter = meter->CreateUInt64Counter(
+        "ausf_sor_protection_total", "Total Nausf_SoRProtection ue-sor calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     // --- Nausf_UEAuthentication: ue-authentications ---
 
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/ue-authentications",
-        [&verifier, &udm_client, &udm_oauth, &auth_contexts, &ausf_instance_id, &ue_auth_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &udm_client,
+         &udm_oauth,
+         &udm_base,
+         &auth_contexts,
+         &ausf_instance_id,
+         &ue_auth_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -264,7 +298,7 @@ int main() {
 
             sbi_core::http2::ClientRequest udm_http_req;
             udm_http_req.method = "POST";
-            udm_http_req.url = std::string(kUdmBase) + "/nudm-ueau/v1/" + body->supiOrSuci +
+            udm_http_req.url = udm_base + "/nudm-ueau/v1/" + body->supiOrSuci +
                                "/security-information/generate-auth-data";
             udm_http_req.headers.emplace("content-type", "application/json");
             udm_http_req.headers.emplace("authorization", "Bearer " + *token);
@@ -414,7 +448,8 @@ int main() {
     server.add_route(
         "PUT",
         std::string(kApiRoot) + "/ue-authentications/{authCtxId}/5g-aka-confirmation",
-        [&verifier, &auth_contexts, &confirm_5g_aka_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &auth_contexts, &confirm_5g_aka_counter, &kausf_store](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -442,6 +477,12 @@ int main() {
                 resp_data.supi = ctx->supi;
                 resp_data.kseaf = aka_crypto::to_hex(
                     aka_crypto::derive_kseaf(ctx->kausf_5g_aka, ctx->serving_network_name));
+                // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0081): a fresh
+                // KAUSF is now real, persistent, per-SUPI state -- TS 33.501 §6.14.2.3's own
+                // "when the newly derived KAUSF is stored" trigger for CounterSoR
+                // initialization/reset, needed by Nausf_SoRProtection (a later, separate call
+                // from UDM, well after this exchange completes).
+                kausf_store.store_fresh_kausf(ctx->supi, ctx->kausf_5g_aka);
             } else {
                 resp_data.authResult.value = sbi_gen::AuthResult::AUTHENTICATION_FAILURE;
             }
@@ -471,7 +512,8 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/ue-authentications/{authCtxId}/eap-session",
-        [&verifier, &auth_contexts, &eap_session_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &auth_contexts, &eap_session_counter, &kausf_store](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -513,6 +555,9 @@ int main() {
                 resp_data.kSeaf = aka_crypto::to_hex(kseaf);
                 resp_data.msk =
                     aka_crypto::to_hex(std::vector<uint8_t>(ctx->msk.begin(), ctx->msk.end()));
+                // Same real trigger as the 5G-AKA confirmation handler above -- see its own
+                // comment.
+                kausf_store.store_fresh_kausf(ctx->supi, ctx->kausf_eap);
             } else {
                 resp_data.eapPayload =
                     aka_crypto::eap::base64_encode(aka_crypto::eap::build_failure(identifier));
@@ -564,11 +609,121 @@ int main() {
             return resp;
         });
 
-    std::thread(run_nrf_lifecycle, ausf_instance_id).detach();
+    // --- Nausf_SoRProtection (ADR-0081, gap-closure task #104) ---
+
+    server.add_route(
+        "POST",
+        std::string(kSorProtectionApiRoot) + "/{supi}/ue-sor",
+        [&verifier, &kausf_store, &sor_protection_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::SorInfo_Nausf_SoRProtection>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto supi = req.path_params.at("supi");
+
+            auto sor_ctx = kausf_store.get(supi);
+            if (!sor_ctx.has_value()) {
+                return sbi_core::http2::problem_response(404,
+                                                         "Not Found",
+                                                         "No KAUSF on record for SUPI " + supi +
+                                                             " (never authenticated, or this "
+                                                             "AUSF instance restarted since)");
+            }
+
+            // Real, disclosed scope narrowing (see this file's own header): TS 33.501 clause
+            // 6.14.2 NOTE 2 permits the AUSF to construct the SOR header itself (per TS 24.501
+            // §9.11.3.51) when the requester didn't supply one -- that NAS-layer bit encoding is
+            // a different spec section this build doesn't have in hand, so only the "received
+            // from requester" branch is implemented; a request without sorHeader is rejected
+            // rather than silently fabricating one.
+            if (!body->sorHeader.has_value()) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Missing mandatory IE",
+                    "This build requires the requester to supply sorHeader -- AUSF-side "
+                    "construction of the SOR header (TS 24.501 9.11.3.51) is not implemented");
+            }
+            const auto sor_header_bytes = aka_crypto::eap::base64_decode(*body->sorHeader);
+            if (!sor_header_bytes.has_value()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "sorHeader is not valid base64 data");
+            }
+
+            // P2 (Steering Info List, TS 33.501 Annex A.17): real only for the SecuredPacket
+            // (opaque base64 bytes) form of steeringContainer, which needs no NAS-layer encoding
+            // to use directly. The structured (array-of-SteeringInfo) form would need the same
+            // TS 24.501 §9.11.3.51 encoding just disclosed as out of scope above -- real,
+            // disclosed limitation, not silently wrong: this build omits P2 for that form rather
+            // than guessing its wire encoding.
+            std::optional<std::vector<uint8_t>> steering_info_list;
+            if (body->steeringContainer.has_value()) {
+                if (body->steeringContainer->is_string()) {
+                    steering_info_list =
+                        aka_crypto::eap::base64_decode(body->steeringContainer->get<std::string>());
+                    if (!steering_info_list.has_value()) {
+                        return sbi_core::http2::problem_response(
+                            400,
+                            "Bad Request",
+                            "steeringContainer (SecuredPacket form) is not valid base64 data");
+                    }
+                } else {
+                    spdlog::warn(
+                        "ausf: SoR protection request for SUPI {} carries a structured "
+                        "(array-of-SteeringInfo) steeringContainer -- P2 omitted from the "
+                        "SoR-MAC-IAUSF computation (NAS-layer encoding, TS 24.501 §9.11.3.51, "
+                        "not implemented; see this file's own header)",
+                        supi);
+                }
+            }
+
+            const auto counter = kausf_store.use_counter(supi);
+            if (!counter.has_value()) {
+                return sbi_core::http2::problem_response(
+                    503,
+                    "Service Unavailable",
+                    "SoR protection service is suspended for SUPI " + supi +
+                        " (CounterSoR wrap-around, TS 33.501 6.14.2.3 -- requires a fresh KAUSF)");
+            }
+
+            const auto mac_iausf = aka_crypto::derive_sor_mac_iausf(
+                sor_ctx->kausf,
+                *sor_header_bytes,
+                *counter,
+                steering_info_list.has_value() ? &*steering_info_list : nullptr);
+
+            sbi_gen::SorSecurityInfo resp_data{};
+            resp_data.sorMacIausf =
+                aka_crypto::to_hex(std::vector<uint8_t>(mac_iausf.begin(), mac_iausf.end()));
+            std::array<uint8_t, 2> counter_be{static_cast<uint8_t>((*counter >> 8) & 0xff),
+                                              static_cast<uint8_t>(*counter & 0xff)};
+            resp_data.counterSor = aka_crypto::to_hex(counter_be);
+            if (body->ackInd) {
+                // Real, disclosed scope: computed and returned per spec (the UDM needs it to
+                // later verify the UE's own ack), but this build has no later real endpoint that
+                // consumes/verifies a returned SoR-MAC-IUE against this cached value yet -- no
+                // caller exists in this lab for that verification step, same "computed but not
+                // yet consumed downstream" shape as other real-but-not-fully-wired values
+                // elsewhere in this project.
+                const auto xmac_iue = aka_crypto::derive_sor_mac_iue(sor_ctx->kausf, *counter);
+                resp_data.sorXmacIue =
+                    aka_crypto::to_hex(std::vector<uint8_t>(xmac_iue.begin(), xmac_iue.end()));
+            }
+
+            sor_protection_counter->Add(1);
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    std::thread(run_nrf_lifecycle, ausf_instance_id, nrf_base).detach();
 
     server.start();
-    spdlog::info("ausf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
-    spdlog::info("ausf: Prometheus metrics at http://{}/metrics", kMetricsBindAddress);
+    spdlog::info("ausf: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
+    spdlog::info("ausf: Prometheus metrics at http://{}/metrics", metrics_bind_address);
     ioc.run();
     return 0;
 }

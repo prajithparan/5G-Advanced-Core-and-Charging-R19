@@ -1,0 +1,283 @@
+# TS 33.501 — SoR-MAC-IAUSF / SoR-MAC-IUE / SoR-XMAC-IUE Derivation Spec
+### Implementation reference for C++
+
+---
+
+## 0. A note on the clause number
+
+The request referenced "Annex E.2." In every published version of 3GPP TS 33.501 checked (Rel-15 through the current Rel-15/16/17/18 maintenance stream), **Annex E** is "UE-assisted network-based detection of false base stations" — it does not contain MAC derivations. The Steering-of-Roaming (SoR) MAC generation functions actually live in:
+
+- **Annex A.17 — SoR-MAC-IAUSF generation function**
+- **Annex A.18 — SoR-MAC-IUE / SoR-XMAC-IUE generation function**
+
+(with the procedural context in clause **6.14.2**, and the CounterSoR state machine in **6.14.2.3**). If you have a document that genuinely labels this "Annex E.2" it's likely an internal/company doc or an early draft contribution using different numbering — the content below is normative TS 33.501, so it will match either way. I'd recommend renaming your internal references to A.17/A.18 to avoid confusion when cross-checking against the spec later.
+
+---
+
+## 1. Where this fits
+
+SoR lets the HPLMN push a steering-of-roaming list (preferred PLMN/access-tech list) to a UE while it's roaming, without the VPLMN being able to tamper with or strip it. Two MACs (plus one optional UE→network ack MAC) provide that protection:
+
+| Name | Computed by | Purpose |
+|---|---|---|
+| `SoR-MAC-IAUSF` | AUSF (HPLMN) | Integrity-protects the SOR header + steering info list sent to the UE |
+| `SoR-XMAC-IUE` | AUSF (HPLMN), stored temporarily | Expected value of the UE's ack MAC, used by the network to verify it |
+| `SoR-MAC-IUE` | UE (ME) | Ack MAC sent back to network confirming successful receipt/application of SOR info |
+
+All three use the same underlying key derivation machinery — the key (`KAUSF`) never leaves the AUSF/USIM(or ME) trust boundary; the MAC is what travels over NAS.
+
+---
+
+## 2. Underlying primitive: the generic 3GPP KDF
+
+Annex A of TS 33.501 (and, before it, TS 33.220 Annex B.2.0) defines one generic key derivation function reused for every "FC-based" derivation in 5G security (`KAUSF`, `KSEAF`, `KAMF`, `KgNB`, `RES*`, and the SoR/UPU MACs among them):
+
+```
+KDF(KEY, S) = HMAC-SHA-256(KEY, S)
+```
+
+The input string `S` is built by concatenating a **Function Code (FC)**, one or more **parameters `Pi`**, each immediately followed by its **2-byte big-endian length field `Li`**:
+
+```
+S = FC || P0 || L0 || P1 || L1 || P2 || L2 || ...
+```
+
+- `FC` — 1 octet, identifies which derivation this is (prevents cross-protocol key/MAC confusion).
+- `Pi` — the i-th input parameter, arbitrary length.
+- `Li` — 2 octets, big-endian, encodes `length(Pi)` **in octets**.
+
+The output of `HMAC-SHA-256` is 256 bits (32 bytes). For the SoR MACs, the spec says to take **the 128 least significant bits** of that output — i.e., **the last 16 bytes** of the 32-byte digest — as the MAC value.
+
+This is exactly the same construction used in every other 5G Annex A derivation, so if you already have a `Kdf(key, fc, params...)` helper for `KAUSF`/`KSEAF`/etc. in your codebase, you can reuse it verbatim here — only `FC` and the parameter list change.
+
+---
+
+## 3. FC value allocation
+
+TS 33.501 Annex A.1.2 reserves FC range `0x69–0x79, 0x7B–0x7D, 0x83–0x84` for this specification. Within that range:
+
+| FC (hex) | Derivation |
+|---|---|
+| 0x77 | **SoR-MAC-IAUSF** generation (Annex A.17) |
+| 0x78 | **SoR-MAC-IUE / SoR-XMAC-IUE** generation (Annex A.18) |
+
+(For reference/sanity-checking against your own KDF helper, other well-known allocations in the same table include `0x6A` = KAUSF, `0x6B` = RES*/XRES*, `0x6C` = KSEAF, `0x6D` = KAMF, `0x6E` = KgNB/KN3IWF, `0x6F` = NH.)
+
+---
+
+## 4. Annex A.17 — SoR-MAC-IAUSF
+
+```
+SoR-MAC-IAUSF = 128 LSBs of HMAC-SHA-256( KAUSF, S )
+
+S = FC || P0 || L0 || P1 || L1 [ || P2 || L2 ]
+```
+
+| Param | Value | Length field |
+|---|---|---|
+| `FC` | `0x77` | — |
+| `P0` | **SoR header** — either received from the requesting NF (e.g. UDM in the `Nausf_SoRProtection` request) or, if not supplied, constructed by the AUSF itself from: the ACK-indication flag, presence/absence of a preferred PLMN/access-technology list, and whether a secured packet is present. Encoded per the SOR header / "Steering of roaming information" IE format defined in **TS 24.501 clause 9.11.3.51** (this is the same octet stream the AMF will later forward to the UE inside the REGISTRATION ACCEPT). | `L0` = length of `P0` in octets, 2-byte BE |
+| `P1` | **CounterSoR** — the 16-bit (2-octet) freshness counter associated with the current `KAUSF` (see §6 below) | `L1` = length of `P1` = `0x00 0x02` |
+| `P2` *(conditional)* | **Steering Information List** — "the octets included in the SOR transparent container...beyond octet 22", i.e. everything in the SOR transparent container after the fixed 22-octet header/MAC/counter portion. **Included only if the Steering Information List / additional parameters were present in the `Nausf_SoRProtection` request** (i.e. this is an actual data push, not a "no change" indication). | `L2` = length of `P2` in octets, 2-byte BE — omitted along with `P2` when not applicable |
+
+Key points for an implementer:
+- `P2`/`L2` is **optional** — your function needs a variant that hashes 2 parameters (header + counter only) vs. 3 parameters (header + counter + steering list), selected based on whether the caller actually supplied steering-list content.
+- The AUSF is the only entity that ever computes this with the "real" `KAUSF` — the UE recomputes it the same way to verify integrity on receipt.
+- `KAUSF` here is the *original* anchor key derived from the primary authentication run for this security context, not a derived NAS key.
+
+---
+
+## 5. Annex A.18 — SoR-MAC-IUE / SoR-XMAC-IUE
+
+Used for the (optional) UE→network acknowledgement:
+
+```
+SoR-MAC-IUE (or SoR-XMAC-IUE) = 128 LSBs of HMAC-SHA-256( KAUSF, S )
+
+S = FC || P0 || L0 || P1 || L1
+```
+
+| Param | Value | Length field |
+|---|---|---|
+| `FC` | `0x78` | — |
+| `P0` | Fixed 1-octet value `0x01`, meaning *"SoR acknowledgement: UE successfully received/verified/applied the Steering of Roaming information"* | `L0` = `0x00 0x01` |
+| `P1` | Same `CounterSoR` value that was used for the corresponding `SoR-MAC-IAUSF` computation | `L1` = `0x00 0x02` |
+
+Flow: the UE computes `SoR-MAC-IUE` and sends it uplink (in the UL NAS TRANSPORT / registration message). The AUSF had already pre-computed and cached the expected value as `SoR-XMAC-IUE` at the time it generated `SoR-MAC-IAUSF`; it compares the two on receipt. Same formula, different name depending on who computed it and when.
+
+---
+
+## 6. CounterSoR — freshness counter (TS 33.501 §6.14.2.3)
+
+This is a piece of long-lived, replay-protection state you must implement correctly, not just an incrementing local variable:
+
+- 16-bit (2-octet) counter, one instance **per KAUSF**, held by both AUSF and UE (ME/USIM).
+- **UE-side initial value**: `0x0000` when a newly derived `KAUSF` is stored.
+- **AUSF-side initial value**: `0x0001` when the newly derived `KAUSF` is stored (control-plane SoR solution). After the AUSF computes the *first* `SoR-MAC-IAUSF` with a fresh `KAUSF`, it sets the counter to `0x0002`, then monotonically increments by 1 for every subsequent `SoR-MAC-IAUSF` computation under that same `KAUSF`.
+- **Reset condition**: whenever a *new* `KAUSF` is established for the UE (fresh primary authentication), `CounterSoR` at the AUSF resets to `0x0001`.
+- **Storage**: on the UE side, in USIM if it supports 5G-parameter (extended) storage, otherwise in ME non-volatile memory. On the network side, this is AUSF-local persistent state keyed by SUPI (or equivalent).
+- **Wrap-around**: the AUSF must **suspend** the SoR-protection service for that UE if `CounterSoR` is about to wrap around (i.e., don't silently roll over to `0x0000`/reuse values — that would break the freshness guarantee and require re-running primary authentication to get a new `KAUSF`).
+- The **same** `CounterSoR` value used in a given `SoR-MAC-IAUSF` computation is reused as `P1` in the paired `SoR-MAC-IUE`/`SoR-XMAC-IUE` computation for that round — it is not independently incremented for the ack.
+
+This state (not just the KDF) is the part most likely to cause interop bugs, since it's easy to get the AUSF/UE initial-value asymmetry (`0x0001` vs `0x0000`) or the reset-on-new-KAUSF rule wrong.
+
+---
+
+## 7. Pseudocode
+
+```
+// Generic KDF, reusable across all Annex A derivations
+bytes32 KDF(bytes key, byte FC, vector<bytes> params) {
+    bytes S;
+    S.append(FC);
+    for (p in params) {
+        S.append(p);
+        S.append(be16(p.length()));   // 2-byte big-endian length
+    }
+    return HMAC_SHA256(key, S);       // 32-byte output
+}
+
+bytes16 last128bits(bytes32 digest) {
+    return digest[16..32];            // 128 LSBs = last 16 bytes
+}
+
+// A.17
+bytes16 ComputeSorMacIausf(bytes32 kausf, bytes sorHeader,
+                            uint16 counterSor, optional<bytes> steeringInfoList) {
+    vector<bytes> params = { sorHeader, be16_as_bytes(counterSor) };
+    if (steeringInfoList.has_value())
+        params.push_back(steeringInfoList.value());
+    return last128bits( KDF(kausf, 0x77, params) );
+}
+
+// A.18
+bytes16 ComputeSorMacIue(bytes32 kausf, uint16 counterSor) {
+    bytes ack = { 0x01 };
+    vector<bytes> params = { ack, be16_as_bytes(counterSor) };
+    return last128bits( KDF(kausf, 0x78, params) );
+}
+```
+
+Note `be16_as_bytes(counterSor)` here is the **parameter value** `P1` itself (the 2-octet counter, big-endian) — don't confuse it with `L1`, which is the KDF's own length-prefix and happens to also equal `0x0002` for this parameter, since the counter is exactly 2 bytes long. They're computed the same way but conceptually distinct.
+
+---
+
+## 8. C++ implementation sketch
+
+Using OpenSSL's EVP HMAC interface (works with OpenSSL 3.x):
+
+```cpp
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <vector>
+#include <cstdint>
+#include <stdexcept>
+#include <array>
+
+using Bytes = std::vector<uint8_t>;
+
+inline void appendBE16(Bytes& out, uint16_t v) {
+    out.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+    out.push_back(static_cast<uint8_t>(v & 0xFF));
+}
+
+// Generic Annex A / TS 33.220 B.2.0 KDF: HMAC-SHA-256(key, FC || P0 || L0 || P1 || L1 || ...)
+inline std::array<uint8_t, 32> Kdf(const Bytes& key,
+                                    uint8_t fc,
+                                    const std::vector<Bytes>& params) {
+    Bytes s;
+    s.push_back(fc);
+    for (const auto& p : params) {
+        s.insert(s.end(), p.begin(), p.end());
+        appendBE16(s, static_cast<uint16_t>(p.size()));
+    }
+
+    std::array<uint8_t, 32> digest{};
+    unsigned int len = 0;
+    if (!HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()),
+              s.data(), s.size(), digest.data(), &len) || len != 32) {
+        throw std::runtime_error("HMAC-SHA-256 computation failed");
+    }
+    return digest;
+}
+
+inline std::array<uint8_t, 16> Last128Bits(const std::array<uint8_t, 32>& d) {
+    std::array<uint8_t, 16> out{};
+    std::copy(d.begin() + 16, d.end(), out.begin());
+    return out;
+}
+
+constexpr uint8_t FC_SOR_MAC_IAUSF = 0x77;
+constexpr uint8_t FC_SOR_MAC_IUE   = 0x78;
+
+// Annex A.17
+std::array<uint8_t, 16> ComputeSorMacIausf(
+        const Bytes& kausf,                 // 32 bytes
+        const Bytes& sorHeader,             // P0, raw SOR header octets (TS 24.501 9.11.3.51)
+        uint16_t counterSor,                // P1
+        const Bytes* steeringInfoList) {    // P2, optional (nullptr if not present)
+    Bytes p1;
+    appendBE16(p1, counterSor);             // P1 value is the counter itself, big-endian
+    // NB: appendBE16 above is being reused just to get 2 BE bytes for the *value*,
+    // not to be confused with the KDF's own length field.
+
+    std::vector<Bytes> params = { sorHeader, p1 };
+    if (steeringInfoList != nullptr) {
+        params.push_back(*steeringInfoList);
+    }
+    auto digest = Kdf(kausf, FC_SOR_MAC_IAUSF, params);
+    return Last128Bits(digest);
+}
+
+// Annex A.18
+std::array<uint8_t, 16> ComputeSorMacIue(
+        const Bytes& kausf,                 // 32 bytes
+        uint16_t counterSor) {
+    Bytes p0 = { 0x01 };                    // fixed "ack" octet
+    Bytes p1;
+    appendBE16(p1, counterSor);
+
+    std::vector<Bytes> params = { p0, p1 };
+    auto digest = Kdf(kausf, FC_SOR_MAC_IUE, params);
+    return Last128Bits(digest);
+}
+```
+
+### Constant-time comparison
+
+Both the AUSF (comparing `SoR-MAC-IUE` vs. cached `SoR-XMAC-IUE`) and the UE (comparing received `SoR-MAC-IAUSF` vs. its own computation) **must** use a constant-time comparison, not `memcmp`/`==`, to avoid timing side-channels on a MAC check:
+
+```cpp
+#include <openssl/crypto.h>
+bool MacEquals(const std::array<uint8_t,16>& a, const std::array<uint8_t,16>& b) {
+    return CRYPTO_memcmp(a.data(), b.data(), 16) == 0;
+}
+```
+
+### Things your C++ module needs from elsewhere (inputs, not part of this KDF)
+
+1. **`KAUSF`** (32 bytes) — comes from your primary-authentication/5G-AKA key hierarchy implementation (TS 33.501 clause 6.1.3 / Annex A.2). This spec assumes you already have it.
+2. **`sorHeader`** raw bytes — the encoded SOR header per TS 24.501 §9.11.3.51 (ack-indication bit, list-indication bit, SOR data type, etc.). This module treats it as an opaque byte blob; you don't need to interpret its internal bit layout to compute the MAC, only to *construct* it correctly on the AUSF side (or receive it pre-built from the NF that calls `Nausf_SoRProtection`).
+3. **`steeringInfoList`** raw bytes — the encoded PLMN/access-tech steering list, again opaque to the MAC function itself, but it's specifically "the SOR transparent container content beyond octet 22" — so if you're building the whole SOR transparent container in one place, make sure you're slicing the right sub-range when you extract `P2`, not re-including the header/MAC/counter octets that precede it.
+4. **`CounterSoR`** state machine — see §6; this needs to be persistent, per-`KAUSF`, and reset/incremented per the exact rules given, not just a simple in-memory counter.
+
+---
+
+## 9. Validation / test-vector caveat
+
+3GPP does **not** publish official test vectors for `SoR-MAC-IAUSF`/`SoR-MAC-IUE` the way it does for some other crypto (e.g., MILENAGE). To validate your implementation:
+
+- Cross-check byte-for-byte against a second independent implementation if you have access to one (e.g., a compliant AUSF/UE stack, or write two independent implementations in-house and diff their outputs on identical fixed inputs).
+- At minimum, unit-test the generic `KDF()`/`Kdf()` function against the well-known `KAUSF`/`KSEAF` derivation formulas (Annex A.2/A.6, FC `0x6A`/`0x6C`), since those share the exact same S-string construction and are more likely to have publicly circulated test values you can sanity-check the HMAC/concatenation plumbing against — then swap in FC `0x77`/`0x78` with confidence the plumbing itself is correct.
+- Double-check `CounterSoR` endianness and initial-value handling with a mock AUSF/UE pair before wiring into a real stack — this is the most common source of interop mismatches, not the HMAC itself.
+
+---
+
+## 10. Sources consulted
+
+- 3GPP TS 33.501, Annex A.1 (generic KDF construction, FC allocation range), A.17 (SoR-MAC-IAUSF), A.18 (SoR-MAC-IUE/SoR-XMAC-IUE), clause 6.14.2 and 6.14.2.3 (CounterSoR) — via [iTecSpec's TS 33.501 clause browser](https://itecspec.com/3gpp/33.501)
+- [ETSI TS 133 501 full text (multiple releases)](https://www.etsi.org/deliver/etsi_ts/133500_133599/133501/) — used to confirm Annex E's actual (unrelated) content and cross-check clause numbering
+- [free5gc/util `ueauth.go`](https://github.com/free5gc/util/blob/main/ueauth/ueauth.go) — independent open-source confirmation of the generic `FC || P0 || L0 || ...` / HMAC-SHA-256 KDF construction pattern used throughout TS 33.501 Annex A
+- TS 24.501 clause 9.11.3.51 (referenced for the SOR header/transparent container wire format; not reproduced in full here — pull the exact bit layout from that clause if you need to *build*, not just consume, the SOR header)
+
+**Recommendation:** before shipping, pull the current in-force revision of TS 33.501 directly from the [3GPP specification page](https://www.3gpp.org/dynareport/33501.htm) and diff Annex A.17/A.18 against this document — the derivation itself has been stable since Release 15, but always confirm against the exact release your deployment targets.

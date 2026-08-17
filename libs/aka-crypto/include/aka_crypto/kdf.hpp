@@ -41,6 +41,20 @@
 //                        `s1 = [FromOctet(N_NAS_enc_alg=0x01), FromOctet(ciphering_alg_id)]`, and
 //                        the mirror for `N_NAS_int_alg=0x02`/integrity) and its own
 //                        `.subCopy(16, 16)` (rightmost half of the 32-byte HMAC-SHA-256 output).
+//   A.17 SoR-MAC-IAUSF   FC=0x77  KDF(KAUSF, SoR header, CounterSoR, [Steering Info List]),
+//                        128 LSBs (rightmost 16 bytes) of the 256-bit KDF output. UNLIKE A.7/A.8
+//                        above, this one IS a direct citation, not a reconstruction: confirmed
+//                        2026-08-17 against a real local copy of 3GPP TS 33.501 v19.6.0 (Release
+//                        19, matching this project's own target release), Annex A.17 (page 242)
+//                        and clause 6.14.2.3 (CounterSoR state machine, page 122-123) -- gap-
+//                        closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0081). The P2
+//                        (Steering Info List) parameter is genuinely optional in the KDF itself,
+//                        included only when the caller's own Nausf_SoRProtection request supplied
+//                        one.
+//   A.18 SoR-MAC-IUE/    FC=0x78  KDF(KAUSF, 0x01, CounterSoR), 128 LSBs. Same real citation as
+//        SoR-XMAC-IUE    A.17 above. One function computes both -- which name applies depends only
+//                        on who computed it (UE sends SoR-MAC-IUE; AUSF pre-computes and caches
+//                        the same value as SoR-XMAC-IUE to compare against).
 
 namespace aka_crypto {
 
@@ -113,5 +127,23 @@ constexpr uint8_t kNia2AlgorithmIdentity = 0x02;
 // a second near-identical function.
 NasEncKey derive_knas_enc(const Kamf& kamf, uint8_t algorithm_identity);
 NasIntKey derive_knas_int(const Kamf& kamf, uint8_t algorithm_identity);
+
+using SorMac = std::array<uint8_t, 16>;
+
+// TS 33.501 Annex A.17 (real citation, see this file's own header comment). sor_header is the
+// caller-supplied, already-encoded SOR header octets (TS 24.501 §9.11.3.51 -- this function
+// treats them as opaque, does not construct or interpret them). counter_sor is the real,
+// persistent per-KAUSF freshness counter (see clause 6.14.2.3 -- caller's responsibility to
+// maintain per its own real state-machine rules, not this function's). steering_info_list is the
+// optional P2 parameter, nullptr when the caller's own request had none to include.
+SorMac derive_sor_mac_iausf(const Kausf& kausf,
+                            const std::vector<uint8_t>& sor_header,
+                            uint16_t counter_sor,
+                            const std::vector<uint8_t>* steering_info_list);
+
+// TS 33.501 Annex A.18 (real citation). Same formula computes both SoR-MAC-IUE (sent by the UE)
+// and SoR-XMAC-IUE (pre-computed and cached by the AUSF to compare against) -- which name applies
+// is a caller-side bookkeeping distinction, not a functional one.
+SorMac derive_sor_mac_iue(const Kausf& kausf, uint16_t counter_sor);
 
 } // namespace aka_crypto

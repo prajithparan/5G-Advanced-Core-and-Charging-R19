@@ -32,6 +32,13 @@ std::vector<uint8_t> len_prefix(const std::vector<uint8_t>& p) {
     return {static_cast<uint8_t>((n >> 8) & 0xff), static_cast<uint8_t>(n & 0xff)};
 }
 
+// The counter's own 2-byte big-endian VALUE (a KDF parameter, Annex A.17/A.18's own P1) --
+// distinct from len_prefix above (a KDF-framing length field) even though both happen to produce
+// 2 big-endian bytes here, since CounterSoR is itself exactly 2 octets wide.
+std::vector<uint8_t> be16(uint16_t v) {
+    return {static_cast<uint8_t>((v >> 8) & 0xff), static_cast<uint8_t>(v & 0xff)};
+}
+
 } // namespace
 
 std::array<uint8_t, 32> generic_kdf(const std::vector<uint8_t>& key,
@@ -138,6 +145,27 @@ NasIntKey derive_knas_int(const Kamf& kamf, uint8_t algorithm_identity) {
     NasIntKey key{};
     std::copy(out.begin() + 16, out.end(), key.begin()); // rightmost 128 bits
     return key;
+}
+
+SorMac derive_sor_mac_iausf(const Kausf& kausf,
+                            const std::vector<uint8_t>& sor_header,
+                            uint16_t counter_sor,
+                            const std::vector<uint8_t>* steering_info_list) {
+    std::vector<std::vector<uint8_t>> params{sor_header, be16(counter_sor)};
+    if (steering_info_list != nullptr) {
+        params.push_back(*steering_info_list);
+    }
+    const auto out = generic_kdf(to_bytes(kausf), 0x77, params);
+    SorMac mac{};
+    std::copy(out.begin() + 16, out.end(), mac.begin()); // 128 LSBs
+    return mac;
+}
+
+SorMac derive_sor_mac_iue(const Kausf& kausf, uint16_t counter_sor) {
+    const auto out = generic_kdf(to_bytes(kausf), 0x78, {{0x01}, be16(counter_sor)});
+    SorMac mac{};
+    std::copy(out.begin() + 16, out.end(), mac.begin()); // 128 LSBs
+    return mac;
 }
 
 } // namespace aka_crypto
