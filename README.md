@@ -51,6 +51,26 @@ Establishment Accept received` → `PDU Session establishment is successful` —
 Full phase plan: [`PROMPT.md`](PROMPT.md). Per-procedure spec traceability:
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md).
 
+### Capability-completeness gap-closure (ADR-0075 onward)
+
+Alongside the phase plan, an ongoing effort closes real capability gaps found against free5GC's
+and open5GS's own actual source (not just their docs) — see
+[`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md) for the evidence base and
+`docs/DECISIONS.md` ADR-0075 onward for what's closed, each real, live-verified, and disclosed
+rather than just unit-tested. Closed so far: NRF (NFProfile validation, heartbeat-expiry timer),
+AMF (`ServiceRequest`, RAN-initiated `UEContextRelease`, and — ADR-0090 — the `PathSwitchRequest`
+slice of N2 handover, live-verified with a hand-crafted NGAP test client since UERANSIM has no
+CLI-triggerable handover scenario), AUSF (`Nausf_SoRProtection`, and — ADR-0091 — real TS 33.503
+5G ProSe authentication, live-verified with an independently-computed EAP-AKA' response against
+real TS 35.207 test vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR
+(real PostgreSQL persistence plus a first slice of TS 29.504 resource breadth), and UPF (task
+#107 closed in full: PFCP Association Update/Release, PFD Management, Node Report). CHF closed
+real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even free5GC's own CDR module doesn't
+fully match in scope on this project's own terms. **Still open**: the real N2-based
+`HandoverRequired`/.../`HandoverNotify` handover chain (AMF), SMF's `UpdateSMContext` (coupled to
+it), the remainder of UDR's ~42+ real TS 29.504 resource surface, ProSe's PAnF-dependent
+returning-UE path, and NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all).
+
 ## Repository layout
 
 ```
