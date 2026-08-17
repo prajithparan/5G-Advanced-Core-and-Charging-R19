@@ -343,6 +343,53 @@ build_association_setup_response_ies(std::time_t start_time,
     return ies;
 }
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107, ADR-0084): real TS 29.244 §7.4.4.3/
+// §7.4.4.4 Sx Association Update Request/Response -- real IE table confirmed directly against
+// the vendored spec text (specs/PFCP/29244-e30.pdf), same source ADR-0039 already established
+// for every other PFCP message in this file. Real, disclosed scope: the request's own optional
+// "Sx Association Release Request"/"Graceful Release Period"/"User Plane IP Resource Information"
+// IEs (used when the UP function itself is the one requesting changes via this message) are not
+// decoded -- this build only handles the CP-initiated "update my own Node ID's advertised
+// features" direction, the one real scenario this lab's single-CP-per-UP topology actually needs.
+// Real, disclosed limitation: UP/CP Function Features are unconditionally accepted/echoed back
+// (RequestAccepted) -- this lab has no real per-feature negotiation state machine, same
+// disclosed simplification AssociationSetupResponse's own encode_up_function_features_ftup_only
+// already carries.
+std::vector<std::uint8_t>
+build_association_update_response_ies(std::array<std::uint8_t, 4> node_ipv4) {
+    std::vector<std::uint8_t> ies;
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+                         pfcp_core::encode_node_id_ipv4(node_ipv4));
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                         pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::UpFunctionFeatures),
+                         encode_up_function_features_ftup_only());
+    return ies;
+}
+
+// Real TS 29.244 §7.4.4.5/§7.4.4.6 Sx Association Release Request/Response -- real IE table
+// confirmed against the same vendored spec text. Real, disclosed scope: a real Association
+// Release conceptually tears down ALL Sx sessions associated with the releasing peer (TS 29.244
+// §7.4.4 general text) -- this build accepts the release and logs it, but does NOT bulk-delete
+// this UPF's own session state for the requesting peer (this lab's own single-CP-per-UP scope
+// means Session Set Deletion, TS 29.244 §7.4.6, is the real, precise, FQ-CSID-scoped mechanism
+// spec'd for exactly this cleanup -- a separate, still-open gap, not fabricated here as a side
+// effect of this message instead).
+std::vector<std::uint8_t>
+build_association_release_response_ies(std::array<std::uint8_t, 4> node_ipv4) {
+    std::vector<std::uint8_t> ies;
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+                         pfcp_core::encode_node_id_ipv4(node_ipv4));
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                         pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+    return ies;
+}
+
 struct SessionEstablishmentResult {
     std::vector<std::uint8_t> ies;
     // The header SEID for this response: TS 29.244's addressing rule ("the sending entity uses
@@ -975,6 +1022,18 @@ void run_pfcp_lifecycle(std::time_t start_time,
             resp_header.seid = result->response_header_seid;
             resp_ies = result->ies;
             spdlog::info("upf: Sx Session Deletion processed from {}",
+                         sender.address().to_string());
+        } else if (header->message_type == pfcp_core::MessageType::AssociationUpdateRequest) {
+            resp_header.message_type = pfcp_core::MessageType::AssociationUpdateResponse;
+            resp_ies = build_association_update_response_ies(kNodeIpv4);
+            spdlog::info("upf: Sx Association Update accepted from {}",
+                         sender.address().to_string());
+        } else if (header->message_type == pfcp_core::MessageType::AssociationReleaseRequest) {
+            resp_header.message_type = pfcp_core::MessageType::AssociationReleaseResponse;
+            resp_ies = build_association_release_response_ies(kNodeIpv4);
+            spdlog::info("upf: Sx Association Release accepted from {} (real, disclosed scope: "
+                         "this UPF's own session state for the peer is NOT bulk-deleted as a side "
+                         "effect -- see this file's own comment on Session Set Deletion)",
                          sender.address().to_string());
         } else {
             spdlog::warn("upf: received PFCP message type {} with no handler yet, ignoring",

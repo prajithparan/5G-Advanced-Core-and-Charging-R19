@@ -41,6 +41,11 @@ enum class MessageType : std::uint8_t {
     HeartbeatResponse = 2,
     AssociationSetupRequest = 5,
     AssociationSetupResponse = 6,
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107, ADR-0084): real values confirmed
+    // against Table 7.3-1 "Message Types" in the same vendored spec text (specs/PFCP/
+    // 29244-e30.pdf) every other MessageType value in this enum was already confirmed against.
+    AssociationUpdateRequest = 7,
+    AssociationUpdateResponse = 8,
     AssociationReleaseRequest = 9,
     AssociationReleaseResponse = 10,
     SessionEstablishmentRequest = 50,

@@ -383,14 +383,16 @@ free5GC's `internal/pfcp/pfcp.go` dispatches the full real PFCP message set (gre
 request+response pairs): `Heartbeat`, `PFDManagement`, `AssociationSetup`, `AssociationUpdate`,
 `AssociationRelease`, `NodeReport`, `SessionSetDeletion`, `SessionEstablishment`,
 `SessionModification`, `SessionDeletion`, `SessionReport`. This project's UPF handles
-`Heartbeat`, `AssociationSetup`, `SessionEstablishment`/`Modification`/`Deletion`, and sends
-`SessionReport` (UPF-initiated usage reports) -- the core session lifecycle is real and already
-covered by gap-closure Tier 1d's own QER/BAR work. **Grep-confirmed missing**: `PFDManagement`
+`Heartbeat`, `AssociationSetup`, `AssociationUpdate`, `AssociationRelease`,
+`SessionEstablishment`/`Modification`/`Deletion`, and sends `SessionReport` (UPF-initiated usage
+reports) -- the core session lifecycle is real and already covered by gap-closure Tier 1d's own
+QER/BAR work; `AssociationUpdate`/`AssociationRelease` closed by gap-closure task #107 part 1
+(ADR-0084, live-verified over real raw UDP). **Grep-confirmed still missing**: `PFDManagement`
 (real, used to deploy Application Detection Filters from SMF to UPF for App-ID traffic
-classification), `AssociationUpdate` (updating UPF capabilities without a full re-association),
-`AssociationRelease` (graceful N4 teardown), `NodeReport` (UPF-initiated node-level reporting,
-e.g. GTP-U path failure), `SessionSetDeletion` (bulk session cleanup tied to a specific CP
-instance -- used on CP function restart/failure recovery).
+classification), `NodeReport` (UPF-initiated node-level reporting, e.g. GTP-U path failure),
+`SessionSetDeletion` (bulk session cleanup tied to a specific CP instance -- used on CP function
+restart/failure recovery) -- each deferred to task #107's continuing scope, each needing its own
+new IE type read from the vendored spec before implementation (see ADR-0084).
 
 ### Datapath: this project is already ahead here, worth recording per ADR-0075's "superior, not
 just parity" framing, not just gaps
@@ -473,7 +475,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
 | UDR | ~2.5-10x | Resource-type breadth (~6 of 42+ real TS 29.504 resources) |
-| UPF | ~2.5-5x | PFD Management, Association Update/Release, Node Report, Session Set Deletion; datapath (XDP) already ahead of both references on paper, unbenchmarked |
+| UPF | ~2.5-5x | PFD Management, Node Report, Session Set Deletion (Association Update/Release closed, ADR-0084); datapath (XDP) already ahead of both references on paper, unbenchmarked |
 | CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding; already ahead on 5G-native service breadth + AI-native charging |
 
 **Real, honest pattern across the sweep**: this project's "happy path" (initial attach, PDU
