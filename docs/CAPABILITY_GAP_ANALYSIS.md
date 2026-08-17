@@ -40,26 +40,30 @@ having actually read the cited source.
 
 ### Real gaps found (this project is missing real behavior both/one reference has)
 
-1. **`NFProfile` semantic validation is missing.** free5GC has ~290 lines of real validation
-   (`internal/sbi/processor/nf_profile_validation.go`): `nfInstanceId` must be a real UUID v4,
-   `heartBeatTimer` bounds-checked, `nfType`/`nfStatus`/`nfServiceStatus`/`uriScheme` checked
-   against real enum sets, `ipv4Addresses`/`ipv6Addresses` format-validated, `ipEndPoint.transport`
-   must be TCP, port range-checked. This project's NRF (`nfs/nrf/src/main.cpp:253`) only checks
-   that `nfInstanceId`/`nfType`/`nfStatus` keys are **present** in the JSON body -- no format or
-   enum validation at all. A malformed `nfType` or an out-of-range `heartBeatTimer` is silently
-   accepted today. **Real gap, not disclosed before this analysis.**
+1. **`NFProfile` semantic validation was missing -- closed, docs/DECISIONS.md ADR-0079.** free5GC
+   has ~290 lines of real validation (`internal/sbi/processor/nf_profile_validation.go`):
+   `nfInstanceId` must be a real UUID v4, `heartBeatTimer` bounds-checked, `nfType`/`nfStatus`/
+   `nfServiceStatus`/`uriScheme` checked against real enum sets, `ipv4Addresses`/`ipv6Addresses`
+   format-validated, `ipEndPoint.transport` must be TCP, port range-checked. This project's NRF
+   previously only checked that `nfInstanceId`/`nfType`/`nfStatus` keys were **present** -- no
+   format or enum validation at all, so a malformed `nfType` or an out-of-range `heartBeatTimer`
+   was silently accepted. Now real: every constraint above is enforced, each independently
+   grounded in the actual OpenAPI YAML (cited per-field in `nfs/nrf/src/main.cpp`'s own comment,
+   not copied from free5GC's own choices) -- live-verified via real HTTP 400 rejections for each
+   violation class.
 
-2. **No active heartbeat-expiry timer.** open5GS runs a real per-NF-instance timer
-   (`src/nrf/nf-sm.c:187-216`, `t_no_heartbeat`, started on entry to the `registered` state for
-   `heartbeat_interval + no_heartbeat_margin`) that proactively deregisters an NF instance if it
-   stops sending heartbeats, and fires a real `NF_REGISTERED`/de-registration notification to
-   subscribers on each transition. This project's NRF accepts `PATCH` heartbeats
-   (`nfs/nrf/src/main.cpp:313`) but has no background expiry sweep anywhere in `nfs/nrf/src/` --
-   a crashed NF that never sends `DELETE` stays registered forever. free5GC does not appear to
-   have this either (only stores the `HeartBeatTimer` value,
-   `internal/context/management_data.go:62`) -- **this is specifically an open5GS capability, not
-   a universal one**, so the honest framing is "we lack what open5GS has," not "we lack what both
-   have." **Real gap.**
+2. **No active heartbeat-expiry timer -- closed, docs/DECISIONS.md ADR-0079.** open5GS runs a
+   real per-NF-instance timer (`src/nrf/nf-sm.c:187-216`, `t_no_heartbeat`, started on entry to
+   the `registered` state for `heartbeat_interval + no_heartbeat_margin`) that proactively
+   deregisters an NF instance if it stops sending heartbeats, firing a real de-registration
+   notification to subscribers. This project's NRF previously accepted `PATCH` heartbeats but had
+   no background expiry sweep at all -- a crashed NF that never sent `DELETE` stayed registered
+   forever. free5GC does not appear to have this either (only stores the `HeartBeatTimer` value,
+   `internal/context/management_data.go:62`) -- this was specifically an open5GS capability this
+   project lacked, not a universal gap. Now real: `NfRegistry::sweep_expired`, a periodic
+   background sweep (this project's own design, not a byte-for-byte port of open5GS's per-NF
+   timer object) -- live-verified end-to-end, including that a `PATCH` heartbeat genuinely resets
+   the expiry window, not just that expiry fires at all.
 
 3. **Subscription `subscrCond` filtering is ignored.** open5GS validates and applies
    `subscrCond` (an `nfType`-or-`serviceName` XOR filter, `src/nrf/nnrf-handler.c:481-603`, citing

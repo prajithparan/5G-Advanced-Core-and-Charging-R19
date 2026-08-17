@@ -32,7 +32,10 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <regex>
 #include <sstream>
+#include <thread>
+#include <unordered_set>
 
 #include "registry.hpp"
 
@@ -124,6 +127,160 @@ std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::R
     return verifier.verify(value.substr(kPrefix.size()));
 }
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #102, ADR-0079): real NFProfile semantic
+// validation. Before this, RegisterNFInstance only checked that nfInstanceId/nfType/nfStatus
+// KEYS were present (below), never that their VALUES were well-formed -- a malformed nfType or
+// an out-of-range heartBeatTimer was silently accepted. Every constraint here is grounded
+// directly in the real OpenAPI YAML, cited per field, not invented:
+// - nfInstanceId: format=uuid, "shall be a UUID version 4" (TS29571_CommonData.yaml).
+// - heartBeatTimer: type integer, minimum 1 (TS29510_Nnrf_NFManagement.yaml) -- no maximum is
+//   declared in the spec, so none is enforced here.
+// - nfType: TS29571_CommonData.yaml's NFType is an open anyOf[enum,string] (any string parses
+//   without throwing, for wire round-tripping -- see sbi_gen::NFType's own comment) -- but NRF,
+//   as the registry owning the canonical NF catalog, should still reject values outside the real
+//   known set at registration time, the same real validation free5GC's own NRF applies. The set
+//   below is the exact real enum list the spec (and this project's own codegen, sbi_gen::NFType)
+//   already derived from the YAML, not independently invented.
+// - nfStatus / nfServices[].nfServiceStatus: real 4-value enum (REGISTERED/SUSPENDED/
+//   UNDISCOVERABLE/CANARY_RELEASE), both TS29510_Nnrf_NFManagement.yaml.
+// - nfServices[].scheme: real {http,https} UriScheme enum (TS29571_CommonData.yaml).
+// - nfServices[].ipEndPoints[].transport: TCP only -- NOT the more general TS29571_CommonData
+//   TransportProtocol (which also allows UDP); THIS API's own local TransportProtocol schema
+//   (TS29510_Nnrf_NFManagement.yaml) narrows it to TCP only, confirmed by reading the YAML
+//   directly, not assumed from the more general type.
+// - nfServices[].ipEndPoints[].port: minimum 0, maximum 65535 (TS29510_Nnrf_NFManagement.yaml).
+// - ipv4Addresses[] / nfServices[].ipEndPoints[].ipv4Address: real dotted-decimal regex, copied
+//   verbatim from TS29571_CommonData.yaml's Ipv4Addr pattern.
+// - ipv6Addresses[] / nfServices[].ipEndPoints[].ipv6Address: real colon-hex regex pair, copied
+//   verbatim from TS29571_CommonData.yaml's Ipv6Addr pattern.
+// Returns nullopt if valid, else a human-readable reason for the first violation found.
+const std::unordered_set<std::string>& known_nf_types() {
+    static const std::unordered_set<std::string> types = {
+        "NRF",      "UDM",        "AMF",    "SMF",      "AUSF",      "NEF",      "PCF",    "SMSF",
+        "NSSF",     "UDR",        "LMF",    "GMLC",     "5G_EIR",    "SEPP",     "UPF",    "N3IWF",
+        "AF",       "UDSF",       "BSF",    "CHF",      "NWDAF",     "PCSCF",    "CBCF",   "HSS",
+        "UCMF",     "SOR_AF",     "SPAF",   "MME",      "SCSAS",     "SCEF",     "SCP",    "NSSAAF",
+        "ICSCF",    "SCSCF",      "DRA",    "IMS_AS",   "AANF",      "5G_DDNMF", "NSACF",  "MFAF",
+        "EASDF",    "DCCF",       "MB_SMF", "TSCTSF",   "ADRF",      "GBA_BSF",  "CEF",    "MB_UPF",
+        "NSWOF",    "PKMF",       "MNPF",   "SMS_GMSC", "SMS_IWMSC", "MBSF",     "MBSTF",  "PANF",
+        "IP_SM_GW", "SMS_ROUTER", "DCSF",   "MRF",      "MRFP",      "MF",       "SLPKMF", "RH",
+        "EIF",      "AIOTF",      "ADM",
+    };
+    return types;
+}
+
+const std::unordered_set<std::string>& known_status_values() {
+    static const std::unordered_set<std::string> statuses = {
+        "REGISTERED", "SUSPENDED", "UNDISCOVERABLE", "CANARY_RELEASE"};
+    return statuses;
+}
+
+bool is_uuid_v4(const std::string& s) {
+    static const std::regex kPattern(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", std::regex::icase);
+    return std::regex_match(s, kPattern);
+}
+
+bool is_ipv4(const std::string& s) {
+    static const std::regex kPattern(
+        "^(([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9][0-9]"
+        "|2[0-4][0-9]|25[0-5])$");
+    return std::regex_match(s, kPattern);
+}
+
+bool is_ipv6(const std::string& s) {
+    static const std::regex kPattern1(
+        "^((:|(0?|([1-9a-f][0-9a-f]{0,3}))):)((0?|([1-9a-f][0-9a-f]{0,3})):){0,6}(:|(0?|([1-9a-f]"
+        "[0-9a-f]{0,3})))$",
+        std::regex::icase);
+    static const std::regex kPattern2(
+        "^((([^:]+:){7}([^:]+))|((([^:]+:)*[^:]+)?::(([^:]+:)*[^:]+)?))$", std::regex::icase);
+    return std::regex_match(s, kPattern1) && std::regex_match(s, kPattern2);
+}
+
+std::optional<std::string> validate_ip_endpoint(const json& ep) {
+    if (ep.contains("ipv4Address") && ep.at("ipv4Address").is_string() &&
+        !is_ipv4(ep.at("ipv4Address").get<std::string>())) {
+        return "ipEndPoints[].ipv4Address is not a valid dotted-decimal IPv4 address";
+    }
+    if (ep.contains("ipv6Address") && ep.at("ipv6Address").is_string() &&
+        !is_ipv6(ep.at("ipv6Address").get<std::string>())) {
+        return "ipEndPoints[].ipv6Address is not a valid IPv6 address";
+    }
+    if (ep.contains("transport") && ep.at("transport").is_string() &&
+        ep.at("transport").get<std::string>() != "TCP") {
+        return "ipEndPoints[].transport must be TCP (this API's own TransportProtocol schema, "
+               "unlike the general one, allows only TCP)";
+    }
+    if (ep.contains("port") && ep.at("port").is_number()) {
+        const auto port = ep.at("port").get<std::int64_t>();
+        if (port < 0 || port > 65535) {
+            return "ipEndPoints[].port must be in [0, 65535]";
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> validate_nf_profile(const json& profile) {
+    if (profile.contains("nfInstanceId") && profile.at("nfInstanceId").is_string() &&
+        !is_uuid_v4(profile.at("nfInstanceId").get<std::string>())) {
+        return "nfInstanceId must be a UUID v4";
+    }
+    if (profile.contains("nfType") && profile.at("nfType").is_string() &&
+        !known_nf_types().contains(profile.at("nfType").get<std::string>())) {
+        return "nfType '" + profile.at("nfType").get<std::string>() +
+               "' is not a recognized NFType";
+    }
+    if (profile.contains("nfStatus") && profile.at("nfStatus").is_string() &&
+        !known_status_values().contains(profile.at("nfStatus").get<std::string>())) {
+        return "nfStatus '" + profile.at("nfStatus").get<std::string>() +
+               "' is not one of REGISTERED/SUSPENDED/UNDISCOVERABLE/CANARY_RELEASE";
+    }
+    if (profile.contains("heartBeatTimer") && profile.at("heartBeatTimer").is_number()) {
+        if (profile.at("heartBeatTimer").get<std::int64_t>() < 1) {
+            return "heartBeatTimer must be >= 1";
+        }
+    }
+    if (profile.contains("ipv4Addresses") && profile.at("ipv4Addresses").is_array()) {
+        for (const auto& addr : profile.at("ipv4Addresses")) {
+            if (addr.is_string() && !is_ipv4(addr.get<std::string>())) {
+                return "ipv4Addresses contains an invalid IPv4 address";
+            }
+        }
+    }
+    if (profile.contains("ipv6Addresses") && profile.at("ipv6Addresses").is_array()) {
+        for (const auto& addr : profile.at("ipv6Addresses")) {
+            if (addr.is_string() && !is_ipv6(addr.get<std::string>())) {
+                return "ipv6Addresses contains an invalid IPv6 address";
+            }
+        }
+    }
+    if (profile.contains("nfServices") && profile.at("nfServices").is_array()) {
+        for (const auto& svc : profile.at("nfServices")) {
+            if (svc.contains("scheme") && svc.at("scheme").is_string()) {
+                const auto scheme = svc.at("scheme").get<std::string>();
+                if (scheme != "http" && scheme != "https") {
+                    return "nfServices[].scheme must be http or https";
+                }
+            }
+            if (svc.contains("nfServiceStatus") && svc.at("nfServiceStatus").is_string() &&
+                !known_status_values().contains(svc.at("nfServiceStatus").get<std::string>())) {
+                return "nfServices[].nfServiceStatus '" +
+                       svc.at("nfServiceStatus").get<std::string>() +
+                       "' is not one of REGISTERED/SUSPENDED/UNDISCOVERABLE/CANARY_RELEASE";
+            }
+            if (svc.contains("ipEndPoints") && svc.at("ipEndPoints").is_array()) {
+                for (const auto& ep : svc.at("ipEndPoints")) {
+                    if (auto err = validate_ip_endpoint(ep); err.has_value()) {
+                        return err;
+                    }
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 int main() {
@@ -197,6 +354,24 @@ int main() {
             }
         };
 
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #102, ADR-0079): real heartbeat-expiry
+    // sweep, open5GS's own real per-NF `t_no_heartbeat` mechanism as the model (not a byte-for-
+    // byte port -- this project's own periodic-sweep design rather than a per-NF timer object).
+    // Interval/margin are this lab's own reasonable, disclosed choice -- open5GS's own specific
+    // numeric margin isn't published/known, not claimed to match it. Only NFs that themselves
+    // supplied heartBeatTimer are ever swept (see NfRegistry::sweep_expired's own comment).
+    constexpr std::chrono::seconds kHeartbeatSweepInterval{5};
+    constexpr std::chrono::seconds kHeartbeatExpiryMargin{5};
+    std::thread([nf_registry, notify, kHeartbeatSweepInterval, kHeartbeatExpiryMargin]() {
+        while (true) {
+            std::this_thread::sleep_for(kHeartbeatSweepInterval);
+            for (const auto& id : nf_registry->sweep_expired(kHeartbeatExpiryMargin)) {
+                spdlog::warn("nrf: NF instance {} missed its heartBeatTimer -- deregistering", id);
+                notify("NF_DEREGISTERED", id, std::nullopt);
+            }
+        }
+    }).detach();
+
     boost::asio::io_context ioc;
     // 0.0.0.0, not 127.0.0.1: found via actual Docker verification, not assumed -- a
     // loopback-only bind is unreachable from outside the container even with `docker run -p`,
@@ -256,6 +431,9 @@ int main() {
                                             "Missing mandatory IE",
                                             std::string("NFProfile missing '") + required + "'");
                 }
+            }
+            if (auto err = validate_nf_profile(profile); err.has_value()) {
+                return problem_response(400, "Invalid NFProfile", *err);
             }
             const bool is_new = nf_registry->put(path_id, profile);
             spdlog::info("nrf: {} NF instance {} (type={}, status={})",
@@ -333,6 +511,7 @@ int main() {
             }
             spdlog::info("nrf: heartbeat/update for {}", path_id);
             heartbeats_counter->Add(1);
+            nf_registry->touch_heartbeat(path_id);
             notify("NF_PROFILE_CHANGED", path_id, patched);
             return sbi_core::http2::Response::json(200, patched->dump());
         });

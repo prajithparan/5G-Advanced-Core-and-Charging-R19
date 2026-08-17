@@ -1261,3 +1261,29 @@ and `integration_tests` both rebuilt clean with no changes needed elsewhere.
 own trigger); the AMF-initiated direction (AMF deciding on its own to release, e.g. after
 Deregistration) is not. Full N2 handover remains entirely open, tracked as the rest of task
 #100/#101.
+
+## Gap-closure task #102 -- NRF real NFProfile validation + heartbeat-expiry timer (ADR-0079)
+
+| Requirement | Real spec source | Test |
+|---|---|---|
+| `nfInstanceId` must be UUID v4 | `TS29571_CommonData.yaml` `NfInstanceId` (`format: uuid`) | Live HTTP: `nfInstanceId: "not-a-uuid"` -> 400 "nfInstanceId must be a UUID v4"; a real `uuid.uuid4()`-generated id -> 201 |
+| `heartBeatTimer >= 1` | `TS29510_Nnrf_NFManagement.yaml` (`minimum: 1`) | Live HTTP: `heartBeatTimer: 0` -> 400 "heartBeatTimer must be >= 1" |
+| `nfType` must be a real, known value | `TS29571_CommonData.yaml` `NFType` enum | Live HTTP: `nfType: "NOT_A_REAL_TYPE"` -> 400 "nfType 'NOT_A_REAL_TYPE' is not a recognized NFType" |
+| `nfStatus` / `nfServices[].nfServiceStatus` real 4-value enum | `TS29510_Nnrf_NFManagement.yaml` | Covered by `validate_nf_profile`'s own logic; not separately live-exercised this pass (same code path as nfType) |
+| `nfServices[].scheme` in `{http,https}` | `TS29571_CommonData.yaml` `UriScheme` | Covered by `validate_nf_profile` |
+| `ipEndPoints[].transport` must be TCP (this API's own local, narrower `TransportProtocol`) | `TS29510_Nnrf_NFManagement.yaml` (confirmed distinct from the general `TS29571_CommonData` one, which also allows UDP) | Covered by `validate_ip_endpoint` |
+| `ipEndPoints[].port` in `[0, 65535]` | `TS29510_Nnrf_NFManagement.yaml` | Covered by `validate_ip_endpoint` |
+| `ipv4Addresses[]` real dotted-decimal format | `TS29571_CommonData.yaml` `Ipv4Addr` pattern | Live HTTP: `ipv4Addresses: ["999.1.1.1"]` -> 400 "ipv4Addresses contains an invalid IPv4 address" |
+| Real heartbeat-expiry sweep, open5GS's `t_no_heartbeat` as the model | `docs/CAPABILITY_GAP_ANALYSIS.md` NRF section, finding 2 | Live: registered with `heartBeatTimer=2`, confirmed present via `GET`, confirmed gone (404) ~13s later, real log "missed its heartBeatTimer -- deregistering" |
+| Heartbeat genuinely resets the expiry window (not just that expiry exists) | Same | Live: registered with `heartBeatTimer=6`, one `PATCH` at t=4s, confirmed STILL present (200) at t=12s -- would have expired an unrefreshed timer |
+
+Full `conformance_tests`: 261/261 pass, unaffected (no new unit tests -- coverage is via the live
+HTTP verification above). A full `ctest -j4` run surfaced 4 failures
+(`SmfIntegration.FullSmContextLifecycleOverRealHttp2`,
+`SmfIntegration.CreateSMContextFailsClosedWhenPcfUnreachable`,
+`PcfN28Integration.CreateSmPolicyFailsOpenWhenChfUnreachable`,
+`PcfChfN28Integration.FullLoopSubscribeStatusChangeNotifyUnsubscribe`); all 4 re-ran and passed
+cleanly under `-j1`, confirming a real, pre-existing test-isolation gap (parallel `ctest` jobs
+spawning their own `nrf`/`pcf`/`chf` on the same fixed ports can collide) rather than a
+regression from this change -- disclosed, not silently worked around, not fixed this pass (a test
+-harness concern, separate from NRF's own product code).

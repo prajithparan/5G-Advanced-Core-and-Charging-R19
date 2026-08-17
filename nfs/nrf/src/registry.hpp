@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -42,9 +43,23 @@ public:
     // dropped; see docs/DECISIONS.md.
     std::vector<nlohmann::json> search_by_type(const std::string& target_nf_type);
 
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #102, ADR-0079): records "now" as this
+    // NF instance's most recent heartbeat, for sweep_expired's own use. Called on both initial
+    // registration (put, below) and every later PATCH heartbeat.
+    void touch_heartbeat(const std::string& nf_instance_id);
+
+    // Real heartbeat-expiry sweep (open5GS's own real per-NF `t_no_heartbeat` mechanism,
+    // src/nrf/nf-sm.c -- this project's own equivalent, not a byte-for-byte port). Removes and
+    // returns the nfInstanceIds of every NF whose OWN profile declares a heartBeatTimer and whose
+    // last heartbeat is older than heartBeatTimer + margin -- an NF that never specified
+    // heartBeatTimer is never swept (nothing in the spec to expire it against, not invented).
+    // Atomic with the check (single lock), so a heartbeat racing the sweep can't be lost.
+    std::vector<std::string> sweep_expired(std::chrono::seconds margin);
+
 private:
     std::mutex mutex_;
     std::unordered_map<std::string, nlohmann::json> profiles_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_heartbeat_;
 };
 
 // Backs CreateSubscription/UpdateSubscription/RemoveSubscription

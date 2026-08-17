@@ -6,6 +6,7 @@ bool NfRegistry::put(const std::string& nf_instance_id, nlohmann::json profile) 
     std::lock_guard<std::mutex> lock(mutex_);
     const bool is_new = !profiles_.contains(nf_instance_id);
     profiles_[nf_instance_id] = std::move(profile);
+    last_heartbeat_[nf_instance_id] = std::chrono::steady_clock::now();
     return is_new;
 }
 
@@ -31,6 +32,7 @@ std::optional<nlohmann::json> NfRegistry::apply_patch(const std::string& nf_inst
 
 bool NfRegistry::remove(const std::string& nf_instance_id) {
     std::lock_guard<std::mutex> lock(mutex_);
+    last_heartbeat_.erase(nf_instance_id);
     return profiles_.erase(nf_instance_id) > 0;
 }
 
@@ -53,6 +55,36 @@ std::vector<nlohmann::json> NfRegistry::search_by_type(const std::string& target
         }
     }
     return result;
+}
+
+void NfRegistry::touch_heartbeat(const std::string& nf_instance_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_heartbeat_[nf_instance_id] = std::chrono::steady_clock::now();
+}
+
+std::vector<std::string> NfRegistry::sweep_expired(std::chrono::seconds margin) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<std::string> expired;
+    for (auto it = profiles_.begin(); it != profiles_.end();) {
+        const auto& profile = it->second;
+        if (!profile.contains("heartBeatTimer") || !profile.at("heartBeatTimer").is_number()) {
+            ++it;
+            continue;
+        }
+        const auto heartbeat_timer =
+            std::chrono::seconds(profile.at("heartBeatTimer").get<std::int64_t>());
+        const auto last_it = last_heartbeat_.find(it->first);
+        const auto last = (last_it != last_heartbeat_.end()) ? last_it->second : now;
+        if (now - last > heartbeat_timer + margin) {
+            expired.push_back(it->first);
+            last_heartbeat_.erase(it->first);
+            it = profiles_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return expired;
 }
 
 nlohmann::json SubscriptionRegistry::create(nlohmann::json subscription_data) {
