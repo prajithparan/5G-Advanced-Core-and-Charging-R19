@@ -52,6 +52,16 @@ enum class MessageType : std::uint8_t {
     AssociationUpdateResponse = 8,
     AssociationReleaseRequest = 9,
     AssociationReleaseResponse = 10,
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107, ADR-0087): real values confirmed
+    // against Table 7.3-1. Real, disclosed finding from that same table's own "Applicability"
+    // columns (Sxa/Sxb/Sxc): Session Set Deletion (14/15) is marked "-" for Sxc -- not applicable
+    // to this project's own N4 interface (N4 maps to Sxc, TS 23.501's own PFCP-reference-point
+    // naming) at all per this vendored v14.3.0 spec text, an EPC-only (Sxa/Sxb) message tied to
+    // SGW-C/PGW-C/MME FQ-CSID concepts this project's 5GC-only scope has no real analogue for --
+    // see ADR-0087 for the full disclosure. Not implemented for that reason, not omitted by
+    // oversight.
+    NodeReportRequest = 12,
+    NodeReportResponse = 13,
     SessionEstablishmentRequest = 50,
     SessionEstablishmentResponse = 51,
     SessionModificationRequest = 52,

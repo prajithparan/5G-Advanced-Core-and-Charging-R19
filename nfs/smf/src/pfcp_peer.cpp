@@ -32,6 +32,11 @@ void PfcpPeer::set_session_report_handler(SessionReportHandler handler) {
     on_session_report_request_ = std::move(handler);
 }
 
+void PfcpPeer::set_node_report_handler(NodeReportHandler handler) {
+    std::lock_guard<std::mutex> lock(handler_mutex_);
+    on_node_report_request_ = std::move(handler);
+}
+
 std::uint32_t PfcpPeer::allocate_sequence_number() {
     return next_sequence_number_++;
 }
@@ -71,6 +76,22 @@ void PfcpPeer::receive_loop() {
             } else {
                 spdlog::warn("smf: received a Sx Session Report Request with no handler installed "
                              "yet, dropping");
+            }
+            continue;
+        }
+
+        if (header->message_type == pfcp_core::MessageType::NodeReportRequest) {
+            NodeReportHandler handler;
+            {
+                std::lock_guard<std::mutex> lock(handler_mutex_);
+                handler = on_node_report_request_;
+            }
+            if (handler) {
+                handler(*header, ie_bytes, sender);
+            } else {
+                spdlog::warn(
+                    "smf: received a Sx Node Report Request with no handler installed yet, "
+                    "dropping");
             }
             continue;
         }

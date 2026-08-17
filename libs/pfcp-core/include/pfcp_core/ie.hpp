@@ -90,6 +90,14 @@ enum class IeType : std::uint16_t {
     // Information/UE IP address/etc. -- Session Deletion's variant is the narrower one, matching
     // exactly the fields this project's UrrState already tracks).
     UsageReportSessionDeletion = 79,
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107, ADR-0087): real IE types for Sx Node
+    // Report Request (TS 29.244 §7.4.5.1/§8.2.69/§8.2.70), confirmed against the same vendored
+    // spec text every other IeType value here is confirmed against. UserPlanePathFailureReport is
+    // a grouped IE (repeated RemoteGtpuPeer children) with no dedicated codec, same choice
+    // CreatePdr/ApplicationIdsPfds already made.
+    NodeReportType = 101,
+    UserPlanePathFailureReport = 102,
+    RemoteGtpuPeer = 103,
 };
 
 struct Ie {

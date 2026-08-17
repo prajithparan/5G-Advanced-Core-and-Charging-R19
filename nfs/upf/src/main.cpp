@@ -524,6 +524,48 @@ build_pfd_management_response_ies(const std::vector<std::uint8_t>& request_ies,
     return resp_ies;
 }
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107, ADR-0087): real TS 29.244 §7.4.5.1 Sx
+// Node Report Request, reporting a User Plane Path Failure Report toward one remote GTP-U peer.
+// This is UP-function-initiated (the spec's own §7.4.5.1.1: "sent... by the UP function"), so
+// unlike every earlier PFCP builder in this file, it produces a REQUEST this UPF would send, not a
+// response to one it received -- same real direction as this file's own SessionReportRequest
+// (built inline in the datapath's usage_report_handler below) and Association Setup Request (SMF
+// side, nfs/smf/src/main.cpp).
+//
+// Real, disclosed gap: this project's UPF has no live GTP-U path-failure DETECTION (the eBPF/XDP
+// datapath, ADR-0043, decapsulates/forwards; it does not monitor peer reachability) -- so nothing
+// in this codebase calls this function yet. It exists, byte-correct and unit-tested, so a real
+// detector can call it once one exists, matching this project's own established precedent of
+// building a real send-side function ahead of its live trigger (ReportSender's own
+// SessionReportRequest machinery, ADR-0050 Stage 2, was built the same way before Stage 5 gave it
+// a real caller).
+// [[maybe_unused]]: real, disclosed above -- no live caller exists yet (no path-failure detector),
+// same reasoning applied here as everywhere else in this codebase to a genuinely unused-for-now
+// but real, tested, spec-correct function.
+[[maybe_unused]] std::vector<std::uint8_t>
+build_node_report_request_ies(std::array<std::uint8_t, 4> node_ipv4,
+                              std::array<std::uint8_t, 4> failed_remote_peer_ipv4) {
+    pfcp_core::NodeReportType report_type;
+    report_type.user_plane_path_failure_report = true;
+
+    std::vector<std::uint8_t> failure_report_ies;
+    pfcp_core::encode_ie(failure_report_ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::RemoteGtpuPeer),
+                         pfcp_core::encode_remote_gtpu_peer_ipv4(failed_remote_peer_ipv4));
+
+    std::vector<std::uint8_t> ies;
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+                         pfcp_core::encode_node_id_ipv4(node_ipv4));
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::NodeReportType),
+                         pfcp_core::encode_node_report_type(report_type));
+    pfcp_core::encode_ie(ies,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::UserPlanePathFailureReport),
+                         failure_report_ies);
+    return ies;
+}
+
 struct SessionEstablishmentResult {
     std::vector<std::uint8_t> ies;
     // The header SEID for this response: TS 29.244's addressing rule ("the sending entity uses

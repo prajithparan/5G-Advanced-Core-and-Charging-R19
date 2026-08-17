@@ -67,4 +67,40 @@ std::vector<std::uint8_t> encode_cp_function_features_none() {
     return {0x00};
 }
 
+std::vector<std::uint8_t> encode_node_report_type(const NodeReportType& type) {
+    constexpr std::uint8_t kUpfrBit = 0x01;
+    std::uint8_t octet = 0;
+    if (type.user_plane_path_failure_report) {
+        octet |= kUpfrBit;
+    }
+    return {octet};
+}
+
+std::optional<NodeReportType> decode_node_report_type(const std::vector<std::uint8_t>& value) {
+    constexpr std::uint8_t kUpfrBit = 0x01;
+    if (value.size() != 1) {
+        return std::nullopt;
+    }
+    NodeReportType type;
+    type.user_plane_path_failure_report = (value[0] & kUpfrBit) != 0;
+    return type;
+}
+
+std::vector<std::uint8_t> encode_remote_gtpu_peer_ipv4(std::array<std::uint8_t, 4> ipv4) {
+    constexpr std::uint8_t kV4Bit = 0x02;
+    std::vector<std::uint8_t> out;
+    out.push_back(kV4Bit);
+    out.insert(out.end(), ipv4.begin(), ipv4.end());
+    return out;
+}
+
+std::optional<std::array<std::uint8_t, 4>>
+decode_remote_gtpu_peer_ipv4(const std::vector<std::uint8_t>& value) {
+    constexpr std::uint8_t kV4Bit = 0x02;
+    if (value.size() != 5 || (value[0] & kV4Bit) == 0) {
+        return std::nullopt;
+    }
+    return std::array<std::uint8_t, 4>{value[1], value[2], value[3], value[4]};
+}
+
 } // namespace pfcp_core

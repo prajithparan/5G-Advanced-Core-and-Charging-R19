@@ -1276,6 +1276,78 @@ int main() {
         }).detach();
     });
 
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107, ADR-0087): real Sx Node Report
+    // Request handling (TS 29.244 §7.4.5.1/§7.4.5.2). Real, disclosed scope: this handler decodes
+    // and acknowledges the report (real Cause=RequestAccepted, no Offending IE support -- same
+    // precedent as UPF's own PFD Management/Association Update handling this session already
+    // established) but does not yet act on it (e.g. triggering a real N4 re-association or marking
+    // the reported remote GTP-U peer unreachable) -- this project has no other real consumer for a
+    // User Plane Path Failure Report yet, and no live UPF-side trigger sends this message in this
+    // lab either (see nfs/upf/src/main.cpp's own build_node_report_request_ies comment). Simple
+    // enough to stay inline on PfcpPeer's own receive thread, unlike the Session Report handler
+    // above -- no further network I/O follows.
+    pfcp_peer.set_node_report_handler([&pfcp_peer](const pfcp_core::Header& header,
+                                                   const std::vector<std::uint8_t>& ie_bytes,
+                                                   const boost::asio::ip::udp::endpoint& sender) {
+        spdlog::info("smf: received real Sx Node Report Request from {} (seq={})",
+                     sender.address().to_string(),
+                     header.sequence_number);
+
+        const auto ies = pfcp_core::decode_ies(ie_bytes);
+        const auto* node_id_ie =
+            ies.has_value()
+                ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::NodeId))
+                : nullptr;
+        const auto node_id = node_id_ie != nullptr
+                                 ? pfcp_core::decode_node_id_ipv4(node_id_ie->value)
+                                 : std::nullopt;
+        const auto* failure_report_ie =
+            ies.has_value() ? pfcp_core::find_ie(*ies,
+                                                 static_cast<std::uint16_t>(
+                                                     pfcp_core::IeType::UserPlanePathFailureReport))
+                            : nullptr;
+        if (failure_report_ie != nullptr) {
+            const auto failure_ies = pfcp_core::decode_ies(failure_report_ie->value);
+            const auto* peer_ie = failure_ies.has_value()
+                                      ? pfcp_core::find_ie(*failure_ies,
+                                                           static_cast<std::uint16_t>(
+                                                               pfcp_core::IeType::RemoteGtpuPeer))
+                                      : nullptr;
+            const auto peer_ipv4 = peer_ie != nullptr
+                                       ? pfcp_core::decode_remote_gtpu_peer_ipv4(peer_ie->value)
+                                       : std::nullopt;
+            if (peer_ipv4.has_value()) {
+                spdlog::warn(
+                    "smf: real User Plane Path Failure Report from Node ID {}.{}.{}.{} -- remote "
+                    "GTP-U peer {}.{}.{}.{} unreachable (real, disclosed gap: not yet acted on)",
+                    node_id.has_value() ? (*node_id)[0] : 0,
+                    node_id.has_value() ? (*node_id)[1] : 0,
+                    node_id.has_value() ? (*node_id)[2] : 0,
+                    node_id.has_value() ? (*node_id)[3] : 0,
+                    (*peer_ipv4)[0],
+                    (*peer_ipv4)[1],
+                    (*peer_ipv4)[2],
+                    (*peer_ipv4)[3]);
+            }
+        }
+
+        std::vector<std::uint8_t> resp_ies;
+        pfcp_core::encode_ie(resp_ies,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::NodeId),
+                             pfcp_core::encode_node_id_ipv4(kSmfNodeIpv4));
+        pfcp_core::encode_ie(resp_ies,
+                             static_cast<std::uint16_t>(pfcp_core::IeType::Cause),
+                             pfcp_core::encode_cause(pfcp_core::Cause::RequestAccepted));
+        pfcp_core::Header resp_header;
+        resp_header.has_seid = false;
+        resp_header.message_type = pfcp_core::MessageType::NodeReportResponse;
+        resp_header.sequence_number = header.sequence_number;
+        auto resp_pdu =
+            pfcp_core::encode_header(resp_header, static_cast<std::uint16_t>(resp_ies.size()));
+        resp_pdu.insert(resp_pdu.end(), resp_ies.begin(), resp_ies.end());
+        pfcp_peer.send_fire_and_forget(sender, resp_pdu);
+    });
+
     smf::SmContextStore sm_contexts;
     UpfEndpointStore upf_endpoint_store;
 

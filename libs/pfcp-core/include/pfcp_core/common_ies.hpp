@@ -54,4 +54,20 @@ decode_node_id_ipv4(const std::vector<std::uint8_t>& value);
 std::vector<std::uint8_t> encode_up_function_features_none();
 std::vector<std::uint8_t> encode_cp_function_features_none();
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107, ADR-0087): TS 29.244 §8.2.69 -- a
+// 1-octet flag field. This project's UPF only ever reports one real condition (a User Plane Path
+// Failure), so the struct exposes just that bit, not the full "several bits may be set" union the
+// spec permits.
+struct NodeReportType {
+    bool user_plane_path_failure_report = false;
+};
+std::vector<std::uint8_t> encode_node_report_type(const NodeReportType& type);
+std::optional<NodeReportType> decode_node_report_type(const std::vector<std::uint8_t>& value);
+
+// TS 29.244 §8.2.70: this project only ever sends/expects the IPv4 form (V4 bit set, V6 clear),
+// same disclosed IPv4-only narrowing as encode_node_id_ipv4 above.
+std::vector<std::uint8_t> encode_remote_gtpu_peer_ipv4(std::array<std::uint8_t, 4> ipv4);
+std::optional<std::array<std::uint8_t, 4>>
+decode_remote_gtpu_peer_ipv4(const std::vector<std::uint8_t>& value);
+
 } // namespace pfcp_core

@@ -41,6 +41,12 @@ public:
     using SessionReportHandler = std::function<void(const pfcp_core::Header& header,
                                                     const std::vector<std::uint8_t>& ie_bytes,
                                                     const boost::asio::ip::udp::endpoint& sender)>;
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #107, ADR-0087): same shape as
+    // SessionReportHandler above -- Sx Node Report Request (TS 29.244 §7.4.5.1) is the other real
+    // message this project's own N4/Sxc interface has that's genuinely UP-function-initiated.
+    using NodeReportHandler = std::function<void(const pfcp_core::Header& header,
+                                                 const std::vector<std::uint8_t>& ie_bytes,
+                                                 const boost::asio::ip::udp::endpoint& sender)>;
 
     // Binds the persistent socket to 0.0.0.0:kSmfCpFunctionPfcpPort and starts the receive-
     // dispatch thread immediately -- with no session-report handler set yet (set_session_report_
@@ -59,6 +65,7 @@ public:
     // Thread-safe; may be called any time after construction, including from a different thread
     // than the one that constructed this peer.
     void set_session_report_handler(SessionReportHandler handler);
+    void set_node_report_handler(NodeReportHandler handler);
 
     // Allocates a fresh sequence number for a new logical request. Thread-safe; every call site
     // gets a genuinely unique value now that one shared socket serves every concurrent caller
@@ -89,6 +96,7 @@ private:
     boost::asio::ip::udp::socket socket_;
     std::mutex handler_mutex_;
     SessionReportHandler on_session_report_request_;
+    NodeReportHandler on_node_report_request_;
     std::thread receive_thread_;
     std::atomic<bool> stop_{false};
     std::atomic<std::uint32_t> next_sequence_number_{1};

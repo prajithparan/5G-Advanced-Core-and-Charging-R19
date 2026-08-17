@@ -382,18 +382,26 @@ NEF exists) remains open, out of scope until NEF is built.
 free5GC's `internal/pfcp/pfcp.go` dispatches the full real PFCP message set (grep-confirmed,
 request+response pairs): `Heartbeat`, `PFDManagement`, `AssociationSetup`, `AssociationUpdate`,
 `AssociationRelease`, `NodeReport`, `SessionSetDeletion`, `SessionEstablishment`,
-`SessionModification`, `SessionDeletion`, `SessionReport`. This project's UPF handles
-`Heartbeat`, `AssociationSetup`, `AssociationUpdate`, `AssociationRelease`,
-`SessionEstablishment`/`Modification`/`Deletion`, `PFDManagement`, and sends `SessionReport`
-(UPF-initiated usage reports) -- the core session lifecycle is real and already covered by
-gap-closure Tier 1d's own QER/BAR work; `AssociationUpdate`/`AssociationRelease` closed by
-gap-closure task #107 part 1 (ADR-0084, live-verified over real raw UDP); `PFDManagement` closed by
-task #107 part 2 (ADR-0086, live-verified over real raw UDP -- real, disclosed gap: no Application
-Detection Filter engine yet consumes the provisioned PFDs, see ADR-0086's own scope note).
-**Grep-confirmed still missing**: `NodeReport` (UPF-initiated node-level reporting, e.g. GTP-U path
-failure), `SessionSetDeletion` (bulk session cleanup tied to a specific CP instance -- used on CP
-function restart/failure recovery) -- each deferred to task #107's continuing scope, each needing its own
-new IE type read from the vendored spec before implementation (see ADR-0084).
+`SessionModification`, `SessionDeletion`, `SessionReport`. This project's UPF now handles every one
+of these except `SessionSetDeletion` -- `Heartbeat`, `AssociationSetup`, `AssociationUpdate`,
+`AssociationRelease`, `SessionEstablishment`/`Modification`/`Deletion`, `PFDManagement`, sends and
+now (real, both directions) receives `NodeReport`. `AssociationUpdate`/`AssociationRelease` closed
+by gap-closure task #107 part 1 (ADR-0084, live-verified over real raw UDP); `PFDManagement` closed
+by task #107 part 2 (ADR-0086, live-verified over real raw UDP -- real, disclosed gap: no
+Application Detection Filter engine yet consumes the provisioned PFDs); `NodeReport` closed by task
+#107's final slice (ADR-0087, live-verified between two real, independently-built processes --
+UPF's own send-side encoder and SMF's real `PfcpPeer` receive-side handler).
+
+**`SessionSetDeletion` real, disclosed correction to this section's own original finding** (ADR-
+0087): this project's vendored spec text (`specs/PFCP/29244-e30.pdf`, Table 7.3-1's own
+"Applicability" columns) marks Session Set Deletion (message types 14/15) applicable to Sxa/Sxb
+only -- **not Sxc**, and N4 (this project's own real interface) is Sxc. Its own IE table (Table
+7.4.6.1-1) independently confirms this: every conditional IE is an EPC-only FQ-CSID concept
+(SGW-C/PGW-C/SGW-U/PGW-U/TWAN/ePDG/MME) this project's 5GC-only scope has no real analogue for.
+free5GC's own dispatch of this message type is real, but does not by itself mean the message
+applies to a 5GC-only N4 deployment such as this one's -- a genuine "not applicable" per the spec
+text actually read, not a deferred stub. **Task #107 is now closed in full**: 4 of its 5 originally-
+named gaps are real and closed, the 5th is a real non-gap.
 
 ### Datapath: this project is already ahead here, worth recording per ADR-0075's "superior, not
 just parity" framing, not just gaps
@@ -476,7 +484,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
 | UDR | ~2.5-10x | Resource-type breadth (~6 of 42+ real TS 29.504 resources) |
-| UPF | ~2.5-5x | Node Report, Session Set Deletion (Association Update/Release closed, ADR-0084; PFD Management closed, ADR-0086); datapath (XDP) already ahead of both references on paper, unbenchmarked |
+| UPF | ~1x (task #107 fully closed: Association Update/Release, ADR-0084; PFD Management, ADR-0086; Node Report, ADR-0087; Session Set Deletion correctly found not applicable to this project's own N4/Sxc interface) | datapath (XDP) already ahead of both references on paper, unbenchmarked |
 | CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding; already ahead on 5G-native service breadth + AI-native charging |
 
 **Real, honest pattern across the sweep**: this project's "happy path" (initial attach, PDU

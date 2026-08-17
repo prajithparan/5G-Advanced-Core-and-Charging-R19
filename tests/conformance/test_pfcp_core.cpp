@@ -520,3 +520,36 @@ TEST(PfcpPfdIes, ApplicationIdsPfdsGroupRoundTripsViaExistingIeCodec) {
     ASSERT_TRUE(inner_contents->flow_description.has_value());
     EXPECT_EQ(*inner_contents->flow_description, *contents.flow_description);
 }
+
+// Gap-closure task #107 remaining (ADR-0087): Node Report IEs.
+
+TEST(PfcpCommonIes, NodeReportTypeRoundTrips) {
+    pfcp_core::NodeReportType type;
+    type.user_plane_path_failure_report = true;
+    const auto decoded =
+        pfcp_core::decode_node_report_type(pfcp_core::encode_node_report_type(type));
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_TRUE(decoded->user_plane_path_failure_report);
+}
+
+TEST(PfcpCommonIes, NodeReportTypeFalseRoundTrips) {
+    const pfcp_core::NodeReportType type;
+    const auto decoded =
+        pfcp_core::decode_node_report_type(pfcp_core::encode_node_report_type(type));
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_FALSE(decoded->user_plane_path_failure_report);
+}
+
+TEST(PfcpCommonIes, RemoteGtpuPeerIpv4RoundTrips) {
+    const std::array<std::uint8_t, 4> ip{10, 0, 0, 9};
+    const auto bytes = pfcp_core::encode_remote_gtpu_peer_ipv4(ip);
+    EXPECT_EQ(bytes, (std::vector<std::uint8_t>{0x02, 10, 0, 0, 9}));
+    const auto decoded = pfcp_core::decode_remote_gtpu_peer_ipv4(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(*decoded, ip);
+}
+
+TEST(PfcpCommonIes, RemoteGtpuPeerRejectsV4BitUnset) {
+    const std::vector<std::uint8_t> bytes = {0x01, 10, 0, 0, 9}; // V6 bit set, not V4
+    EXPECT_FALSE(pfcp_core::decode_remote_gtpu_peer_ipv4(bytes).has_value());
+}
