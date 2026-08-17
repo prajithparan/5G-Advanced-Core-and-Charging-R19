@@ -81,4 +81,24 @@ private:
     std::unordered_map<std::string, Entry> entries_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #103, ADR-0080). Backs
+// Npcf_PolicyAuthorization's individual Application Session Context resource. Keyed by a
+// PCF-generated appSessionId. Value is a full `AppSessionContext` (TS29514, i.e. {ascReqData,
+// ascRespData, evsNotif} together) serialized as JSON -- same nlohmann::json-store precedent as
+// AmPolicyStore/SmPolicyStore above (a large DTO whose route handlers already build/read the full
+// JSON directly).
+class AppSessionStore {
+public:
+    std::string create(nlohmann::json app_session_context);
+    std::optional<nlohmann::json> get(const std::string& app_session_id);
+    // Returns false if app_session_id doesn't exist.
+    bool put(const std::string& app_session_id, nlohmann::json app_session_context);
+    bool remove(const std::string& app_session_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> sessions_;
+    std::uint64_t next_id_ = 1;
+};
+
 } // namespace pcf

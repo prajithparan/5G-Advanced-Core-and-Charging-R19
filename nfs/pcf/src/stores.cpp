@@ -102,4 +102,35 @@ SpendingLimitTrackingStore::remove(const std::string& sm_policy_id) {
     return std::make_optional(std::move(entry));
 }
 
+std::string AppSessionStore::create(nlohmann::json app_session_context) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "appsess-" + std::to_string(next_id_++);
+    sessions_.emplace(id, std::move(app_session_context));
+    return id;
+}
+
+std::optional<nlohmann::json> AppSessionStore::get(const std::string& app_session_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = sessions_.find(app_session_id);
+    if (it == sessions_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool AppSessionStore::put(const std::string& app_session_id, nlohmann::json app_session_context) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = sessions_.find(app_session_id);
+    if (it == sessions_.end()) {
+        return false;
+    }
+    it->second = std::move(app_session_context);
+    return true;
+}
+
+bool AppSessionStore::remove(const std::string& app_session_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return sessions_.erase(app_session_id) > 0;
+}
+
 } // namespace pcf

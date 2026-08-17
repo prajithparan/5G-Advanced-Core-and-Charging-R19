@@ -1287,3 +1287,29 @@ cleanly under `-j1`, confirming a real, pre-existing test-isolation gap (paralle
 spawning their own `nrf`/`pcf`/`chf` on the same fixed ports can collide) rather than a
 regression from this change -- disclosed, not silently worked around, not fixed this pass (a test
 -harness concern, separate from NRF's own product code).
+
+## Gap-closure task #103 -- PCF real Npcf_PolicyAuthorization (ADR-0080)
+
+| Procedure | Real requirement | Test |
+|---|---|---|
+| `PostAppSessions` (TS29514 §4.2.2) | 201 + real `Location`; `ascRespData` with no `servAuthInfo` failure code = the real "authorized" outcome (confirmed by reading `ServAuthInfo`'s own real spec enum, which only lists failure reasons) | Live HTTP: real `ascReqData` -> 201, `Location: .../app-sessions/appsess-1`, body `{"ascReqData":{...},"ascRespData":{}}` |
+| `GetAppSession` | 200 with the stored `AppSessionContext` | Live HTTP: matches the create response exactly |
+| `ModAppSession` (TS29514 §4.2.3.3) | `application/merge-patch+json` (RFC 7396), NOT RFC 6902 (confirmed by reading the YAML's own requestBody content-type) | Live HTTP: merge-patched `{"suppFeat":"3","mcpttId":"mcptt-1"}` onto an existing `ascReqData` -> `suppFeat` updated in place, `mcpttId` added, `notifUri`/`supi` preserved unchanged -- proves real RFC 7396 merge semantics, not a full overwrite |
+| `updateEventsSubsc` (PUT) | 201 on first create, 200 on subsequent modify, stored at `ascReqData.evSubsc` | Live HTTP: first PUT -> 201 + `Location`; second PUT (same appSessionId) -> 200; `GetAppSession` afterward shows the real nested `evSubsc` object with the latest `notifUri` |
+| `DeleteEventsSubsc` (DELETE) | 204, removes `ascReqData.evSubsc` | Live HTTP: 204 |
+| `PcscfRestoration` | 204, no real per-UE inventory to search (disclosed gap) | Live HTTP: 204 |
+| `DeleteAppSession` (real spec quirk: `POST .../delete`, not HTTP DELETE) | 204, real resource removal | Live HTTP: 204, then a subsequent `GetAppSession` on the same id -> 404 |
+| Missing mandatory `ascReqData` | 400 | Live HTTP: `{}` body -> 400 "AppSessionContext requires ascReqData" |
+| Nonexistent `appSessionId` | 404 | Live HTTP: both `GetAppSession` and `DeleteAppSession` on an unknown id -> 404 |
+
+**Real bug found and fixed during live verification**: an `updateEventsSubsc` test request used a
+bare string array for `events` (`["QOS_MONITORING"]`); this failed with a real `nlohmann::json`
+type error, tracing back to `AfEventSubscription` (the real element type) being a real OBJECT
+(`{event: AfEvent, ...}`), not a bare string -- the test request was wrong, not the code.
+Corrected to `[{"event": "QOS_NOTIF"}]` and re-verified.
+
+`specs/5G_APIs-REL-19/TS29514_Npcf_PolicyAuthorization.yaml` added to the sbi-codegen pilot set
+(`libs/sbi-generated/CMakeLists.txt`) -- clean regeneration (2086 types, up from 2010), no codegen
+fixes needed. Full `conformance_tests` (261/261) and a full `integration_tests` rebuild both pass
+unaffected; no new unit tests added this pass (coverage via live HTTP verification, matching this
+same session's own ADR-0079 precedent).

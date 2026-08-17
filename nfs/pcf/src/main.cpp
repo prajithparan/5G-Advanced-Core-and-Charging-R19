@@ -14,13 +14,32 @@
 // Deliberately deferred, not dropped: both services' callback notifications (PolicyUpdate/
 // TerminationNotification pushed BY PCF TO the notificationUri AMF/SMF supplied) -- neither AMF
 // nor SMF has a receiver for these yet, same shape as every other proactive/callback flow this
-// build has deferred so far. Npcf_PolicyAuthorization (AF/Rx-style), Npcf_UEPolicyControl (URSP),
-// Npcf_EventExposure, Npcf_BDTPolicyControl, Npcf_PDTQPolicyControl, Npcf_AMPolicyAuthorization,
+// build has deferred so far. Npcf_UEPolicyControl (URSP), Npcf_EventExposure,
+// Npcf_BDTPolicyControl, Npcf_PDTQPolicyControl, Npcf_AMPolicyAuthorization,
 // Npcf_MBSPolicyControl/Authorization -- separate PCF sub-services, not needed for the core
 // registration/PDU-session flows. Also deferred: actually wiring AMF/SMF to call this PCF -- this
 // turn stands up PCF's own API surface + tests standalone, same precedent as UDR's turn
 // (ADR-0025) and UDM's Nudm_UEAU turn (ADR-0026) before AUSF called it -- a deliberate future turn
 // touching already-committed AMF/SMF code, reviewable on its own. See ADR-0028.
+//
+// UPDATE (ADR-0080, gap-closure task #103): Npcf_PolicyAuthorization (specs/5G_APIs-REL-19/
+// TS29514_Npcf_PolicyAuthorization.yaml) added -- the real AF/IMS-facing interface an IMS AS
+// (P-CSCF/VoNR call setup) uses to request media/QoS policy authorization, flagged by
+// docs/CAPABILITY_GAP_ANALYSIS.md as a real, high-impact gap both free5GC and open5GS implement.
+// PostAppSessions/GetAppSession/ModAppSession/DeleteAppSession/updateEventsSubsc/
+// DeleteEventsSubsc/PcscfRestoration all implemented, route-for-route. Real, disclosed
+// simplification, same category as the AM/SM policy defaults above: this lab has no real
+// PCC-rule/session-rule engine to actually authorize a requested media flow against, so
+// CreateAppSession stores the real request and returns a schema-correct AppSessionContext with NO
+// ServAuthInfo failure code set -- per the real spec, ServAuthInfo only enumerates FAILURE reasons
+// (TP_NOT_KNOWN, TP_EXPIRED, ...); there is no "AUTHORIZED" value, so an absent servAuthInfo IS
+// the real, correct "authorized" outcome, not a fabricated approval decision. No real trigger
+// exists in this lab for PcscfRestoration's own real use case (a P-CSCF actually restoring and
+// needing to terminate stale App Session Contexts), so it acknowledges (204) without any real
+// per-UE inventory to search -- same disclosed shape as this file's other "no real trigger source
+// yet" gaps. AF-pushed callback notifications (eventNotification/terminationRequest) are, like
+// PolicyUpdate/TerminationNotification above, deferred -- no receiver exists on the AF side in
+// this lab.
 //
 // Disclosed simplification, stated up front: real PCF policy decisions are computed from
 // subscriber data UDR would hold (Npcf's own UDR client for the policy-data group), which UDR's
@@ -77,6 +96,8 @@ constexpr const char* kNfType = "PCF";
 constexpr const char* kNrfBase = "https://127.0.0.1:7777";
 constexpr const char* kAmApiRoot = "/npcf-am-policy-control/v1";
 constexpr const char* kSmApiRoot = "/npcf-smpolicycontrol/v1";
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #103, ADR-0080).
+constexpr const char* kPolicyAuthApiRoot = "/npcf-policyauthorization/v1";
 
 // ADR-0072 (gap-closure: real N28 end-to-end). PCF's real UDR client (fetches SmPolicyData,
 // TS29519_Policy_Data.yaml) and CHF client (Nchf_SpendingLimitControl, TS29594) -- same
@@ -401,6 +422,7 @@ int main() {
     pcf::AmPolicyStore am_policies;
     pcf::SmPolicyStore sm_policies;
     pcf::SpendingLimitTrackingStore spending_limit_tracking;
+    pcf::AppSessionStore app_sessions;
 
     // ADR-0072 (gap-closure: real N28 end-to-end) -- PCF's own client identity + token source for
     // calling UDR and CHF, same separate-http2::Client-per-target-NF pattern this project already
@@ -446,6 +468,12 @@ int main() {
     auto spending_limit_notify_counter = meter->CreateUInt64Counter(
         "pcf_spending_limit_notify_total",
         "Total real Nchf_SpendingLimitControl statusNotification callbacks received");
+    auto policy_auth_create_counter =
+        meter->CreateUInt64Counter("pcf_policy_auth_create_total", "Total PostAppSessions calls");
+    auto policy_auth_update_counter =
+        meter->CreateUInt64Counter("pcf_policy_auth_update_total", "Total ModAppSession calls");
+    auto policy_auth_delete_counter =
+        meter->CreateUInt64Counter("pcf_policy_auth_delete_total", "Total DeleteAppSession calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -757,6 +785,189 @@ int main() {
             spending_limit_notify_counter->Add(1);
             spdlog::info("pcf: received real spending-limit statusNotification for SM policy {}",
                          sm_policy_id);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Npcf_PolicyAuthorization (ADR-0080, gap-closure task #103) ---
+
+    server.add_route(
+        "POST",
+        std::string(kPolicyAuthApiRoot) + "/app-sessions",
+        [&verifier, &app_sessions, &policy_auth_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::AppSessionContext>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            if (!body->ascReqData.has_value()) {
+                return sbi_core::http2::problem_response(
+                    400, "Missing mandatory IE", "AppSessionContext requires ascReqData");
+            }
+
+            sbi_gen::AppSessionContext ctx{};
+            ctx.ascReqData = body->ascReqData;
+            // No ServAuthInfo failure code set = the real "authorized" outcome -- see this file's
+            // own header comment for why that's not a fabricated approval, just correctly absent.
+            ctx.ascRespData = sbi_gen::AppSessionContextRespData{};
+            json j = ctx;
+            const auto id = app_sessions.create(j);
+            policy_auth_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kPolicyAuthApiRoot) + "/app-sessions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kPolicyAuthApiRoot) + "/app-sessions/{appSessionId}",
+        [&verifier, &app_sessions](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("appSessionId");
+            auto ctx = app_sessions.get(id);
+            if (!ctx.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No app session " + id);
+            }
+            return sbi_core::http2::Response::json(200, ctx->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kPolicyAuthApiRoot) + "/app-sessions/{appSessionId}",
+        [&verifier, &app_sessions, &policy_auth_update_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("appSessionId");
+            auto ctx = app_sessions.get(id);
+            if (!ctx.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No app session " + id);
+            }
+            // application/merge-patch+json (RFC 7396) per the real spec -- NOT RFC 6902 JSON
+            // Patch (which NRF's own UpdateNFInstance uses); confirmed by reading
+            // TS29514_Npcf_PolicyAuthorization.yaml's own ModAppSession requestBody content-type
+            // directly, not assumed to match NRF's own convention.
+            json patch_doc;
+            try {
+                patch_doc = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            if (ctx->contains("ascReqData")) {
+                (*ctx)["ascReqData"].merge_patch(patch_doc);
+            } else {
+                (*ctx)["ascReqData"] = patch_doc;
+            }
+            app_sessions.put(id, *ctx);
+            policy_auth_update_counter->Add(1);
+            return sbi_core::http2::Response::json(200, ctx->dump());
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kPolicyAuthApiRoot) + "/app-sessions/{appSessionId}/delete",
+        [&verifier, &app_sessions, &policy_auth_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            // EventsSubscReqData (the optional real request body here) has no mandatory fields --
+            // accepted without requiring a specific typed parse, same convention as DeleteSMPolicy
+            // above.
+            const auto id = req.path_params.at("appSessionId");
+            if (!app_sessions.remove(id)) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No app session " + id);
+            }
+            policy_auth_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kPolicyAuthApiRoot) + "/app-sessions/{appSessionId}/events-subscription",
+        [&verifier, &app_sessions](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("appSessionId");
+            auto ctx = app_sessions.get(id);
+            if (!ctx.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No app session " + id);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::EventsSubscReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const bool is_new = !(*ctx)["ascReqData"].contains("evSubsc") ||
+                                (*ctx)["ascReqData"]["evSubsc"].is_null();
+            json j = *body;
+            (*ctx)["ascReqData"]["evSubsc"] = j;
+            app_sessions.put(id, *ctx);
+
+            sbi_core::http2::Response resp;
+            resp.status = is_new ? 201 : 200;
+            resp.headers.emplace("content-type", "application/json");
+            if (is_new) {
+                resp.headers.emplace("location",
+                                     std::string(kPolicyAuthApiRoot) + "/app-sessions/" + id +
+                                         "/events-subscription");
+            }
+            // EventsSubscPutData is an opaque anyOf shape tools/sbi-codegen couldn't resolve into
+            // a typed struct (see TS29122_CommonData_grp.hpp's own "OPAQUE FALLBACK" comment) --
+            // returning the real stored EventsSubscReqData representation instead: real,
+            // schema-compatible content, not a fabricated shape.
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kPolicyAuthApiRoot) + "/app-sessions/{appSessionId}/events-subscription",
+        [&verifier, &app_sessions](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("appSessionId");
+            auto ctx = app_sessions.get(id);
+            if (!ctx.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No app session " + id);
+            }
+            (*ctx)["ascReqData"].erase("evSubsc");
+            app_sessions.put(id, *ctx);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kPolicyAuthApiRoot) + "/app-sessions/pcscf-restoration",
+        [&verifier](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            // Real, disclosed simplification: this lab has no real per-UE App Session Context
+            // inventory keyed by UE identity to actually terminate on P-CSCF restoration (TS
+            // 29.514's own real trigger for this operation) -- acknowledges (204) without any App
+            // Session Contexts actually existing to search/terminate, same class of
+            // simplification as every other "no real trigger source in this lab yet" gap already
+            // disclosed in this file's own header.
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

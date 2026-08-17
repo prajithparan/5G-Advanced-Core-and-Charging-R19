@@ -281,7 +281,7 @@ verified priority evidence for them:
 
 | Service | free5GC | open5GS | Priority signal |
 |---|---|---|---|
-| `Npcf_PolicyAuthorization` | Real (`policyauthorization.go`) | Real -- confirmed via `OGS_SBI_RESOURCE_NAME_APP_SESSIONS` in `npcf-handler.c` (1,686 lines), the real TS 29.514 resource name | **Both references implement this.** This is the AF-facing interface IMS/VoNR call setup uses to request media/QoS policy -- a real, high-impact gap, not a minor one. |
+| `Npcf_PolicyAuthorization` | Real (`policyauthorization.go`) | Real -- confirmed via `OGS_SBI_RESOURCE_NAME_APP_SESSIONS` in `npcf-handler.c` (1,686 lines), the real TS 29.514 resource name | **Closed, docs/DECISIONS.md ADR-0080.** Both references implement this; this project's own `nfs/pcf/src/main.cpp` now does too (`PostAppSessions`/`GetAppSession`/`ModAppSession`/`DeleteAppSession`/`updateEventsSubsc`/`DeleteEventsSubsc`/`PcscfRestoration`, all live-verified). Real, disclosed gap remaining: no PCC-rule engine to authorize a requested media flow against -- returns a schema-correct, non-fabricated "authorized" outcome (no `ServAuthInfo` failure code), not real subscriber-specific decisioning. |
 | `Npcf_UEPolicyControl` (URSP) | Real (`api_uepolicy.go`) | Grep-confirmed absent (no URSP/UE-policy resource name found in open5GS's PCF source) | free5GC-only. Still owed per ADR-0075, lower relative priority than PolicyAuthorization. |
 | `Npcf_BDTPolicyControl` | Real (`bdtpolicy.go`) | Grep-confirmed absent | free5GC-only. |
 | `Npcf_EventExposure` | Not found in free5GC's own processor directory either | Not checked in depth | Neither reference clearly implements this -- lowest priority of the self-disclosed list, pending a closer look. |
