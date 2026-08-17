@@ -55,6 +55,22 @@
 //        SoR-XMAC-IUE    A.17 above. One function computes both -- which name applies depends only
 //                        on who computed it (UE sends SoR-MAC-IUE; AUSF pre-computes and caches
 //                        the same value as SoR-XMAC-IUE to compare against).
+//   A.9  KgNB/KN3IWF/... FC=0x6E  KDF(KAMF, uplink NAS COUNT, access type distinguisher). Real
+//                        citation, confirmed 2026-08-17 against the same local TS 33.501 v19.6.0
+//                        copy A.17/A.18 above cite (page 239) -- gap-closure (docs/
+//                        CAPABILITY_GAP_ANALYSIS.md task #100, ADR-0090). This project only ever
+//                        derives the 3GPP-access variant (KgNB), access type distinguisher fixed
+//                        at 0x01 (Table A.9-1); the non-3GPP KN3IWF/KWAGF/KTNGF/KTWIF variants
+//                        (distinguisher 0x02) are real but unbuilt, this project having no
+//                        non-3GPP access NF.
+//   A.10 NH              FC=0x6F  KDF(KAMF, SYNC-input). Real citation, same source, page 240.
+//                        SYNC-input is the just-derived KgNB for the first NH in a chain, or the
+//                        previous NH for every subsequent one -- this project's own disclosed gap
+//                        (no NGAP InitialContextSetup exists yet, so no prior AS security context
+//                        or NH chain is ever established for any UE before a handover) means every
+//                        call this project makes derives chain position 0 (SYNC-input=KgNB,
+//                        NCC=0), never a later position; see nfs/amf/src/ngap_task.cpp's own
+//                        handle_path_switch_request for the real, disclosed caller-side detail.
 
 namespace aka_crypto {
 
@@ -145,5 +161,22 @@ SorMac derive_sor_mac_iausf(const Kausf& kausf,
 // and SoR-XMAC-IUE (pre-computed and cached by the AUSF to compare against) -- which name applies
 // is a caller-side bookkeeping distinction, not a functional one.
 SorMac derive_sor_mac_iue(const Kausf& kausf, uint16_t counter_sor);
+
+using Kgnb = std::array<uint8_t, 32>;
+using NextHopKey = std::array<uint8_t, 32>;
+
+// TS 33.501 Annex A.9 Table A.9-1 access type distinguisher values (real citation, see this
+// file's own header comment). This project only ever derives the 3GPP-access variant.
+constexpr uint8_t kAccessType3gpp = 0x01;
+
+// TS 33.501 Annex A.9 (real citation). uplink_nas_count is the real, persistent per-UE value
+// (UeSecurityContext::uplink_count in nfs/amf's own store) at the moment this KgNB is derived --
+// the same COUNT value a real AS security context establishment would use.
+Kgnb derive_kgnb(const Kamf& kamf, uint32_t uplink_nas_count, uint8_t access_type_distinguisher);
+
+// TS 33.501 Annex A.10 (real citation). sync_input is the just-derived KgNB (32 bytes) for the
+// first NH in a chain, or the previous NH (32 bytes) for every subsequent one -- see this file's
+// own header comment for this project's own disclosed real scope (chain position 0 only).
+NextHopKey derive_nh(const Kamf& kamf, const std::array<uint8_t, 32>& sync_input);
 
 } // namespace aka_crypto

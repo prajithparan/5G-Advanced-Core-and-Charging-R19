@@ -160,7 +160,18 @@ still absent from `ngap_codec.hpp` entirely -- not even encodable/decodable, not
 today; only initial attach + PDU session establishment on a single gNB is real. This is a
 structural gap, not a missing edge case. **Not addressed by ADR-0076 or ADR-0078** (those passes
 closed `ServiceRequest`/GMM and `UEContextRelease` specifically, not this NGAP-side gap) -- still
-fully open, tracked as the remaining scope of task #100/#101.
+mostly open, tracked as the remaining scope of task #100/#101.
+
+**Partial closure, ADR-0090**: `PathSwitchRequest`/`PathSwitchRequestAcknowledge`/
+`PathSwitchRequestFailure` (the AMF-facing tail of Xn-based handover, TS 38.413 §8.4.4) are now
+real and live-verified -- a genuine, previously-missing `amf_ue_ngap_id -> tmsi` cross-association
+index and real TS 33.501 Annex A.9/A.10 vertical key derivation (KgNB/NH) were built along the
+way. `HandoverRequired`/`HandoverRequest`/`HandoverRequestAcknowledge`/`HandoverCommand`/
+`HandoverNotify`/`HandoverCancel` (the real N2-based handover chain -- 5 messages, 2 live gNB
+associations) remain fully open, a genuinely larger body of work than `PathSwitchRequest` alone.
+See ADR-0090 for the full real, disclosed scope (including a real, found-in-passing correction to
+`ngap_task.hpp`'s own pre-existing "one thread per association" claim -- this project's real NGAP
+accept loop is single-association-at-a-time, sequential).
 
 **Real NGAP gap found via live interop, closed the same way it was found**: attempting to
 trigger a real `ServiceRequest` naturally (gNB-initiated idle-mode re-entry via UERANSIM's
@@ -479,7 +490,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | NF | Scale ratio (ref/ours) | Highest-priority real gap |
 |---|---|---|
 | NRF | ~1-1.3x | NFProfile semantic validation; active heartbeat-expiry timer (open5GS only) |
-| AMF | ~10-14x | **`ServiceRequest` NAS procedure entirely missing; zero N2 handover support (NGAP + GMM both sides)** -- highest-impact finding in the whole sweep |
+| AMF | ~10-14x | `ServiceRequest`: CLOSED (ADR-0076). N2 handover: `PathSwitchRequest` slice CLOSED (task #100, ADR-0090); the real N2-based `HandoverRequired`/.../`Notify` chain remains open -- still the highest-impact remaining finding in the whole sweep |
 | AUSF | ~3-5x | `Nausf_SoRProtection`, ProSe auth (free5GC-only, both) |
 | SMF | ~10-16x | `UpdateSMContext` is a near-total stub -- couples directly to AMF's handover gap |
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |

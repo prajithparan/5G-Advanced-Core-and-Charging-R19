@@ -295,6 +295,10 @@ int main() {
     redis->ping();
     spdlog::info("amf: connected to Redis/Valkey");
     amf::UeSecurityContextStore ue_security_contexts(redis);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100, ADR-0090): real cross-association
+    // amf_ue_ngap_id -> tmsi index -- see amf_ue_id_index_store.hpp's own header for why
+    // PathSwitchRequest needs it. Shares the same Redis connection as ue_security_contexts above.
+    amf::AmfUeIdIndexStore amf_ue_id_index(redis);
     amf::UeN1N2SubscriptionStore ue_n1n2_subs("n1n2sub-");
     amf::NonUeN2SubscriptionStore non_ue_n2_subs("nonuen2sub-");
     amf::AmfStatusSubscriptionStore amf_status_subs("amfstatussub-");
@@ -767,6 +771,7 @@ int main() {
                 std::ref(ue_contexts),
                 std::ref(ue_ngap_registry),
                 std::ref(ue_security_contexts),
+                std::ref(amf_ue_id_index),
                 amf_region_id,
                 amf_set_id,
                 amf_pointer)

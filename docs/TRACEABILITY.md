@@ -1466,3 +1466,26 @@ fields populated; the rest need unvendored specs (TS 32.255, TS 32.260) or don't
 project's current scope. Disclosed version gap: spec supplied is v18.8.0/Release 18, not
 re-verified against REL-19. See ADR-0089 in `docs/DECISIONS.md` for full disclosure -- **this
 closes task #108**.
+
+## ADR-0090 -- gap-closure task #100 (first slice of the N2 handover remainder): real NGAP PathSwitchRequest
+
+| Requirement | Test |
+|---|---|
+| `handle_path_switch_request` decodes a real `PathSwitchRequest` (TS 38.413 §8.4.4) and looks up the referenced UE's persisted security context via a new `AmfUeIdIndexStore` (real `amf_ue_ngap_id -> tmsi` index) | Live: real UERANSIM registration for `imsi-999700000000001` gave real `AMF-UE-NGAP-ID=1`; direct Redis inspection confirmed `amf:ueidindex:1 -> 3` and a real `amf:uesecctx:00000003` (KAMF/uplink_count/downlink_count all present) |
+| Real `PathSwitchRequestAcknowledge` sent back with a real TS 33.501 Annex A.9/A.10 `SecurityContext` (`NCC=0`, freshly-derived 32-byte NH) | Hand-crafted NGAP test client (`path_switch_client.cpp`, target-gNB role, real SCTP) sent a real `PathSwitchRequest`; received a real 76-byte `PathSwitchRequestAcknowledge` with `AMF-UE-NGAP-ID`/`RAN-UE-NGAP-ID`/`PDUSessionResourceSwitchedList`/`AllowedNSSAI` all present and a real, non-trivial 32-byte `nextHopNH`; independently corroborated by AMF's own log (`"sent PathSwitchRequestAcknowledge (76 bytes) ... NCC=0"`) |
+| Real, load-bearing side effect: `NgapUeRegistry` re-pointed to the new association/RAN-UE-NGAP-ID | AMF's own log: `"re-pointed NGAP registry entry for SUPI imsi-999700000000001 to the new association"` |
+| Unrecognized `SourceAMF-UE-NGAP-ID` gets a real `ErrorIndication` (`Cause=radioNetwork/unknown-local-UE-NGAP-ID`), not a fabricated `PathSwitchRequestFailure` | Test client sent `SourceAMF-UE-NGAP-ID=999`; received a real 20-byte `ErrorIndication`; AMF's own log: `"referenced an unrecognized SourceAMF-UE-NGAP-ID=999 ... sending ErrorIndication"` |
+| No regression | Full `conformance_tests`: 325/325 pass (unchanged -- no new committed conformance test this ADR, live verification via the manual `path_switch_client.cpp` tool instead, same disclosed precedent ADR-0076/ADR-0078 established for this class of NGAP work) |
+
+Real, previously-missing architectural prerequisite built along the way: every prior NGAP
+procedure this project handled runs on the SAME association a UE's context already lives on;
+`PathSwitchRequest` arrives on a brand new association from a different (target) gNB, needing the
+new cross-association index above. Real, found-in-passing correction: `ngap_task.hpp`'s own
+pre-existing header comment claimed "each NGAP association runs on its own dedicated thread" --
+found, while building this, to not match the real implementation (a single sequential accept
+loop, one association at a time); corrected in the header comment itself, not silently left wrong.
+Real, disclosed scope: `PDUSessionResourceToBeSwitchedDLList` is parsed but not acted on (task
+#101's own separate scope); `HandoverRequired`/`Request`/`RequestAcknowledge`/`Command`/`Notify`/
+`Cancel` (the real N2-based handover chain) remain fully open. See ADR-0090 in
+`docs/DECISIONS.md` for full disclosure -- **task #100 remains open**, this closes one real slice
+of its remainder.

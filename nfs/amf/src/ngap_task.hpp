@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "aka_crypto/kdf.hpp"
+#include "amf_ue_id_index_store.hpp"
 #include "ue_context_store.hpp"
 #include "ue_security_context_store.hpp"
 
@@ -72,6 +73,19 @@ private:
 // context store ServiceRequest needs, plus this AMF instance's own real, disclosed lab 5G-GUTI
 // identity (see main.cpp's own kAmfRegionId/kAmfSetId/kAmfPointer comment), threaded through so
 // RegistrationAccept can assign a real GUTI and a later ServiceRequest can be routed back here.
+//
+// amf_ue_id_index: gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100, ADR-0090) -- the real
+// amf_ue_ngap_id -> tmsi cross-association index PathSwitchRequest needs, see
+// amf_ue_id_index_store.hpp's own comment. Real, disclosed correction to this function's own
+// pre-existing header comment above ("each NGAP association runs on its own dedicated thread"):
+// found, while building this, to not match the real implementation -- this project's actual NGAP
+// accept loop handles one association at a time, sequentially, on ITS OWN single thread (`while
+// (true) { assoc = listener.accept(); handle_association(...); }`, no per-association
+// std::thread spawn anywhere in this file); NgapUeRegistry's own cross-THREAD documentation
+// still describes the real cross-thread handoff with the SBI HTTP/2 server thread correctly, just
+// not a per-association thread on the NGAP side. Not fixed here (out of this ADR's own scope,
+// and PathSwitchRequest's own design already accounts for the real sequential-not-concurrent
+// behavior by reading persisted Redis state rather than live per-association memory).
 void run_ngap_lifecycle(const std::string& bind_address,
                         unsigned short bind_port,
                         const std::string& amf_instance_id,
@@ -79,6 +93,7 @@ void run_ngap_lifecycle(const std::string& bind_address,
                         UeContextStore& ue_contexts,
                         NgapUeRegistry& ue_ngap_registry,
                         UeSecurityContextStore& ue_security_contexts,
+                        AmfUeIdIndexStore& amf_ue_id_index,
                         std::uint8_t amf_region_id,
                         std::uint16_t amf_set_id,
                         std::uint8_t amf_pointer);

@@ -2312,7 +2312,7 @@ HandoverNotifyIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 PathSwitchRequest ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ { PathSwitchRequestIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per PathSwitchRequestIEs below, ADR-0031/ADR-0090
 	...
 }
 
@@ -2336,7 +2336,7 @@ PathSwitchRequestIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 PathSwitchRequestAcknowledge ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ { PathSwitchRequestAcknowledgeIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per PathSwitchRequestAcknowledgeIEs below, ADR-0031/ADR-0090
 	...
 }
 
@@ -2384,7 +2384,7 @@ PathSwitchRequestAcknowledgeIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 PathSwitchRequestFailure ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ { PathSwitchRequestFailureIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per PathSwitchRequestFailureIEs below, ADR-0031/ADR-0090
 	...
 }
 
@@ -3007,7 +3007,7 @@ NGResetAcknowledgeIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 ErrorIndication ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ {ErrorIndicationIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per ErrorIndicationIEs below, ADR-0031/ADR-0090
 	...
 }
 
@@ -11967,12 +11967,13 @@ ProtocolIE-Field {NGAP-PROTOCOL-IES : IEsSetParam} ::= SEQUENCE {
 -- the compiler warnings alone. This is not a different wire format. Per X.691 clause 10.9's rule
 -- that an ASN.1 open type's PER encoding is byte for byte an octet string wrapped blob, the
 -- "value OCTET STRING" field below produces identical bytes to what a correctly IOC resolving
--- compiler would emit for "value NGAP-PROTOCOL-IES.&Value". Only the nine NGSetupRequest,
+-- compiler would emit for "value NGAP-PROTOCOL-IES.&Value". Only the thirteen NGSetupRequest,
 -- NGSetupResponse, NGSetupFailure, InitialUEMessage, DownlinkNASTransport, UplinkNASTransport,
--- UEContextReleaseRequest, UEContextReleaseCommand, and UEContextReleaseComplete message
--- definitions below are repointed at this type (see each definition's own comment); every other
--- procedure in this file is untouched, still exactly as published, for any future stage that
--- needs full IOC resolution to work correctly. See docs/DECISIONS.md ADR-0031/ADR-0078.
+-- UEContextReleaseRequest, UEContextReleaseCommand, UEContextReleaseComplete, PathSwitchRequest,
+-- PathSwitchRequestAcknowledge, PathSwitchRequestFailure, and ErrorIndication message definitions
+-- below are repointed at this type (see each definition's own comment); every other procedure in
+-- this file is untouched, still exactly as published, for any future stage that needs full IOC
+-- resolution to work correctly. See docs/DECISIONS.md ADR-0031/ADR-0078/ADR-0090.
 --
 -- **************************************************************
 

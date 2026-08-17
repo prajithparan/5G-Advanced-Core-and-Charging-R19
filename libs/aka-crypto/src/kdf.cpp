@@ -39,6 +39,15 @@ std::vector<uint8_t> be16(uint16_t v) {
     return {static_cast<uint8_t>((v >> 8) & 0xff), static_cast<uint8_t>(v & 0xff)};
 }
 
+// Uplink NAS COUNT's own 4-byte big-endian VALUE (TS 33.501 Annex A.9's own P0) -- same real
+// "value, not framing length" distinction be16 above already carries for CounterSoR.
+std::vector<uint8_t> be32(uint32_t v) {
+    return {static_cast<uint8_t>((v >> 24) & 0xff),
+            static_cast<uint8_t>((v >> 16) & 0xff),
+            static_cast<uint8_t>((v >> 8) & 0xff),
+            static_cast<uint8_t>(v & 0xff)};
+}
+
 } // namespace
 
 std::array<uint8_t, 32> generic_kdf(const std::vector<uint8_t>& key,
@@ -166,6 +175,14 @@ SorMac derive_sor_mac_iue(const Kausf& kausf, uint16_t counter_sor) {
     SorMac mac{};
     std::copy(out.begin() + 16, out.end(), mac.begin()); // 128 LSBs
     return mac;
+}
+
+Kgnb derive_kgnb(const Kamf& kamf, uint32_t uplink_nas_count, uint8_t access_type_distinguisher) {
+    return generic_kdf(to_bytes(kamf), 0x6E, {be32(uplink_nas_count), {access_type_distinguisher}});
+}
+
+NextHopKey derive_nh(const Kamf& kamf, const std::array<uint8_t, 32>& sync_input) {
+    return generic_kdf(to_bytes(kamf), 0x6F, {to_bytes(sync_input)});
 }
 
 } // namespace aka_crypto

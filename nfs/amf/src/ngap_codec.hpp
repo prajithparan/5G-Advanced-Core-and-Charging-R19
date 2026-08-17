@@ -48,4 +48,15 @@ std::vector<std::uint8_t> encode_pdu(const NGAP_PDU_t& pdu);
 // owns the returned pointer (free via ASN_STRUCT_FREE(asn_DEF_NGAP_PDU, ptr)).
 NGAP_PDU_t* decode_pdu(const std::vector<std::uint8_t>& bytes);
 
+// Generic single-type Aligned PER encode/decode (gap-closure, docs/CAPABILITY_GAP_ANALYSIS.md
+// task #100, ADR-0090) -- the same underlying codec make_ie/decode_ie_value already use
+// internally, exposed directly for types that need to be embedded as a raw
+// "OCTET STRING (CONTAINING SomeType)" transparent container rather than wrapped in an IE tuple
+// (e.g. PathSwitchRequestTransfer/PathSwitchRequestAcknowledgeTransfer inside
+// PDUSessionResourceToBeSwitchedDLItem/PDUSessionResourceSwitchedItem).
+std::vector<std::uint8_t> encode_value(const struct asn_TYPE_descriptor_s* type_descriptor,
+                                       const void* value);
+void* decode_value(const struct asn_TYPE_descriptor_s* type_descriptor,
+                   const std::vector<std::uint8_t>& bytes);
+
 } // namespace ngap

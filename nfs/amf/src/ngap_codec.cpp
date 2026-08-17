@@ -95,4 +95,23 @@ NGAP_PDU_t* decode_pdu(const std::vector<std::uint8_t>& bytes) {
     return static_cast<NGAP_PDU_t*>(out);
 }
 
+std::vector<std::uint8_t> encode_value(const asn_TYPE_descriptor_s* type_descriptor,
+                                       const void* value) {
+    return per_encode(type_descriptor, value);
+}
+
+void* decode_value(const asn_TYPE_descriptor_s* type_descriptor,
+                   const std::vector<std::uint8_t>& bytes) {
+    void* out = nullptr;
+    const asn_dec_rval_t rv =
+        aper_decode_complete(nullptr, type_descriptor, &out, bytes.data(), bytes.size());
+    if (rv.code != RC_OK) {
+        if (out != nullptr) {
+            ASN_STRUCT_FREE(*type_descriptor, out);
+        }
+        return nullptr;
+    }
+    return out;
+}
+
 } // namespace ngap

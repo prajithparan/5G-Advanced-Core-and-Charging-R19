@@ -16,6 +16,7 @@
 #include "TS29509_Nausf_UEAuthentication.hpp"
 #include "aka_crypto/hex.hpp"
 #include "aka_crypto/kdf.hpp"
+#include "amf_ue_id_index_store.hpp"
 #include "nas_codec.hpp"
 #include "ngap_codec.hpp"
 #include "ngap_core/sctp_socket.hpp"
@@ -26,9 +27,13 @@ extern "C" {
 #include <AMFPointer.h>
 #include <AMFRegionID.h>
 #include <AMFSetID.h>
+#include <AllowedNSSAI-Item.h>
+#include <AllowedNSSAI.h>
 #include <Cause.h>
 #include <CauseNas.h>
+#include <CauseRadioNetwork.h>
 #include <DownlinkNASTransport.h>
+#include <ErrorIndication.h>
 #include <GUAMI.h>
 #include <InitialUEMessage.h>
 #include <InitiatingMessage.h>
@@ -36,15 +41,24 @@ extern "C" {
 #include <NGAP-PDU.h>
 #include <NGSetupRequest.h>
 #include <NGSetupResponse.h>
+#include <PDUSessionResourceSwitchedItem.h>
+#include <PDUSessionResourceSwitchedList.h>
+#include <PDUSessionResourceToBeSwitchedDLItem.h>
+#include <PDUSessionResourceToBeSwitchedDLList.h>
 #include <PLMNIdentity.h>
 #include <PLMNSupportItem.h>
 #include <PLMNSupportList.h>
+#include <PathSwitchRequest.h>
+#include <PathSwitchRequestAcknowledge.h>
+#include <PathSwitchRequestAcknowledgeTransfer.h>
+#include <PathSwitchRequestFailure.h>
 #include <ProcedureCode.h>
 #include <RAN-UE-NGAP-ID.h>
 #include <RelativeAMFCapacity.h>
 #include <S-NSSAI.h>
 #include <SD.h>
 #include <SST.h>
+#include <SecurityContext.h>
 #include <ServedGUAMIItem.h>
 #include <ServedGUAMIList.h>
 #include <SliceSupportItem.h>
@@ -54,6 +68,7 @@ extern "C" {
 #include <UEContextReleaseCommand.h>
 #include <UEContextReleaseComplete.h>
 #include <UEContextReleaseRequest.h>
+#include <UnsuccessfulOutcome.h>
 #include <UplinkNASTransport.h>
 }
 
@@ -746,6 +761,260 @@ void handle_ue_context_release_complete(NgapUeRegistry& ue_ngap_registry,
     auth_state = UeAuthState{};
 }
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100, ADR-0090): real NGAP PathSwitchRequest
+// (TS 38.413 §8.4.4) -- the AMF-facing tail end of an Xn-based inter-gNB handover (TS 23.502
+// §4.9.1.2.2): after the source and target gNBs complete their own direct Xn handshake (entirely
+// outside AMF's own visibility -- this project has no gNB-to-gNB Xn simulation either way), the
+// TARGET gNB sends PathSwitchRequest to tell the AMF the UE has moved. Arrives on a BRAND NEW SCTP
+// association (from the target gNB), with NO prior UeAuthState for it -- see
+// amf_ue_id_index_store.hpp's own comment for why a real cross-association
+// amf_ue_ngap_id -> tmsi index was a genuine, previously-missing architectural prerequisite this
+// needed (every earlier NGAP procedure this project built runs on the SAME association a UE's
+// context already lives on).
+//
+// Real, disclosed scope narrowing: PDUSessionResourceToBeSwitchedDLList is structurally parsed
+// (real PDU session IDs, real mandatory-IE presence checks) but NOT acted on -- no SMF/UPF call
+// updates real GTP-U forwarding for the new gNB; that is task #101's own explicit, separate,
+// not-yet-built scope (SMF UpdateSMContext real N2SmInfo dispatch). The PDUSessionResourceSwitched
+// List sent back echoes each PDU session ID with an all-OPTIONAL-fields-empty
+// PathSwitchRequestAcknowledgeTransfer -- a real, spec-valid encoding (uL-NGU-UP-TNLInformation is
+// genuinely OPTIONAL per the ASN.1 module), not a fabricated tunnel endpoint.
+// UserLocationInformation/UESecurityCapabilities are checked for mandatory presence only, not
+// decoded -- same "mandatory but log-only" precedent Cause already set in
+// handle_ue_context_release_request above. AllowedNSSAI is this lab's own fixed single S-NSSAI
+// (sst=kSst, sd=kSd), the same value NG Setup/registration already use everywhere else in this
+// file, not derived per-UE.
+//
+// Real vertical key derivation (TS 33.501 Annex A.9/A.10, aka_crypto::derive_kgnb/derive_nh) for
+// the mandatory SecurityContext IE -- see kdf.hpp's own header comment for this project's
+// disclosed real scope: since no InitialContextSetup/prior AS security context has ever been
+// established for any UE in this project, every call always derives chain position 0
+// (NCC=0, SYNC-input=freshly-derived KgNB), never a later position.
+//
+// Real, load-bearing side effect on success: re-points ue_ngap_registry's entry for this UE's
+// SUPI to the NEW association/RAN-UE-NGAP-ID -- without this, a later Namf_Communication
+// N1N2MessageTransfer (ADR-0038) would still try to deliver to the stale source-gNB association.
+// The stale source association itself is not force-closed (this project has no way to reach into
+// a different association's own thread) -- a real, disclosed simplification, not a new regression.
+//
+// If SourceAMF-UE-NGAP-ID doesn't match any persisted context, replies with a real ErrorIndication
+// (TS 38.413's generic, all-optional-fields error procedure, id-ErrorIndication) carrying
+// Cause=radioNetwork/unknown-local-UE-NGAP-ID (the real, precise cited value, not PathSwitchRequest
+// Failure -- that procedure's own PDUSessionResourceReleasedListPSFail IE is mandatory with a
+// SIZE(1..) real ASN.1 constraint this project has no real PDU session IDs to populate for a
+// wholly-unrecognized UE).
+void handle_path_switch_request(ngap_core::SctpSocket& assoc,
+                                UeSecurityContextStore& ue_security_contexts,
+                                AmfUeIdIndexStore& amf_ue_id_index,
+                                NgapUeRegistry& ue_ngap_registry,
+                                const InitiatingMessage_t& msg) {
+    const auto& container = msg.value.choice.PathSwitchRequest.protocolIEs;
+
+    const auto* ran_ue_id_ie = ::ngap::find_ie(container, 85 /* id-RAN-UE-NGAP-ID */);
+    const auto* source_amf_ue_id_ie = ::ngap::find_ie(container, 100 /* id-SourceAMF-UE-NGAP-ID */);
+    const auto* dl_list_ie =
+        ::ngap::find_ie(container, 76 /* id-PDUSessionResourceToBeSwitchedDLList */);
+    const bool has_ul_info =
+        ::ngap::find_ie(container, 121 /* id-UserLocationInformation */) != nullptr;
+    const bool has_ue_sec_cap =
+        ::ngap::find_ie(container, 119 /* id-UESecurityCapabilities */) != nullptr;
+    if (ran_ue_id_ie == nullptr || source_amf_ue_id_ie == nullptr || dl_list_ie == nullptr ||
+        !has_ul_info || !has_ue_sec_cap) {
+        spdlog::warn("amf-ngap: PathSwitchRequest missing one or more mandatory IEs, ignoring");
+        return;
+    }
+
+    auto* new_ran_ue_id = static_cast<RAN_UE_NGAP_ID_t*>(
+        ::ngap::decode_ie_value(&asn_DEF_RAN_UE_NGAP_ID, *ran_ue_id_ie));
+    auto* source_amf_ue_id = static_cast<AMF_UE_NGAP_ID_t*>(
+        ::ngap::decode_ie_value(&asn_DEF_AMF_UE_NGAP_ID, *source_amf_ue_id_ie));
+    auto* dl_list = static_cast<PDUSessionResourceToBeSwitchedDLList_t*>(
+        ::ngap::decode_ie_value(&asn_DEF_PDUSessionResourceToBeSwitchedDLList, *dl_list_ie));
+    if (new_ran_ue_id == nullptr || source_amf_ue_id == nullptr || dl_list == nullptr) {
+        spdlog::warn("amf-ngap: PathSwitchRequest's mandatory IEs failed to PER-decode, ignoring");
+        if (new_ran_ue_id != nullptr)
+            ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, new_ran_ue_id);
+        if (source_amf_ue_id != nullptr)
+            ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, source_amf_ue_id);
+        if (dl_list != nullptr)
+            ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceToBeSwitchedDLList, dl_list);
+        return;
+    }
+
+    long source_amf_ue_id_value = 0;
+    asn_INTEGER2long(source_amf_ue_id, &source_amf_ue_id_value);
+    const unsigned long new_ran_ue_id_value = *new_ran_ue_id;
+
+    spdlog::info("amf-ngap: PathSwitchRequest for SourceAMF-UE-NGAP-ID={}, new RAN-UE-NGAP-ID={}, "
+                 "{} PDU session(s) to switch",
+                 source_amf_ue_id_value,
+                 new_ran_ue_id_value,
+                 dl_list->list.count);
+
+    const auto tmsi_opt = amf_ue_id_index.get(static_cast<unsigned long>(source_amf_ue_id_value));
+    std::optional<UeSecurityContext> ctx;
+    if (tmsi_opt.has_value()) {
+        ctx = ue_security_contexts.get(*tmsi_opt);
+    }
+    if (!ctx.has_value()) {
+        spdlog::warn(
+            "amf-ngap: PathSwitchRequest referenced an unrecognized SourceAMF-UE-NGAP-ID={} -- "
+            "no persisted UE security context, sending ErrorIndication",
+            source_amf_ue_id_value);
+
+        ErrorIndication_t err{};
+        ::ngap::add_ie(err.protocolIEs,
+                       ::ngap::make_ie(85 /* id-RAN-UE-NGAP-ID */,
+                                       Criticality_ignore,
+                                       &asn_DEF_RAN_UE_NGAP_ID,
+                                       new_ran_ue_id));
+        Cause_t cause{};
+        cause.present = Cause_PR_radioNetwork;
+        cause.choice.radioNetwork = CauseRadioNetwork_unknown_local_UE_NGAP_ID;
+        ::ngap::add_ie(
+            err.protocolIEs,
+            ::ngap::make_ie(15 /* id-Cause */, Criticality_ignore, &asn_DEF_Cause, &cause));
+
+        NGAP_PDU_t err_pdu{};
+        err_pdu.present = NGAP_PDU_PR_initiatingMessage;
+        err_pdu.choice.initiatingMessage =
+            static_cast<InitiatingMessage_t*>(std::calloc(1, sizeof(InitiatingMessage_t)));
+        err_pdu.choice.initiatingMessage->procedureCode = 9 /* id-ErrorIndication */;
+        err_pdu.choice.initiatingMessage->criticality = Criticality_ignore;
+        err_pdu.choice.initiatingMessage->value.present =
+            InitiatingMessage__value_PR_ErrorIndication;
+        err_pdu.choice.initiatingMessage->value.choice.ErrorIndication = err;
+
+        const auto err_bytes = ::ngap::encode_pdu(err_pdu);
+        ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &err_pdu);
+        if (!err_bytes.empty()) {
+            assoc.send(err_bytes);
+            spdlog::info("amf-ngap: sent ErrorIndication ({} bytes) for unrecognized "
+                         "SourceAMF-UE-NGAP-ID={}",
+                         err_bytes.size(),
+                         source_amf_ue_id_value);
+        }
+
+        ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, new_ran_ue_id);
+        ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, source_amf_ue_id);
+        ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceToBeSwitchedDLList, dl_list);
+        return;
+    }
+
+    const auto kgnb =
+        aka_crypto::derive_kgnb(ctx->kamf, ctx->uplink_count, aka_crypto::kAccessType3gpp);
+    const auto nh = aka_crypto::derive_nh(ctx->kamf, kgnb);
+
+    PathSwitchRequestAcknowledge_t ack{};
+    ::ngap::add_ie(ack.protocolIEs,
+                   ::ngap::make_ie(10 /* id-AMF-UE-NGAP-ID */,
+                                   Criticality_ignore,
+                                   &asn_DEF_AMF_UE_NGAP_ID,
+                                   source_amf_ue_id));
+    ::ngap::add_ie(ack.protocolIEs,
+                   ::ngap::make_ie(85 /* id-RAN-UE-NGAP-ID */,
+                                   Criticality_ignore,
+                                   &asn_DEF_RAN_UE_NGAP_ID,
+                                   new_ran_ue_id));
+
+    SecurityContext_t sec_ctx{};
+    sec_ctx.nextHopChainingCount = 0;
+    sec_ctx.nextHopNH.buf = static_cast<std::uint8_t*>(std::malloc(nh.size()));
+    std::memcpy(sec_ctx.nextHopNH.buf, nh.data(), nh.size());
+    sec_ctx.nextHopNH.size = nh.size();
+    sec_ctx.nextHopNH.bits_unused = 0;
+    ::ngap::add_ie(
+        ack.protocolIEs,
+        ::ngap::make_ie(
+            93 /* id-SecurityContext */, Criticality_reject, &asn_DEF_SecurityContext, &sec_ctx));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_SecurityContext, &sec_ctx);
+
+    PDUSessionResourceSwitchedList_t switched_list{};
+    const PathSwitchRequestAcknowledgeTransfer_t empty_transfer{};
+    const auto empty_transfer_bytes =
+        ::ngap::encode_value(&asn_DEF_PathSwitchRequestAcknowledgeTransfer, &empty_transfer);
+    for (int i = 0; i < dl_list->list.count; ++i) {
+        auto* item = static_cast<PDUSessionResourceSwitchedItem_t*>(
+            std::calloc(1, sizeof(PDUSessionResourceSwitchedItem_t)));
+        item->pDUSessionID = dl_list->list.array[i]->pDUSessionID;
+        item->pathSwitchRequestAcknowledgeTransfer.buf =
+            static_cast<std::uint8_t*>(std::malloc(empty_transfer_bytes.size()));
+        std::memcpy(item->pathSwitchRequestAcknowledgeTransfer.buf,
+                    empty_transfer_bytes.data(),
+                    empty_transfer_bytes.size());
+        item->pathSwitchRequestAcknowledgeTransfer.size = empty_transfer_bytes.size();
+        ASN_SEQUENCE_ADD(&switched_list.list, item);
+    }
+    ::ngap::add_ie(ack.protocolIEs,
+                   ::ngap::make_ie(77 /* id-PDUSessionResourceSwitchedList */,
+                                   Criticality_ignore,
+                                   &asn_DEF_PDUSessionResourceSwitchedList,
+                                   &switched_list));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PDUSessionResourceSwitchedList, &switched_list);
+
+    AllowedNSSAI_t allowed_nssai{};
+    auto* nssai_item =
+        static_cast<AllowedNSSAI_Item_t*>(std::calloc(1, sizeof(AllowedNSSAI_Item_t)));
+    nssai_item->s_NSSAI.sST = make_octet_string(&kSst, 1);
+    auto* sd = static_cast<SD_t*>(std::calloc(1, sizeof(SD_t)));
+    const std::uint8_t sd_bytes[3] = {static_cast<std::uint8_t>((kSd >> 16) & 0xff),
+                                      static_cast<std::uint8_t>((kSd >> 8) & 0xff),
+                                      static_cast<std::uint8_t>(kSd & 0xff)};
+    *sd = make_octet_string(sd_bytes, 3);
+    nssai_item->s_NSSAI.sD = sd;
+    ASN_SEQUENCE_ADD(&allowed_nssai.list, nssai_item);
+    ::ngap::add_ie(
+        ack.protocolIEs,
+        ::ngap::make_ie(
+            0 /* id-AllowedNSSAI */, Criticality_reject, &asn_DEF_AllowedNSSAI, &allowed_nssai));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_AllowedNSSAI, &allowed_nssai);
+
+    NGAP_PDU_t pdu{};
+    pdu.present = NGAP_PDU_PR_successfulOutcome;
+    pdu.choice.successfulOutcome =
+        static_cast<SuccessfulOutcome_t*>(std::calloc(1, sizeof(SuccessfulOutcome_t)));
+    pdu.choice.successfulOutcome->procedureCode = 25 /* id-PathSwitchRequest */;
+    pdu.choice.successfulOutcome->criticality = Criticality_reject;
+    pdu.choice.successfulOutcome->value.present =
+        SuccessfulOutcome__value_PR_PathSwitchRequestAcknowledge;
+    pdu.choice.successfulOutcome->value.choice.PathSwitchRequestAcknowledge = ack;
+
+    const auto bytes = ::ngap::encode_pdu(pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
+    if (bytes.empty()) {
+        spdlog::error("amf-ngap: failed to PER-encode PathSwitchRequestAcknowledge");
+        ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, new_ran_ue_id);
+        ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, source_amf_ue_id);
+        ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceToBeSwitchedDLList, dl_list);
+        return;
+    }
+    assoc.send(bytes);
+    spdlog::info("amf-ngap: sent PathSwitchRequestAcknowledge ({} bytes), AMF-UE-NGAP-ID={}, new "
+                 "RAN-UE-NGAP-ID={}, NCC=0",
+                 bytes.size(),
+                 source_amf_ue_id_value,
+                 new_ran_ue_id_value);
+
+    if (!ctx->supi.empty()) {
+        NgapUeRegistry::Entry entry;
+        entry.socket = &assoc;
+        entry.amf_ue_id = static_cast<std::uint32_t>(source_amf_ue_id_value);
+        entry.ran_ue_id = static_cast<std::uint32_t>(new_ran_ue_id_value);
+        entry.knas_int = aka_crypto::derive_knas_int(ctx->kamf, aka_crypto::kNia2AlgorithmIdentity);
+        entry.knas_enc = aka_crypto::derive_knas_enc(ctx->kamf, aka_crypto::kNea2AlgorithmIdentity);
+        entry.next_downlink_count = ctx->downlink_count;
+        ue_ngap_registry.register_ue(ctx->supi, entry);
+        spdlog::info(
+            "amf-ngap: re-pointed NGAP registry entry for SUPI {} to the new association after "
+            "PathSwitchRequest",
+            ctx->supi);
+    }
+
+    ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, new_ran_ue_id);
+    ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, source_amf_ue_id);
+    ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceToBeSwitchedDLList, dl_list);
+}
+
 void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
                                sbi_core::http2::Client& ausf_client,
                                sbi_core::OAuth2Client& ausf_oauth,
@@ -959,6 +1228,7 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc,
 // response, handled by handle_uplink_nas_transport_registration_complete below, NOT here anymore.
 void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
                                               UeSecurityContextStore& ue_security_contexts,
+                                              AmfUeIdIndexStore& amf_ue_id_index,
                                               std::uint8_t amf_region_id,
                                               std::uint16_t amf_set_id,
                                               std::uint8_t amf_pointer,
@@ -1024,6 +1294,12 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
     ctx.downlink_count = 2;
     ctx.ue_security_capability = auth_state.ue_security_capability;
     ue_security_contexts.put(tmsi, ctx);
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100, ADR-0090): real cross-association
+    // index -- see amf_ue_id_index_store.hpp's own comment for why PathSwitchRequest (arriving on
+    // a brand new association, from a different gNB) needs this to find this UE's persisted
+    // security context by AMF-UE-NGAP-ID alone.
+    amf_ue_id_index.put(auth_state.amf_ue_id, tmsi);
 
     auth_state.phase = UeAuthState::Phase::AwaitingRegistrationComplete;
 }
@@ -1281,6 +1557,7 @@ void handle_association(ngap_core::SctpSocket assoc,
                         UeContextStore& ue_contexts,
                         NgapUeRegistry& ue_ngap_registry,
                         UeSecurityContextStore& ue_security_contexts,
+                        AmfUeIdIndexStore& amf_ue_id_index,
                         std::uint8_t amf_region_id,
                         std::uint16_t amf_set_id,
                         std::uint8_t amf_pointer) {
@@ -1331,6 +1608,7 @@ void handle_association(ngap_core::SctpSocket assoc,
                 case UeAuthState::Phase::AwaitingSecurityModeComplete:
                     handle_uplink_nas_transport_smc_complete(assoc,
                                                              ue_security_contexts,
+                                                             amf_ue_id_index,
                                                              amf_region_id,
                                                              amf_set_id,
                                                              amf_pointer,
@@ -1372,6 +1650,15 @@ void handle_association(ngap_core::SctpSocket assoc,
                    pdu->choice.successfulOutcome->procedureCode == 41 /* id-UEContextRelease */) {
             handle_ue_context_release_complete(
                 ue_ngap_registry, auth_state, *pdu->choice.successfulOutcome);
+        } else if (pdu->present == NGAP_PDU_PR_initiatingMessage &&
+                   pdu->choice.initiatingMessage->procedureCode == 25 /* id-PathSwitchRequest */) {
+            // Arrives on a brand new association (the target gNB), not this association's own
+            // auth_state -- see handle_path_switch_request's own header comment.
+            handle_path_switch_request(assoc,
+                                       ue_security_contexts,
+                                       amf_ue_id_index,
+                                       ue_ngap_registry,
+                                       *pdu->choice.initiatingMessage);
         } else {
             spdlog::warn("amf-ngap: received NGAP PDU (present={}) with no handler yet, ignoring",
                          static_cast<int>(pdu->present));
@@ -1416,6 +1703,7 @@ void run_ngap_lifecycle(const std::string& bind_address,
                         UeContextStore& ue_contexts,
                         NgapUeRegistry& ue_ngap_registry,
                         UeSecurityContextStore& ue_security_contexts,
+                        AmfUeIdIndexStore& amf_ue_id_index,
                         std::uint8_t amf_region_id,
                         std::uint16_t amf_set_id,
                         std::uint8_t amf_pointer) {
@@ -1473,6 +1761,7 @@ void run_ngap_lifecycle(const std::string& bind_address,
                            ue_contexts,
                            ue_ngap_registry,
                            ue_security_contexts,
+                           amf_ue_id_index,
                            amf_region_id,
                            amf_set_id,
                            amf_pointer);

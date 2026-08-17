@@ -48,6 +48,16 @@ public:
     // socket for it. Throws std::runtime_error on failure.
     SctpSocket accept();
 
+    // Client-role counterpart to bind_and_listen/accept -- establishes a new SCTP association to
+    // a real listening peer (e.g. this AMF's own NGAP port, from a test acting as a second, real
+    // gNB). Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100, ADR-0090): added when a real
+    // hand-crafted NGAP test client needed it -- UERANSIM's own gNB has no CLI-triggerable
+    // handover/path-switch scenario, so this project's own strongest verification tier (a second,
+    // independently-built real process) needed a real client-role SCTP capability this library
+    // never had before (every prior stage only ever needed the server/gNB-facing accept() role).
+    // Throws std::runtime_error on failure.
+    void connect(const std::string& address, std::uint16_t port);
+
     // One send() call = one SCTP message = one NGAP PDU (SCTP preserves message boundaries,
     // unlike a TCP stream -- no length-prefixing needed). Throws std::runtime_error on failure.
     void send(const std::vector<std::uint8_t>& data, std::uint16_t stream = 0);
