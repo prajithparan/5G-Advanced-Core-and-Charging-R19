@@ -209,3 +209,14 @@ CREATE TABLE IF NOT EXISTS udr_lcs_privacy_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0104). Real Nudr_DataRepository LCS
+-- Subscription Data resource (/subscription-data/{ueId}/lcs-subscription-data, real schema
+-- LcsSubscriptionData -- $ref'd verbatim from TS29503_Nudm_SDM.yaml, all fields optional:
+-- configuredLmfId, pruInd, lpHapType, userPlanePosIndLmf). Confirmed by grepping every operationId
+-- referencing this path: genuinely GET-only (QueryLcsSubscriptionData), same real "provisioned
+-- out-of-band, seeded at startup" shape as udr_lcs_privacy_data above.
+CREATE TABLE IF NOT EXISTS udr_lcs_subscription_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

@@ -84,10 +84,14 @@
 // UPDATE (ADR-0103, gap-closure task #106): the LCS Privacy Subscription Data resource
 // (QueryLcsPrivacyData, real GET-only) is now implemented -- same real "seeded at startup" shape.
 //
+// UPDATE (ADR-0104, gap-closure task #106): the LCS Subscription Data resource
+// (QueryLcsSubscriptionData, real GET-only) is now implemented -- same real "seeded at startup"
+// shape.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
-// operator-specific-data; lcs-mo-data/lcs-subscription-data/lcs-bca-data and other lcs-* siblings;
+// operator-specific-data; lcs-mo-data/lcs-bca-data and other lcs-* siblings;
 // pp-data; group-data; shared-data; subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
@@ -305,6 +309,8 @@ int main() {
     udr::CoverageRestrictionDataStore coverage_restriction_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0103).
     udr::LcsPrivacyDataStore lcs_privacy_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0104).
+    udr::LcsSubscriptionDataStore lcs_subscription_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -357,6 +363,19 @@ int main() {
         json lcs_privacy;
         lcs_privacy["lpi"]["locationPrivacyInd"] = "LOCATION_ALLOWED";
         lcs_privacy_data.seed(supi, lcs_privacy);
+    }
+
+    // Real seed data (ADR-0104, gap-closure task #106) -- the real LCS Subscription Data resource
+    // is genuinely GET-only per spec, same "no live provisioning path yet" reasoning as above.
+    // `pruInd: "NON_PRU"` is a real enum value from PruInd (TS29503_Nudm_SDM.yaml), this project's
+    // own representative test choice; `userPlanePosIndLmf: false` matches the schema's own
+    // documented `default: false`.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json lcs_subscription;
+        lcs_subscription["pruInd"] = "NON_PRU";
+        lcs_subscription["userPlanePosIndLmf"] = false;
+        lcs_subscription_data.seed(supi, lcs_subscription);
     }
 
     auto meter = sbi_core::get_meter("udr");
@@ -415,6 +434,8 @@ int main() {
         "udr_coverage_restriction_data_get_total", "Total QueryCoverageRestrictionData calls");
     auto lcs_privacy_data_get_counter = meter->CreateUInt64Counter(
         "udr_lcs_privacy_data_get_total", "Total QueryLcsPrivacyData calls");
+    auto lcs_subscription_data_get_counter = meter->CreateUInt64Counter(
+        "udr_lcs_subscription_data_get_total", "Total QueryLcsSubscriptionData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1428,6 +1449,30 @@ int main() {
                     404, "Not Found", "No LCS Privacy Data for ueId " + ue_id);
             }
             lcs_privacy_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: LCS Subscription Data resource (ADR-0104, gap-closure task #106)
+    // -- real GET-only per TS29505_Subscription_Data.yaml, seeded at startup. ---
+
+    const std::string lcs_subscription_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/lcs-subscription-data";
+
+    server.add_route(
+        "GET",
+        lcs_subscription_data_path_pattern,
+        [&verifier, &lcs_subscription_data, &lcs_subscription_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = lcs_subscription_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No LCS Subscription Data for ueId " + ue_id);
+            }
+            lcs_subscription_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 
