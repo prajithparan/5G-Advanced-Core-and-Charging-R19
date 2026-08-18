@@ -1982,3 +1982,23 @@ reading. Takes UDR's real resource-type coverage from 28 to 29 of free5GC's ~42+
 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0114 in `docs/DECISIONS.md` for full
 disclosure, including what remains deliberately deferred (no NF currently calls these new
 endpoints) -- task #106 remains open, ~13 resources still a real, disclosed gap.
+
+## ADR-0115 -- gap-closure task #106 continuation: UDR real Sponsor Connectivity Data (second non-per-UE resource)
+
+| Requirement | Test |
+|---|---|
+| `GET /policy-data/sponsor-connectivity-data/{sponsorId}` for the real seeded `sponsorId` `sponsor1` | Live curl, real `200` with the exact seeded `aspIds` document |
+| `GET` for an unseeded `sponsorId` | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_sponsor_connectivity_data` confirms the single seeded row persisted correctly |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real, genuinely GET-only resource (confirmed by direct YAML read, no other operation exists for
+this path), and the **second UDR resource in this project genuinely not keyed per-UE** (after
+`shared-data`, ADR-0110) -- `sponsorId` alone, real 3GPP concept (TS 23.503) of
+sponsored-data-connectivity policy. Seeded once (not looped over the two test SUPIs) with real,
+disclosed representative test values. Real, disclosed simplification: the real spec's own
+distinct `204` ("found but empty") vs `404` ("not found") is not modeled, same simple
+existence-based store shape as every other GET-only UDR resource. Takes UDR's real resource-type
+coverage from 29 to 30 of free5GC's ~42+ real TS 29.504 resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0115 in `docs/DECISIONS.md` for full disclosure --
+task #106 remains open, ~12 resources still a real, disclosed gap.

@@ -360,3 +360,20 @@ CREATE TABLE IF NOT EXISTS udr_policy_operator_specific_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0115). Real Nudr_DataRepository
+-- `policy-data` group's Sponsor Connectivity Data resource
+-- (/policy-data/sponsor-connectivity-data/{sponsorId}, real schema SponsorConnectivityData --
+-- mandatory aspIds, optional suppFeat). Confirmed by direct YAML read: genuinely GET-only
+-- (ReadSponsorConnectivityData), no other operation exists for this path. Genuinely NOT per-UE --
+-- keyed by sponsor_id alone (real 3GPP concept, TS 23.503, sponsored-data-connectivity policy
+-- shared across the sponsor's own application service providers), same real "not every UDR
+-- resource is UE-scoped" precedent already established for udr_shared_data. Real, disclosed
+-- simplification: the real spec also documents a distinct `204` ("resource found but no data
+-- available") separate from `404` ("not found at all") -- this project's simple existence-based
+-- store model only distinguishes 200-with-data vs 404-not-provisioned, not the finer real
+-- "provisioned but empty" case.
+CREATE TABLE IF NOT EXISTS udr_sponsor_connectivity_data (
+    sponsor_id TEXT PRIMARY KEY,
+    data       JSONB NOT NULL
+);

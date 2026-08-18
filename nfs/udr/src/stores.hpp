@@ -525,4 +525,20 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0115). Backs the real
+// `policy-data` group's Sponsor Connectivity Data resource (ReadSponsorConnectivityData -- real
+// GET-only, no create/update operation exists in the spec at all). Genuinely NOT per-UE -- keyed
+// by sponsor_id alone.
+class SponsorConnectivityDataStore {
+public:
+    explicit SponsorConnectivityDataStore(const std::string& conninfo);
+
+    void seed(const std::string& sponsor_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& sponsor_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

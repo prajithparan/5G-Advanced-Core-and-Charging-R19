@@ -134,12 +134,18 @@
 // operator-specific-data (ADR-0111), reusing the same real OperatorSpecificDataContainer schema
 // via a cross-file $ref.
 //
+// UPDATE (ADR-0115, gap-closure task #106): the `policy-data` group's Sponsor Connectivity Data
+// resource (ReadSponsorConnectivityData, real GET-only) is now implemented -- genuinely NOT
+// per-UE, keyed by sponsorId alone. Real, disclosed simplification: the real spec's own distinct
+// `204` ("found but no data") vs `404` ("not found") is not modeled -- this store's simple
+// existence-based model only distinguishes 200-with-data vs 404-not-provisioned.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // group-data (including ee-profile-data's own group-keyed sibling);
 // subs-to-notify; policy-data's
-// own other resources (sponsor-connectivity-data, bdt-data, slice-control-data,
+// own other resources (bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
 // not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn).
 //
@@ -375,6 +381,8 @@ int main() {
     udr::UePolicySetStore ue_policy_set(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0114).
     udr::PolicyOperatorSpecificDataStore policy_operator_specific_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0115).
+    udr::SponsorConnectivityDataStore sponsor_connectivity_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -494,6 +502,16 @@ int main() {
         ee_profile_data.seed(supi, ee_profile);
     }
 
+    // Real seed data (ADR-0115, gap-closure task #106) -- the real Sponsor Connectivity Data
+    // resource is genuinely GET-only per spec, same "no live provisioning path yet" reasoning as
+    // above. Genuinely NOT per-UE, so seeded once. "sponsor1" is this project's own arbitrary
+    // representative test sponsorId; `aspIds` is the real mandatory field.
+    {
+        json sponsor;
+        sponsor["aspIds"] = json::array({"asp1"});
+        sponsor_connectivity_data.seed("sponsor1", sponsor);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -583,6 +601,8 @@ int main() {
         "udr_policy_operator_specific_data_get_total", "Total ReadOperatorSpecificData calls");
     auto policy_operator_specific_data_patch_counter = meter->CreateUInt64Counter(
         "udr_policy_operator_specific_data_patch_total", "Total UpdateOperatorSpecificData calls");
+    auto sponsor_connectivity_data_get_counter = meter->CreateUInt64Counter(
+        "udr_sponsor_connectivity_data_get_total", "Total ReadSponsorConnectivityData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2065,6 +2085,31 @@ int main() {
             }
             policy_operator_specific_data_patch_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    // --- Nudr_DataRepository: policy-data group, Sponsor Connectivity Data resource (ADR-0115,
+    // gap-closure task #106) -- real GET-only per TS29519_Policy_Data.yaml, keyed by sponsorId
+    // (not ueId), seeded at startup. ---
+
+    const std::string sponsor_connectivity_data_path_pattern =
+        std::string(kApiRoot) + "/policy-data/sponsor-connectivity-data/{sponsorId}";
+
+    server.add_route(
+        "GET",
+        sponsor_connectivity_data_path_pattern,
+        [&verifier, &sponsor_connectivity_data, &sponsor_connectivity_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sponsor_id = req.path_params.at("sponsorId");
+            auto data = sponsor_connectivity_data.get(sponsor_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No sponsor connectivity data for sponsorId " + sponsor_id);
+            }
+            sponsor_connectivity_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

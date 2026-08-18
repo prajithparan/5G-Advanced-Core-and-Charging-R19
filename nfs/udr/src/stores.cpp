@@ -898,4 +898,28 @@ nlohmann::json PolicyOperatorSpecificDataStore::apply_patch(const std::string& u
     return doc;
 }
 
+SponsorConnectivityDataStore::SponsorConnectivityDataStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+void SponsorConnectivityDataStore::seed(const std::string& sponsor_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_sponsor_connectivity_data (sponsor_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (sponsor_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{sponsor_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> SponsorConnectivityDataStore::get(const std::string& sponsor_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_sponsor_connectivity_data WHERE sponsor_id = $1",
+                 pqxx::params{sponsor_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr

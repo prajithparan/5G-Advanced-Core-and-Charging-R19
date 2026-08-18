@@ -66,7 +66,7 @@ live-verified against AMF's own PathSwitchRequest slice and a real UPF PFCP Sess
 AUSF (`Nausf_SoRProtection`, and — ADR-0091 — real TS 33.503 5G ProSe authentication,
 live-verified with an independently-computed EAP-AKA' response against real TS 35.207 test
 vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR (real PostgreSQL
-persistence, now 29 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
+persistence, now 30 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
 context-data (ADR-0094), SMSF 3GPP/non-3GPP-access context-data (ADR-0097), IP-SM-GW
 Registration context-data (ADR-0098, real PUT+GET+PATCH+DELETE, the first UDR context-data
 resource with all four real operations together), Message Waiting Data (Document) context-data
@@ -84,8 +84,9 @@ sibling collection GET, composite (ueId, afInstanceId) key), individual Shared D
 (ADR-0110, the first UDR resource genuinely not keyed per-UE), Operator-Specific Data
 Container (Document) (ADR-0111, real GET+PATCH RFC 6902, upsert-capable), Event Exposure
 Data (Document) (ADR-0112, real GET-only, seeded at startup), UE Policy Set (ADR-0113, real
-GET+PUT+PATCH combining create-or-replace and RFC 7396 merge-patch), and policy-data
-Operator-Specific Data (ADR-0114, genuinely distinct from the subscription-data-scoped sibling)), and UPF (task #107
+GET+PUT+PATCH combining create-or-replace and RFC 7396 merge-patch), policy-data
+Operator-Specific Data (ADR-0114, genuinely distinct from the subscription-data-scoped sibling),
+and Sponsor Connectivity Data (ADR-0115, second non-per-UE UDR resource)), and UPF (task #107
 closed in full: PFCP Association Update/Release, PFD
 Management, Node Report). CHF closed real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even
 free5GC's own CDR module doesn't fully match in scope on this project's own terms. AMF's real
@@ -97,7 +98,7 @@ two genuinely simultaneous gNB associations and, as an unplanned bonus, real int
 from UERANSIM's own unmodified gNB correctly reacting to a new AMF-initiated
 `UEContextReleaseCommand`. **Still open**: `HandoverCancel`, the real AMF→SMF relay that would
 replace handover's own placeholder N3 addressing, SMF's remaining 19 `N2SmInfoType` values beyond
-`PATH_SWITCH_REQ`, the remaining ~13 of UDR's ~42+ real TS 29.504 resources (19 more now closed —
+`PATH_SWITCH_REQ`, the remaining ~12 of UDR's ~42+ real TS 29.504 resources (20 more now closed —
 SMSF 3GPP/non-3GPP-access context-data (ADR-0097), IP-SM-GW Registration context-data (ADR-0098),
 Message Waiting Data (Document) context-data (ADR-0099), Roaming Information (Document)
 context-data (ADR-0100), PEI Information (Document) context-data (ADR-0101), Enhanced
@@ -107,7 +108,8 @@ Broadcast Assistance Data (ADR-0106), Parameter Provision (Document) (ADR-0107),
 Provision profile Data (Document) (ADR-0108), Provisioned Parameter Data Entry /
 pp-data-store (ADR-0109), individual Shared Data (ADR-0110), Operator-Specific Data
 Container (Document) (ADR-0111), Event Exposure Data (Document) (ADR-0112), UE Policy Set
-(ADR-0113), and policy-data Operator-Specific Data (ADR-0114), 29 of ~42+ total), ProSe's
+(ADR-0113), policy-data Operator-Specific Data (ADR-0114), and Sponsor Connectivity Data
+(ADR-0115), 30 of ~42+ total), ProSe's
 PAnF-dependent
 returning-UE path, and
 NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all). CI note: `.github/workflows/ci.yml`'s
