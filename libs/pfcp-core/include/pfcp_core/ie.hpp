@@ -98,6 +98,14 @@ enum class IeType : std::uint16_t {
     NodeReportType = 101,
     UserPlanePathFailureReport = 102,
     RemoteGtpuPeer = 103,
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #101, ADR-0092): real IE types confirmed
+    // against TS 29.244 §7.5.4.3 (Table 7.5.4.3-1/7.5.4.3-2) and §8.2.56, same vendored spec text
+    // every other IeType value here is confirmed against. UpdateFar/UpdateForwardingParameters are
+    // grouped IEs (decoded like CreatePdr/CreateFar above, no dedicated codec needed for the
+    // container itself); OuterHeaderCreation has its own codec (session_ies.hpp).
+    UpdateFar = 10,                  // Table 7.5.4.3-1
+    UpdateForwardingParameters = 11, // Table 7.5.4.3-2
+    OuterHeaderCreation = 84,        // §8.2.56
 };
 
 struct Ie {

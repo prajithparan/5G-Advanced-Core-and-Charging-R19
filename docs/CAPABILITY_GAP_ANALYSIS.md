@@ -267,6 +267,21 @@ computed real updated N2 SM info for a handover, AMF has no NGAP handler to carr
 `PATH_SWITCH_REQ`/`HANDOVER_REQUIRED` in the first place. The two gaps are the same real
 capability (N2 handover) viewed from each NF's own side, not two independent gaps.
 
+**Partial closure, ADR-0092**: `PATH_SWITCH_REQ`/`PATH_SWITCH_REQ_ACK` are now real -- `UpdateSMContext`
+gained real multipart parsing, decodes the real NGAP `PathSwitchRequestTransfer`, issues a real
+PFCP Session Modification creating this project's first-ever real downlink PDR/FAR (with a real
+TS 29.244 §8.2.56 Outer Header Creation), and returns a real `PathSwitchRequestAcknowledgeTransfer`
+carrying UPF's own real N3 uplink F-TEID. A real, previously-undiscovered UPF bug (false-positive
+`RequestAccepted` on an unrecognized `CreatePDR`/`CreateFAR`) was found and fixed along the way.
+Live-verified, three-way corroborated (SMF log, UPF log, and independent decode of the real HTTP
+response). Real, disclosed scope: AMF's own `PathSwitchRequest` handler does not call this
+endpoint yet (deferred, separate relay-wiring piece); the downlink PDR's match criteria is
+`SourceInterface`-only (this project has no real UE IP allocation anywhere, a real, deeper,
+separate gap found while scoping this ADR); the new FAR's `OuterHeaderCreation` is real at the
+PFCP control-plane level only, not wired into the real eBPF/XDP datapath (no downlink GTP-U
+encapsulation path exists there). The other 20 real `N2SmInfoType` values (`PDU_RES_*`,
+`HANDOVER_*`, ...) remain unreal -- see ADR-0092 for full disclosure.
+
 ### Real, further, not-yet-fully-characterized findings (flagged, not yet fully drilled down)
 
 - **ULCL (Uplink Classifier) / multi-homed PDU sessions** (R16 local-breakout/edge-computing
@@ -497,7 +512,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | NRF | ~1-1.3x | NFProfile semantic validation; active heartbeat-expiry timer (open5GS only) |
 | AMF | ~10-14x | `ServiceRequest`: CLOSED (ADR-0076). N2 handover: `PathSwitchRequest` slice CLOSED (task #100, ADR-0090); the real N2-based `HandoverRequired`/.../`Notify` chain remains open -- still the highest-impact remaining finding in the whole sweep |
 | AUSF | ~3-5x | `Nausf_SoRProtection`, ProSe auth (free5GC-only, both) |
-| SMF | ~10-16x | `UpdateSMContext` is a near-total stub -- couples directly to AMF's handover gap |
+| SMF | ~10-16x | `UpdateSMContext`: `PATH_SWITCH_REQ`/`_ACK` slice CLOSED (task #101, ADR-0092, real downlink FAR/GTP-U control-plane); the other 20 real N2SmInfoType values remain a stub -- still couples to AMF's own remaining handover gap |
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
 | UDR | ~2.5-10x | Resource-type breadth (~6 of 42+ real TS 29.504 resources) |

@@ -183,4 +183,20 @@ struct Mbr {
 std::vector<std::uint8_t> encode_mbr(const Mbr& v);
 std::optional<Mbr> decode_mbr(const std::vector<std::uint8_t>& value);
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #101, ADR-0092): real TS 29.244 §8.2.56 Outer
+// Header Creation -- the IE a downlink FAR's own Forwarding Parameters uses to instruct UPF to
+// GTP-U-encapsulate outgoing packets toward a real peer (a gNB, in this project's own N3 use).
+// Real byte layout: 2-octet Outer Header Creation Description (bitmask; this project only ever
+// sets bit 5/1, "GTP-U/UDP/IPv4"), then TEID (4 octets, present because the GTP-U bit is set),
+// then IPv4 Address (4 octets, present because the IPv4 bit is implied by GTP-U/UDP/IPv4) -- no
+// IPv6/Port Number octets, this project's only real address family and encapsulation choice.
+std::vector<std::uint8_t> encode_outer_header_creation_gtpu_ipv4(std::uint32_t teid,
+                                                                 std::array<std::uint8_t, 4> ipv4);
+struct OuterHeaderCreationGtpuIpv4 {
+    std::uint32_t teid = 0;
+    std::array<std::uint8_t, 4> ipv4{};
+};
+std::optional<OuterHeaderCreationGtpuIpv4>
+decode_outer_header_creation_gtpu_ipv4(const std::vector<std::uint8_t>& value);
+
 } // namespace pfcp_core

@@ -334,4 +334,37 @@ std::optional<Mbr> decode_mbr(const std::vector<std::uint8_t>& value) {
     return out;
 }
 
+namespace {
+// TS 29.244 §8.2.56 Table 8.2.56-1: octet 5 bit 1 = "GTP-U/UDP/IPv4" -- this project's only real
+// encapsulation choice, same real bit-position convention encode_f_teid_allocated_ipv4's own
+// kFTeidV4Bit comment already establishes for a different IE.
+constexpr std::uint8_t kOhcGtpuIpv4Bit = 0x01;
+} // namespace
+
+std::vector<std::uint8_t> encode_outer_header_creation_gtpu_ipv4(std::uint32_t teid,
+                                                                 std::array<std::uint8_t, 4> ipv4) {
+    std::vector<std::uint8_t> out;
+    out.push_back(kOhcGtpuIpv4Bit);
+    out.push_back(0x00); // octet 6: spare, no other bits this project ever sets
+    out.push_back(static_cast<std::uint8_t>((teid >> 24) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((teid >> 16) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((teid >> 8) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>(teid & 0xFF));
+    out.insert(out.end(), ipv4.begin(), ipv4.end());
+    return out;
+}
+
+std::optional<OuterHeaderCreationGtpuIpv4>
+decode_outer_header_creation_gtpu_ipv4(const std::vector<std::uint8_t>& value) {
+    if (value.size() != 10 || (value[0] & kOhcGtpuIpv4Bit) == 0) {
+        return std::nullopt;
+    }
+    OuterHeaderCreationGtpuIpv4 out;
+    out.teid = (static_cast<std::uint32_t>(value[2]) << 24) |
+               (static_cast<std::uint32_t>(value[3]) << 16) |
+               (static_cast<std::uint32_t>(value[4]) << 8) | static_cast<std::uint32_t>(value[5]);
+    out.ipv4 = {value[6], value[7], value[8], value[9]};
+    return out;
+}
+
 } // namespace pfcp_core

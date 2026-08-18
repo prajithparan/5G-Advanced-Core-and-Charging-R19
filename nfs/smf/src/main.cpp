@@ -44,7 +44,20 @@
 //   fails closed if PCF is unreachable or errors, matching TS 23.502's real intent that SM Policy
 //   Association Establishment failure fails PDU session establishment.
 // - UpdateSMContext acknowledges (204) without fabricating SmContextUpdatedData content (EBI
-//   allocation, N1/N2 info, ...) -- there is nothing real behind those fields yet.
+//   allocation, N1/N2 info, ...) for every N2SmInfoType except PATH_SWITCH_REQ -- there is
+//   nothing real behind those other fields yet. UPDATE (gap-closure, docs/
+//   CAPABILITY_GAP_ANALYSIS.md task #101, ADR-0092): PATH_SWITCH_REQ now has real behavior --
+//   decodes the real, AMF-relayed PathSwitchRequestTransfer (n2SmInfo), issues a real PFCP
+//   Session Modification creating this project's first-ever real downlink PDR/FAR (with a real
+//   TS 29.244 §8.2.56 Outer Header Creation pointing GTP-U at the new gNB), and returns a real
+//   PathSwitchRequestAcknowledgeTransfer carrying UPF's own real N3 uplink F-TEID. Real, disclosed
+//   scope: the downlink PDR's own match criteria is SourceInterface-only (no UE IP Address IE --
+//   this project has never allocated/tracked a real UE IP address anywhere, a real, deeper,
+//   separate gap found while scoping this ADR); the other 20 real N2SmInfoType values (PDU_RES_*,
+//   HANDOVER_*, ...) remain unreal. AMF's own PathSwitchRequest handler (ADR-0090) does NOT yet
+//   call this endpoint -- that relay wiring (plus persisting the SM context ref somewhere AMF can
+//   retrieve it across associations) is real, separate, deliberately deferred scope, not built
+//   this pass.
 // - Error responses use the generic ProblemDetails shape (sbi_core::http2::problem_response,
 //   application/problem+json) rather than each operation's bespoke *Error schema
 //   (SmContextCreateError, SmContextUpdateError) -- same simplification NRF/AMF already use.
@@ -85,6 +98,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <functional>
 #include <mutex>
@@ -105,7 +120,56 @@
 // docs/DECISIONS.md ADR-0077 -- no hardcoded deployment literal in source.
 #include "nf_config/nf_config.hpp"
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #101, ADR-0092): real NGAP PER codec for the
+// PathSwitchRequestTransfer/PathSwitchRequestAcknowledgeTransfer transparent containers AMF
+// relays verbatim as n2SmInfo -- see nfs/smf/CMakeLists.txt's own comment for why this is a real,
+// legitimate shared-library dependency (ngap_generated), not an NF-private-header violation.
+extern "C" {
+#include <GTPTunnel.h>
+#include <PathSwitchRequestAcknowledgeTransfer.h>
+#include <PathSwitchRequestTransfer.h>
+#include <QosFlowAcceptedItem.h>
+#include <QosFlowAcceptedList.h>
+#include <UPTransportLayerInformation.h>
+#include <asn_application.h>
+#include <per_decoder.h>
+#include <per_encoder.h>
+}
+
 namespace {
+
+// Real Aligned PER (X.691) encode/decode of a single ASN.1 type -- the exact same underlying
+// asn1c runtime entry points nfs/amf/src/ngap_codec.cpp's own per_encode/decode_value use (see
+// its own comment on ADR-0031's Aligned PER patch), reimplemented locally here rather than
+// reaching into AMF's private ngap_codec.{hpp,cpp} (CLAUDE.md's "no NF includes another NF's
+// private headers" rule) -- both this project's own two real, independent uses of the shared
+// ngap_generated library.
+std::vector<std::uint8_t> ngap_per_encode(const asn_TYPE_descriptor_s* type_descriptor,
+                                          const void* value) {
+    void* buffer = nullptr;
+    const ssize_t encoded = aper_encode_to_new_buffer(type_descriptor, nullptr, value, &buffer);
+    if (encoded < 0 || buffer == nullptr) {
+        return {};
+    }
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(encoded));
+    std::memcpy(out.data(), buffer, out.size());
+    std::free(buffer);
+    return out;
+}
+
+void* ngap_per_decode(const asn_TYPE_descriptor_s* type_descriptor,
+                      const std::vector<std::uint8_t>& bytes) {
+    void* out = nullptr;
+    const asn_dec_rval_t rv =
+        aper_decode_complete(nullptr, type_descriptor, &out, bytes.data(), bytes.size());
+    if (rv.code != RC_OK) {
+        if (out != nullptr) {
+            ASN_STRUCT_FREE(*type_descriptor, out);
+        }
+        return nullptr;
+    }
+    return out;
+}
 
 using nlohmann::json;
 
@@ -488,6 +552,14 @@ struct N4EstablishmentResult {
     // already relies on elsewhere means a CP-originated session-related message's header SEID must
     // carry the *receiving* entity's own SEID, i.e. UPF's, not SMF's own cp_seid.
     std::uint64_t up_seid = 0;
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #101, ADR-0092): UPF's own real, allocated
+    // N3 (uplink GTP-U) TEID + IPv4 -- computed by this function already (CreatedPdr's own
+    // F-TEID) but, before this ADR, discarded after only being logged. Real, load-bearing use: a
+    // real PathSwitchRequestAcknowledgeTransfer's own `uL-NGU-UP-TNLInformation` needs UPF's real
+    // N3 receive endpoint, not a fabricated one -- see handle_update_sm_context's own
+    // PATH_SWITCH_REQ branch.
+    std::optional<std::uint32_t> ul_teid;
+    std::optional<std::array<std::uint8_t, 4>> ul_ipv4;
 };
 
 std::optional<N4EstablishmentResult>
@@ -628,6 +700,7 @@ perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer,
         up_f_seid = pfcp_core::decode_f_seid_ipv4(up_f_seid_ie->value);
     }
     std::optional<std::uint32_t> allocated_teid;
+    std::optional<std::array<std::uint8_t, 4>> allocated_ipv4;
     if (const auto* created_pdr_ie = pfcp_core::find_ie(
             *resp_ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatedPdr));
         created_pdr_ie != nullptr) {
@@ -640,6 +713,7 @@ perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer,
                         pfcp_core::decode_f_teid_allocated_ipv4(f_teid_ie->value);
                     allocated.has_value()) {
                     allocated_teid = allocated->teid;
+                    allocated_ipv4 = allocated->ipv4;
                 }
             }
         }
@@ -661,7 +735,7 @@ perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer,
                      pdu_session_id);
         return std::nullopt;
     }
-    return N4EstablishmentResult{cp_seid, up_f_seid->seid};
+    return N4EstablishmentResult{cp_seid, up_f_seid->seid, allocated_teid, allocated_ipv4};
 }
 
 // Real Nchf_ConvergedCharging_Create (TS 32.291, N40, ADR-0044), SMF's side -- see this file's own
@@ -1575,6 +1649,25 @@ int main() {
                         CpSeidSessionInfo{
                             *body->supi, charging_data_ref, n4_result->up_seid, *upf_ip});
                 }
+                // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #101, ADR-0092): persisted
+                // unconditionally (not gated on a granted quota like cp_seid_sessions above --
+                // PATH_SWITCH_REQ can arrive for any established session, charged or not), so
+                // handle_update_sm_context's own PATH_SWITCH_REQ branch can address a real Session
+                // Modification back to UPF and build a real uL-NGU-UP-TNLInformation.
+                if (n4_result.has_value()) {
+                    if (auto stored = sm_contexts.get(sm_context_ref); stored.has_value()) {
+                        (*stored)["upSeid"] = n4_result->up_seid;
+                        (*stored)["upfIp"] = *upf_ip;
+                        if (n4_result->ul_teid.has_value()) {
+                            (*stored)["ulTeid"] = *n4_result->ul_teid;
+                        }
+                        if (n4_result->ul_ipv4.has_value()) {
+                            (*stored)["ulIpv4"] = std::vector<std::uint8_t>(
+                                n4_result->ul_ipv4->begin(), n4_result->ul_ipv4->end());
+                        }
+                        sm_contexts.update(sm_context_ref, *stored);
+                    }
+                }
             } else {
                 spdlog::warn("smf: no UPF Sx Association established yet, skipping N4 Session "
                              "Establishment for pduSessionId {}",
@@ -1747,24 +1840,285 @@ int main() {
     server.add_route(
         "POST",
         std::string(kApiRoot) + "/sm-contexts/{smContextRef}/modify",
-        [&verifier, &sm_contexts, &update_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &sm_contexts, &update_counter, &pfcp_peer](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
-            sbi_core::http2::Response err;
-            auto body = sbi_core::http2::parse_json_body<sbi_gen::SmContextUpdateData>(req, err);
-            if (!body.has_value()) {
-                return err;
+            // Real, both-real-shapes content negotiation (TS29502_Nsmf_PDUSession.yaml's own
+            // UpdateSmContext requestBody: application/json "message without binary body part" OR
+            // multipart/related "message with binary body part(s)") -- unlike CreateSMContext,
+            // which is multipart-ONLY, most real Updates (upCnxState-only, etc.) carry no N2SmInfo
+            // and use plain JSON; gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #101,
+            // ADR-0092) is the first real reason this handler ever needs the multipart branch.
+            std::optional<sbi_gen::SmContextUpdateData> body;
+            std::vector<std::uint8_t> n2_sm_info_bytes;
+            bool has_n2_sm_info_bytes = false;
+            const auto content_type_it = req.headers.find("content-type");
+            const bool is_multipart =
+                content_type_it != req.headers.end() &&
+                sbi_core::multipart::is_multipart_related(content_type_it->second);
+            if (is_multipart) {
+                auto parts = sbi_core::multipart::parse(content_type_it->second, req.body);
+                if (!parts.has_value() || parts->empty()) {
+                    return sbi_core::http2::problem_response(
+                        400, "Malformed multipart body", "no parts found");
+                }
+                try {
+                    body = json::parse((*parts)[0].body).get<sbi_gen::SmContextUpdateData>();
+                } catch (const json::exception& e) {
+                    return sbi_core::http2::problem_response(
+                        400, "Missing or invalid mandatory IE", e.what());
+                }
+                if (body->n2SmInfo.has_value()) {
+                    for (const auto& part : *parts) {
+                        if (part.content_id.has_value() &&
+                            *part.content_id == body->n2SmInfo->contentId) {
+                            n2_sm_info_bytes.assign(part.body.begin(), part.body.end());
+                            has_n2_sm_info_bytes = true;
+                            break;
+                        }
+                    }
+                }
+            } else {
+                sbi_core::http2::Response err;
+                body = sbi_core::http2::parse_json_body<sbi_gen::SmContextUpdateData>(req, err);
+                if (!body.has_value()) {
+                    return err;
+                }
             }
             const auto sm_context_ref = req.path_params.at("smContextRef");
-            if (!sm_contexts.get(sm_context_ref).has_value()) {
+            const auto stored_ctx = sm_contexts.get(sm_context_ref);
+            if (!stored_ctx.has_value()) {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No SM context with ref " + sm_context_ref);
             }
             update_counter->Add(1);
-            // Disclosed simplification: acknowledges the update (204) rather than fabricating
-            // SmContextUpdatedData content (EBI allocation, N1/N2 info, ...) with no real PCF/
-            // UPF backing it yet (see file header).
+
+            // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #101, ADR-0092): real
+            // PATH_SWITCH_REQ handling -- the one N2SmInfoType this project closes real, live
+            // datapath behavior for (see this handler's own real, disclosed scope in the file
+            // header: the other 20 real N2SmInfoType values remain a real, open gap).
+            if (body->n2SmInfoType.has_value() &&
+                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::PATH_SWITCH_REQ &&
+                has_n2_sm_info_bytes) {
+                auto* transfer = static_cast<PathSwitchRequestTransfer_t*>(
+                    ngap_per_decode(&asn_DEF_PathSwitchRequestTransfer, n2_sm_info_bytes));
+                if (transfer == nullptr) {
+                    return sbi_core::http2::problem_response(
+                        400, "Bad Request", "n2SmInfo is not a valid PathSwitchRequestTransfer");
+                }
+                if (transfer->dL_NGU_UP_TNLInformation.present !=
+                        UPTransportLayerInformation_PR_gTPTunnel ||
+                    transfer->dL_NGU_UP_TNLInformation.choice.gTPTunnel == nullptr) {
+                    ASN_STRUCT_FREE(asn_DEF_PathSwitchRequestTransfer, transfer);
+                    return sbi_core::http2::problem_response(
+                        400,
+                        "Bad Request",
+                        "PathSwitchRequestTransfer has no real GTP-U dL-NGU-UP-TNLInformation");
+                }
+                const auto* gtp_tunnel = transfer->dL_NGU_UP_TNLInformation.choice.gTPTunnel;
+                if (gtp_tunnel->transportLayerAddress.size != 4 || gtp_tunnel->gTP_TEID.size != 4) {
+                    ASN_STRUCT_FREE(asn_DEF_PathSwitchRequestTransfer, transfer);
+                    return sbi_core::http2::problem_response(
+                        400,
+                        "Bad Request",
+                        "PathSwitchRequestTransfer's GTPTunnel is not a real IPv4 4-octet TEID");
+                }
+                std::array<std::uint8_t, 4> gnb_ipv4{};
+                std::copy(gtp_tunnel->transportLayerAddress.buf,
+                          gtp_tunnel->transportLayerAddress.buf + 4,
+                          gnb_ipv4.begin());
+                const std::uint32_t gnb_teid =
+                    (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[0]) << 24) |
+                    (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[1]) << 16) |
+                    (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[2]) << 8) |
+                    static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[3]);
+                ASN_STRUCT_FREE(asn_DEF_PathSwitchRequestTransfer, transfer);
+
+                if (!stored_ctx->contains("upSeid") || !stored_ctx->contains("upfIp")) {
+                    return sbi_core::http2::problem_response(
+                        500,
+                        "Internal Server Error",
+                        "No real N4 session on record for this SM context (established before "
+                        "UPF was reachable) -- cannot address a real PFCP Session Modification");
+                }
+                const std::uint64_t up_seid = stored_ctx->at("upSeid").get<std::uint64_t>();
+                const std::string upf_ip = stored_ctx->at("upfIp").get<std::string>();
+
+                // Real PFCP Session Modification (TS 29.244 §7.5.4): this project's first-ever
+                // real DOWNLINK PDR/FAR pair (CreatePDR/CreateFAR are real, spec-legal inside a
+                // Session Modification Request, not just Establishment -- Table 7.5.4.1-1). Real,
+                // disclosed simplification: the PDR's own match criteria is SourceInterface=Core
+                // only, no UE IP Address IE -- this project has never allocated/tracked a real UE
+                // IP address anywhere (a real, deeper, separate gap found while scoping this ADR,
+                // not silently worked around), same simplification class as the existing uplink
+                // PDR's own no-real-subscriber-match-criteria scope.
+                std::vector<std::uint8_t> dl_pdi;
+                pfcp_core::encode_ie(
+                    dl_pdi,
+                    static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface),
+                    pfcp_core::encode_source_interface(pfcp_core::InterfaceValue::Core));
+
+                std::vector<std::uint8_t> dl_create_pdr;
+                pfcp_core::encode_ie(dl_create_pdr,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
+                                     pfcp_core::encode_pdr_id(2));
+                pfcp_core::encode_ie(dl_create_pdr,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::Precedence),
+                                     pfcp_core::encode_precedence(100));
+                pfcp_core::encode_ie(
+                    dl_create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi), dl_pdi);
+                pfcp_core::encode_ie(dl_create_pdr,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
+                                     pfcp_core::encode_far_id(2));
+
+                std::vector<std::uint8_t> dl_forwarding_parameters;
+                pfcp_core::encode_ie(
+                    dl_forwarding_parameters,
+                    static_cast<std::uint16_t>(pfcp_core::IeType::DestinationInterface),
+                    pfcp_core::encode_destination_interface(pfcp_core::InterfaceValue::Access));
+                pfcp_core::encode_ie(
+                    dl_forwarding_parameters,
+                    static_cast<std::uint16_t>(pfcp_core::IeType::OuterHeaderCreation),
+                    pfcp_core::encode_outer_header_creation_gtpu_ipv4(gnb_teid, gnb_ipv4));
+
+                std::vector<std::uint8_t> dl_create_far;
+                pfcp_core::encode_ie(dl_create_far,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
+                                     pfcp_core::encode_far_id(2));
+                pfcp_core::encode_ie(dl_create_far,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::ApplyAction),
+                                     pfcp_core::encode_apply_action_forward());
+                pfcp_core::encode_ie(
+                    dl_create_far,
+                    static_cast<std::uint16_t>(pfcp_core::IeType::ForwardingParameters),
+                    dl_forwarding_parameters);
+
+                std::vector<std::uint8_t> mod_ies;
+                pfcp_core::encode_ie(mod_ies,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::CreatePdr),
+                                     dl_create_pdr);
+                pfcp_core::encode_ie(mod_ies,
+                                     static_cast<std::uint16_t>(pfcp_core::IeType::CreateFar),
+                                     dl_create_far);
+
+                pfcp_core::Header mod_header;
+                mod_header.has_seid = true;
+                mod_header.seid = up_seid;
+                mod_header.message_type = pfcp_core::MessageType::SessionModificationRequest;
+                mod_header.sequence_number = pfcp_peer.allocate_sequence_number();
+                auto mod_pdu = pfcp_core::encode_header(mod_header,
+                                                        static_cast<std::uint16_t>(mod_ies.size()));
+                mod_pdu.insert(mod_pdu.end(), mod_ies.begin(), mod_ies.end());
+
+                const boost::asio::ip::udp::endpoint upf_endpoint(
+                    boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
+                const auto mod_resp_ies = pfcp_peer.send_request_and_await_response(
+                    upf_endpoint,
+                    mod_pdu,
+                    pfcp_core::MessageType::SessionModificationResponse,
+                    mod_header.sequence_number,
+                    "Session Modification (PATH_SWITCH_REQ real DL FAR)");
+                const auto decoded_mod_resp_ies =
+                    mod_resp_ies.has_value() ? pfcp_core::decode_ies(*mod_resp_ies) : std::nullopt;
+                const auto* mod_cause_ie =
+                    decoded_mod_resp_ies.has_value()
+                        ? pfcp_core::find_ie(*decoded_mod_resp_ies,
+                                             static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
+                        : nullptr;
+                const auto mod_cause = mod_cause_ie != nullptr
+                                           ? pfcp_core::decode_cause(mod_cause_ie->value)
+                                           : std::nullopt;
+                if (!mod_cause.has_value() || *mod_cause != pfcp_core::Cause::RequestAccepted) {
+                    return sbi_core::http2::problem_response(
+                        500,
+                        "Internal Server Error",
+                        "UPF rejected the real PFCP Session Modification for PATH_SWITCH_REQ's "
+                        "new downlink FAR (UP F-SEID=" +
+                            std::to_string(up_seid) + ")");
+                }
+                spdlog::info(
+                    "smf: PATH_SWITCH_REQ real N4 Session Modification succeeded (UP F-SEID={:#x},"
+                    " new gNB TEID={:#x}) -- real downlink GTP-U tunnel now points at the new gNB",
+                    up_seid,
+                    gnb_teid);
+
+                // Real PathSwitchRequestAcknowledgeTransfer (§9.3.4.9): uL-NGU-UP-TNLInformation
+                // is UPF's own real, previously-allocated N3 receive F-TEID (persisted at Session
+                // Establishment, ADR-0092) -- not the all-OPTIONAL-fields-empty placeholder
+                // ADR-0090 disclosed as this project's own real, previously-open gap.
+                PathSwitchRequestAcknowledgeTransfer_t ack_transfer{};
+                if (stored_ctx->contains("ulTeid") && stored_ctx->contains("ulIpv4")) {
+                    auto* ul_gtp_tunnel =
+                        static_cast<GTPTunnel_t*>(std::calloc(1, sizeof(GTPTunnel_t)));
+                    const auto ul_teid = stored_ctx->at("ulTeid").get<std::uint32_t>();
+                    const auto ul_ipv4 = stored_ctx->at("ulIpv4").get<std::vector<std::uint8_t>>();
+                    const std::uint8_t teid_bytes[4] = {
+                        static_cast<std::uint8_t>((ul_teid >> 24) & 0xFF),
+                        static_cast<std::uint8_t>((ul_teid >> 16) & 0xFF),
+                        static_cast<std::uint8_t>((ul_teid >> 8) & 0xFF),
+                        static_cast<std::uint8_t>(ul_teid & 0xFF)};
+                    ul_gtp_tunnel->gTP_TEID.buf = static_cast<std::uint8_t*>(std::malloc(4));
+                    std::memcpy(ul_gtp_tunnel->gTP_TEID.buf, teid_bytes, 4);
+                    ul_gtp_tunnel->gTP_TEID.size = 4;
+                    ul_gtp_tunnel->transportLayerAddress.buf =
+                        static_cast<std::uint8_t*>(std::malloc(4));
+                    std::memcpy(ul_gtp_tunnel->transportLayerAddress.buf, ul_ipv4.data(), 4);
+                    ul_gtp_tunnel->transportLayerAddress.size = 4;
+                    ul_gtp_tunnel->transportLayerAddress.bits_unused = 0;
+                    ack_transfer.uL_NGU_UP_TNLInformation =
+                        static_cast<UPTransportLayerInformation_t*>(
+                            std::calloc(1, sizeof(UPTransportLayerInformation_t)));
+                    ack_transfer.uL_NGU_UP_TNLInformation->present =
+                        UPTransportLayerInformation_PR_gTPTunnel;
+                    ack_transfer.uL_NGU_UP_TNLInformation->choice.gTPTunnel = ul_gtp_tunnel;
+                } else {
+                    spdlog::warn(
+                        "smf: no real UPF N3 uplink F-TEID on record for UP F-SEID={:#x} -- "
+                        "PathSwitchRequestAcknowledgeTransfer sent with uL-NGU-UP-TNLInformation "
+                        "absent (a real, disclosed gap in this specific session's own Establishment"
+                        " history, not new scope)",
+                        up_seid);
+                }
+                const auto ack_bytes =
+                    ngap_per_encode(&asn_DEF_PathSwitchRequestAcknowledgeTransfer, &ack_transfer);
+                ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PathSwitchRequestAcknowledgeTransfer,
+                                              &ack_transfer);
+                if (ack_bytes.empty()) {
+                    return sbi_core::http2::problem_response(
+                        500,
+                        "Internal Server Error",
+                        "Failed to PER-encode a real PathSwitchRequestAcknowledgeTransfer");
+                }
+
+                sbi_gen::SmContextUpdatedData resp_data{};
+                resp_data.n2SmInfoType = sbi_gen::N2SmInfoType{};
+                resp_data.n2SmInfoType->value = sbi_gen::N2SmInfoType::PATH_SWITCH_REQ_ACK;
+                sbi_gen::RefToBinaryData n2_info_ref{};
+                n2_info_ref.contentId = "n2SmInfo";
+                resp_data.n2SmInfo = n2_info_ref;
+
+                sbi_core::multipart::Part json_part;
+                json_part.content_type = "application/json";
+                json_part.body = json(resp_data).dump();
+                sbi_core::multipart::Part bin_part;
+                bin_part.content_type = "application/vnd.3gpp.ngap";
+                bin_part.content_id = "n2SmInfo";
+                bin_part.body.assign(ack_bytes.begin(), ack_bytes.end());
+                const auto encoded = sbi_core::multipart::encode({json_part, bin_part});
+
+                sbi_core::http2::Response resp;
+                resp.status = 200;
+                resp.headers.emplace("content-type", encoded.content_type_header);
+                resp.body = encoded.body;
+                return resp;
+            }
+
+            // Disclosed simplification: acknowledges every other N2SmInfoType/plain update (204)
+            // rather than fabricating SmContextUpdatedData content (EBI allocation, other N1/N2
+            // info, ...) with no real PCF/UPF backing it yet -- see file header for the full,
+            // real, disclosed scope (only PATH_SWITCH_REQ above has real datapath behavior).
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

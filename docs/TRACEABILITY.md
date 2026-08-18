@@ -1512,3 +1512,27 @@ Both relevant YAML files' ProSe DTOs were already codegen-generated from earlier
 confirmed by direct `grep` before writing any application code, so this ADR needed zero codegen
 work. See ADR-0091 in `docs/DECISIONS.md` for full disclosure -- **this closes task #104's ProSe
 half** (AUSF ProSe auth was the task's remaining scope after SoR Protection closed in ADR-0081).
+
+## ADR-0092 -- gap-closure task #101: SMF real UpdateSMContext PATH_SWITCH_REQ (real downlink GTP-U)
+
+| Requirement | Test |
+|---|---|
+| `UpdateSMContext` real dual content-type parsing (application/json vs multipart/related) and real `PATH_SWITCH_REQ` decode of the NGAP `PathSwitchRequestTransfer` | Live: real curl multipart POST (replicating `sbi_core::multipart::encode`'s own exact wire format) to a real running SMF, carrying a real PER-encoded `PathSwitchRequestTransfer` (gNB TEID=`0x2aaa`, IPv4=`10.45.0.99`) built by a hand-crafted scratch tool reusing the real `ngap_generated` codec |
+| Real PFCP Session Modification creates this project's first-ever real downlink PDR/FAR with a real TS 29.244 §8.2.56 Outer Header Creation | SMF's own log: `"PATH_SWITCH_REQ real N4 Session Modification succeeded (UP F-SEID=0x1, new gNB TEID=0x2aaa)"`; UPF's own log: `"real Create PDR 2 / Create FAR 2 ... peer TEID=0x2aaa, peer IPv4=10.45.0.99"` -- an exact match to what the client sent |
+| Real `PathSwitchRequestAcknowledgeTransfer` response carries UPF's own real, previously-allocated N3 uplink F-TEID (not the all-fields-empty placeholder ADR-0090 disclosed) | Real `200` with a real multipart `SmContextUpdatedData{n2SmInfoType=PATH_SWITCH_REQ_ACK}` + binary `n2SmInfo`; a second scratch tool independently decoded it back into a real `PathSwitchRequestAcknowledgeTransfer` with `uL-NGU-UP-TNLInformation` TEID=`00000001`/IPv4=`127.0.0.1` -- an exact match against UPF's own real, independently-logged allocated N3 F-TEID from Session Establishment |
+| Real, previously-undiscovered UPF bug: `SessionModificationRequest` with only `CreatePDR`/`CreateFAR` (no `UpdateUrr` etc.) used to unconditionally reply `Cause=RequestAccepted` without applying anything -- a false-positive success | Found by reading UPF's own handler before assuming success (not via a failing test); fixed: UPF now really decodes and logs the real Outer Header Creation, PFCP-level-only, same disclosed-scope class as Update BAR/Remove BAR (ADR-0071) |
+| Unknown `smContextRef` still real `404` | Live curl, real `404` with the real, existing error message |
+| No regression | Full `conformance_tests`: 325/325 pass (unchanged -- same disclosed manual-verification precedent ADR-0090/ADR-0091 established, applied to a real cross-NF PFCP/NGAP flow here), zero regressions; `pfcp_core`/`smf`/`upf` all built clean |
+
+Real, deeper prerequisites found while scoping this ADR (surfaced to the user, AskUserQuestion,
+before starting): this project's PDU session establishment has only ever created one PDR/FAR pair
+(uplink-only) -- no real downlink FAR/`OuterHeaderCreation` existed anywhere, and no real UE IP
+address has ever been allocated/tracked anywhere either. Real resolution: the downlink PDR/FAR is
+created for the first time exactly at `PATH_SWITCH_REQ` (via `CreatePDR`/`CreateFAR` legally
+nested inside a Session Modification Request, TS 29.244 Table 7.5.4.1-1), not retrofitted into
+Session Establishment; the PDR's own match criteria is `SourceInterface`-only, a real, disclosed
+narrowing (no UE IP allocation exists to match on). `perform_n4_session_establishment`'s own
+already-computed but previously-discarded allocated N3 uplink F-TEID is now persisted. See
+ADR-0092 in `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred
+(AMF's own relay wiring to this endpoint, real eBPF/XDP downlink encapsulation, the other 20 real
+N2SmInfoType values) -- **task #101 is closed for its real, scoped first slice**.

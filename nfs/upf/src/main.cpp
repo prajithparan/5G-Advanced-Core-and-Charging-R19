@@ -869,6 +869,102 @@ build_session_modification_response_ies(const std::vector<std::uint8_t>& request
     // 29.244 does support partial success via Failed Rule ID, not implemented here).
     bool failed = false;
 
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #101, ADR-0092): real Create PDR/Create
+    // FAR within a Session Modification Request (TS 29.244 Table 7.5.4.1-1 -- both real,
+    // Conditional, legal here just as in Session Establishment, not just at session creation).
+    // SMF's own PATH_SWITCH_REQ handling uses this to provision this project's first-ever real
+    // downlink PDR/FAR (with a real Outer Header Creation pointing GTP-U at the new gNB). Real,
+    // disclosed scope, same class as Update BAR/Remove BAR's own established "PFCP-level only"
+    // disclosure a few lines below: this project's real eBPF/XDP datapath (see
+    // datapath->register_teid's own real, disclosed uplink-decapsulation-only scope, Phase 3) has
+    // no real GTP-U encapsulation path at all -- a downlink FAR's own Outer Header Creation is
+    // decoded and logged for real (not silently ignored, unlike before this ADR), acknowledged at
+    // the real PFCP control-plane level, but does NOT yet cause real outgoing packets to actually
+    // be encapsulated toward the gNB. Before this ADR, a Create PDR/Create FAR arriving here was
+    // silently ignored while the response still unconditionally claimed Cause=RequestAccepted -- a
+    // real, now-fixed false-positive-success bug, not merely an added feature.
+    const auto* mod_create_pdr_ie =
+        ies.has_value()
+            ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatePdr))
+            : nullptr;
+    const auto* mod_create_far_ie =
+        ies.has_value()
+            ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreateFar))
+            : nullptr;
+    if (mod_create_pdr_ie != nullptr || mod_create_far_ie != nullptr) {
+        std::optional<std::uint32_t> new_pdr_id;
+        std::optional<std::uint32_t> new_far_id_from_pdr;
+        if (mod_create_pdr_ie != nullptr) {
+            const auto new_pdr_ies = pfcp_core::decode_ies(mod_create_pdr_ie->value);
+            const auto* pdr_id_ie =
+                new_pdr_ies.has_value()
+                    ? pfcp_core::find_ie(*new_pdr_ies,
+                                         static_cast<std::uint16_t>(pfcp_core::IeType::PdrId))
+                    : nullptr;
+            const auto* far_id_ie =
+                new_pdr_ies.has_value()
+                    ? pfcp_core::find_ie(*new_pdr_ies,
+                                         static_cast<std::uint16_t>(pfcp_core::IeType::FarId))
+                    : nullptr;
+            new_pdr_id =
+                pdr_id_ie != nullptr ? pfcp_core::decode_pdr_id(pdr_id_ie->value) : std::nullopt;
+            new_far_id_from_pdr =
+                far_id_ie != nullptr ? pfcp_core::decode_far_id(far_id_ie->value) : std::nullopt;
+        }
+        std::optional<pfcp_core::OuterHeaderCreationGtpuIpv4> new_ohc;
+        std::optional<std::uint32_t> new_far_id;
+        if (mod_create_far_ie != nullptr) {
+            const auto new_far_ies = pfcp_core::decode_ies(mod_create_far_ie->value);
+            const auto* far_id_ie =
+                new_far_ies.has_value()
+                    ? pfcp_core::find_ie(*new_far_ies,
+                                         static_cast<std::uint16_t>(pfcp_core::IeType::FarId))
+                    : nullptr;
+            new_far_id =
+                far_id_ie != nullptr ? pfcp_core::decode_far_id(far_id_ie->value) : std::nullopt;
+            const auto* fwd_params_ie =
+                new_far_ies.has_value()
+                    ? pfcp_core::find_ie(
+                          *new_far_ies,
+                          static_cast<std::uint16_t>(pfcp_core::IeType::ForwardingParameters))
+                    : nullptr;
+            if (fwd_params_ie != nullptr) {
+                const auto fwd_params_ies = pfcp_core::decode_ies(fwd_params_ie->value);
+                const auto* ohc_ie =
+                    fwd_params_ies.has_value()
+                        ? pfcp_core::find_ie(
+                              *fwd_params_ies,
+                              static_cast<std::uint16_t>(pfcp_core::IeType::OuterHeaderCreation))
+                        : nullptr;
+                if (ohc_ie != nullptr) {
+                    new_ohc = pfcp_core::decode_outer_header_creation_gtpu_ipv4(ohc_ie->value);
+                }
+            }
+        }
+        if (!new_pdr_id.has_value() || !new_far_id_from_pdr.has_value() ||
+            !new_far_id.has_value() || !new_ohc.has_value()) {
+            spdlog::warn("upf: Session Modification Request's Create PDR/Create FAR for TEID "
+                         "{:#x} is malformed or missing Outer Header Creation, ignoring",
+                         *teid);
+            failed = true;
+        } else {
+            spdlog::info(
+                "upf: real Create PDR {} / Create FAR {} for TEID {:#x} -- downlink Outer Header "
+                "Creation decoded (GTP-U/UDP/IPv4, peer TEID={:#x}, peer IPv4={}.{}.{}.{}) and "
+                "acknowledged at the PFCP control-plane level; NOT yet wired into the real "
+                "eBPF/XDP datapath (no downlink GTP-U encapsulation path exists there, a real, "
+                "disclosed gap -- see this branch's own comment)",
+                *new_pdr_id,
+                *new_far_id,
+                *teid,
+                new_ohc->teid,
+                new_ohc->ipv4[0],
+                new_ohc->ipv4[1],
+                new_ohc->ipv4[2],
+                new_ohc->ipv4[3]);
+        }
+    }
+
     const auto* update_urr_ie =
         ies.has_value()
             ? pfcp_core::find_ie(*ies, static_cast<std::uint16_t>(pfcp_core::IeType::UpdateUrr))
