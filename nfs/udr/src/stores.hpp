@@ -230,4 +230,27 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0098). Backs the real IP-SM-GW
+// Registration context-data resource (CreateIpSmGwContext/QueryIpSmGwContext/
+// ModifyIpSmGwContext/DeleteIpSmGwContext -- real PUT+GET+PATCH+DELETE, the richest operation set
+// of any context-data resource this project has closed so far). Real RFC 6902 JSON Patch (same
+// standard AmfContextStore's own apply_patch already uses), not RFC 7396 merge-patch.
+class IpSmGwContextStore {
+public:
+    explicit IpSmGwContextStore(const std::string& conninfo);
+
+    void put(const std::string& ue_id, nlohmann::json context);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    // Throws nlohmann::json::exception on a malformed patch -- caller turns that into a 400
+    // ProblemDetails, same as AmfContextStore's own apply_patch. Returns nullopt if ue_id doesn't
+    // exist.
+    std::optional<nlohmann::json> apply_patch(const std::string& ue_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

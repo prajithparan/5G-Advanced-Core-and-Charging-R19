@@ -1627,3 +1627,25 @@ TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0097 in `docs/DEC
 full disclosure, including what remains deliberately deferred (SMSF itself doesn't exist as a
 built NF in this project yet, so nothing calls these new routes) -- task #106 remains open, ~30
 resources still a real, disclosed gap.
+
+## ADR-0098 -- gap-closure task #106 continuation: UDR real IP-SM-GW Registration context-data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/context-data/ip-sm-gw` on an unseeded `ueId` | Live curl, real `404` |
+| `PUT` with a real partial document (`ipsmgwFqdn`, `unriIndicator`, both real optional fields) | Live curl, real `204` |
+| `GET` immediately after `PUT` | Live curl, real `200` with the identical document |
+| `PATCH` (`application/json-patch+json`, RFC 6902 `replace` on `/ipsmgwFqdn`) | Live curl, real `204` |
+| `GET` immediately after `PATCH` | Live curl, real `200` confirming `ipsmgwFqdn` updated, `unriIndicator` unchanged -- patch genuinely applied server-side |
+| `DELETE`, then `GET` again | Live curl, real `204` then real `404` -- full real four-operation lifecycle |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions; `udr` built clean |
+
+Real, richer operation set than the SMSF pair above (PUT+GET+PATCH+DELETE, confirmed per-operation
+from `TS29505_Subscription_Data.yaml` directly, not assumed uniform) -- the first UDR context-data
+resource in this project combining all four real operations, including a real RFC 6902 patch
+(`ModifyIpSmGwContext`) matching `AmfContextStore`'s own established patch standard, not the RFC
+7396 merge-patch style `SmPolicyDataStore`/`AmPolicyDataStore` use. Takes UDR's real resource-type
+coverage from 12 to 13 of free5GC's ~42+ real TS 29.504 resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0098 in `docs/DECISIONS.md` for full disclosure,
+including what remains deliberately deferred (no NF currently calls this new endpoint) -- task
+#106 remains open, ~29 resources still a real, disclosed gap.

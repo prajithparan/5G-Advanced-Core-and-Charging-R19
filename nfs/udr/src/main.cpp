@@ -54,8 +54,13 @@
 // counterparts, real GET+PUT+DELETE) is now implemented -- two real, distinct resources sharing
 // the identical `SmsfRegistration` schema, same "no PATCH exists for this resource" scope.
 //
+// UPDATE (ADR-0098, gap-closure task #106): the IP-SM-GW Registration context-data resource
+// (CreateIpSmGwContext/QueryIpSmGwContext/ModifyIpSmGwContext/DeleteIpSmGwContext, real
+// PUT+GET+PATCH+DELETE, RFC 6902 JSON Patch) is now implemented -- the richest operation set of
+// any context-data resource closed so far.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
-// context-data's other sub-resources (ip-sm-gw, mwd, roaming-information, pei-info,
+// context-data's other sub-resources (mwd, roaming-information, pei-info,
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // operator-specific-data; lcs-*; pp-data; group-data; shared-data; subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
@@ -261,6 +266,8 @@ int main() {
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0097).
     udr::SmsfContext3gppStore smsf_3gpp_context(conninfo);
     udr::SmsfNon3GppContextStore smsf_non3gpp_context(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0098).
+    udr::IpSmGwContextStore ip_sm_gw_context(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -329,6 +336,10 @@ int main() {
         "udr_smsf_non3gpp_context_write_total", "Total CreateSmsfContextNon3gpp calls");
     auto smsf_non3gpp_delete_counter = meter->CreateUInt64Counter(
         "udr_smsf_non3gpp_context_delete_total", "Total DeleteSmsfContextNon3gpp calls");
+    auto ip_sm_gw_write_counter = meter->CreateUInt64Counter(
+        "udr_ip_sm_gw_context_write_total", "Total CreateIpSmGwContext/ModifyIpSmGwContext calls");
+    auto ip_sm_gw_delete_counter = meter->CreateUInt64Counter("udr_ip_sm_gw_context_delete_total",
+                                                              "Total DeleteIpSmGwContext calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -991,6 +1002,100 @@ int main() {
                     404, "Not Found", "No SMSF non-3GPP-access context for ueId " + ue_id);
             }
             smsf_non3gpp_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: IP-SM-GW Registration context-data resource (ADR-0098, gap-closure
+    // task #106) -- real PUT+GET+PATCH(RFC 6902)+DELETE per TS29505_Subscription_Data.yaml, the
+    // richest operation set of any context-data resource this project has closed so far. ---
+
+    const std::string ip_sm_gw_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/ip-sm-gw";
+
+    server.add_route(
+        "PUT",
+        ip_sm_gw_path_pattern,
+        [&verifier, &ip_sm_gw_context, &ip_sm_gw_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::IpSmGwRegistration>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            ip_sm_gw_context.put(ue_id, json(*body));
+            ip_sm_gw_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        ip_sm_gw_path_pattern,
+        [&verifier, &ip_sm_gw_context](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = ip_sm_gw_context.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No IP-SM-GW context for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        ip_sm_gw_path_pattern,
+        [&verifier, &ip_sm_gw_context, &ip_sm_gw_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            std::optional<json> patched;
+            try {
+                patched = ip_sm_gw_context.apply_patch(ue_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No IP-SM-GW context for ueId " + ue_id);
+            }
+            ip_sm_gw_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        ip_sm_gw_path_pattern,
+        [&verifier, &ip_sm_gw_context, &ip_sm_gw_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!ip_sm_gw_context.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No IP-SM-GW context for ueId " + ue_id);
+            }
+            ip_sm_gw_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

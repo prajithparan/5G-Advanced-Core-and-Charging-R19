@@ -404,4 +404,52 @@ bool SmsfNon3GppContextStore::remove(const std::string& ue_id) {
     return result.affected_rows() > 0;
 }
 
+IpSmGwContextStore::IpSmGwContextStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void IpSmGwContextStore::put(const std::string& ue_id, nlohmann::json context) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_ip_sm_gw_context (ue_id, context) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET context = EXCLUDED.context",
+             pqxx::params{ue_id, context.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> IpSmGwContextStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT context FROM udr_ip_sm_gw_context WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["context"].as<std::string>()));
+}
+
+std::optional<nlohmann::json> IpSmGwContextStore::apply_patch(const std::string& ue_id,
+                                                              const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT context FROM udr_ip_sm_gw_context WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto context = nlohmann::json::parse(result.front()["context"].as<std::string>());
+    context = context.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("UPDATE udr_ip_sm_gw_context SET context = $2::jsonb WHERE ue_id = $1",
+             pqxx::params{ue_id, context.dump()});
+    txn.commit();
+    return std::make_optional(context);
+}
+
+bool IpSmGwContextStore::remove(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM udr_ip_sm_gw_context WHERE ue_id = $1", pqxx::params{ue_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr

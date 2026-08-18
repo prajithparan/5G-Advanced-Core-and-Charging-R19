@@ -393,16 +393,17 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 12 real resource endpoints: AMF 3GPP-access
+This project's UDR (`nfs/udr/src/main.cpp`) implements 13 real resource endpoints: AMF 3GPP-access
 context-data, AMF non-3GPP-access context-data (docs/DECISIONS.md ADR-0093), SMSF 3GPP-access and
-non-3GPP-access context-data (ADR-0097 -- see below), SMF-registrations context-data (full CRUD,
+non-3GPP-access context-data (ADR-0097 -- see below), IP-SM-GW Registration context-data
+(ADR-0098 -- see below), SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
 (`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
 semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
-ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 12
-of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, now 12 as of ADR-0097
--- see below).
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 13
+of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, now
+13 as of ADR-0098 -- see below).
 
 **Highest-priority missing resources** (the ones with real, direct behavioral impact elsewhere in
 this project, not just data-model completeness): Authentication Data / Authentication Status
@@ -424,8 +425,14 @@ non-3GPP-access (`CreateSmsfContext3gpp`/`QuerySmsfContext3gpp`/`DeleteSmsfConte
 non-3GPP counterparts, real GET+PUT+DELETE, schema `SmsfRegistration` shared by both real, distinct
 resources) -- taking UDR from 10 to 12 of free5GC's ~42+ real resource types. Same "surface first,
 consumer wiring later" precedent -- SMSF itself doesn't exist as a built NF in this project yet
-(Tier 2), so nothing calls these new routes. Influence Data (AF traffic-steering, needed once NEF
-exists) remains open, out of scope until NEF is built.
+(Tier 2), so nothing calls these new routes. **Closed, docs/DECISIONS.md ADR-0098**: IP-SM-GW
+Registration context-data (`CreateIpSmGwContext`/`QueryIpSmGwContext`/`ModifyIpSmGwContext`/
+`DeleteIpSmGwContext`, real PUT+GET+PATCH+DELETE, schema `IpSmGwRegistration`, real RFC 6902
+`application/json-patch+json` patch) -- taking UDR from 12 to 13 of free5GC's ~42+ real resource
+types, and the first UDR context-data resource with all four real operations together. Same
+"surface first, consumer wiring later" precedent -- no NF currently calls this new endpoint.
+Influence Data (AF traffic-steering, needed once NEF exists) remains open, out of scope until NEF
+is built.
 
 ---
 

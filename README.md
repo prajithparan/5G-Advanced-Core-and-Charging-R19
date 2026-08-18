@@ -66,8 +66,10 @@ live-verified against AMF's own PathSwitchRequest slice and a real UPF PFCP Sess
 AUSF (`Nausf_SoRProtection`, and — ADR-0091 — real TS 33.503 5G ProSe authentication,
 live-verified with an independently-computed EAP-AKA' response against real TS 35.207 test
 vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR (real PostgreSQL
-persistence, now 12 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
-context-data (ADR-0094) and SMSF 3GPP/non-3GPP-access context-data (ADR-0097)), and UPF (task #107
+persistence, now 13 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
+context-data (ADR-0094), SMSF 3GPP/non-3GPP-access context-data (ADR-0097), and IP-SM-GW
+Registration context-data (ADR-0098, real PUT+GET+PATCH+DELETE, the first UDR context-data
+resource with all four real operations together)), and UPF (task #107
 closed in full: PFCP Association Update/Release, PFD
 Management, Node Report). CHF closed real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even
 free5GC's own CDR module doesn't fully match in scope on this project's own terms. AMF's real
@@ -79,8 +81,9 @@ two genuinely simultaneous gNB associations and, as an unplanned bonus, real int
 from UERANSIM's own unmodified gNB correctly reacting to a new AMF-initiated
 `UEContextReleaseCommand`. **Still open**: `HandoverCancel`, the real AMF→SMF relay that would
 replace handover's own placeholder N3 addressing, SMF's remaining 19 `N2SmInfoType` values beyond
-`PATH_SWITCH_REQ`, the remaining ~30 of UDR's ~42+ real TS 29.504 resources (2 more now closed —
-SMSF 3GPP/non-3GPP-access context-data, ADR-0097, 12 of ~42+ total), ProSe's PAnF-dependent
+`PATH_SWITCH_REQ`, the remaining ~29 of UDR's ~42+ real TS 29.504 resources (3 more now closed —
+SMSF 3GPP/non-3GPP-access context-data (ADR-0097) and IP-SM-GW Registration context-data
+(ADR-0098), 13 of ~42+ total), ProSe's PAnF-dependent
 returning-UE path, and
 NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all). CI note: `.github/workflows/ci.yml`'s
 two `ctest` invocations were found (2026-08-18) to be missing the same known-flaky-test exclusion

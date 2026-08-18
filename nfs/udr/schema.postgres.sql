@@ -132,3 +132,16 @@ CREATE TABLE IF NOT EXISTS udr_smsf_non3gpp_context (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0098). Real Nudr_DataRepository
+-- IP-SM-GW Registration context-data resource
+-- (/subscription-data/{ueId}/context-data/ip-sm-gw, real schema IpSmGwRegistration). Real, richer
+-- operation set than the SMSF pair above: PUT (CreateIpSmGwContext) + GET (QueryIpSmGwContext) +
+-- PATCH (ModifyIpSmGwContext, real application/json-patch+json -- RFC 6902, confirmed by reading
+-- the YAML directly, same standard as udr_amf_context's own patch, NOT the RFC 7396 merge-patch
+-- style) + DELETE (DeleteIpSmGwContext), confirmed per-operation from the YAML, not assumed
+-- uniform across the context-data group.
+CREATE TABLE IF NOT EXISTS udr_ip_sm_gw_context (
+    ue_id   TEXT PRIMARY KEY,
+    context JSONB NOT NULL
+);
