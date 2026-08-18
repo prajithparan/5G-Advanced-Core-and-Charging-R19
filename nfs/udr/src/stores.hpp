@@ -436,4 +436,19 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0110). Backs the real individual
+// Shared Data resource (GetIndividualSharedData -- real GET-only, no create/update operation
+// exists in the spec at all). Genuinely NOT per-UE -- keyed by shared_data_id alone.
+class SharedDataStore {
+public:
+    explicit SharedDataStore(const std::string& conninfo);
+
+    void seed(const std::string& shared_data_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& shared_data_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

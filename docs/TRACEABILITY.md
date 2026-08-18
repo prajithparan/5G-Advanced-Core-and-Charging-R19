@@ -1872,3 +1872,24 @@ coverage from 23 to 24 of free5GC's ~42+ real TS 29.504 resources
 (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0109 in `docs/DECISIONS.md` for full disclosure,
 including what remains deliberately deferred (no NF currently calls these new endpoints) -- task
 #106 remains open, ~18 resources still a real, disclosed gap.
+
+## ADR-0110 -- gap-closure task #106 continuation: UDR real individual Shared Data (first non-per-UE resource)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/shared-data/{sharedDataId}` for the real seeded `sharedDataId` `10000-default` | Live curl, real `200` with the exact seeded document |
+| `GET` for an unseeded `sharedDataId` | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_shared_data` confirms the single seeded row persisted correctly |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real, genuinely GET-only resource (confirmed by grepping every operationId under the
+`/subscription-data/shared-data*` prefix, no create/update operation exists at all), and the
+**first UDR resource in this project genuinely not keyed per-UE** -- `sharedDataId` alone, real
+3GPP concept of operator-shared default profile data reused across many UEs. Seeded once (not
+looped over the two test SUPIs), with a real, spec-pattern-conformant identifier
+(`SharedDataId`'s own `^[0-9]{5,6}-.+$`), not fabricated. Takes UDR's real resource-type coverage
+from 24 to 25 of free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See
+ADR-0110 in `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred
+(the real sibling collection resource `GetSharedData`, which needs array-query-parameter parsing
+this project has no precedent for yet; no NF currently calls this new endpoint) -- task #106
+remains open, ~17 resources still a real, disclosed gap.

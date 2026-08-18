@@ -282,3 +282,21 @@ CREATE TABLE IF NOT EXISTS udr_pp_data_entry (
     data           JSONB NOT NULL,
     PRIMARY KEY (ue_id, af_instance_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0110). Real Nudr_DataRepository
+-- individual Shared Data resource (/subscription-data/shared-data/{sharedDataId}, real schema
+-- SharedData -- TS29503_Nudm_SDM.yaml, mandatory sharedDataId + optional sharedAmData/
+-- sharedSmsSubsData/sharedSmsMngSubsData/sharedDnnConfigurations and others). Confirmed by
+-- grepping every operationId under the real /subscription-data/shared-data* prefix: genuinely
+-- GET-only (GetIndividualSharedData), same real "provisioned out-of-band, seeded at startup"
+-- shape as the other GET-only UDR resources. Genuinely NOT per-UE -- keyed by shared_data_id alone
+-- (real 3GPP concept: operator-shared default profile data reused across many UEs), unlike every
+-- other UDR resource closed so far. Real, disclosed scope narrowing: the real sibling collection
+-- resource (/subscription-data/shared-data, GetSharedData, a required comma-separated
+-- shared-data-ids array query parameter) is deferred -- this project has no existing precedent
+-- anywhere yet for parsing array-shaped query parameters, and building that real capability
+-- belongs in its own scoped turn, not bundled into this one.
+CREATE TABLE IF NOT EXISTS udr_shared_data (
+    shared_data_id TEXT PRIMARY KEY,
+    data           JSONB NOT NULL
+);

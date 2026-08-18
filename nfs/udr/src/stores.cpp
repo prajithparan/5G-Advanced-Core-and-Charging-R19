@@ -753,4 +753,26 @@ std::vector<nlohmann::json> PpDataEntryStore::list_for_ue(const std::string& ue_
     return out;
 }
 
+SharedDataStore::SharedDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void SharedDataStore::seed(const std::string& shared_data_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_shared_data (shared_data_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (shared_data_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{shared_data_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> SharedDataStore::get(const std::string& shared_data_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_shared_data WHERE shared_data_id = $1",
+                                 pqxx::params{shared_data_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr

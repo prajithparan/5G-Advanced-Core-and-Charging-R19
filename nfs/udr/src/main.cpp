@@ -108,10 +108,17 @@
 // (Get Multiple PP Data Entries) are now implemented -- composite (ueId, afInstanceId) key, same
 // real shape as SmfRegistrationStore's own (ueId, pduSessionId).
 //
+// UPDATE (ADR-0110, gap-closure task #106): the individual Shared Data resource
+// (GetIndividualSharedData, real GET-only) is now implemented -- genuinely NOT per-UE, keyed by
+// shared_data_id alone. Real, disclosed scope narrowing: the real sibling collection resource
+// (GetSharedData, a required comma-separated shared-data-ids array query parameter) remains
+// deferred -- this project has no existing precedent for parsing array-shaped query parameters
+// yet, a real capability that belongs in its own scoped turn.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
-// operator-specific-data; group-data; shared-data;
+// operator-specific-data; group-data;
 // subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
@@ -339,6 +346,8 @@ int main() {
     udr::PpProfileDataStore pp_profile_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0109).
     udr::PpDataEntryStore pp_data_entry(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0110).
+    udr::SharedDataStore shared_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -436,6 +445,17 @@ int main() {
         pp_profile_data.seed(supi, pp_profile);
     }
 
+    // Real seed data (ADR-0110, gap-closure task #106) -- the real individual Shared Data
+    // resource is genuinely GET-only per spec, same "no live provisioning path yet" reasoning as
+    // above. Genuinely NOT per-UE, so seeded once (not looped over the two test SUPIs).
+    // "10000-default" matches SharedDataId's own real pattern (^[0-9]{5,6}-.+$), this project's
+    // own representative test identifier, not fabricated spec content.
+    {
+        json shared;
+        shared["sharedDataId"] = "10000-default";
+        shared_data.seed("10000-default", shared);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -507,6 +527,8 @@ int main() {
         "udr_pp_data_entry_write_total", "Total Create PP Data Entry calls");
     auto pp_data_entry_delete_counter = meter->CreateUInt64Counter(
         "udr_pp_data_entry_delete_total", "Total Delete PP Data Entry calls");
+    auto shared_data_get_counter = meter->CreateUInt64Counter(
+        "udr_shared_data_get_total", "Total GetIndividualSharedData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1762,6 +1784,30 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Nudr_DataRepository: individual Shared Data resource (ADR-0110, gap-closure task #106)
+    // -- real GET-only per TS29505_Subscription_Data.yaml, seeded at startup. Genuinely NOT
+    // per-UE -- keyed by sharedDataId alone. ---
+
+    const std::string shared_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/shared-data/{sharedDataId}";
+
+    server.add_route(
+        "GET",
+        shared_data_path_pattern,
+        [&verifier, &shared_data, &shared_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto shared_data_id = req.path_params.at("sharedDataId");
+            auto data = shared_data.get(shared_data_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No shared data for sharedDataId " + shared_data_id);
+            }
+            shared_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

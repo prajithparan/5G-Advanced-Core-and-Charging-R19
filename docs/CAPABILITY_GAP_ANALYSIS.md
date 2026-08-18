@@ -393,7 +393,7 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 24 real resource endpoints: AMF 3GPP-access
+This project's UDR (`nfs/udr/src/main.cpp`) implements 25 real resource endpoints: AMF 3GPP-access
 context-data, AMF non-3GPP-access context-data (docs/DECISIONS.md ADR-0093), SMSF 3GPP-access and
 non-3GPP-access context-data (ADR-0097 -- see below), IP-SM-GW Registration context-data
 (ADR-0098 -- see below), Message Waiting Data (Document) context-data (ADR-0099 -- see below),
@@ -402,17 +402,18 @@ context-data (ADR-0101 -- see below), Enhanced Coverage Restriction Data (ADR-01
 LCS Privacy Subscription Data (ADR-0103 -- see below), LCS Subscription Data (ADR-0104 -- see
 below), LCS Mobile Originated Subscription Data (ADR-0105 -- see below), Parameter Provision
 (Document) (ADR-0107 -- see below), Parameter Provision profile Data (Document) (ADR-0108 -- see
-below), Provisioned Parameter Data Entry / pp-data-store (ADR-0109 -- see below),
+below), Provisioned Parameter Data Entry / pp-data-store (ADR-0109 -- see below), individual
+Shared Data (ADR-0110 -- see below, first non-per-UE UDR resource),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`, and -- ADR-0106 -- `lcs-bca-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
 (`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
 semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
-ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 24
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 25
 of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, 13
 as of ADR-0098, 14 as of ADR-0099, 15 as of ADR-0100, 16 as of ADR-0101, 17 as of ADR-0102, 18 as
 of ADR-0103, 19 as of ADR-0104, 20 as of ADR-0105, 21 as of ADR-0106, 22 as of ADR-0107, 23 as of
-ADR-0108, now 24 as of ADR-0109 -- see below).
+ADR-0108, 24 as of ADR-0109, now 25 as of ADR-0110 -- see below).
 
 **Highest-priority missing resources** (the ones with real, direct behavioral impact elsewhere in
 this project, not just data-model completeness): Authentication Data / Authentication Status
@@ -475,7 +476,12 @@ GET-only, seeded at startup) -- taking UDR from 22 to 23 of free5GC's ~42+ real 
 **Closed, docs/DECISIONS.md ADR-0109**: Provisioned Parameter Data Entry / `pp-data-store`
 (`Create`/`Get`/`Delete PP Data Entry` plus `Get Multiple PP Data Entries`, real PUT+GET+DELETE
 plus a real sibling collection GET, composite `(ueId, afInstanceId)` key) -- taking UDR from 23 to
-24 of free5GC's ~42+ real resource types.
+24 of free5GC's ~42+ real resource types. **Closed, docs/DECISIONS.md ADR-0110**: individual
+Shared Data (`GetIndividualSharedData`, real GET-only, keyed by `sharedDataId` alone -- the first
+UDR resource in this project genuinely not keyed per-UE) -- taking UDR from 24 to 25 of free5GC's
+~42+ real resource types; its real sibling collection resource (`GetSharedData`, array query
+parameter) remains deferred, needing array-query-param parsing this project has no precedent for
+yet.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 
