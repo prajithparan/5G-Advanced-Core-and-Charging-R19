@@ -186,3 +186,15 @@ CREATE TABLE IF NOT EXISTS udr_pei_info (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0102). Real Nudr_DataRepository
+-- Enhanced Coverage Restriction Data resource (/subscription-data/{ueId}/coverage-restriction-data,
+-- real schema EnhancedCoverageRestrictionData -- TS29503_Nudm_SDM.yaml, a `plmnEcInfoList` of
+-- `PlmnEcInfo` entries). Confirmed by direct YAML read: this resource is genuinely GET-only
+-- (QueryCoverageRestrictionData) -- no create/update operation exists at all, same real
+-- "provisioned out-of-band, seeded at startup" precedent already established for
+-- udr_provisioned_data above (ADR-0069).
+CREATE TABLE IF NOT EXISTS udr_coverage_restriction_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

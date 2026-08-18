@@ -393,20 +393,21 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 16 real resource endpoints: AMF 3GPP-access
+This project's UDR (`nfs/udr/src/main.cpp`) implements 17 real resource endpoints: AMF 3GPP-access
 context-data, AMF non-3GPP-access context-data (docs/DECISIONS.md ADR-0093), SMSF 3GPP-access and
 non-3GPP-access context-data (ADR-0097 -- see below), IP-SM-GW Registration context-data
 (ADR-0098 -- see below), Message Waiting Data (Document) context-data (ADR-0099 -- see below),
 Roaming Information (Document) context-data (ADR-0100 -- see below), PEI Information (Document)
-context-data (ADR-0101 -- see below),
+context-data (ADR-0101 -- see below), Enhanced Coverage Restriction Data (ADR-0102 -- see below),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
 (`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
 semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
-ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 16
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 17
 of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, 13
-as of ADR-0098, 14 as of ADR-0099, 15 as of ADR-0100, now 16 as of ADR-0101 -- see below).
+as of ADR-0098, 14 as of ADR-0099, 15 as of ADR-0100, 16 as of ADR-0101, now 17 as of ADR-0102 --
+see below).
 
 **Highest-priority missing resources** (the ones with real, direct behavioral impact elsewhere in
 this project, not just data-model completeness): Authentication Data / Authentication Status
@@ -449,7 +450,10 @@ no NF currently calls this new endpoint. **Closed, docs/DECISIONS.md ADR-0101**:
 real `allOf`-composed schema `PeiUpdateInfo` correctly flattened by sbi-codegen into
 `PeiUpdateInfo_Subscription_Data`, real distinct `201`-vs-`204` PUT response codes) -- taking UDR
 from 15 to 16 of free5GC's ~42+ real resource types. Same "surface first, consumer wiring later"
-precedent -- no NF currently calls this new endpoint. Influence Data (AF traffic-steering, needed once NEF
+precedent -- no NF currently calls this new endpoint. **Closed, docs/DECISIONS.md ADR-0102**:
+Enhanced Coverage Restriction Data (`QueryCoverageRestrictionData`, real GET-only, seeded at
+startup for the same two real test SUPIs every other GET-only UDR resource seeds -- same shape as
+`provisioned-data`) -- taking UDR from 16 to 17 of free5GC's ~42+ real resource types. Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 
 ---

@@ -313,4 +313,22 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0102). Backs the real Enhanced
+// Coverage Restriction Data resource (QueryCoverageRestrictionData -- real GET-only, no
+// create/update operation exists in the spec at all, same real "provisioned out-of-band, seeded
+// at startup" shape as ProvisionedDataStore above).
+class CoverageRestrictionDataStore {
+public:
+    explicit CoverageRestrictionDataStore(const std::string& conninfo);
+
+    // Real UPSERT -- idempotent, safe to call every startup even if rows already exist from a
+    // prior run (same real persistence property ProvisionedDataStore's own seed() has).
+    void seed(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

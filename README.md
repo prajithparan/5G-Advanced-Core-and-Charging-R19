@@ -66,13 +66,14 @@ live-verified against AMF's own PathSwitchRequest slice and a real UPF PFCP Sess
 AUSF (`Nausf_SoRProtection`, and — ADR-0091 — real TS 33.503 5G ProSe authentication,
 live-verified with an independently-computed EAP-AKA' response against real TS 35.207 test
 vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR (real PostgreSQL
-persistence, now 16 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
+persistence, now 17 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
 context-data (ADR-0094), SMSF 3GPP/non-3GPP-access context-data (ADR-0097), IP-SM-GW
 Registration context-data (ADR-0098, real PUT+GET+PATCH+DELETE, the first UDR context-data
 resource with all four real operations together), Message Waiting Data (Document) context-data
 (ADR-0099, real distinct 201-vs-204 PUT response codes), Roaming Information (Document)
-context-data (ADR-0100, same distinct 201-vs-204 PUT shape), and PEI Information (Document)
-context-data (ADR-0101, real allOf-composed schema flattened by sbi-codegen)), and UPF (task #107
+context-data (ADR-0100, same distinct 201-vs-204 PUT shape), PEI Information (Document)
+context-data (ADR-0101, real allOf-composed schema flattened by sbi-codegen), and Enhanced
+Coverage Restriction Data (ADR-0102, real GET-only, seeded at startup)), and UPF (task #107
 closed in full: PFCP Association Update/Release, PFD
 Management, Node Report). CHF closed real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even
 free5GC's own CDR module doesn't fully match in scope on this project's own terms. AMF's real
@@ -84,10 +85,11 @@ two genuinely simultaneous gNB associations and, as an unplanned bonus, real int
 from UERANSIM's own unmodified gNB correctly reacting to a new AMF-initiated
 `UEContextReleaseCommand`. **Still open**: `HandoverCancel`, the real AMF→SMF relay that would
 replace handover's own placeholder N3 addressing, SMF's remaining 19 `N2SmInfoType` values beyond
-`PATH_SWITCH_REQ`, the remaining ~26 of UDR's ~42+ real TS 29.504 resources (6 more now closed —
+`PATH_SWITCH_REQ`, the remaining ~25 of UDR's ~42+ real TS 29.504 resources (7 more now closed —
 SMSF 3GPP/non-3GPP-access context-data (ADR-0097), IP-SM-GW Registration context-data (ADR-0098),
 Message Waiting Data (Document) context-data (ADR-0099), Roaming Information (Document)
-context-data (ADR-0100), and PEI Information (Document) context-data (ADR-0101), 16 of ~42+ total), ProSe's
+context-data (ADR-0100), PEI Information (Document) context-data (ADR-0101), and Enhanced
+Coverage Restriction Data (ADR-0102), 17 of ~42+ total), ProSe's
 PAnF-dependent
 returning-UE path, and
 NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all). CI note: `.github/workflows/ci.yml`'s

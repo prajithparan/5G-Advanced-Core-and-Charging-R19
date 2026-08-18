@@ -1714,3 +1714,21 @@ coverage from 15 to 16 of free5GC's ~42+ real TS 29.504 resources
 (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0101 in `docs/DECISIONS.md` for full disclosure,
 including what remains deliberately deferred (no NF currently calls this new endpoint) -- task
 #106 remains open, ~26 resources still a real, disclosed gap.
+
+## ADR-0102 -- gap-closure task #106 continuation: UDR real Enhanced Coverage Restriction Data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/coverage-restriction-data` for the real seeded SUPI `imsi-999700000000001` | Live curl, real `200` with the exact seeded `plmnEcInfoList`/`ecRestrictionDataNb` document |
+| `GET` for an unseeded SUPI | Live curl, real `404` |
+| Genuine PostgreSQL persistence across startup | Direct `psql` query against `udr_coverage_restriction_data` confirms both real seeded rows (`imsi-999700000000001`/`...002`) persisted correctly |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions; `udr` built clean |
+
+Real, genuinely GET-only resource (confirmed by grepping every operationId referencing this path,
+no create/update operation exists at all in the spec), same shape as `ProvisionedDataStore`
+(ADR-0069) -- seeded at startup rather than exposed for live creation, since the real spec assumes
+out-of-band provisioning for this data. Takes UDR's real resource-type coverage from 16 to 17 of
+free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0102 in
+`docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred
+(`ecRestrictionDataWb` left unpopulated in the seed data, no NF currently calls this new endpoint)
+-- task #106 remains open, ~25 resources still a real, disclosed gap.

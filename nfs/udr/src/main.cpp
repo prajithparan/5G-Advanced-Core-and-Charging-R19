@@ -77,12 +77,17 @@
 // `sbi_gen::PeiUpdateInfo_Subscription_Data` to disambiguate from the base type's own
 // `PeiUpdateInfo_Nudm_UECM`.
 //
+// UPDATE (ADR-0102, gap-closure task #106): the Enhanced Coverage Restriction Data resource
+// (QueryCoverageRestrictionData, real GET-only) is now implemented -- same real "no create/update
+// operation exists at all, seeded at startup" shape as the provisioned-data group (ADR-0069).
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // operator-specific-data; lcs-*; pp-data; group-data; shared-data; subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
-// and others); all of TS29504_Nudr_GroupIDmap.yaml.
+// and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
+// not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn).
 //
 // RFC 6902 JSON Patch, not RFC 7396 Merge Patch: AmfContext3gpp and UpdateSmfContext both use
 // application/json-patch+json (confirmed by reading the YAML directly), unlike UDM's
@@ -292,6 +297,8 @@ int main() {
     udr::RoamingInformationStore roaming_information(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0101).
     udr::PeiInfoStore pei_info(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0102).
+    udr::CoverageRestrictionDataStore coverage_restriction_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -318,6 +325,20 @@ int main() {
                               std::make_optional(am_data),
                               std::make_optional(json::object()),
                               std::make_optional(sm_data));
+    }
+
+    // Real seed data (ADR-0102, gap-closure task #106) -- the real Enhanced Coverage Restriction
+    // Data resource is genuinely GET-only per spec, same "no live provisioning path yet" reasoning
+    // as provisioned-data above. Seeded for the same two real test SUPIs, real lab PLMN
+    // (mcc=999/mnc=70, ADR-0016); ecRestrictionDataNb explicitly false is this project's own
+    // representative test value, not a spec default beyond the schema's own documented
+    // `default: false`.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json coverage_data;
+        coverage_data["plmnEcInfoList"] = json::array({json{
+            {"plmnId", json{{"mcc", "999"}, {"mnc", "70"}}}, {"ecRestrictionDataNb", false}}});
+        coverage_restriction_data.seed(supi, coverage_data);
     }
 
     auto meter = sbi_core::get_meter("udr");
@@ -372,6 +393,8 @@ int main() {
         "udr_roaming_information_write_total", "Total UpdateRoamingInformation calls");
     auto pei_info_write_counter = meter->CreateUInt64Counter(
         "udr_pei_info_write_total", "Total CreateOrUpdatePeiInformation calls");
+    auto coverage_restriction_data_get_counter = meter->CreateUInt64Counter(
+        "udr_coverage_restriction_data_get_total", "Total QueryCoverageRestrictionData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1336,6 +1359,31 @@ int main() {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No PEI Information for ueId " + ue_id);
             }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: Enhanced Coverage Restriction Data resource (ADR-0102, gap-closure
+    // task #106) -- real GET-only per TS29505_Subscription_Data.yaml, seeded at startup (no
+    // create/update operation exists in the spec, same shape as provisioned-data). ---
+
+    const std::string coverage_restriction_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/coverage-restriction-data";
+
+    server.add_route(
+        "GET",
+        coverage_restriction_data_path_pattern,
+        [&verifier, &coverage_restriction_data, &coverage_restriction_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = coverage_restriction_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Coverage Restriction Data for ueId " + ue_id);
+            }
+            coverage_restriction_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 
