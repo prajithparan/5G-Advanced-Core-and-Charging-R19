@@ -1692,3 +1692,25 @@ resource-type coverage from 14 to 15 of free5GC's ~42+ real TS 29.504 resources
 (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0100 in `docs/DECISIONS.md` for full disclosure,
 including what remains deliberately deferred (no NF currently calls this new endpoint) -- task
 #106 remains open, ~27 resources still a real, disclosed gap.
+
+## ADR-0101 -- gap-closure task #106 continuation: UDR real PEI Information (Document)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/context-data/pei-info` on an unseeded `ueId` | Live curl, real `404` |
+| `PUT` with `{"pei":"imei-490154203237518"}` on a new `ueId` | Live curl, real `201 Created` with `Location` header + created document in the body |
+| `GET` immediately after the create `PUT` | Live curl, real `200` with the identical document |
+| `PUT` again on the same `ueId` with a changed `pei` plus `previousPei` | Live curl, real `204` -- genuinely distinct from the `201` create path above |
+| `GET` after the update `PUT` | Live curl, real `200` confirming the updated document, including the composed `PeiUpdateInfoExt` field `previousPei` alongside the base `pei` field -- proves the real `allOf` flattening (`PeiUpdateInfo_Subscription_Data`) is correct end-to-end |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_pei_info` confirms the persisted document matches the API response |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions; `udr` built clean |
+
+Real `allOf` schema composition (`TS29505_Subscription_Data.yaml`'s own `PeiUpdateInfo` = base
+`TS29503_Nudm_UECM.yaml` `PeiUpdateInfo` + local `PeiUpdateInfoExt`), correctly generated and
+disambiguated by sbi-codegen as `PeiUpdateInfo_Subscription_Data` -- confirmed already generated
+before writing any application code, no new codegen work needed. Same real 201-vs-204 `xmax = 0`
+UPSERT idiom already used by `RoamingInformationStore` and others. Takes UDR's real resource-type
+coverage from 15 to 16 of free5GC's ~42+ real TS 29.504 resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0101 in `docs/DECISIONS.md` for full disclosure,
+including what remains deliberately deferred (no NF currently calls this new endpoint) -- task
+#106 remains open, ~26 resources still a real, disclosed gap.

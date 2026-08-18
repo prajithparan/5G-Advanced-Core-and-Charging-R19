@@ -70,8 +70,15 @@
 // response codes) is now implemented -- same "no PATCH/DELETE exists for this resource" scope as
 // the AMF non-3GPP-access context resource.
 //
+// UPDATE (ADR-0101, gap-closure task #106): the PEI Information (Document) resource
+// (CreateOrUpdatePeiInformation/QueryPeiInformation, real GET+PUT, real distinct 201-vs-204 PUT
+// response codes) is now implemented -- real schema is an allOf composition
+// (TS29503_Nudm_UECM.yaml's base PeiUpdateInfo + this file's own PeiUpdateInfoExt), generated as
+// `sbi_gen::PeiUpdateInfo_Subscription_Data` to disambiguate from the base type's own
+// `PeiUpdateInfo_Nudm_UECM`.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
-// context-data's other sub-resources (pei-info,
+// context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // operator-specific-data; lcs-*; pp-data; group-data; shared-data; subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
@@ -283,6 +290,8 @@ int main() {
     udr::MessageWaitingDataStore mwd(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0100).
     udr::RoamingInformationStore roaming_information(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0101).
+    udr::PeiInfoStore pei_info(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -361,6 +370,8 @@ int main() {
         meter->CreateUInt64Counter("udr_mwd_delete_total", "Total DeleteMessageWaitingData calls");
     auto roaming_information_write_counter = meter->CreateUInt64Counter(
         "udr_roaming_information_write_total", "Total UpdateRoamingInformation calls");
+    auto pei_info_write_counter = meter->CreateUInt64Counter(
+        "udr_pei_info_write_total", "Total CreateOrUpdatePeiInformation calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1272,6 +1283,58 @@ int main() {
             if (!data.has_value()) {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No Roaming Information for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: PEI Information (Document) resource (ADR-0101, gap-closure
+    // task #106) -- real PUT+GET per TS29505_Subscription_Data.yaml, no PATCH/DELETE. ---
+
+    const std::string pei_info_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/pei-info";
+
+    server.add_route(
+        "PUT",
+        pei_info_path_pattern,
+        [&verifier, &pei_info, &pei_info_write_counter, pei_info_path_pattern](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::PeiUpdateInfo_Subscription_Data>(
+                req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json j = *body;
+            const bool is_new = pei_info.put(ue_id, j);
+            pei_info_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", pei_info_path_pattern);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET", pei_info_path_pattern, [&verifier, &pei_info](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = pei_info.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No PEI Information for ueId " + ue_id);
             }
             return sbi_core::http2::Response::json(200, data->dump());
         });

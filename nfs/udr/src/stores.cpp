@@ -526,4 +526,29 @@ std::optional<nlohmann::json> RoamingInformationStore::get(const std::string& ue
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+PeiInfoStore::PeiInfoStore(const std::string& conninfo) : conn_(conninfo) {}
+
+bool PeiInfoStore::put(const std::string& ue_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto row = txn.exec("INSERT INTO udr_pei_info (ue_id, data) VALUES ($1, $2::jsonb) "
+                              "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data "
+                              "RETURNING (xmax = 0) AS inserted",
+                              pqxx::params{ue_id, data.dump()})
+                         .one_row();
+    txn.commit();
+    return row["inserted"].as<bool>();
+}
+
+std::optional<nlohmann::json> PeiInfoStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_pei_info WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr

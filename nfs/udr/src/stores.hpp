@@ -295,4 +295,22 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0101). Backs the real PEI
+// Information (Document) resource (CreateOrUpdatePeiInformation/QueryPeiInformation -- real
+// GET+PUT, same shape as RoamingInformationStore above, including the real distinct 201-vs-204
+// PUT response codes). No PATCH/DELETE exists for this resource in the spec (checked, not
+// assumed).
+class PeiInfoStore {
+public:
+    explicit PeiInfoStore(const std::string& conninfo);
+
+    // Returns true if this was a new entry (for 201-vs-204 response selection).
+    bool put(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

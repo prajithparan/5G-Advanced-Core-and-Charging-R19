@@ -171,3 +171,18 @@ CREATE TABLE IF NOT EXISTS udr_roaming_information (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0101). Real Nudr_DataRepository
+-- PEI Information (Document) resource (/subscription-data/{ueId}/context-data/pei-info, real
+-- schema PeiUpdateInfo -- an allOf composition of TS29503_Nudm_UECM.yaml's own base PeiUpdateInfo
+-- (mandatory `pei`) plus this file's own PeiUpdateInfoExt (lastPeiChangeTimestamp/
+-- lastImeiChangeTimestamp/previousPei/previousPeiTimestamp), flattened by sbi-codegen into
+-- PeiUpdateInfo_Subscription_Data to disambiguate from the base type's own PeiUpdateInfo_Nudm_UECM
+-- name). Real, simple operation set, confirmed by direct YAML read: PUT
+-- (CreateOrUpdatePeiInformation, real distinct 201-vs-204 response codes) + GET
+-- (QueryPeiInformation) only -- no PATCH/DELETE exists for this resource in the spec, same shape
+-- as udr_roaming_information above.
+CREATE TABLE IF NOT EXISTS udr_pei_info (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
