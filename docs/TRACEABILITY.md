@@ -1934,3 +1934,28 @@ full disclosure, including what remains deliberately deferred (`allowedMtcProvid
 `iwkEpcRestricted` left unpopulated in the seed data, the real group-keyed sibling resource, no NF
 currently calls this new endpoint) -- task #106 remains open, ~15 resources still a real,
 disclosed gap.
+
+## ADR-0113 -- gap-closure task #106 continuation: UDR real UE Policy Set (policy-data group)
+
+| Requirement | Test |
+|---|---|
+| `GET /policy-data/ues/{ueId}/ue-policy-set` on an unseeded `ueId` | Live curl, real `404` |
+| `PUT` with `{"subscCats":["cat1"]}` on a new `ueId` | Live curl, real `201 Created` with `Location` header + created document |
+| `GET` immediately after the create `PUT` | Live curl, real `200` |
+| `PUT` again with a changed `subscCats` | Live curl, real `204` -- genuinely distinct from the `201` create path above |
+| `GET` after the update `PUT` | Live curl, real `200` confirming the update |
+| `PATCH` (`application/merge-patch+json`, RFC 7396) with a changed `subscCats` | Live curl, real `204` with **no body** -- confirmed correct per the real spec's narrower response set (unlike `am-data`'s own `200`-with-body choice) |
+| `GET` after the `PATCH` | Live curl, real `200` confirming the merge-patched value took effect |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_ue_policy_set` confirms the persisted document matches the API's final response |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real, richer resource combining a real `PUT` (create-or-replace, `AmfContextStore`-style
+201-vs-204) with a real `PATCH` (merge-patch, `AmPolicyDataStore`-style) on the same resource --
+the first `policy-data` group resource in this project with both. `UePolicySetStore::put()`
+reuses the established `xmax = 0` UPSERT idiom; `merge_patch()` matches
+`AmPolicyDataStore::merge_patch()`'s own pattern exactly. Takes UDR's real resource-type coverage
+from 27 to 28 of free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See
+ADR-0113 in `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred
+(`praInfos`/`uePolicySections` left unpopulated, the real PLMN-keyed sibling resource, no NF
+currently calls these new endpoints) -- task #106 remains open, ~14 resources still a real,
+disclosed gap.

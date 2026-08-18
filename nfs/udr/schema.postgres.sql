@@ -329,3 +329,17 @@ CREATE TABLE IF NOT EXISTS udr_ee_profile_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0113). Real Nudr_DataRepository
+-- `policy-data` group's UE Policy Set resource (/policy-data/ues/{ueId}/ue-policy-set, real
+-- schema UePolicySet -- TS29519_Policy_Data.yaml, praInfos/subscCats/uePolicySections, every
+-- field optional). Confirmed by direct YAML read: real GET (ReadUEPolicySet) + real PUT
+-- (CreateOrReplaceUEPolicySet, real distinct 201-vs-204 response codes) + real PATCH
+-- (UpdateUEPolicySet, application/merge-patch+json -- RFC 7396, same standard as
+-- udr_am_policy_data's own patch, NOT udr_authentication_subscription's RFC 6902 -- and, unlike
+-- udr_am_policy_data's own PATCH, the real spec here only documents 204 as the success response,
+-- no 200-with-body option). No DELETE exists for this resource in the spec.
+CREATE TABLE IF NOT EXISTS udr_ue_policy_set (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

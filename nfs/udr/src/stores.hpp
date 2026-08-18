@@ -485,4 +485,24 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0113). Backs the real `policy-data`
+// group's UE Policy Set resource (ReadUEPolicySet/CreateOrReplaceUEPolicySet/UpdateUEPolicySet --
+// real GET+PUT+PATCH, RFC 7396 merge-patch, no DELETE exists for this resource in the spec). Real
+// distinct 201-vs-204 PUT response codes, same real `xmax = 0` UPSERT idiom already established.
+class UePolicySetStore {
+public:
+    explicit UePolicySetStore(const std::string& conninfo);
+
+    // Returns true if this was a new entry (for 201-vs-204 response selection).
+    bool put(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    // Real RFC 7396 JSON Merge Patch -- upsert-capable, matching AmPolicyDataStore's own
+    // merge_patch() shape.
+    nlohmann::json merge_patch(const std::string& ue_id, const nlohmann::json& patch);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

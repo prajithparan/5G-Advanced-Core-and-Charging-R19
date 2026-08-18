@@ -123,12 +123,17 @@
 // (QueryEEData, real GET-only) is now implemented -- same real "seeded at startup" shape. Real,
 // distinct UDR-side resource from this project's own UDM-side Nudm_EE work (task #105).
 //
+// UPDATE (ADR-0113, gap-closure task #106): the `policy-data` group's UE Policy Set resource
+// (ReadUEPolicySet/CreateOrReplaceUEPolicySet/UpdateUEPolicySet, real GET+PUT+PATCH RFC 7396
+// merge-patch) is now implemented -- real distinct 201-vs-204 PUT codes; unlike am-data's own
+// PATCH, the real spec here only documents 204 (no 200-with-body option).
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // group-data (including ee-profile-data's own group-keyed sibling);
 // subs-to-notify; policy-data's
-// own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
+// own other resources (sponsor-connectivity-data, bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
 // not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn).
 //
@@ -360,6 +365,8 @@ int main() {
     udr::OperatorSpecificDataStore operator_specific_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0112).
     udr::EeProfileDataStore ee_profile_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0113).
+    udr::UePolicySetStore ue_policy_set(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -558,6 +565,12 @@ int main() {
         "udr_operator_specific_data_patch_total", "Total ModifyOperSpecData calls");
     auto ee_profile_data_get_counter =
         meter->CreateUInt64Counter("udr_ee_profile_data_get_total", "Total QueryEEData calls");
+    auto ue_policy_set_write_counter = meter->CreateUInt64Counter(
+        "udr_ue_policy_set_write_total", "Total CreateOrReplaceUEPolicySet calls");
+    auto ue_policy_set_get_counter =
+        meter->CreateUInt64Counter("udr_ue_policy_set_get_total", "Total ReadUEPolicySet calls");
+    auto ue_policy_set_patch_counter = meter->CreateUInt64Counter("udr_ue_policy_set_patch_total",
+                                                                  "Total UpdateUEPolicySet calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1911,6 +1924,85 @@ int main() {
             }
             ee_profile_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: policy-data group, UE Policy Set resource (ADR-0113, gap-closure
+    // task #106) -- real GET+PUT+PATCH(RFC 7396) per TS29519_Policy_Data.yaml, no DELETE. ---
+
+    const std::string ue_policy_set_path_pattern =
+        std::string(kApiRoot) + "/policy-data/ues/{ueId}/ue-policy-set";
+
+    server.add_route(
+        "GET",
+        ue_policy_set_path_pattern,
+        [&verifier, &ue_policy_set, &ue_policy_set_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = ue_policy_set.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No UE policy set for ueId " + ue_id);
+            }
+            ue_policy_set_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        ue_policy_set_path_pattern,
+        [&verifier, &ue_policy_set, &ue_policy_set_write_counter, ue_policy_set_path_pattern](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const bool is_new = ue_policy_set.put(ue_id, body);
+            ue_policy_set_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", ue_policy_set_path_pattern);
+            resp.body = body.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        ue_policy_set_path_pattern,
+        [&verifier, &ue_policy_set, &ue_policy_set_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch;
+            try {
+                patch = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            ue_policy_set.merge_patch(ue_id, patch);
+            ue_policy_set_patch_counter->Add(1);
+            // Real spec: only 204 (no-body) is documented for this resource's real PATCH, unlike
+            // am-data's own 200-with-body option -- confirmed by direct YAML read.
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();
