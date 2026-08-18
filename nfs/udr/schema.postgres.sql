@@ -255,3 +255,14 @@ CREATE TABLE IF NOT EXISTS udr_pp_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0108). Real Nudr_DataRepository
+-- Parameter Provision profile Data (Document) resource (/subscription-data/{ueId}/pp-profile-data,
+-- real schema PpProfileData -- an `allowedMtcProviders` map keyed by PpDataType (or the special
+-- key "ALL"), every field optional). Confirmed by grepping every operationId referencing this
+-- path: genuinely GET-only (QueryPPData), same real "provisioned out-of-band, seeded at startup"
+-- shape as the other GET-only UDR resources already closed (ADR-0102/0103/0104/0105).
+CREATE TABLE IF NOT EXISTS udr_pp_profile_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

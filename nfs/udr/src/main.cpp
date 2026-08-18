@@ -100,11 +100,14 @@
 // (GetppData/ModifyPpData, real GET+PATCH, RFC 6902) is now implemented -- same
 // "no PUT/DELETE, apply_patch upsert-capable" shape as authentication-subscription.
 //
+// UPDATE (ADR-0108, gap-closure task #106): the Parameter Provision profile Data (Document)
+// resource (QueryPPData, real GET-only) is now implemented -- same real "seeded at startup" shape.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // operator-specific-data;
-// pp-data's own siblings (pp-data-store, pp-profile-data); group-data; shared-data;
+// pp-data-store; group-data; shared-data;
 // subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
@@ -328,6 +331,8 @@ int main() {
     udr::LcsMoDataStore lcs_mo_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0107).
     udr::PpDataStore pp_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0108).
+    udr::PpProfileDataStore pp_profile_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -413,6 +418,18 @@ int main() {
         lcs_mo_data.seed(supi, lcs_mo);
     }
 
+    // Real seed data (ADR-0108, gap-closure task #106) -- the real Parameter Provision profile
+    // Data resource is genuinely GET-only per spec, same "no live provisioning path yet" reasoning
+    // as above. `"ALL"` is a real, documented special key for `allowedMtcProviders` (per this
+    // schema's own description text, not fabricated); `afId: "af1"` is this project's own
+    // arbitrary representative test value.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json pp_profile;
+        pp_profile["allowedMtcProviders"]["ALL"] = json::array({json{{"afId", "af1"}}});
+        pp_profile_data.seed(supi, pp_profile);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -478,6 +495,8 @@ int main() {
         meter->CreateUInt64Counter("udr_pp_data_get_total", "Total GetppData calls");
     auto pp_data_patch_counter =
         meter->CreateUInt64Counter("udr_pp_data_patch_total", "Total ModifyPpData calls");
+    auto pp_profile_data_get_counter =
+        meter->CreateUInt64Counter("udr_pp_profile_data_get_total", "Total QueryPPData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1608,6 +1627,31 @@ int main() {
             }
             pp_data_patch_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    // --- Nudr_DataRepository: Parameter Provision profile Data (Document) resource (ADR-0108,
+    // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml, seeded at
+    // startup. ---
+
+    const std::string pp_profile_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/pp-profile-data";
+
+    server.add_route(
+        "GET",
+        pp_profile_data_path_pattern,
+        [&verifier, &pp_profile_data, &pp_profile_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = pp_profile_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No pp-profile-data for ueId " + ue_id);
+            }
+            pp_profile_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

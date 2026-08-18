@@ -1830,3 +1830,20 @@ free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See A
 `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred
 (`pp-data`'s own siblings `pp-data-store`/`pp-profile-data`, no NF currently calls this new
 endpoint) -- task #106 remains open, ~20 resources still a real, disclosed gap.
+
+## ADR-0108 -- gap-closure task #106 continuation: UDR real Parameter Provision profile Data (Document)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/pp-profile-data` for the real seeded SUPI `imsi-999700000000001` | Live curl, real `200` with the exact seeded `allowedMtcProviders` document |
+| `GET` for an unseeded SUPI | Live curl, real `404` |
+| Genuine PostgreSQL persistence across startup | Direct `psql` query against `udr_pp_profile_data` confirms both real seeded rows (`imsi-999700000000001`/`...002`) persisted correctly |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real, genuinely GET-only resource (confirmed by grepping every operationId referencing this path,
+no create/update operation exists at all in the spec), seeded at startup with the real, documented
+special key `"ALL"` from `PpProfileData`'s own description text, not fabricated. Takes UDR's real
+resource-type coverage from 22 to 23 of free5GC's ~42+ real TS 29.504 resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0108 in `docs/DECISIONS.md` for full disclosure,
+including what remains deliberately deferred (`pp-data-store`, no NF currently calls this new
+endpoint) -- task #106 remains open, ~19 resources still a real, disclosed gap.
