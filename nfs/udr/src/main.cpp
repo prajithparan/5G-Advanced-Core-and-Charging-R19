@@ -49,9 +49,14 @@
 // `Amf3GppAccessRegistration`), same "no PATCH/DELETE exists for this resource" scope its 3GPP
 // sibling already has.
 //
+// UPDATE (ADR-0097, gap-closure task #106): the SMSF Registration context-data group
+// (CreateSmsfContext3gpp/QuerySmsfContext3gpp/DeleteSmsfContext3gpp and their non-3GPP
+// counterparts, real GET+PUT+DELETE) is now implemented -- two real, distinct resources sharing
+// the identical `SmsfRegistration` schema, same "no PATCH exists for this resource" scope.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
-// context-data's other sub-resources (smsf-3gpp/non-3gpp, ip-sm-gw, mwd,
-// roaming-information, pei-info, ee-subscriptions, sdm-subscriptions, nidd-authorizations);
+// context-data's other sub-resources (ip-sm-gw, mwd, roaming-information, pei-info,
+// ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // operator-specific-data; lcs-*; pp-data; group-data; shared-data; subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml.
@@ -253,6 +258,9 @@ int main() {
     udr::AuthenticationSubscriptionDataStore auth_subscription_data(conninfo);
     udr::AuthenticationStatusStore auth_status(conninfo);
     udr::AmPolicyDataStore am_policy_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0097).
+    udr::SmsfContext3gppStore smsf_3gpp_context(conninfo);
+    udr::SmsfNon3GppContextStore smsf_non3gpp_context(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -313,6 +321,14 @@ int main() {
         "udr_am_policy_data_get_total", "Total ReadAccessAndMobilityPolicyData calls");
     auto am_policy_data_patch_counter = meter->CreateUInt64Counter(
         "udr_am_policy_data_patch_total", "Total UpdateAccessAndMobilityPolicyData calls");
+    auto smsf_3gpp_write_counter = meter->CreateUInt64Counter("udr_smsf_3gpp_context_write_total",
+                                                              "Total CreateSmsfContext3gpp calls");
+    auto smsf_3gpp_delete_counter = meter->CreateUInt64Counter("udr_smsf_3gpp_context_delete_total",
+                                                               "Total DeleteSmsfContext3gpp calls");
+    auto smsf_non3gpp_write_counter = meter->CreateUInt64Counter(
+        "udr_smsf_non3gpp_context_write_total", "Total CreateSmsfContextNon3gpp calls");
+    auto smsf_non3gpp_delete_counter = meter->CreateUInt64Counter(
+        "udr_smsf_non3gpp_context_delete_total", "Total DeleteSmsfContextNon3gpp calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -854,6 +870,130 @@ int main() {
             const auto patched = am_policy_data.merge_patch(ue_id, patch);
             am_policy_data_patch_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    // --- Nudr_DataRepository: SMSF Registration context-data group (ADR-0097, gap-closure task
+    // #106) -- real GET+PUT+DELETE per TS29505_Subscription_Data.yaml, two distinct real
+    // resources (3GPP-access / non-3GPP-access) sharing the identical real `SmsfRegistration`
+    // schema -- see schema.postgres.sql's own comment for why these stay two separate
+    // tables/stores rather than merged. ---
+
+    const std::string smsf_3gpp_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/smsf-3gpp-access";
+
+    server.add_route(
+        "PUT",
+        smsf_3gpp_path_pattern,
+        [&verifier, &smsf_3gpp_context, &smsf_3gpp_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SmsfRegistration>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            smsf_3gpp_context.put(ue_id, json(*body));
+            smsf_3gpp_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        smsf_3gpp_path_pattern,
+        [&verifier, &smsf_3gpp_context](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = smsf_3gpp_context.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMSF 3GPP-access context for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        smsf_3gpp_path_pattern,
+        [&verifier, &smsf_3gpp_context, &smsf_3gpp_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!smsf_3gpp_context.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMSF 3GPP-access context for ueId " + ue_id);
+            }
+            smsf_3gpp_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    const std::string smsf_non3gpp_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/smsf-non-3gpp-access";
+
+    server.add_route(
+        "PUT",
+        smsf_non3gpp_path_pattern,
+        [&verifier, &smsf_non3gpp_context, &smsf_non3gpp_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SmsfRegistration>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            smsf_non3gpp_context.put(ue_id, json(*body));
+            smsf_non3gpp_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        smsf_non3gpp_path_pattern,
+        [&verifier, &smsf_non3gpp_context](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = smsf_non3gpp_context.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMSF non-3GPP-access context for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        smsf_non3gpp_path_pattern,
+        [&verifier, &smsf_non3gpp_context, &smsf_non3gpp_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!smsf_non3gpp_context.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMSF non-3GPP-access context for ueId " + ue_id);
+            }
+            smsf_non3gpp_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

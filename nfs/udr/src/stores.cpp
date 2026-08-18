@@ -342,4 +342,66 @@ nlohmann::json AmPolicyDataStore::merge_patch(const std::string& ue_id,
     return doc;
 }
 
+SmsfContext3gppStore::SmsfContext3gppStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void SmsfContext3gppStore::put(const std::string& ue_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_smsf_3gpp_context (ue_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> SmsfContext3gppStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_smsf_3gpp_context WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+bool SmsfContext3gppStore::remove(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM udr_smsf_3gpp_context WHERE ue_id = $1", pqxx::params{ue_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
+SmsfNon3GppContextStore::SmsfNon3GppContextStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void SmsfNon3GppContextStore::put(const std::string& ue_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_smsf_non3gpp_context (ue_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> SmsfNon3GppContextStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_smsf_non3gpp_context WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+bool SmsfNon3GppContextStore::remove(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM udr_smsf_non3gpp_context WHERE ue_id = $1", pqxx::params{ue_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr

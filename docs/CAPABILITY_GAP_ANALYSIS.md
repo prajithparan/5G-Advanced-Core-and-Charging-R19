@@ -393,15 +393,16 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 10 real resource endpoints: AMF 3GPP-access
-context-data, AMF non-3GPP-access context-data (docs/DECISIONS.md ADR-0093 -- see below),
-SMF-registrations context-data (full CRUD, `{pduSessionId}`-scoped), provisioned-data
-(`am-data`, `smf-selection-subscription-data`, `sm-data`), and the real nested `policy-data/ues/
-{ueId}/sm-data` resource from ADR-0072 (`SmPolicyData` with full `SmPolicySnssaiData ->
-SmPolicyDnnData` nesting and RFC 7396 merge-patch semantics -- genuinely more complete for THIS
-one resource than a bare CRUD document, per that ADR's own real, deliberate design). What's
-covered is solid; the real gap is breadth -- roughly 10 of free5GC's ~42+ real resource types
-(9 as of ADR-0083, now 10, docs/DECISIONS.md ADR-0093 -- see below).
+This project's UDR (`nfs/udr/src/main.cpp`) implements 12 real resource endpoints: AMF 3GPP-access
+context-data, AMF non-3GPP-access context-data (docs/DECISIONS.md ADR-0093), SMSF 3GPP-access and
+non-3GPP-access context-data (ADR-0097 -- see below), SMF-registrations context-data (full CRUD,
+`{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
+`sm-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
+(`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
+semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 12
+of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, now 12 as of ADR-0097
+-- see below).
 
 **Highest-priority missing resources** (the ones with real, direct behavioral impact elsewhere in
 this project, not just data-model completeness): Authentication Data / Authentication Status
@@ -418,8 +419,13 @@ non-3GPP-access context-data (`QueryAmfContextNon3gpp`/`CreateAmfContextNon3gpp`
 schema `AmfNon3GppAccessRegistration`, a real, distinct resource from the 3GPP-access one, not a
 rename) -- taking UDR from 9 to 10 of free5GC's ~42+ real resource types. Same "surface first,
 consumer wiring later" disclosed precedent -- AMF's own registration path does not yet call this
-endpoint. Influence Data (AF traffic-steering, needed once NEF exists) remains open, out of scope
-until NEF is built.
+endpoint. **Closed, docs/DECISIONS.md ADR-0097**: SMSF Registration context-data, 3GPP-access and
+non-3GPP-access (`CreateSmsfContext3gpp`/`QuerySmsfContext3gpp`/`DeleteSmsfContext3gpp` and their
+non-3GPP counterparts, real GET+PUT+DELETE, schema `SmsfRegistration` shared by both real, distinct
+resources) -- taking UDR from 10 to 12 of free5GC's ~42+ real resource types. Same "surface first,
+consumer wiring later" precedent -- SMSF itself doesn't exist as a built NF in this project yet
+(Tier 2), so nothing calls these new routes. Influence Data (AF traffic-steering, needed once NEF
+exists) remains open, out of scope until NEF is built.
 
 ---
 
@@ -535,7 +541,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | SMF | ~10-16x | `UpdateSMContext`: `PATH_SWITCH_REQ`/`_ACK` slice CLOSED (task #101, ADR-0092, real downlink FAR/GTP-U control-plane); the other 20 real N2SmInfoType values remain a stub. AMF's own N2 handover NGAP side is now closed (ADR-0095/ADR-0096), but AMF still doesn't call SMF during handover -- the real AMF->SMF relay wiring for handover-triggered PDU session resource re-setup remains a real, disclosed open gap |
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
-| UDR | ~2.5-10x | Resource-type breadth (~10 of 42+ real TS 29.504 resources) |
+| UDR | ~2.5-10x | Resource-type breadth (~12 of 42+ real TS 29.504 resources) |
 | UPF | ~1x (task #107 fully closed: Association Update/Release, ADR-0084; PFD Management, ADR-0086; Node Report, ADR-0087; Session Set Deletion correctly found not applicable to this project's own N4/Sxc interface) | datapath (XDP) already ahead of both references on paper, unbenchmarked |
 | CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding: CLOSED (task #108, ADR-0089, narrower disclosed scope than free5GC's); already ahead on 5G-native service breadth + AI-native charging |
 

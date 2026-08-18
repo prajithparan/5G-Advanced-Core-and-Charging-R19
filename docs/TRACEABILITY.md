@@ -1606,3 +1606,24 @@ same class of gap as ADR-0090/ADR-0092's own "AMF doesn't call SMF yet" disclosu
 `HandoverCancel`/`HandoverCancelAcknowledge` remain real, open, out of this pass's scope (a
 separate elementary procedure). See ADR-0096 in `docs/DECISIONS.md` for full disclosure --
 **task #100 is closed for its real, scoped chain** (`HandoverRequired` through `HandoverNotify`).
+
+## ADR-0097 -- gap-closure task #106 continuation: UDR real SMSF Registration context-data (3GPP + non-3GPP access)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/context-data/smsf-3gpp-access` on an unseeded `ueId` | Live curl, real `404` |
+| `PUT` with the real mandatory field set (`smsfInstanceId`, `plmnId`) | Live curl, real `204` |
+| `GET` immediately after `PUT` | Live curl, real `200` with the identical document |
+| `DELETE`, then `GET` again | Live curl, real `204` then real `404` -- full real CRUD lifecycle |
+| `smsf-3gpp-access` and `smsf-non-3gpp-access` are genuinely independent despite sharing the identical `SmsfRegistration` schema | `PUT` distinct `smsfInstanceId` values on each for the SAME `ueId`, `GET` both back -- each returned its own value, not the other's |
+| Genuine PostgreSQL persistence, not process-memory-only | Direct `psql` query against both `udr_smsf_3gpp_context` and `udr_smsf_non3gpp_context` independently confirms two separate real rows |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions; `udr` built clean |
+
+Real, distinct resources sharing an identical schema -- confirmed by direct YAML read
+(`TS29505_Subscription_Data.yaml`), two real, separate operationId triples
+(`CreateSmsfContext3gpp`/`QuerySmsfContext3gpp`/`DeleteSmsfContext3gpp` and their non-3GPP
+counterparts). Takes UDR's real resource-type coverage from 10 to 12 of free5GC's ~42+ real
+TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0097 in `docs/DECISIONS.md` for
+full disclosure, including what remains deliberately deferred (SMSF itself doesn't exist as a
+built NF in this project yet, so nothing calls these new routes) -- task #106 remains open, ~30
+resources still a real, disclosed gap.

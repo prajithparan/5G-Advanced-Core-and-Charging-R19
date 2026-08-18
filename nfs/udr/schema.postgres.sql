@@ -112,3 +112,23 @@ CREATE TABLE IF NOT EXISTS udr_am_policy_data (
     ue_id       TEXT PRIMARY KEY,
     policy_data JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0097). Real Nudr_DataRepository
+-- SMSF Registration context-data group (TS29505_Subscription_Data.yaml's
+-- /subscription-data/{ueId}/context-data/smsf-3gpp-access and .../smsf-non-3gpp-access) --
+-- both real, distinct resources per spec (two separate real paths/operationIds
+-- CreateSmsfContext3gpp/QuerySmsfContext3gpp/DeleteSmsfContext3gpp vs.
+-- CreateSmsfContextNon3gpp/QuerySmsfContextNon3gpp/DeleteSmsfContextNon3gpp), even though both
+-- happen to share the identical real schema `SmsfRegistration` -- same "real, distinct resource,
+-- not a rename" reasoning udr_amf_non3gpp_context's own comment already established for the
+-- AMF-side pair, kept as two separate tables/stores here too rather than merged. Real GET+PUT+
+-- DELETE (confirmed per-operation from the YAML, matching udr_authentication_status's own shape).
+CREATE TABLE IF NOT EXISTS udr_smsf_3gpp_context (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS udr_smsf_non3gpp_context (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

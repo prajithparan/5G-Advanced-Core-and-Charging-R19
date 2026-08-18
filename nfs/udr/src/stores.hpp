@@ -195,4 +195,39 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0097). Backs the real SMSF
+// 3GPP-access context-data resource (CreateSmsfContext3gpp/QuerySmsfContext3gpp/
+// DeleteSmsfContext3gpp -- real GET+PUT+DELETE, same shape as AuthenticationStatusStore above).
+// Deliberately NOT the same class as SmsfNon3GppContextStore below, even though both real spec
+// resources share the identical schema (`SmsfRegistration`) -- same "real, distinct resource, not
+// a rename" precedent AmfContextStore/AmfNon3GppContextStore already established.
+class SmsfContext3gppStore {
+public:
+    explicit SmsfContext3gppStore(const std::string& conninfo);
+
+    void put(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    bool remove(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
+// Backs the real SMSF non-3GPP-access context-data resource (CreateSmsfContextNon3gpp/
+// QuerySmsfContextNon3gpp/DeleteSmsfContextNon3gpp) -- see SmsfContext3gppStore's own comment for
+// why this is a separate class/table.
+class SmsfNon3GppContextStore {
+public:
+    explicit SmsfNon3GppContextStore(const std::string& conninfo);
+
+    void put(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    bool remove(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

@@ -66,8 +66,9 @@ live-verified against AMF's own PathSwitchRequest slice and a real UPF PFCP Sess
 AUSF (`Nausf_SoRProtection`, and — ADR-0091 — real TS 33.503 5G ProSe authentication,
 live-verified with an independently-computed EAP-AKA' response against real TS 35.207 test
 vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR (real PostgreSQL
-persistence, now 10 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
-context-data, ADR-0094), and UPF (task #107 closed in full: PFCP Association Update/Release, PFD
+persistence, now 12 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
+context-data (ADR-0094) and SMSF 3GPP/non-3GPP-access context-data (ADR-0097)), and UPF (task #107
+closed in full: PFCP Association Update/Release, PFD
 Management, Node Report). CHF closed real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even
 free5GC's own CDR module doesn't fully match in scope on this project's own terms. AMF's real
 N2-based handover chain (`HandoverRequired` through `HandoverNotify`, TS 38.413 §8.4.2–§8.4.4) is
