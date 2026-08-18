@@ -92,10 +92,11 @@ private:
 };
 
 // Backs the real Nudr_DataRepository `provisioned-data` group (am-data, smf-selection-
-// subscription-data, sm-data) -- ADR-0069, gap-closure Tier 1b. Real, disclosed: this real
-// resource group is GET-only per the spec (no create/update operation exists at all), so there is
-// no put()/apply_patch() here -- only seed() (used once, at startup, same real-data-source
-// reasoning as this NF's own schema.postgres.sql header) and the three real get*() accessors.
+// subscription-data, sm-data, and -- ADR-0106, gap-closure task #106 -- lcs-bca-data) -- ADR-0069,
+// gap-closure Tier 1b. Real, disclosed: this real resource group is GET-only per the spec (no
+// create/update operation exists at all), so there is no put()/apply_patch() here -- only seed()
+// (used once, at startup, same real-data-source reasoning as this NF's own schema.postgres.sql
+// header) and the four real get*() accessors.
 class ProvisionedDataStore {
 public:
     explicit ProvisionedDataStore(const std::string& conninfo);
@@ -106,7 +107,8 @@ public:
               const std::string& serving_plmn_id,
               std::optional<nlohmann::json> am_data,
               std::optional<nlohmann::json> smf_sel_data,
-              std::optional<nlohmann::json> sm_data);
+              std::optional<nlohmann::json> sm_data,
+              std::optional<nlohmann::json> lcs_bca_data);
 
     std::optional<nlohmann::json> get_am_data(const std::string& ue_id,
                                               const std::string& serving_plmn_id);
@@ -114,6 +116,10 @@ public:
                                                    const std::string& serving_plmn_id);
     std::optional<nlohmann::json> get_sm_data(const std::string& ue_id,
                                               const std::string& serving_plmn_id);
+    // ADR-0106, gap-closure task #106: real LCS Broadcast Assistance Subscription Data
+    // (QueryLcsBcaData), same real GET-only path shape as the other three sub-resources above.
+    std::optional<nlohmann::json> get_lcs_bca_data(const std::string& ue_id,
+                                                   const std::string& serving_plmn_id);
 
 private:
     std::mutex mutex_;

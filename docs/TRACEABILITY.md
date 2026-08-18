@@ -1788,3 +1788,25 @@ real resource-type coverage from 19 to 20 of free5GC's ~42+ real TS 29.504 resou
 including what remains deliberately deferred (`moAssistanceDataTypes` left unpopulated in the seed
 data, no NF currently calls this new endpoint) -- task #106 remains open, ~22 resources still a
 real, disclosed gap.
+
+## ADR-0106 -- gap-closure task #106 continuation: UDR real LCS Broadcast Assistance Data (provisioned-data sibling)
+
+| Requirement | Test |
+|---|---|
+| `GET .../provisioned-data/lcs-bca-data` for the real seeded `(ueId, servingPlmnId)` pair | Live curl, real `200` with the exact seeded `locationAssistanceType` document |
+| `GET` for the same `ueId` with an unseeded `servingPlmnId` | Live curl, real `404` |
+| Sibling `am-data` route regression check | Live curl against the same `(ueId, servingPlmnId)`'s `am-data` route -- real `200`, unchanged, confirming the `ProvisionedDataStore` extension caused no regression |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_provisioned_data` confirms both real seeded rows' `lcs_bca_data` column matches the API response |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real sibling of the already-closed `provisioned-data` group (`am-data`/
+`smf-selection-subscription-data`/`sm-data`, ADR-0069) -- same real `(ueId, servingPlmnId)` key
+shape, added as a 4th column on the existing `ProvisionedDataStore`/`udr_provisioned_data` rather
+than a new store/table, reusing the existing generic `get_provisioned_column()` helper. Real,
+disclosed detail: `CREATE TABLE IF NOT EXISTS` alone is a no-op against the already-existing
+table, so an explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` was required to actually apply
+the new column to the live database -- confirmed via `\d udr_provisioned_data` before live
+verification. Takes UDR's real resource-type coverage from 20 to 21 of free5GC's ~42+ real
+TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0106 in `docs/DECISIONS.md` for
+full disclosure, including what remains deliberately deferred (no NF currently calls this new
+endpoint) -- task #106 remains open, ~21 resources still a real, disclosed gap.

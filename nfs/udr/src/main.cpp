@@ -91,10 +91,15 @@
 // UPDATE (ADR-0105, gap-closure task #106): the LCS Mobile Originated Subscription Data resource
 // (QueryLcsMoData, real GET-only) is now implemented -- same real "seeded at startup" shape.
 //
+// UPDATE (ADR-0106, gap-closure task #106): the provisioned-data group's `lcs-bca-data`
+// sub-resource (QueryLcsBcaData, real GET-only) is now implemented as a 4th column on
+// ProvisionedDataStore -- same real (ueId, servingPlmnId) key shape as am-data/
+// smf-selection-subscription-data/sm-data.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
-// operator-specific-data; lcs-bca-data and other lcs-* siblings;
+// operator-specific-data;
 // pp-data; group-data; shared-data; subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
@@ -330,18 +335,24 @@ int main() {
     // not invented for this project. SmfSelectionSubscriptionData.subscribedSnssaiInfos and
     // SessionManagementSubscriptionData.dnnConfigurations are real, cited, opaque-JSON fields this
     // codegen couldn't strongly type (OPAQUE FALLBACK) -- left unpopulated here, a real, disclosed
-    // gap rather than a guessed nested shape.
+    // gap rather than a guessed nested shape. lcs_bca_data.locationAssistanceType is a real `Bytes`
+    // field (TS29571_CommonData.yaml, base64) -- "dGVzdA==" (base64 of "test") is this project's
+    // own arbitrary representative test payload, not real 3GPP assistance-data content (ADR-0106,
+    // gap-closure task #106).
     for (const std::string& supi :
          {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
         json am_data;
         am_data["nssai"]["defaultSingleNssais"] = json::array({json{{"sst", 1}, {"sd", "000001"}}});
         json sm_data;
         sm_data["singleNssai"] = json{{"sst", 1}, {"sd", "000001"}};
+        json lcs_bca_data;
+        lcs_bca_data["locationAssistanceType"] = "dGVzdA==";
         provisioned_data.seed(supi,
                               "99970",
                               std::make_optional(am_data),
                               std::make_optional(json::object()),
-                              std::make_optional(sm_data));
+                              std::make_optional(sm_data),
+                              std::make_optional(lcs_bca_data));
     }
 
     // Real seed data (ADR-0102, gap-closure task #106) -- the real Enhanced Coverage Restriction
@@ -408,7 +419,8 @@ int main() {
                                                              "Total DeleteSmfRegistration calls");
     auto provisioned_data_get_counter = meter->CreateUInt64Counter(
         "udr_provisioned_data_get_total",
-        "Total provisioned-data am-data/smf-selection-subscription-data/sm-data GET calls");
+        "Total provisioned-data am-data/smf-selection-subscription-data/sm-data/lcs-bca-data GET "
+        "calls");
     auto sm_policy_data_get_counter = meter->CreateUInt64Counter(
         "udr_sm_policy_data_get_total", "Total ReadSessionManagementPolicyData calls");
     auto sm_policy_data_patch_counter = meter->CreateUInt64Counter(
@@ -788,6 +800,27 @@ int main() {
             if (!data.has_value()) {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No provisioned sm-data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // ADR-0106, gap-closure task #106: real LCS Broadcast Assistance Subscription Data
+    // (QueryLcsBcaData), same real GET-only (ueId, servingPlmnId) shape as the three routes above.
+    server.add_route(
+        "GET",
+        provisioned_data_path_pattern + "/lcs-bca-data",
+        [&verifier, &provisioned_data, &provisioned_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto serving_plmn_id = req.path_params.at("servingPlmnId");
+            auto data = provisioned_data.get_lcs_bca_data(ue_id, serving_plmn_id);
+            provisioned_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No provisioned lcs-bca-data for ueId " + ue_id);
             }
             return sbi_core::http2::Response::json(200, data->dump());
         });

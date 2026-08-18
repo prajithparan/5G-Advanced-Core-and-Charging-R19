@@ -142,22 +142,25 @@ void ProvisionedDataStore::seed(const std::string& ue_id,
                                 const std::string& serving_plmn_id,
                                 std::optional<nlohmann::json> am_data,
                                 std::optional<nlohmann::json> smf_sel_data,
-                                std::optional<nlohmann::json> sm_data) {
+                                std::optional<nlohmann::json> sm_data,
+                                std::optional<nlohmann::json> lcs_bca_data) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(conn_);
     txn.exec("INSERT INTO udr_provisioned_data "
-             "(ue_id, serving_plmn_id, am_data, smf_sel_data, sm_data) "
-             "VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb) "
+             "(ue_id, serving_plmn_id, am_data, smf_sel_data, sm_data, lcs_bca_data) "
+             "VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb) "
              "ON CONFLICT (ue_id, serving_plmn_id) DO UPDATE SET "
              "am_data = EXCLUDED.am_data, smf_sel_data = EXCLUDED.smf_sel_data, "
-             "sm_data = EXCLUDED.sm_data",
+             "sm_data = EXCLUDED.sm_data, lcs_bca_data = EXCLUDED.lcs_bca_data",
              pqxx::params{
                  ue_id,
                  serving_plmn_id,
                  am_data.has_value() ? std::optional<std::string>(am_data->dump()) : std::nullopt,
                  smf_sel_data.has_value() ? std::optional<std::string>(smf_sel_data->dump())
                                           : std::nullopt,
-                 sm_data.has_value() ? std::optional<std::string>(sm_data->dump()) : std::nullopt});
+                 sm_data.has_value() ? std::optional<std::string>(sm_data->dump()) : std::nullopt,
+                 lcs_bca_data.has_value() ? std::optional<std::string>(lcs_bca_data->dump())
+                                          : std::nullopt});
     txn.commit();
 }
 
@@ -199,6 +202,12 @@ ProvisionedDataStore::get_smf_sel_data(const std::string& ue_id,
 std::optional<nlohmann::json>
 ProvisionedDataStore::get_sm_data(const std::string& ue_id, const std::string& serving_plmn_id) {
     return get_provisioned_column(conn_, mutex_, "sm_data", ue_id, serving_plmn_id);
+}
+
+std::optional<nlohmann::json>
+ProvisionedDataStore::get_lcs_bca_data(const std::string& ue_id,
+                                       const std::string& serving_plmn_id) {
+    return get_provisioned_column(conn_, mutex_, "lcs_bca_data", ue_id, serving_plmn_id);
 }
 
 std::vector<nlohmann::json> SmfRegistrationStore::list_for_ue(const std::string& ue_id) {

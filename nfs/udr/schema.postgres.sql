@@ -45,14 +45,25 @@ CREATE TABLE IF NOT EXISTS udr_smf_registration (
 -- nfs/udr/src/main.cpp's own file header already gave for deferring this group originally. Row
 -- keyed by (ue_id, serving_plmn_id) per the real path shape; one JSONB column per real sub-
 -- resource since all three are always read/seeded together per UE in this slice.
+--
+-- Gap-closure (task #106, ADR-0106): `lcs_bca_data` column added -- the real, sibling
+-- `.../provisioned-data/lcs-bca-data` resource (real schema `LcsBroadcastAssistanceTypesData`,
+-- QueryLcsBcaData, same real GET-only shape, same (ue_id, serving_plmn_id) key) -- a genuinely
+-- distinct real sub-resource under this same group, not a rename.
 CREATE TABLE IF NOT EXISTS udr_provisioned_data (
     ue_id            TEXT NOT NULL,
     serving_plmn_id  TEXT NOT NULL,
     am_data          JSONB,
     smf_sel_data     JSONB,
     sm_data          JSONB,
+    lcs_bca_data     JSONB,
     PRIMARY KEY (ue_id, serving_plmn_id)
 );
+
+-- `CREATE TABLE IF NOT EXISTS` above is a no-op against an already-existing table from a prior
+-- run (real persistence property this whole schema relies on) -- this ALTER is what actually adds
+-- the new column to an existing real database.
+ALTER TABLE udr_provisioned_data ADD COLUMN IF NOT EXISTS lcs_bca_data JSONB;
 
 -- ADR-0072 (gap-closure: real N28 end-to-end): the real Nudr_DataRepository `policy-data` group's
 -- SM policy resource (TS29519_Policy_Data.yaml's /policy-data/ues/{ueId}/sm-data, real schema
