@@ -1914,3 +1914,23 @@ to 26 of free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.m
 in `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred (no NF
 currently calls these new endpoints) -- task #106 remains open, ~16 resources still a real,
 disclosed gap.
+
+## ADR-0112 -- gap-closure task #106 continuation: UDR real Event Exposure Data (Document)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/ee-profile-data` for the real seeded SUPI `imsi-999700000000001` | Live curl, real `200` with the exact seeded `restrictedEventTypes` document |
+| `GET` for an unseeded SUPI | Live curl, real `404` |
+| Genuine PostgreSQL persistence across startup | Direct `psql` query against `udr_ee_profile_data` confirms both real seeded rows (`imsi-999700000000001`/`...002`) persisted correctly |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real, genuinely GET-only resource (confirmed by grepping every operationId referencing this exact
+path, only one, no create/update operation exists at all in the spec), distinct from this
+project's own UDM-side `Nudm_EE` work (task #105) -- this is the real Nudr_DataRepository backing
+document. Seeded at startup with a real enum value (`LOSS_OF_CONNECTIVITY` from `EventType`), not
+fabricated. Takes UDR's real resource-type coverage from 26 to 27 of free5GC's ~42+ real
+TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0112 in `docs/DECISIONS.md` for
+full disclosure, including what remains deliberately deferred (`allowedMtcProvider`/
+`iwkEpcRestricted` left unpopulated in the seed data, the real group-keyed sibling resource, no NF
+currently calls this new endpoint) -- task #106 remains open, ~15 resources still a real,
+disclosed gap.

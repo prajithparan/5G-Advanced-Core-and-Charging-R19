@@ -315,3 +315,17 @@ CREATE TABLE IF NOT EXISTS udr_operator_specific_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0112). Real Nudr_DataRepository
+-- Event Exposure Data (Document) resource (/subscription-data/{ueId}/ee-profile-data, real schema
+-- EeProfileData -- restrictedEventTypes (array of real EventType enum values,
+-- TS29503_Nudm_EE.yaml), allowedMtcProvider, iwkEpcRestricted, every field optional). Confirmed by
+-- grepping every operationId referencing this exact path (only one): genuinely GET-only
+-- (QueryEEData), same real "provisioned out-of-band, seeded at startup" shape as the other
+-- GET-only UDR resources. Real, distinct UDR-side resource from this project's own UDM-side
+-- Nudm_EE work (task #105) -- this is the real Nudr_DataRepository backing document, not the
+-- UDM service surface.
+CREATE TABLE IF NOT EXISTS udr_ee_profile_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

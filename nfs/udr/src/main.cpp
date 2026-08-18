@@ -119,10 +119,14 @@
 // resource (QueryOperSpecData/ModifyOperSpecData, real GET+PATCH, RFC 6902) is now implemented --
 // same "no PUT/DELETE, apply_patch upsert-capable" shape as pp-data.
 //
+// UPDATE (ADR-0112, gap-closure task #106): the Event Exposure Data (Document) resource
+// (QueryEEData, real GET-only) is now implemented -- same real "seeded at startup" shape. Real,
+// distinct UDR-side resource from this project's own UDM-side Nudm_EE work (task #105).
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
-// group-data;
+// group-data (including ee-profile-data's own group-keyed sibling);
 // subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
@@ -354,6 +358,8 @@ int main() {
     udr::SharedDataStore shared_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0111).
     udr::OperatorSpecificDataStore operator_specific_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0112).
+    udr::EeProfileDataStore ee_profile_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -462,6 +468,17 @@ int main() {
         shared_data.seed("10000-default", shared);
     }
 
+    // Real seed data (ADR-0112, gap-closure task #106) -- the real Event Exposure Data resource
+    // is genuinely GET-only per spec, same "no live provisioning path yet" reasoning as above.
+    // `LOSS_OF_CONNECTIVITY` is a real enum value from EventType (TS29503_Nudm_EE.yaml), this
+    // project's own representative test choice for the optional `restrictedEventTypes` field.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json ee_profile;
+        ee_profile["restrictedEventTypes"] = json::array({"LOSS_OF_CONNECTIVITY"});
+        ee_profile_data.seed(supi, ee_profile);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -539,6 +556,8 @@ int main() {
         "udr_operator_specific_data_get_total", "Total QueryOperSpecData calls");
     auto operator_specific_data_patch_counter = meter->CreateUInt64Counter(
         "udr_operator_specific_data_patch_total", "Total ModifyOperSpecData calls");
+    auto ee_profile_data_get_counter =
+        meter->CreateUInt64Counter("udr_ee_profile_data_get_total", "Total QueryEEData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1868,6 +1887,30 @@ int main() {
             }
             operator_specific_data_patch_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    // --- Nudr_DataRepository: Event Exposure Data (Document) resource (ADR-0112, gap-closure
+    // task #106) -- real GET-only per TS29505_Subscription_Data.yaml, seeded at startup. ---
+
+    const std::string ee_profile_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/ee-profile-data";
+
+    server.add_route(
+        "GET",
+        ee_profile_data_path_pattern,
+        [&verifier, &ee_profile_data, &ee_profile_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = ee_profile_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No ee-profile-data for ueId " + ue_id);
+            }
+            ee_profile_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();
