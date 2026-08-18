@@ -2043,3 +2043,26 @@ per-UE `ue-policy-set` resource (ADR-0113) but genuinely distinct: keyed by `plm
 free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0117 in
 `docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~10 resources still a real,
 disclosed gap.
+
+## ADR-0118 -- gap-closure task #106 continuation: UDR real Slice-specific Policy Control Data
+
+| Requirement | Test |
+|---|---|
+| `GET /policy-data/slice-control-data/{snssai}` on an unseeded `snssai` (`1-000001`) | Live curl, real `404` |
+| `PATCH` (`application/merge-patch+json`) with `{"remainMbrUl":"100 Mbps"}` on that same key, no prior create | Live curl, real `200` with the newly-originated document -- confirms `PATCH` is genuinely upsert-capable (no `PUT`/`POST` exists for this resource) |
+| `GET` immediately after the originating `PATCH` | Live curl, real `200` matching |
+| `PATCH` again with `{"remainMbrDl":"200 Mbps"}` | Live curl, real `200` with both fields present (merged, not replaced) |
+| `GET` after the second `PATCH` | Live curl, real `200` confirming the merge |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_slice_control_data` confirms the persisted document matches the API's final response exactly (`{"remainMbrDl": "200 Mbps", "remainMbrUl": "100 Mbps"}`, key `1-000001`) |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real `GET`+`PATCH`-only resource (`ReadSlicePolicyControlData`/`UpdateSlicePolicyControlData`,
+RFC 7396 merge-patch) -- no `PUT`/`POST` create operation exists at all, so `merge_patch` is
+upsert-capable, same disclosed precedent as `AmPolicyDataStore`/`SmPolicyDataStore`. Real,
+disclosed: the YAML types the `{snssai}` path parameter as the `Snssai` object schema with no
+documented bare-path-segment string encoding (checked, not assumed); this project reuses its own
+already-disclosed `sst + '-' + sd` convention (ADR-0072/PCF's `snssai_map_key`) rather than
+inventing a second answer to the same open question. Takes UDR's real resource-type coverage from
+32 to 33 of free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See
+ADR-0118 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~9 resources still
+a real, disclosed gap.

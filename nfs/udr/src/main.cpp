@@ -153,12 +153,20 @@
 // ue-policy-set resource) but keyed by plmn_id, a genuinely distinct resource, not a UE-scoped
 // alias.
 //
+// UPDATE (ADR-0118, gap-closure task #106): the `policy-data` group's Slice-specific Policy
+// Control Data resource (ReadSlicePolicyControlData/UpdateSlicePolicyControlData, real
+// GET+PATCH-only, no PUT/POST create operation exists at all) is now implemented -- merge_patch
+// is upsert-capable, same disclosed precedent as AmPolicyDataStore/SmPolicyDataStore. Real,
+// disclosed: the YAML types the {snssai} path parameter as the Snssai object schema with no
+// documented bare-path-segment string encoding; this project reuses its own already-disclosed
+// "sst + '-' + sd" convention (ADR-0072/PCF's snssai_map_key) rather than inventing a new one.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // group-data (including ee-profile-data's own group-keyed sibling);
 // subs-to-notify; policy-data's
-// own other resources (slice-control-data, mbs-session-pol-data, pdtq-data, group-control-data,
+// own other resources (mbs-session-pol-data, pdtq-data, group-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
 // not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn).
 //
@@ -400,6 +408,8 @@ int main() {
     udr::BdtDataStore bdt_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0117).
     udr::PlmnUePolicySetStore plmn_ue_policy_set(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0118).
+    udr::SlicePolicyDataStore slice_control_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -642,6 +652,10 @@ int main() {
         "udr_bdt_data_delete_total", "Total DeleteIndividualBdtData calls");
     auto plmn_ue_policy_set_get_counter = meter->CreateUInt64Counter(
         "udr_plmn_ue_policy_set_get_total", "Total ReadPlmnUePolicySet calls");
+    auto slice_control_data_get_counter = meter->CreateUInt64Counter(
+        "udr_slice_control_data_get_total", "Total ReadSlicePolicyControlData calls");
+    auto slice_control_data_patch_counter = meter->CreateUInt64Counter(
+        "udr_slice_control_data_patch_total", "Total UpdateSlicePolicyControlData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2267,6 +2281,52 @@ int main() {
             }
             plmn_ue_policy_set_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: policy-data group, Slice-specific Policy Control Data resource
+    // (ADR-0118, gap-closure task #106) -- real GET+PATCH-only per TS29519_Policy_Data.yaml, no
+    // PUT/POST create operation exists, so merge_patch is upsert-capable (same precedent as
+    // am-data). ---
+
+    const std::string slice_control_data_path_pattern =
+        std::string(kApiRoot) + "/policy-data/slice-control-data/{snssai}";
+
+    server.add_route(
+        "GET",
+        slice_control_data_path_pattern,
+        [&verifier, &slice_control_data, &slice_control_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto snssai = req.path_params.at("snssai");
+            auto data = slice_control_data.get(snssai);
+            slice_control_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Slice Policy Control Data for snssai " + snssai);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        slice_control_data_path_pattern,
+        [&verifier, &slice_control_data, &slice_control_data_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch;
+            try {
+                patch = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto snssai = req.path_params.at("snssai");
+            const auto patched = slice_control_data.merge_patch(snssai, patch);
+            slice_control_data_patch_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched.dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

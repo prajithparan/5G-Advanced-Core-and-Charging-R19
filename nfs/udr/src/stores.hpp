@@ -582,4 +582,23 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0118). Backs the real Slice-specific
+// Policy Control Data resource (/policy-data/slice-control-data/{snssai}, real GET+PATCH-only,
+// no PUT/POST create operation exists at all -- confirmed by direct YAML read). Same disclosed,
+// deliberate "no create operation exists, so merge_patch is upsert-capable" precedent already
+// established for AmPolicyDataStore/SmPolicyDataStore, byte-for-byte matching AmPolicyDataStore's
+// own class shape. Keyed by snssai (a plain string per this project's own established Snssai
+// string-key convention).
+class SlicePolicyDataStore {
+public:
+    explicit SlicePolicyDataStore(const std::string& conninfo);
+
+    std::optional<nlohmann::json> get(const std::string& snssai);
+    nlohmann::json merge_patch(const std::string& snssai, const nlohmann::json& patch);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

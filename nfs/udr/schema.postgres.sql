@@ -410,3 +410,22 @@ CREATE TABLE IF NOT EXISTS udr_plmn_ue_policy_set (
     plmn_id TEXT PRIMARY KEY,
     data    JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0118). Real Nudr_DataRepository
+-- Slice-specific Policy Control Data resource (/policy-data/slice-control-data/{snssai}, real
+-- schema SlicePolicyData -- mbrUl/mbrDl/remainMbrUl/remainMbrDl/suppFeat, every field optional;
+-- PATCH request body is the narrower SlicePolicyDataPatch, remainMbrUl/remainMbrDl only).
+-- Confirmed by direct YAML read: real GET (ReadSlicePolicyControlData) + real PATCH
+-- (UpdateSlicePolicyControlData, application/merge-patch+json -- RFC 7396) -- no PUT/POST create
+-- operation exists at all, so (same disclosed, deliberate precedent already established for
+-- AmPolicyDataStore/SmPolicyDataStore) merge_patch is upsert-capable. Keyed by snssai: the real
+-- YAML types this path parameter as the Snssai *object* schema with no documented string
+-- encoding for a bare path segment (checked, not assumed -- genuinely different from every other
+-- real 5G_APIs YAML use of Snssai as a query param, which always wraps it in a real
+-- `content: application/json` parameter instead). This project reuses its own already-disclosed,
+-- not-spec-mandated "sst + '-' + sd" string convention (ADR-0072/PCF's snssai_map_key) for
+-- consistency rather than inventing a second answer to the same open question.
+CREATE TABLE IF NOT EXISTS udr_slice_control_data (
+    snssai TEXT PRIMARY KEY,
+    data   JSONB NOT NULL
+);

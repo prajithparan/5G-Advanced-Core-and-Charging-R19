@@ -995,4 +995,33 @@ std::optional<nlohmann::json> PlmnUePolicySetStore::get(const std::string& plmn_
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+SlicePolicyDataStore::SlicePolicyDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+std::optional<nlohmann::json> SlicePolicyDataStore::get(const std::string& snssai) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_slice_control_data WHERE snssai = $1", pqxx::params{snssai});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+nlohmann::json SlicePolicyDataStore::merge_patch(const std::string& snssai,
+                                                 const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_slice_control_data WHERE snssai = $1", pqxx::params{snssai});
+    auto doc = result.empty() ? nlohmann::json::object()
+                              : nlohmann::json::parse(result.front()["data"].as<std::string>());
+    doc.merge_patch(patch);
+    txn.exec("INSERT INTO udr_slice_control_data (snssai, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (snssai) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{snssai, doc.dump()});
+    txn.commit();
+    return doc;
+}
+
 } // namespace udr
