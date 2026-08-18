@@ -1681,6 +1681,7 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
     ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_ue_id);
     ASN_STRUCT_FREE(asn_DEF_HandoverType, ho_type);
     ASN_STRUCT_FREE(asn_DEF_SourceToTarget_TransparentContainer, s2t);
+    ASN_STRUCT_FREE(asn_DEF_TargetToSource_TransparentContainer, t2s);
 }
 
 // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100, ADR-0096): real Handover Notification
