@@ -79,13 +79,22 @@ two genuinely simultaneous gNB associations and, as an unplanned bonus, real int
 from UERANSIM's own unmodified gNB correctly reacting to a new AMF-initiated
 `UEContextReleaseCommand`. **Still open**: `HandoverCancel`, the real AMF→SMF relay that would
 replace handover's own placeholder N3 addressing, SMF's remaining 19 `N2SmInfoType` values beyond
-`PATH_SWITCH_REQ`, the remaining ~32 of UDR's ~42+ real TS 29.504 resources, ProSe's
-PAnF-dependent returning-UE path, and NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all). CI
-note: `.github/workflows/ci.yml`'s two `ctest` invocations were found (2026-08-18) to be missing
-the same known-flaky-test exclusion (`UdrIntegration.AmfContextLifecycle`/`UdmIntegration.
-SdmDataRetrievalAndSubscriptions`, a real, disclosed, unroot-caused hang since ADR-0071) local
-runs have always used — fixed in ADR-0093 so CI matches established local verification practice;
-the underlying flake itself remains open.
+`PATH_SWITCH_REQ`, the remaining ~30 of UDR's ~42+ real TS 29.504 resources (2 more now closed —
+SMSF 3GPP/non-3GPP-access context-data, ADR-0097, 12 of ~42+ total), ProSe's PAnF-dependent
+returning-UE path, and
+NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all). CI note: `.github/workflows/ci.yml`'s
+two `ctest` invocations were found (2026-08-18) to be missing the same known-flaky-test exclusion
+(`UdrIntegration.AmfContextLifecycle`/`UdmIntegration.SdmDataRetrievalAndSubscriptions`, a real,
+disclosed, unroot-caused hang since ADR-0071) local runs have always used — fixed in ADR-0093 so
+CI matches established local verification practice; the underlying flake itself remains open.
+Separately, a real memory leak found and fixed in the new handover code (ADR-0096 follow-up) and
+the resulting `ngap_task.cpp`/`ngap_handover.cpp` split (real engineering improvement — the file
+had grown to 2658 lines) were both verified clean via full local reproduction under CI's exact
+ASan configuration (325/325 pass), but as of 2026-08-18 the `sanitize (asan-ubsan)` CI job has
+failed 4 consecutive times (including 2 full workflow restarts) for an external reason unrelated
+to code — a consistent ~9.5-minute runner termination, while `sanitize (tsan)`/`build`/`lint` all
+pass clean in the same runs. Real, disclosed, not yet resolved — likely a GitHub-side
+account/runner-pool constraint specific to that one job, out of reach from within this repo.
 
 ## Repository layout
 
