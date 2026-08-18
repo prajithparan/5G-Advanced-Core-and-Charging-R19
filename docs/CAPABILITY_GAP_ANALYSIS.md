@@ -393,7 +393,7 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 28 real resource endpoints: AMF 3GPP-access
+This project's UDR (`nfs/udr/src/main.cpp`) implements 29 real resource endpoints: AMF 3GPP-access
 context-data, AMF non-3GPP-access context-data (docs/DECISIONS.md ADR-0093), SMSF 3GPP-access and
 non-3GPP-access context-data (ADR-0097 -- see below), IP-SM-GW Registration context-data
 (ADR-0098 -- see below), Message Waiting Data (Document) context-data (ADR-0099 -- see below),
@@ -405,18 +405,19 @@ below), LCS Mobile Originated Subscription Data (ADR-0105 -- see below), Paramet
 below), Provisioned Parameter Data Entry / pp-data-store (ADR-0109 -- see below), individual
 Shared Data (ADR-0110 -- see below, first non-per-UE UDR resource), Operator-Specific Data
 Container (Document) (ADR-0111 -- see below), Event Exposure Data (Document) (ADR-0112 -- see
-below), UE Policy Set (ADR-0113 -- see below),
+below), UE Policy Set (ADR-0113 -- see below), policy-data Operator-Specific Data (ADR-0114 --
+see below),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`, and -- ADR-0106 -- `lcs-bca-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
 (`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
 semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
-ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 28
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 29
 of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, 13
 as of ADR-0098, 14 as of ADR-0099, 15 as of ADR-0100, 16 as of ADR-0101, 17 as of ADR-0102, 18 as
 of ADR-0103, 19 as of ADR-0104, 20 as of ADR-0105, 21 as of ADR-0106, 22 as of ADR-0107, 23 as of
-ADR-0108, 24 as of ADR-0109, 25 as of ADR-0110, 26 as of ADR-0111, 27 as of ADR-0112, now 28 as of
-ADR-0113 -- see below).
+ADR-0108, 24 as of ADR-0109, 25 as of ADR-0110, 26 as of ADR-0111, 27 as of ADR-0112, 28 as of
+ADR-0113, now 29 as of ADR-0114 -- see below).
 
 **Highest-priority missing resources** (the ones with real, direct behavioral impact elsewhere in
 this project, not just data-model completeness): Authentication Data / Authentication Status
@@ -493,7 +494,10 @@ taking UDR from 26 to 27 of free5GC's ~42+ real resource types. **Closed, docs/D
 ADR-0113**: UE Policy Set (`ReadUEPolicySet`/`CreateOrReplaceUEPolicySet`/`UpdateUEPolicySet`,
 real GET+PUT+PATCH RFC 7396, the first `policy-data` group resource combining both a real
 create-or-replace PUT and a real merge-patch PATCH) -- taking UDR from 27 to 28 of free5GC's ~42+
-real resource types.
+real resource types. **Closed, docs/DECISIONS.md ADR-0114**: `policy-data` group's
+Operator-Specific Data (`ReadOperatorSpecificData`/`UpdateOperatorSpecificData`, real GET+PATCH
+RFC 6902, genuinely distinct real resource from the `subscription-data`-scoped one, ADR-0111,
+confirmed live) -- taking UDR from 28 to 29 of free5GC's ~42+ real resource types.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 

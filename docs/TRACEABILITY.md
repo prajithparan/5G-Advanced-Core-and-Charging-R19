@@ -1959,3 +1959,26 @@ ADR-0113 in `docs/DECISIONS.md` for full disclosure, including what remains deli
 (`praInfos`/`uePolicySections` left unpopulated, the real PLMN-keyed sibling resource, no NF
 currently calls these new endpoints) -- task #106 remains open, ~14 resources still a real,
 disclosed gap.
+
+## ADR-0114 -- gap-closure task #106 continuation: UDR real policy-data Operator-Specific Data
+
+| Requirement | Test |
+|---|---|
+| `GET /policy-data/ues/{ueId}/operator-specific-data` on an unseeded `ueId` | Live curl, real `404` |
+| `PATCH` (`application/json-patch+json`, RFC 6902 `add` on `/policyFlag`) with no prior document | Live curl, real `200` with the document originated via upsert -- no `PUT`/`POST` exists for this resource |
+| `GET` immediately after the originating `PATCH` | Live curl, real `200` confirming persistence |
+| `PATCH` again (RFC 6902 `replace` on `/policyFlag/value`) | Live curl, real `200` with the updated document |
+| `GET` after the update `PATCH` | Live curl, real `200` confirming the update |
+| Genuinely distinct from the `subscription-data`-scoped sibling | `GET` on the same `ueId`'s `subscription-data`-scoped `operator-specific-data` path independently returns real `404` -- confirms these are two separate resources, not aliases |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_policy_operator_specific_data` confirms the persisted document matches the API's final response |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real `GET`+`PATCH`-only resource (no PUT/DELETE, no POST/create -- confirmed by direct YAML read),
+`PolicyOperatorSpecificDataStore::apply_patch()` byte-for-byte matching `OperatorSpecificDataStore`'s
+own upsert-capable RFC 6902 pattern; reuses the same real `OperatorSpecificDataContainer` schema
+via a real cross-file `$ref`, but is a genuinely distinct resource (separate real operationId
+pair) from the `subscription-data`-scoped one (ADR-0111) -- confirmed live, not just by spec
+reading. Takes UDR's real resource-type coverage from 28 to 29 of free5GC's ~42+ real TS 29.504
+resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0114 in `docs/DECISIONS.md` for full
+disclosure, including what remains deliberately deferred (no NF currently calls these new
+endpoints) -- task #106 remains open, ~13 resources still a real, disclosed gap.

@@ -128,6 +128,12 @@
 // merge-patch) is now implemented -- real distinct 201-vs-204 PUT codes; unlike am-data's own
 // PATCH, the real spec here only documents 204 (no 200-with-body option).
 //
+// UPDATE (ADR-0114, gap-closure task #106): the `policy-data` group's Operator-Specific Data
+// resource (ReadOperatorSpecificData/UpdateOperatorSpecificData, real GET+PATCH RFC 6902) is now
+// implemented -- real, distinct resource from the subscription-data-scoped
+// operator-specific-data (ADR-0111), reusing the same real OperatorSpecificDataContainer schema
+// via a cross-file $ref.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
@@ -367,6 +373,8 @@ int main() {
     udr::EeProfileDataStore ee_profile_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0113).
     udr::UePolicySetStore ue_policy_set(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0114).
+    udr::PolicyOperatorSpecificDataStore policy_operator_specific_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -571,6 +579,10 @@ int main() {
         meter->CreateUInt64Counter("udr_ue_policy_set_get_total", "Total ReadUEPolicySet calls");
     auto ue_policy_set_patch_counter = meter->CreateUInt64Counter("udr_ue_policy_set_patch_total",
                                                                   "Total UpdateUEPolicySet calls");
+    auto policy_operator_specific_data_get_counter = meter->CreateUInt64Counter(
+        "udr_policy_operator_specific_data_get_total", "Total ReadOperatorSpecificData calls");
+    auto policy_operator_specific_data_patch_counter = meter->CreateUInt64Counter(
+        "udr_policy_operator_specific_data_patch_total", "Total UpdateOperatorSpecificData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2003,6 +2015,56 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Nudr_DataRepository: policy-data group, Operator-Specific Data resource (ADR-0114,
+    // gap-closure task #106) -- real GET+PATCH(RFC 6902) per TS29519_Policy_Data.yaml, no
+    // PUT/DELETE. ---
+
+    const std::string policy_operator_specific_data_path_pattern =
+        std::string(kApiRoot) + "/policy-data/ues/{ueId}/operator-specific-data";
+
+    server.add_route(
+        "GET",
+        policy_operator_specific_data_path_pattern,
+        [&verifier, &policy_operator_specific_data, &policy_operator_specific_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = policy_operator_specific_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No policy-data operator-specific-data for ueId " + ue_id);
+            }
+            policy_operator_specific_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        policy_operator_specific_data_path_pattern,
+        [&verifier, &policy_operator_specific_data, &policy_operator_specific_data_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json patched;
+            try {
+                patched = policy_operator_specific_data.apply_patch(ue_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            policy_operator_specific_data_patch_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched.dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

@@ -343,3 +343,20 @@ CREATE TABLE IF NOT EXISTS udr_ue_policy_set (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0114). Real Nudr_DataRepository
+-- `policy-data` group's Operator-Specific Data resource
+-- (/policy-data/ues/{ueId}/operator-specific-data, real response shape: a map keyed by operator
+-- specific data element name, values the same real schema OperatorSpecificDataContainer already
+-- used by udr_operator_specific_data above -- reused via a real cross-file $ref from
+-- TS29519_Policy_Data.yaml into TS29505_Subscription_Data.yaml). Confirmed by grepping this exact
+-- path (only one block, two operations): real GET (ReadOperatorSpecificData) + real PATCH
+-- (UpdateOperatorSpecificData, application/json-patch+json -- RFC 6902) -- no PUT/DELETE. Real,
+-- genuinely distinct resource from the subscription-data-scoped udr_operator_specific_data (real,
+-- separate operationId pair, same "distinct resource, not a rename" precedent already established
+-- for the AMF/SMSF 3GPP-vs-non-3GPP pairs). No POST/create operation exists either, so
+-- apply_patch() is upsert-capable, same disclosed precedent already established.
+CREATE TABLE IF NOT EXISTS udr_policy_operator_specific_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
