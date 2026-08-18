@@ -618,4 +618,26 @@ std::optional<nlohmann::json> LcsSubscriptionDataStore::get(const std::string& u
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+LcsMoDataStore::LcsMoDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void LcsMoDataStore::seed(const std::string& ue_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_lcs_mo_data (ue_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> LcsMoDataStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_lcs_mo_data WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr

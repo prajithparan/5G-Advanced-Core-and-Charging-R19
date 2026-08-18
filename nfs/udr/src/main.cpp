@@ -88,10 +88,13 @@
 // (QueryLcsSubscriptionData, real GET-only) is now implemented -- same real "seeded at startup"
 // shape.
 //
+// UPDATE (ADR-0105, gap-closure task #106): the LCS Mobile Originated Subscription Data resource
+// (QueryLcsMoData, real GET-only) is now implemented -- same real "seeded at startup" shape.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
-// operator-specific-data; lcs-mo-data/lcs-bca-data and other lcs-* siblings;
+// operator-specific-data; lcs-bca-data and other lcs-* siblings;
 // pp-data; group-data; shared-data; subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
@@ -311,6 +314,8 @@ int main() {
     udr::LcsPrivacyDataStore lcs_privacy_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0104).
     udr::LcsSubscriptionDataStore lcs_subscription_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0105).
+    udr::LcsMoDataStore lcs_mo_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -378,6 +383,18 @@ int main() {
         lcs_subscription_data.seed(supi, lcs_subscription);
     }
 
+    // Real seed data (ADR-0105, gap-closure task #106) -- the real LCS Mobile Originated
+    // Subscription Data resource is genuinely GET-only per spec, same "no live provisioning path
+    // yet" reasoning as above. `BASIC_SELF_LOCATION` is a real enum value from LcsMoServiceClass
+    // (TS29503_Nudm_SDM.yaml), this project's own representative test choice for the mandatory
+    // `allowedServiceClasses` field.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json lcs_mo;
+        lcs_mo["allowedServiceClasses"] = json::array({"BASIC_SELF_LOCATION"});
+        lcs_mo_data.seed(supi, lcs_mo);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -436,6 +453,8 @@ int main() {
         "udr_lcs_privacy_data_get_total", "Total QueryLcsPrivacyData calls");
     auto lcs_subscription_data_get_counter = meter->CreateUInt64Counter(
         "udr_lcs_subscription_data_get_total", "Total QueryLcsSubscriptionData calls");
+    auto lcs_mo_data_get_counter =
+        meter->CreateUInt64Counter("udr_lcs_mo_data_get_total", "Total QueryLcsMoData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1473,6 +1492,30 @@ int main() {
                     404, "Not Found", "No LCS Subscription Data for ueId " + ue_id);
             }
             lcs_subscription_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: LCS Mobile Originated Subscription Data resource (ADR-0105,
+    // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml, seeded at
+    // startup. ---
+
+    const std::string lcs_mo_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/lcs-mo-data";
+
+    server.add_route(
+        "GET",
+        lcs_mo_data_path_pattern,
+        [&verifier, &lcs_mo_data, &lcs_mo_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = lcs_mo_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No LCS Mobile Originated Data for ueId " + ue_id);
+            }
+            lcs_mo_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 

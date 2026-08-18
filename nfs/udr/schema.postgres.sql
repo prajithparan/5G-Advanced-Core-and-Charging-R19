@@ -220,3 +220,14 @@ CREATE TABLE IF NOT EXISTS udr_lcs_subscription_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0105). Real Nudr_DataRepository LCS
+-- Mobile Originated Subscription Data resource (/subscription-data/{ueId}/lcs-mo-data, real schema
+-- LcsMoData -- $ref'd verbatim from TS29503_Nudm_SDM.yaml, mandatory `allowedServiceClasses`
+-- (minItems 1) + optional `moAssistanceDataTypes`). Confirmed by grepping every operationId
+-- referencing this path: genuinely GET-only (QueryLcsMoData), same real "provisioned out-of-band,
+-- seeded at startup" shape as udr_lcs_subscription_data above.
+CREATE TABLE IF NOT EXISTS udr_lcs_mo_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
