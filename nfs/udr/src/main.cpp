@@ -161,13 +161,22 @@
 // documented bare-path-segment string encoding; this project reuses its own already-disclosed
 // "sst + '-' + sd" convention (ADR-0072/PCF's snssai_map_key) rather than inventing a new one.
 //
+// UPDATE (ADR-0119, gap-closure task #106): the `policy-data` group's group-specific Policy
+// Control Data resource (ReadGroupPolCtrlData/ModifyGroupPolCtrlData, real GET+PATCH-only, no
+// PUT/POST create operation exists at all) is now implemented -- merge_patch is upsert-capable,
+// same precedent as slice-control-data above. Keyed by the real GroupId schema (plain string, no
+// encoding ambiguity, unlike slice-control-data's own snssai key).
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // group-data (including ee-profile-data's own group-keyed sibling);
 // subs-to-notify; policy-data's
-// own other resources (mbs-session-pol-data, pdtq-data, group-control-data,
-// and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
+// own other resources (mbs-session-pol-data -- real, disclosed: its MbsSessPolDataId key is a
+// deeply nested oneOf/anyOf object (mbsSessionId -> tmgi/ssm/nid, or afAppId) with no documented
+// bare-path-segment string encoding at all, genuinely more ambiguous than snssai's own flat
+// two-field shape, so left deferred rather than inventing a serialization; pdtq-data, and
+// others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
 // not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn).
 //
 // RFC 6902 JSON Patch, not RFC 7396 Merge Patch: AmfContext3gpp and UpdateSmfContext both use
@@ -410,6 +419,8 @@ int main() {
     udr::PlmnUePolicySetStore plmn_ue_policy_set(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0118).
     udr::SlicePolicyDataStore slice_control_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0119).
+    udr::GroupPolicyDataStore group_control_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -656,6 +667,10 @@ int main() {
         "udr_slice_control_data_get_total", "Total ReadSlicePolicyControlData calls");
     auto slice_control_data_patch_counter = meter->CreateUInt64Counter(
         "udr_slice_control_data_patch_total", "Total UpdateSlicePolicyControlData calls");
+    auto group_control_data_get_counter = meter->CreateUInt64Counter(
+        "udr_group_control_data_get_total", "Total ReadGroupPolCtrlData calls");
+    auto group_control_data_patch_counter = meter->CreateUInt64Counter(
+        "udr_group_control_data_patch_total", "Total ModifyGroupPolCtrlData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2326,6 +2341,54 @@ int main() {
             const auto snssai = req.path_params.at("snssai");
             const auto patched = slice_control_data.merge_patch(snssai, patch);
             slice_control_data_patch_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    // --- Nudr_DataRepository: policy-data group, group-specific Policy Control Data resource
+    // (ADR-0119, gap-closure task #106) -- real GET+PATCH-only per TS29519_Policy_Data.yaml, no
+    // PUT/POST create operation exists, so merge_patch is upsert-capable (same precedent as
+    // am-data/slice-control-data). ---
+
+    const std::string group_control_data_path_pattern =
+        std::string(kApiRoot) + "/policy-data/group-control-data/{intGroupId}";
+
+    server.add_route(
+        "GET",
+        group_control_data_path_pattern,
+        [&verifier, &group_control_data, &group_control_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto int_group_id = req.path_params.at("intGroupId");
+            auto data = group_control_data.get(int_group_id);
+            group_control_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No Group Policy Control Data for intGroupId " + int_group_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        group_control_data_path_pattern,
+        [&verifier, &group_control_data, &group_control_data_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch;
+            try {
+                patch = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto int_group_id = req.path_params.at("intGroupId");
+            const auto patched = group_control_data.merge_patch(int_group_id, patch);
+            group_control_data_patch_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched.dump());
         });
 

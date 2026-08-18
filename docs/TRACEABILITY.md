@@ -2066,3 +2066,27 @@ inventing a second answer to the same open question. Takes UDR's real resource-t
 32 to 33 of free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See
 ADR-0118 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~9 resources still
 a real, disclosed gap.
+
+## ADR-0119 -- gap-closure task #106 continuation: UDR real group-specific Policy Control Data
+
+| Requirement | Test |
+|---|---|
+| `GET /policy-data/group-control-data/{intGroupId}` on an unseeded `intGroupId` (`00112233-100-01-AABBCCDDEE`) | Live curl, real `404` |
+| `PATCH` (`application/merge-patch+json`) with `{"maxGroupMbrUl":"500 Mbps"}` on that same key, no prior create | Live curl, real `200` with the newly-originated document -- confirms `PATCH` is genuinely upsert-capable (no `PUT`/`POST` exists for this resource) |
+| `GET` immediately after the originating `PATCH` | Live curl, real `200` matching |
+| `PATCH` again with `{"remainGroupMbrDl":"50 Mbps"}` | Live curl, real `200` with both fields present (merged, not replaced) |
+| `GET` after the second `PATCH` | Live curl, real `200` confirming the merge |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_group_control_data` confirms the persisted document matches the API's final response exactly (`{"maxGroupMbrUl": "500 Mbps", "remainGroupMbrDl": "50 Mbps"}`) |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real `GET`+`PATCH`-only resource (`ReadGroupPolCtrlData`/`ModifyGroupPolCtrlData`, RFC 7396
+merge-patch) -- no `PUT`/`POST` create operation exists at all, so `merge_patch` is
+upsert-capable, same precedent as `slice-control-data` (ADR-0118). Keyed by `intGroupId`, the real
+`GroupId` schema -- a plain string with no encoding ambiguity, unlike `slice-control-data`'s own
+`snssai` key. While checking this resource's siblings, also confirmed and disclosed:
+`mbs-session-pol-data`'s key is a genuinely deeper, deeply-nested `oneOf`/`anyOf` object with no
+documented string encoding and no existing project precedent to reuse -- left deferred rather than
+inventing a serialization. Takes UDR's real resource-type coverage from 33 to 34 of free5GC's
+~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0119 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~8 resources still a real,
+disclosed gap.

@@ -601,4 +601,23 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0119). Backs the real group-specific
+// Policy Control Data resource (/policy-data/group-control-data/{intGroupId}, real
+// GET+PATCH-only, no PUT/POST create operation exists at all -- confirmed by direct YAML read).
+// Same disclosed, deliberate "no create operation exists, so merge_patch is upsert-capable"
+// precedent already established for AmPolicyDataStore/SlicePolicyDataStore. Keyed by intGroupId
+// (real GroupId schema, TS29571_CommonData.yaml -- plain string, real pattern cited from
+// TS 23.003 clause 19.9, no encoding ambiguity unlike SlicePolicyDataStore's own snssai key).
+class GroupPolicyDataStore {
+public:
+    explicit GroupPolicyDataStore(const std::string& conninfo);
+
+    std::optional<nlohmann::json> get(const std::string& int_group_id);
+    nlohmann::json merge_patch(const std::string& int_group_id, const nlohmann::json& patch);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

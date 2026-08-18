@@ -1024,4 +1024,33 @@ nlohmann::json SlicePolicyDataStore::merge_patch(const std::string& snssai,
     return doc;
 }
 
+GroupPolicyDataStore::GroupPolicyDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+std::optional<nlohmann::json> GroupPolicyDataStore::get(const std::string& int_group_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_group_control_data WHERE int_group_id = $1",
+                                 pqxx::params{int_group_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+nlohmann::json GroupPolicyDataStore::merge_patch(const std::string& int_group_id,
+                                                 const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_group_control_data WHERE int_group_id = $1",
+                                 pqxx::params{int_group_id});
+    auto doc = result.empty() ? nlohmann::json::object()
+                              : nlohmann::json::parse(result.front()["data"].as<std::string>());
+    doc.merge_patch(patch);
+    txn.exec("INSERT INTO udr_group_control_data (int_group_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (int_group_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{int_group_id, doc.dump()});
+    txn.commit();
+    return doc;
+}
+
 } // namespace udr

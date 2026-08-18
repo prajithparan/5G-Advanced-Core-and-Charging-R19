@@ -429,3 +429,18 @@ CREATE TABLE IF NOT EXISTS udr_slice_control_data (
     snssai TEXT PRIMARY KEY,
     data   JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0119). Real Nudr_DataRepository
+-- group-specific Policy Control Data resource (/policy-data/group-control-data/{intGroupId}, real
+-- schema GroupPolicyData -- maxGroupMbrUl/maxGroupMbrDl/remainGroupMbrUl/remainGroupMbrDl/
+-- suppFeat, every field optional; PATCH request body is the narrower GroupPolicyDataPatch).
+-- Confirmed by direct YAML read: real GET (ReadGroupPolCtrlData) + real PATCH
+-- (ModifyGroupPolCtrlData, application/merge-patch+json -- RFC 7396) -- no PUT/POST create
+-- operation exists at all, so (same disclosed, deliberate precedent already established for
+-- AmPolicyDataStore/SlicePolicyDataStore) merge_patch is upsert-capable. Keyed by intGroupId
+-- (real GroupId schema, TS29571_CommonData.yaml -- plain string, real pattern cited from
+-- TS 23.003 clause 19.9, no encoding ambiguity unlike slice-control-data's own snssai key).
+CREATE TABLE IF NOT EXISTS udr_group_control_data (
+    int_group_id TEXT PRIMARY KEY,
+    data         JSONB NOT NULL
+);
