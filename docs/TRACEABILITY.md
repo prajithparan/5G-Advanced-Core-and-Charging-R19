@@ -1847,3 +1847,28 @@ resource-type coverage from 22 to 23 of free5GC's ~42+ real TS 29.504 resources
 (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0108 in `docs/DECISIONS.md` for full disclosure,
 including what remains deliberately deferred (`pp-data-store`, no NF currently calls this new
 endpoint) -- task #106 remains open, ~19 resources still a real, disclosed gap.
+
+## ADR-0109 -- gap-closure task #106 continuation: UDR real Provisioned Parameter Data Entry (pp-data-store)
+
+| Requirement | Test |
+|---|---|
+| `GET .../pp-data-store/{afInstanceId}` on an unseeded `(ueId, afInstanceId)` | Live curl, real `404` |
+| `GET .../pp-data-store` (list) before any entries | Live curl, real `200` with an empty `ppDataEntryList` |
+| `PUT` with `{"referenceId":42}` on a new key | Live curl, real `201 Created` with `Location` header + created document |
+| `GET` single immediately after the create `PUT` | Live curl, real `200` |
+| `GET` list after the `PUT` | Live curl, real `200` with the one real entry present |
+| `PUT` again on the same key with a changed `referenceId` | Live curl, real `204` -- genuinely distinct from the `201` create path |
+| Update path genuinely applies (not just a `204` status) | Separate `(ueId, afInstanceId)` pair: `PUT` `referenceId:1` (`201`) -> `PUT` `referenceId:2` (`204`) -> `GET` confirms `referenceId:2` |
+| `DELETE`, then `GET` single again | Live curl, real `204` then real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_pp_data_entry` confirms zero rows remain for the deleted key |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real, richer operation set than the other `pp-*` siblings (PUT+GET+DELETE plus a real sibling
+collection GET, composite `(ueId, afInstanceId)` key matching `SmfRegistrationStore`'s own
+`(ueId, pduSessionId)` shape) -- `PpDataEntryStore::put()` reuses the established `xmax = 0`
+UPSERT idiom for the real 201-vs-204 distinction; `list_for_ue()` matches
+`SmfRegistrationStore::list_for_ue()`'s own pattern exactly. Takes UDR's real resource-type
+coverage from 23 to 24 of free5GC's ~42+ real TS 29.504 resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0109 in `docs/DECISIONS.md` for full disclosure,
+including what remains deliberately deferred (no NF currently calls these new endpoints) -- task
+#106 remains open, ~18 resources still a real, disclosed gap.

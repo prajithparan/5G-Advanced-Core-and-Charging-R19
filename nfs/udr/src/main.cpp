@@ -103,11 +103,15 @@
 // UPDATE (ADR-0108, gap-closure task #106): the Parameter Provision profile Data (Document)
 // resource (QueryPPData, real GET-only) is now implemented -- same real "seeded at startup" shape.
 //
+// UPDATE (ADR-0109, gap-closure task #106): the Provisioned Parameter Data Entry resource
+// (Create/Get/Delete PP Data Entry, real PUT+GET+DELETE) and its real sibling collection resource
+// (Get Multiple PP Data Entries) are now implemented -- composite (ueId, afInstanceId) key, same
+// real shape as SmfRegistrationStore's own (ueId, pduSessionId).
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
-// operator-specific-data;
-// pp-data-store; group-data; shared-data;
+// operator-specific-data; group-data; shared-data;
 // subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
@@ -333,6 +337,8 @@ int main() {
     udr::PpDataStore pp_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0108).
     udr::PpProfileDataStore pp_profile_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0109).
+    udr::PpDataEntryStore pp_data_entry(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -497,6 +503,10 @@ int main() {
         meter->CreateUInt64Counter("udr_pp_data_patch_total", "Total ModifyPpData calls");
     auto pp_profile_data_get_counter =
         meter->CreateUInt64Counter("udr_pp_profile_data_get_total", "Total QueryPPData calls");
+    auto pp_data_entry_write_counter = meter->CreateUInt64Counter(
+        "udr_pp_data_entry_write_total", "Total Create PP Data Entry calls");
+    auto pp_data_entry_delete_counter = meter->CreateUInt64Counter(
+        "udr_pp_data_entry_delete_total", "Total Delete PP Data Entry calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1652,6 +1662,106 @@ int main() {
             }
             pp_profile_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: Provisioned Parameter Data Entry resource (ADR-0109, gap-closure
+    // task #106) -- real PUT+GET+DELETE per TS29505_Subscription_Data.yaml, plus a real sibling
+    // collection GET, composite (ueId, afInstanceId) key. ---
+
+    const std::string pp_data_store_list_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/pp-data-store";
+    const std::string pp_data_store_path_pattern =
+        pp_data_store_list_path_pattern + "/{afInstanceId}";
+
+    server.add_route(
+        "GET",
+        pp_data_store_list_path_pattern,
+        [&verifier, &pp_data_entry](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            sbi_gen::PpDataEntryList list;
+            list.ppDataEntryList = std::vector<sbi_gen::PpDataEntry>{};
+            for (const auto& entry : pp_data_entry.list_for_ue(ue_id)) {
+                list.ppDataEntryList->push_back(entry.get<sbi_gen::PpDataEntry>());
+            }
+            json j = list;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "GET",
+        pp_data_store_path_pattern,
+        [&verifier, &pp_data_entry](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto af_instance_id = req.path_params.at("afInstanceId");
+            auto data = pp_data_entry.get(ue_id, af_instance_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(404,
+                                                         "Not Found",
+                                                         "No PP data entry for ueId/afInstanceId " +
+                                                             ue_id + "/" + af_instance_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        pp_data_store_path_pattern,
+        [&verifier, &pp_data_entry, &pp_data_entry_write_counter, pp_data_store_list_path_pattern](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::PpDataEntry>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto af_instance_id = req.path_params.at("afInstanceId");
+            json j = *body;
+            const bool is_new = pp_data_entry.put(ue_id, af_instance_id, j);
+            pp_data_entry_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 pp_data_store_list_path_pattern + "/" + af_instance_id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        pp_data_store_path_pattern,
+        [&verifier, &pp_data_entry, &pp_data_entry_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto af_instance_id = req.path_params.at("afInstanceId");
+            if (!pp_data_entry.remove(ue_id, af_instance_id)) {
+                return sbi_core::http2::problem_response(404,
+                                                         "Not Found",
+                                                         "No PP data entry for ueId/afInstanceId " +
+                                                             ue_id + "/" + af_instance_id);
+            }
+            pp_data_entry_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

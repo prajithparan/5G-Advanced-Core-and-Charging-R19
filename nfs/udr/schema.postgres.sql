@@ -266,3 +266,19 @@ CREATE TABLE IF NOT EXISTS udr_pp_profile_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0109). Real Nudr_DataRepository
+-- Provisioned Parameter Data Entry resource
+-- (/subscription-data/{ueId}/pp-data-store/{afInstanceId}, real schema PpDataEntry --
+-- TS29503_Nudm_PP.yaml, every field optional) -- confirmed by direct YAML read: real
+-- PUT (Create PP Data Entry) + GET (Get PP Data Entry) + DELETE (Delete PP Data Entry), plus a
+-- real sibling collection resource (/subscription-data/{ueId}/pp-data-store, Get Multiple PP Data
+-- Entries, real schema PpDataEntryList). Composite key (ue_id, af_instance_id) matches the real
+-- spec resource path exactly -- same real "one row per UE+afInstanceId" shape already established
+-- for udr_smf_registration's own (ue_id, pdu_session_id) key.
+CREATE TABLE IF NOT EXISTS udr_pp_data_entry (
+    ue_id          TEXT NOT NULL,
+    af_instance_id TEXT NOT NULL,
+    data           JSONB NOT NULL,
+    PRIMARY KEY (ue_id, af_instance_id)
+);

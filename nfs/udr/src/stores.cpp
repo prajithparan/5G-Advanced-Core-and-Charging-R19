@@ -699,4 +699,58 @@ std::optional<nlohmann::json> PpProfileDataStore::get(const std::string& ue_id) 
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+PpDataEntryStore::PpDataEntryStore(const std::string& conninfo) : conn_(conninfo) {}
+
+bool PpDataEntryStore::put(const std::string& ue_id,
+                           const std::string& af_instance_id,
+                           nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto row = txn.exec("INSERT INTO udr_pp_data_entry (ue_id, af_instance_id, data) "
+                              "VALUES ($1, $2, $3::jsonb) "
+                              "ON CONFLICT (ue_id, af_instance_id) DO UPDATE SET data = "
+                              "EXCLUDED.data "
+                              "RETURNING (xmax = 0) AS inserted",
+                              pqxx::params{ue_id, af_instance_id, data.dump()})
+                         .one_row();
+    txn.commit();
+    return row["inserted"].as<bool>();
+}
+
+std::optional<nlohmann::json> PpDataEntryStore::get(const std::string& ue_id,
+                                                    const std::string& af_instance_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_pp_data_entry "
+                                 "WHERE ue_id = $1 AND af_instance_id = $2",
+                                 pqxx::params{ue_id, af_instance_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+bool PpDataEntryStore::remove(const std::string& ue_id, const std::string& af_instance_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_pp_data_entry "
+                                 "WHERE ue_id = $1 AND af_instance_id = $2",
+                                 pqxx::params{ue_id, af_instance_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
+std::vector<nlohmann::json> PpDataEntryStore::list_for_ue(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_pp_data_entry WHERE ue_id = $1", pqxx::params{ue_id});
+    std::vector<nlohmann::json> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
 } // namespace udr

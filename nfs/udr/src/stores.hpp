@@ -417,4 +417,23 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0109). Backs the real Provisioned
+// Parameter Data Entry resource (Create/Get/Delete PP Data Entry -- real PUT+GET+DELETE) and its
+// real sibling collection resource (Get Multiple PP Data Entries). Composite key
+// (ue_id, af_instance_id), same real shape as SmfRegistrationStore's own (ue_id, pdu_session_id).
+class PpDataEntryStore {
+public:
+    explicit PpDataEntryStore(const std::string& conninfo);
+
+    // Returns true if this was a new entry (for 201-vs-204 response selection).
+    bool put(const std::string& ue_id, const std::string& af_instance_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id, const std::string& af_instance_id);
+    bool remove(const std::string& ue_id, const std::string& af_instance_id);
+    std::vector<nlohmann::json> list_for_ue(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

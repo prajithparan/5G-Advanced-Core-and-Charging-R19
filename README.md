@@ -66,7 +66,7 @@ live-verified against AMF's own PathSwitchRequest slice and a real UPF PFCP Sess
 AUSF (`Nausf_SoRProtection`, and — ADR-0091 — real TS 33.503 5G ProSe authentication,
 live-verified with an independently-computed EAP-AKA' response against real TS 35.207 test
 vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR (real PostgreSQL
-persistence, now 23 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
+persistence, now 24 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
 context-data (ADR-0094), SMSF 3GPP/non-3GPP-access context-data (ADR-0097), IP-SM-GW
 Registration context-data (ADR-0098, real PUT+GET+PATCH+DELETE, the first UDR context-data
 resource with all four real operations together), Message Waiting Data (Document) context-data
@@ -77,8 +77,10 @@ Coverage Restriction Data (ADR-0102, real GET-only, seeded at startup), LCS Priv
 Subscription Data (ADR-0103, same GET-only seeded shape), LCS Subscription Data (ADR-0104,
 same shape), LCS Mobile Originated Subscription Data (ADR-0105, same shape), LCS Broadcast
 Assistance Data (ADR-0106, added as a 4th column on the existing provisioned-data group),
-Parameter Provision (Document) (ADR-0107, real GET+PATCH RFC 6902, upsert-capable), and
-Parameter Provision profile Data (Document) (ADR-0108, same GET-only seeded shape)), and UPF (task #107
+Parameter Provision (Document) (ADR-0107, real GET+PATCH RFC 6902, upsert-capable),
+Parameter Provision profile Data (Document) (ADR-0108, same GET-only seeded shape), and
+Provisioned Parameter Data Entry / pp-data-store (ADR-0109, real PUT+GET+DELETE plus a real
+sibling collection GET, composite (ueId, afInstanceId) key)), and UPF (task #107
 closed in full: PFCP Association Update/Release, PFD
 Management, Node Report). CHF closed real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even
 free5GC's own CDR module doesn't fully match in scope on this project's own terms. AMF's real
@@ -90,14 +92,15 @@ two genuinely simultaneous gNB associations and, as an unplanned bonus, real int
 from UERANSIM's own unmodified gNB correctly reacting to a new AMF-initiated
 `UEContextReleaseCommand`. **Still open**: `HandoverCancel`, the real AMF→SMF relay that would
 replace handover's own placeholder N3 addressing, SMF's remaining 19 `N2SmInfoType` values beyond
-`PATH_SWITCH_REQ`, the remaining ~19 of UDR's ~42+ real TS 29.504 resources (13 more now closed —
+`PATH_SWITCH_REQ`, the remaining ~18 of UDR's ~42+ real TS 29.504 resources (14 more now closed —
 SMSF 3GPP/non-3GPP-access context-data (ADR-0097), IP-SM-GW Registration context-data (ADR-0098),
 Message Waiting Data (Document) context-data (ADR-0099), Roaming Information (Document)
 context-data (ADR-0100), PEI Information (Document) context-data (ADR-0101), Enhanced
 Coverage Restriction Data (ADR-0102), LCS Privacy Subscription Data (ADR-0103), LCS
 Subscription Data (ADR-0104), LCS Mobile Originated Subscription Data (ADR-0105), LCS
-Broadcast Assistance Data (ADR-0106), Parameter Provision (Document) (ADR-0107), and Parameter
-Provision profile Data (Document) (ADR-0108), 23 of ~42+ total), ProSe's
+Broadcast Assistance Data (ADR-0106), Parameter Provision (Document) (ADR-0107), Parameter
+Provision profile Data (Document) (ADR-0108), and Provisioned Parameter Data Entry /
+pp-data-store (ADR-0109), 24 of ~42+ total), ProSe's
 PAnF-dependent
 returning-UE path, and
 NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all). CI note: `.github/workflows/ci.yml`'s
