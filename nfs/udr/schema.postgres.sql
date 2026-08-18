@@ -159,3 +159,15 @@ CREATE TABLE IF NOT EXISTS udr_mwd (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0100). Real Nudr_DataRepository
+-- Roaming Information (Document) resource (/subscription-data/{ueId}/context-data/
+-- roaming-information, real schema RoamingInfoUpdate -- TS29503_Nudm_UECM.yaml, `roaming` bool +
+-- mandatory `servingPlmn` + optional `contextInfo`). Real, simple operation set, confirmed by
+-- direct YAML read: PUT (UpdateRoamingInformation, real distinct 201-vs-204 response codes, same
+-- shape as udr_amf_non3gpp_context's own PUT) + GET (QueryRoamingInformation) only -- no
+-- PATCH/DELETE exists for this resource in the spec.
+CREATE TABLE IF NOT EXISTS udr_roaming_information (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

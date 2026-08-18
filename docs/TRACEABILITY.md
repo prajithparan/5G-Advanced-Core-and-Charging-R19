@@ -1672,3 +1672,23 @@ free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See A
 `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred (no NF
 currently calls this new endpoint) -- task #106 remains open, ~28 resources still a real,
 disclosed gap.
+
+## ADR-0100 -- gap-closure task #106 continuation: UDR real Roaming Information (Document)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/context-data/roaming-information` on an unseeded `ueId` | Live curl, real `404` |
+| `PUT` with `{"roaming":true,"servingPlmn":{"mcc":"001","mnc":"01"}}` on a new `ueId` | Live curl, real `201 Created` with `Location` header + created document in the body |
+| `GET` immediately after the create `PUT` | Live curl, real `200` with the identical document |
+| `PUT` again on the same `ueId` with a changed `roaming`/`servingPlmn` | Live curl, real `204` -- genuinely distinct from the `201` create path above |
+| `GET` after the update `PUT` | Live curl, real `200` confirming the updated document |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_roaming_information` confirms the persisted document matches the API response |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions; `udr` built clean |
+
+Real, simple `PUT`+`GET`-only resource (no PATCH/DELETE, confirmed by direct YAML read, same
+shape as `AmfNon3GppContextStore`), with the same real 201-vs-204 `xmax = 0` UPSERT idiom already
+used by `AmfContextStore`/`AmfNon3GppContextStore`/`MessageWaitingDataStore`. Takes UDR's real
+resource-type coverage from 14 to 15 of free5GC's ~42+ real TS 29.504 resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0100 in `docs/DECISIONS.md` for full disclosure,
+including what remains deliberately deferred (no NF currently calls this new endpoint) -- task
+#106 remains open, ~27 resources still a real, disclosed gap.

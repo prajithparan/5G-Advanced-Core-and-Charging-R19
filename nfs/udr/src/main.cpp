@@ -65,8 +65,13 @@
 // unlike ip-sm-gw's own always-204 PUT, this one's real PUT genuinely distinguishes 201-Created
 // from 204-updated per the YAML.
 //
+// UPDATE (ADR-0100, gap-closure task #106): the Roaming Information (Document) resource
+// (UpdateRoamingInformation/QueryRoamingInformation, real GET+PUT, real distinct 201-vs-204 PUT
+// response codes) is now implemented -- same "no PATCH/DELETE exists for this resource" scope as
+// the AMF non-3GPP-access context resource.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
-// context-data's other sub-resources (roaming-information, pei-info,
+// context-data's other sub-resources (pei-info,
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // operator-specific-data; lcs-*; pp-data; group-data; shared-data; subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
@@ -276,6 +281,8 @@ int main() {
     udr::IpSmGwContextStore ip_sm_gw_context(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0099).
     udr::MessageWaitingDataStore mwd(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0100).
+    udr::RoamingInformationStore roaming_information(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -352,6 +359,8 @@ int main() {
         "udr_mwd_write_total", "Total CreateMessageWaitingData/ModifyMessageWaitingData calls");
     auto mwd_delete_counter =
         meter->CreateUInt64Counter("udr_mwd_delete_total", "Total DeleteMessageWaitingData calls");
+    auto roaming_information_write_counter = meter->CreateUInt64Counter(
+        "udr_roaming_information_write_total", "Total UpdateRoamingInformation calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1210,6 +1219,61 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Nudr_DataRepository: Roaming Information (Document) resource (ADR-0100, gap-closure
+    // task #106) -- real PUT+GET per TS29505_Subscription_Data.yaml, no PATCH/DELETE. ---
+
+    const std::string roaming_information_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/roaming-information";
+
+    server.add_route(
+        "PUT",
+        roaming_information_path_pattern,
+        [&verifier,
+         &roaming_information,
+         &roaming_information_write_counter,
+         roaming_information_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::RoamingInfoUpdate>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json j = *body;
+            const bool is_new = roaming_information.put(ue_id, j);
+            roaming_information_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", roaming_information_path_pattern);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        roaming_information_path_pattern,
+        [&verifier, &roaming_information](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = roaming_information.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Roaming Information for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();
