@@ -242,3 +242,16 @@ CREATE TABLE IF NOT EXISTS udr_lcs_mo_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0107). Real Nudr_DataRepository
+-- Parameter Provision (Document) resource (/subscription-data/{ueId}/pp-data, real schema PpData
+-- -- $ref'd verbatim from TS29503_Nudm_PP.yaml, all fields optional). Confirmed by direct YAML
+-- read: real GET (GetppData) + real PATCH (ModifyPpData, application/json-patch+json -- RFC 6902,
+-- same standard as udr_authentication_subscription's own patch) -- no PUT/DELETE exists for this
+-- resource in the spec. No POST/create operation exists either, so -- same disclosed, deliberate
+-- precedent already established for udr_authentication_subscription/udr_sm_policy_data --
+-- apply_patch is upsert-capable (missing ueId = start from an empty document).
+CREATE TABLE IF NOT EXISTS udr_pp_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

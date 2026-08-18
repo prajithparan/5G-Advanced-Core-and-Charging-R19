@@ -382,4 +382,24 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0107). Backs the real Parameter
+// Provision (Document) resource (GetppData/ModifyPpData -- real GET+PATCH, RFC 6902, no
+// PUT/DELETE exists for this resource in the spec). No POST/create operation exists either, so
+// apply_patch() is upsert-capable (missing ueId = start from an empty document) -- same disclosed,
+// deliberate precedent already established for AuthenticationSubscriptionDataStore/
+// SmPolicyDataStore.
+class PpDataStore {
+public:
+    explicit PpDataStore(const std::string& conninfo);
+
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    // Throws nlohmann::json::exception on a malformed patch -- caller turns that into a 400
+    // ProblemDetails, same as AuthenticationSubscriptionDataStore's own apply_patch.
+    nlohmann::json apply_patch(const std::string& ue_id, const nlohmann::json& patch_ops);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

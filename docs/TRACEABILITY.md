@@ -1810,3 +1810,23 @@ verification. Takes UDR's real resource-type coverage from 20 to 21 of free5GC's
 TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0106 in `docs/DECISIONS.md` for
 full disclosure, including what remains deliberately deferred (no NF currently calls this new
 endpoint) -- task #106 remains open, ~21 resources still a real, disclosed gap.
+
+## ADR-0107 -- gap-closure task #106 continuation: UDR real Parameter Provision (Document)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/pp-data` on an unseeded `ueId` | Live curl, real `404` |
+| `PATCH` (`application/json-patch+json`, RFC 6902 `add` on `/stnSr`) with no prior document | Live curl, real `200` with the document originated via upsert -- no `PUT`/`POST` exists for this resource |
+| `GET` immediately after the originating `PATCH` | Live curl, real `200` confirming persistence |
+| `PATCH` again (RFC 6902 `replace` on `/stnSr`) | Live curl, real `200` with the updated document |
+| `GET` after the update `PATCH` | Live curl, real `200` confirming the update |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_pp_data` confirms the persisted document matches the API's final response |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real `GET`+`PATCH`-only resource (no PUT/DELETE, no POST/create -- confirmed by direct YAML read),
+`PpDataStore::apply_patch()` byte-for-byte matching `AuthenticationSubscriptionDataStore`'s own
+upsert-capable RFC 6902 pattern. Takes UDR's real resource-type coverage from 21 to 22 of
+free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0107 in
+`docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred
+(`pp-data`'s own siblings `pp-data-store`/`pp-profile-data`, no NF currently calls this new
+endpoint) -- task #106 remains open, ~20 resources still a real, disclosed gap.

@@ -96,11 +96,16 @@
 // ProvisionedDataStore -- same real (ueId, servingPlmnId) key shape as am-data/
 // smf-selection-subscription-data/sm-data.
 //
+// UPDATE (ADR-0107, gap-closure task #106): the Parameter Provision (Document) resource
+// (GetppData/ModifyPpData, real GET+PATCH, RFC 6902) is now implemented -- same
+// "no PUT/DELETE, apply_patch upsert-capable" shape as authentication-subscription.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // operator-specific-data;
-// pp-data; group-data; shared-data; subs-to-notify; policy-data's
+// pp-data's own siblings (pp-data-store, pp-profile-data); group-data; shared-data;
+// subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
 // not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn).
@@ -321,6 +326,8 @@ int main() {
     udr::LcsSubscriptionDataStore lcs_subscription_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0105).
     udr::LcsMoDataStore lcs_mo_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0107).
+    udr::PpDataStore pp_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -467,6 +474,10 @@ int main() {
         "udr_lcs_subscription_data_get_total", "Total QueryLcsSubscriptionData calls");
     auto lcs_mo_data_get_counter =
         meter->CreateUInt64Counter("udr_lcs_mo_data_get_total", "Total QueryLcsMoData calls");
+    auto pp_data_get_counter =
+        meter->CreateUInt64Counter("udr_pp_data_get_total", "Total GetppData calls");
+    auto pp_data_patch_counter =
+        meter->CreateUInt64Counter("udr_pp_data_patch_total", "Total ModifyPpData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1550,6 +1561,53 @@ int main() {
             }
             lcs_mo_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: Parameter Provision (Document) resource (ADR-0107, gap-closure
+    // task #106) -- real GET+PATCH(RFC 6902) per TS29505_Subscription_Data.yaml, no PUT/DELETE. ---
+
+    const std::string pp_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/pp-data";
+
+    server.add_route(
+        "GET",
+        pp_data_path_pattern,
+        [&verifier, &pp_data, &pp_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = pp_data.get(ue_id);
+            pp_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No pp-data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        pp_data_path_pattern,
+        [&verifier, &pp_data, &pp_data_patch_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json patched;
+            try {
+                patched = pp_data.apply_patch(ue_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            pp_data_patch_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched.dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();
