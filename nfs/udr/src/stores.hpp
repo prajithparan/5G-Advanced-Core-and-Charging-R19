@@ -564,4 +564,22 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0117). Backs the real PLMN UE
+// Policy Set resource (/policy-data/plmns/{plmnId}/ue-policy-set, ReadPlmnUePolicySet -- real
+// GET-only, no create/update operation exists for this resource at all, same real "provisioned
+// out-of-band, seeded at startup" shape as CoverageRestrictionDataStore above). Reuses the real
+// UePolicySet schema (same type as udr_ue_policy_set's own per-UE resource) but keyed by plmn_id,
+// a genuinely distinct resource per TS29519_Policy_Data.yaml -- not a UE-scoped alias.
+class PlmnUePolicySetStore {
+public:
+    explicit PlmnUePolicySetStore(const std::string& conninfo);
+
+    void seed(const std::string& plmn_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& plmn_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

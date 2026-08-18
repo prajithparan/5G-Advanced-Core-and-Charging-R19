@@ -397,3 +397,16 @@ CREATE TABLE IF NOT EXISTS udr_bdt_data (
     bdt_ref_id TEXT PRIMARY KEY,
     data       JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0117). Real Nudr_DataRepository
+-- PLMN UE Policy Set resource (/policy-data/plmns/{plmnId}/ue-policy-set, real schema
+-- UePolicySet -- same type as udr_ue_policy_set's own per-UE resource, praInfos/subscCats/
+-- uePolicySections/etc, every field optional). Confirmed by direct YAML read: this resource is
+-- genuinely GET-only (ReadPlmnUePolicySet) -- no create/update operation exists at all, same real
+-- "provisioned out-of-band, seeded at startup" shape as udr_coverage_restriction_data above. Keyed
+-- by plmn_id (VarPlmnId, TS29505_Subscription_Data.yaml -- mcc+mnc concatenated), genuinely NOT
+-- per-UE -- a distinct resource from udr_ue_policy_set even though it reuses the same schema type.
+CREATE TABLE IF NOT EXISTS udr_plmn_ue_policy_set (
+    plmn_id TEXT PRIMARY KEY,
+    data    JSONB NOT NULL
+);

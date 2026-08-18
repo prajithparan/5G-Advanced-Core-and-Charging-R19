@@ -973,4 +973,26 @@ bool BdtDataStore::remove(const std::string& bdt_ref_id) {
     return result.affected_rows() > 0;
 }
 
+PlmnUePolicySetStore::PlmnUePolicySetStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void PlmnUePolicySetStore::seed(const std::string& plmn_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_plmn_ue_policy_set (plmn_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (plmn_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{plmn_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> PlmnUePolicySetStore::get(const std::string& plmn_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_plmn_ue_policy_set WHERE plmn_id = $1",
+                                 pqxx::params{plmn_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr

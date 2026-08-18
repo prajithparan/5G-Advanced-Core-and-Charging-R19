@@ -147,12 +147,18 @@
 // responds 201; PATCH is NOT upsert-capable (real 404 if the resource doesn't already exist,
 // unlike am-data/ue-policy-set's own upsert-capable PATCH).
 //
+// UPDATE (ADR-0117, gap-closure task #106): the `policy-data` group's PLMN UE Policy Set resource
+// (ReadPlmnUePolicySet, real GET-only, no create/update operation exists for this resource at
+// all) is now implemented -- reuses the real UePolicySet schema (same type as the per-UE
+// ue-policy-set resource) but keyed by plmn_id, a genuinely distinct resource, not a UE-scoped
+// alias.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // group-data (including ee-profile-data's own group-keyed sibling);
 // subs-to-notify; policy-data's
-// own other resources (slice-control-data,
+// own other resources (slice-control-data, mbs-session-pol-data, pdtq-data, group-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
 // not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn).
 //
@@ -392,6 +398,8 @@ int main() {
     udr::SponsorConnectivityDataStore sponsor_connectivity_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0116).
     udr::BdtDataStore bdt_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0117).
+    udr::PlmnUePolicySetStore plmn_ue_policy_set(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -521,6 +529,18 @@ int main() {
         sponsor_connectivity_data.seed("sponsor1", sponsor);
     }
 
+    // Real seed data (ADR-0117, gap-closure task #106) -- the real PLMN UE Policy Set resource is
+    // genuinely GET-only per spec, same "no live provisioning path yet" reasoning as above.
+    // Genuinely NOT per-UE, so seeded once for this project's own real lab PLMN ("99970",
+    // mcc=999/mnc=70, ADR-0016). `subscCats` is a real optional field (array of strings, no
+    // further-typed enum in the spec); "cat1" is this project's own arbitrary representative test
+    // value, not fabricated spec content.
+    {
+        json plmn_ue_policy;
+        plmn_ue_policy["subscCats"] = json::array({"cat1"});
+        plmn_ue_policy_set.seed("99970", plmn_ue_policy);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -620,6 +640,8 @@ int main() {
                                                              "Total UpdateIndividualBdtData calls");
     auto bdt_data_delete_counter = meter->CreateUInt64Counter(
         "udr_bdt_data_delete_total", "Total DeleteIndividualBdtData calls");
+    auto plmn_ue_policy_set_get_counter = meter->CreateUInt64Counter(
+        "udr_plmn_ue_policy_set_get_total", "Total ReadPlmnUePolicySet calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2220,6 +2242,31 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Nudr_DataRepository: policy-data group, PLMN UE Policy Set resource (ADR-0117,
+    // gap-closure task #106) -- real GET-only per TS29519_Policy_Data.yaml, seeded at startup (no
+    // create/update operation exists in the spec, same shape as coverage-restriction-data). ---
+
+    const std::string plmn_ue_policy_set_path_pattern =
+        std::string(kApiRoot) + "/policy-data/plmns/{plmnId}/ue-policy-set";
+
+    server.add_route(
+        "GET",
+        plmn_ue_policy_set_path_pattern,
+        [&verifier, &plmn_ue_policy_set, &plmn_ue_policy_set_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto plmn_id = req.path_params.at("plmnId");
+            auto data = plmn_ue_policy_set.get(plmn_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No PLMN UE Policy Set for plmnId " + plmn_id);
+            }
+            plmn_ue_policy_set_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

@@ -2027,3 +2027,19 @@ to 31 of free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.m
 in `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred (the real
 sibling collection resource, array-query-param parsing gap, no NF currently calls these new
 endpoints) -- task #106 remains open, ~11 resources still a real, disclosed gap.
+
+## ADR-0117 -- gap-closure task #106 continuation: UDR real PLMN UE Policy Set
+
+| Requirement | Test |
+|---|---|
+| `GET /policy-data/plmns/{plmnId}/ue-policy-set` on the seeded lab PLMN (`99970`) | Live curl, real `200` with `{"subscCats":["cat1"]}` |
+| `GET` on an unseeded PLMN (`00101`) | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_plmn_ue_policy_set` confirms exactly one row, `plmn_id = '99970'`, matching the seeded body |
+| No regression | Full `conformance_tests`: unchanged pass count (same disclosed manual-live-verification precedent already established for every GET-only seeded resource in this series), zero regressions (325/325); `udr` built clean |
+
+Real `GET`-only resource (`ReadPlmnUePolicySet`) reusing the same `UePolicySet` schema as the
+per-UE `ue-policy-set` resource (ADR-0113) but genuinely distinct: keyed by `plmnId`, not `ueId`
+-- an H-PLMN-scoped default policy set. Takes UDR's real resource-type coverage from 31 to 32 of
+free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0117 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~10 resources still a real,
+disclosed gap.
