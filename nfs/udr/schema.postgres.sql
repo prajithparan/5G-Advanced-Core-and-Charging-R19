@@ -145,3 +145,17 @@ CREATE TABLE IF NOT EXISTS udr_ip_sm_gw_context (
     ue_id   TEXT PRIMARY KEY,
     context JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0099). Real Nudr_DataRepository
+-- Message Waiting Data (Document) resource (/subscription-data/{ueId}/context-data/mwd, real
+-- schema MessageWaitingData -- a `mwdList` of `SmscData` entries, each a real SMSC MAP or Diameter
+-- address holding SMS awaiting delivery to the UE). Real PUT (CreateMessageWaitingData, genuinely
+-- distinguishes 201-Created from 204-updated per the YAML, unlike IpSmGwContextStore's own
+-- always-204 PUT above -- confirmed per-operation, not assumed uniform) + GET
+-- (QueryMessageWaitingData) + PATCH (ModifyMessageWaitingData, real application/json-patch+json --
+-- RFC 6902, same standard as udr_ip_sm_gw_context's own patch) + DELETE
+-- (DeleteMessageWaitingData).
+CREATE TABLE IF NOT EXISTS udr_mwd (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

@@ -1649,3 +1649,26 @@ coverage from 12 to 13 of free5GC's ~42+ real TS 29.504 resources
 (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0098 in `docs/DECISIONS.md` for full disclosure,
 including what remains deliberately deferred (no NF currently calls this new endpoint) -- task
 #106 remains open, ~29 resources still a real, disclosed gap.
+
+## ADR-0099 -- gap-closure task #106 continuation: UDR real Message Waiting Data (Document)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/context-data/mwd` on an unseeded `ueId` | Live curl, real `404` |
+| `PUT` with `{"mwdList":[{"smscMapAddress":"+15551234567"}]}` on a new `ueId` | Live curl, real `201 Created` with `Location` header + created document in the body |
+| `GET` immediately after the create `PUT` | Live curl, real `200` with the identical document |
+| `PUT` again on the same `ueId` with a malformed `smscDiameterAddress` (plain string, not the real nested object) | Live curl, real `400` `ProblemDetails` -- confirms the DTO's real mandatory-field validation, not a bug |
+| `PUT` again with a spec-correct `smscDiameterAddress` object (`name`+`realm`) | Live curl, real `204` -- genuinely distinct from the `201` create path above |
+| `PATCH` (`application/json-patch+json`, RFC 6902 `replace` on `/mwdList/0/smscMapAddress`) | Live curl, real `204` |
+| `GET` immediately after `PATCH` | Live curl, real `200` confirming the patched value |
+| `DELETE`, then `GET` again | Live curl, real `204` then real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_mwd` confirms the persisted two-entry `mwdList` matches the API response |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions; `udr` built clean |
+
+Real, distinct 201-vs-204 PUT response codes (unlike `IpSmGwContextStore`'s own always-`204` PUT)
+-- `MessageWaitingDataStore::put()` reuses `AmfContextStore`'s own `xmax = 0` UPSERT idiom to
+report the distinction in one statement. Takes UDR's real resource-type coverage from 13 to 14 of
+free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0099 in
+`docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred (no NF
+currently calls this new endpoint) -- task #106 remains open, ~28 resources still a real,
+disclosed gap.

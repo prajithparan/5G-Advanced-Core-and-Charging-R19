@@ -253,4 +253,29 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0099). Backs the real Message
+// Waiting Data (Document) resource (CreateMessageWaitingData/QueryMessageWaitingData/
+// ModifyMessageWaitingData/DeleteMessageWaitingData -- real PUT+GET+PATCH+DELETE). Unlike
+// IpSmGwContextStore's own always-204 put(), MWD's real PUT genuinely distinguishes 201-Created
+// from 204-updated per the YAML -- same real "xmax = 0" UPSERT idiom AmfContextStore's own put()
+// already established, reused here rather than IpSmGwContextStore's simpler always-update one.
+class MessageWaitingDataStore {
+public:
+    explicit MessageWaitingDataStore(const std::string& conninfo);
+
+    // Returns true if this was a new entry (for 201-vs-204 response selection).
+    bool put(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    // Throws nlohmann::json::exception on a malformed patch -- caller turns that into a 400
+    // ProblemDetails, same as IpSmGwContextStore's own apply_patch. Returns nullopt if ue_id
+    // doesn't exist.
+    std::optional<nlohmann::json> apply_patch(const std::string& ue_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

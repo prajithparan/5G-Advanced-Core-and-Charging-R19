@@ -59,8 +59,14 @@
 // PUT+GET+PATCH+DELETE, RFC 6902 JSON Patch) is now implemented -- the richest operation set of
 // any context-data resource closed so far.
 //
+// UPDATE (ADR-0099, gap-closure task #106): the Message Waiting Data (Document) resource
+// (CreateMessageWaitingData/QueryMessageWaitingData/ModifyMessageWaitingData/
+// DeleteMessageWaitingData, real PUT+GET+PATCH+DELETE, RFC 6902 JSON Patch) is now implemented --
+// unlike ip-sm-gw's own always-204 PUT, this one's real PUT genuinely distinguishes 201-Created
+// from 204-updated per the YAML.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
-// context-data's other sub-resources (mwd, roaming-information, pei-info,
+// context-data's other sub-resources (roaming-information, pei-info,
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // operator-specific-data; lcs-*; pp-data; group-data; shared-data; subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
@@ -268,6 +274,8 @@ int main() {
     udr::SmsfNon3GppContextStore smsf_non3gpp_context(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0098).
     udr::IpSmGwContextStore ip_sm_gw_context(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0099).
+    udr::MessageWaitingDataStore mwd(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -340,6 +348,10 @@ int main() {
         "udr_ip_sm_gw_context_write_total", "Total CreateIpSmGwContext/ModifyIpSmGwContext calls");
     auto ip_sm_gw_delete_counter = meter->CreateUInt64Counter("udr_ip_sm_gw_context_delete_total",
                                                               "Total DeleteIpSmGwContext calls");
+    auto mwd_write_counter = meter->CreateUInt64Counter(
+        "udr_mwd_write_total", "Total CreateMessageWaitingData/ModifyMessageWaitingData calls");
+    auto mwd_delete_counter =
+        meter->CreateUInt64Counter("udr_mwd_delete_total", "Total DeleteMessageWaitingData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1096,6 +1108,105 @@ int main() {
                     404, "Not Found", "No IP-SM-GW context for ueId " + ue_id);
             }
             ip_sm_gw_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: Message Waiting Data (Document) resource (ADR-0099, gap-closure
+    // task #106) -- real PUT+GET+PATCH(RFC 6902)+DELETE per TS29505_Subscription_Data.yaml. ---
+
+    const std::string mwd_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/mwd";
+
+    server.add_route(
+        "PUT",
+        mwd_path_pattern,
+        [&verifier, &mwd, &mwd_write_counter, mwd_path_pattern](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::MessageWaitingData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json j = *body;
+            const bool is_new = mwd.put(ue_id, j);
+            mwd_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", mwd_path_pattern);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET", mwd_path_pattern, [&verifier, &mwd](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = mwd.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Message Waiting Data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        mwd_path_pattern,
+        [&verifier, &mwd, &mwd_write_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            std::optional<json> patched;
+            try {
+                patched = mwd.apply_patch(ue_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Message Waiting Data for ueId " + ue_id);
+            }
+            mwd_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        mwd_path_pattern,
+        [&verifier, &mwd, &mwd_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!mwd.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Message Waiting Data for ueId " + ue_id);
+            }
+            mwd_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

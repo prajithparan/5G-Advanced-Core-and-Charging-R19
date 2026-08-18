@@ -393,17 +393,18 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 13 real resource endpoints: AMF 3GPP-access
+This project's UDR (`nfs/udr/src/main.cpp`) implements 14 real resource endpoints: AMF 3GPP-access
 context-data, AMF non-3GPP-access context-data (docs/DECISIONS.md ADR-0093), SMSF 3GPP-access and
 non-3GPP-access context-data (ADR-0097 -- see below), IP-SM-GW Registration context-data
-(ADR-0098 -- see below), SMF-registrations context-data (full CRUD,
+(ADR-0098 -- see below), Message Waiting Data (Document) context-data (ADR-0099 -- see below),
+SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
 (`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
 semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
-ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 13
-of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, now
-13 as of ADR-0098 -- see below).
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 14
+of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, 13
+as of ADR-0098, now 14 as of ADR-0099 -- see below).
 
 **Highest-priority missing resources** (the ones with real, direct behavioral impact elsewhere in
 this project, not just data-model completeness): Authentication Data / Authentication Status
@@ -431,8 +432,14 @@ Registration context-data (`CreateIpSmGwContext`/`QueryIpSmGwContext`/`ModifyIpS
 `application/json-patch+json` patch) -- taking UDR from 12 to 13 of free5GC's ~42+ real resource
 types, and the first UDR context-data resource with all four real operations together. Same
 "surface first, consumer wiring later" precedent -- no NF currently calls this new endpoint.
-Influence Data (AF traffic-steering, needed once NEF exists) remains open, out of scope until NEF
-is built.
+**Closed, docs/DECISIONS.md ADR-0099**: Message Waiting Data (Document) context-data
+(`CreateMessageWaitingData`/`QueryMessageWaitingData`/`ModifyMessageWaitingData`/
+`DeleteMessageWaitingData`, real PUT+GET+PATCH+DELETE, schema `MessageWaitingData`, real
+distinct `201`-vs-`204` PUT response codes unlike `ip-sm-gw`'s own always-`204` PUT) -- taking UDR
+from 13 to 14 of free5GC's ~42+ real resource types. Same "surface first, consumer wiring later"
+precedent -- SMSF, the real originator of MWD data, doesn't exist as a built NF in this project
+yet (Tier 2). Influence Data (AF traffic-steering, needed once NEF exists) remains open, out of
+scope until NEF is built.
 
 ---
 
