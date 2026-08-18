@@ -1,0 +1,68 @@
+name: Feature request
+description: Propose a new NF, procedure, or capability
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project only builds against real 3GPP/GSMA/TM Forum spec material — nothing is
+        hand-invented. Please cite the real spec source for what you're requesting; if you don't
+        have one, say so and it'll be tracked as a spec-sourcing gap rather than implemented
+        against a guess.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which NF/subsystem does this concern? (Tier 1/2/3 scope per CLAUDE.md — most Tier 2/3 items aren't built yet.)
+      options:
+        - "Tier 1: NRF"
+        - "Tier 1: AMF"
+        - "Tier 1: SMF"
+        - "Tier 1: UPF"
+        - "Tier 1: PCF"
+        - "Tier 1: UDM"
+        - "Tier 1: UDR"
+        - "Tier 1: AUSF"
+        - "Tier 1: NSSF"
+        - "Tier 1: NEF"
+        - "Tier 1: SCP"
+        - "Tier 1: BSF"
+        - "Tier 1: CHF"
+        - "Tier 2: NWDAF (AnLF/MTLF)"
+        - "Tier 2: DCCF / ADRF / MFAF"
+        - "Tier 2: NSACF / TSCTSF / EASDF / UCMF"
+        - "Tier 2: SMSF / 5G-EIR / LMF / GMLC"
+        - "Tier 2: NSSAAF / AAnF / UDSF"
+        - "Tier 2: SEPP (vSEPP/hSEPP + N32)"
+        - "Tier 3 (5MBS, AIOTF, ProSe/SL, IMS Data Channel, MSGin5G, MNPF, PIN, SEAL/SEALDD, ADAES, CAPIF, EIF)"
+        - Charging / TM Forum SID / BSS layer
+        - AI/ML pipelines (NWDAF-adjacent)
+        - Build system / CI / tooling
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What are you proposing?
+    validations:
+      required: true
+
+  - type: input
+    id: spec-ref
+    attributes:
+      label: Real 3GPP TS / GSMA / TM Forum reference
+      description: e.g. "TS 23.502 §4.3.2.2.1", "TS 29.518 Nnwdaf_..." — the exact spec document/clause this maps to.
+      placeholder: e.g. TS 23.502 §4.3.2.2.1
+    validations:
+      required: false
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is this needed?
+      description: What does this unblock, or what capability gap does it close?
+    validations:
+      required: true

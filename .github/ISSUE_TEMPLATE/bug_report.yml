@@ -1,0 +1,85 @@
+name: Bug report
+description: Report a bug in an existing, already-built NF or subsystem
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please check `docs/DECISIONS.md` and
+        `docs/CAPABILITY_GAP_ANALYSIS.md` first — this project discloses known stubs,
+        simplifications, and open gaps explicitly, and your finding may already be a
+        documented, open item rather than a new bug.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      description: Which NF, library, or subsystem is affected?
+      options:
+        - AMF
+        - AUSF
+        - CHF
+        - NRF
+        - PCF
+        - SMF
+        - UDM
+        - UDR
+        - UPF
+        - hello-nf
+        - bss/product-catalog
+        - bss/balance-management
+        - bss/subscriber-management
+        - bss/roaming-interconnect
+        - libs/sbi-core (HTTP/2, JWT, mTLS, ...)
+        - libs/sbi-generated / sbi-codegen
+        - libs/tcap-core / tap3-core / other codec libs
+        - Build system / CI
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, requests, or test invocations that trigger it.
+      placeholder: |
+        1. cmake --build build --target ...
+        2. Start ... with ...
+        3. curl ... / run test ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. actual behavior
+    validations:
+      required: true
+
+  - type: input
+    id: ts-ref
+    attributes:
+      label: Relevant 3GPP TS clause (if spec-related)
+      description: e.g. "TS 23.502 §4.3.2.2.1" — if this is a spec-conformance bug, cite the exact clause. Leave blank if not applicable.
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Build environment
+      description: Compiler + version, OS, CMake version, whether sanitizers were enabled.
+      placeholder: |
+        e.g. GCC 13 / Ubuntu 24.04 / CMake 3.28 / -D5GC_ENABLE_ASAN=ON
+    validations:
+      required: true
