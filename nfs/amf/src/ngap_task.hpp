@@ -9,6 +9,7 @@
 
 #include "aka_crypto/kdf.hpp"
 #include "amf_ue_id_index_store.hpp"
+#include "gnb_association_registry.hpp"
 #include "ue_context_store.hpp"
 #include "ue_security_context_store.hpp"
 
@@ -55,6 +56,15 @@ public:
                                std::uint8_t pdu_session_id,
                                const std::vector<std::uint8_t>& n1_sm_container);
 
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100, ADR-0096): sends a pre-encoded raw
+    // NGAP PDU on the registered UE's CURRENT live association -- used by handle_handover_notify
+    // (running on the TARGET association's own thread) to send a real, AMF-initiated
+    // UEContextReleaseCommand back onto the SOURCE association BEFORE re-pointing this SUPI's own
+    // entry to the target. Same cross-thread send safety precedent send_dl_nas_transport above
+    // already established (the source thread is blocked in SctpSocket::receive(), not sending, by
+    // the time this is called). Returns false if no live association is registered for this SUPI.
+    bool send_raw(const std::string& supi, const std::vector<std::uint8_t>& pdu_bytes);
+
 private:
     std::mutex mutex_;
     std::unordered_map<std::string, Entry> entries_;
@@ -86,6 +96,12 @@ private:
 // not a per-association thread on the NGAP side. Not fixed here (out of this ADR's own scope,
 // and PathSwitchRequest's own design already accounts for the real sequential-not-concurrent
 // behavior by reading persisted Redis state rather than live per-association memory).
+// gnb_associations: gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100, ADR-0095/ADR-0096) --
+// the real cross-association relay registry a genuine N2-based handover
+// (HandoverRequired/.../HandoverNotify) needs. Real, disclosed change to this function's own
+// accept loop alongside it: now one std::thread per accepted association (was strictly
+// sequential, ADR-0031) so AMF can genuinely hold a source AND a target gNB association open at
+// the same time -- see gnb_association_registry.hpp's own header comment.
 void run_ngap_lifecycle(const std::string& bind_address,
                         unsigned short bind_port,
                         const std::string& amf_instance_id,
@@ -94,6 +110,7 @@ void run_ngap_lifecycle(const std::string& bind_address,
                         NgapUeRegistry& ue_ngap_registry,
                         UeSecurityContextStore& ue_security_contexts,
                         AmfUeIdIndexStore& amf_ue_id_index,
+                        GnbAssociationRegistry& gnb_associations,
                         std::uint8_t amf_region_id,
                         std::uint16_t amf_set_id,
                         std::uint8_t amf_pointer);

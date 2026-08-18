@@ -2110,7 +2110,7 @@ RANCPRelocationIndicationIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 HandoverRequired ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ {HandoverRequiredIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per HandoverRequiredIEs below, ADR-0031/ADR-0095/ADR-0096
 	...
 }
 
@@ -2133,7 +2133,7 @@ HandoverRequiredIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 HandoverCommand ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ {HandoverCommandIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per HandoverCommandIEs below, ADR-0031/ADR-0095/ADR-0096
 	...
 }
 
@@ -2158,7 +2158,7 @@ HandoverCommandIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 HandoverPreparationFailure ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ {HandoverPreparationFailureIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per HandoverPreparationFailureIEs below, ADR-0031/ADR-0095/ADR-0096
 	...
 }
 
@@ -2184,7 +2184,7 @@ HandoverPreparationFailureIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 HandoverRequest ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ {HandoverRequestIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per HandoverRequestIEs below, ADR-0031/ADR-0095/ADR-0096
 	...
 }
 
@@ -2238,7 +2238,7 @@ HandoverRequestIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 HandoverRequestAcknowledge ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ {HandoverRequestAcknowledgeIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per HandoverRequestAcknowledgeIEs below, ADR-0031/ADR-0095/ADR-0096
 	...
 }
 
@@ -2262,7 +2262,7 @@ HandoverRequestAcknowledgeIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 HandoverFailure ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ { HandoverFailureIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per HandoverFailureIEs below, ADR-0031/ADR-0095/ADR-0096
 	...
 }
 
@@ -2287,7 +2287,7 @@ HandoverFailureIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 HandoverNotify ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ { HandoverNotifyIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per HandoverNotifyIEs below, ADR-0031/ADR-0095/ADR-0096
 	...
 }
 
@@ -9095,7 +9095,7 @@ PDUSessionResourceSetupItemSURes-ExtIEs NGAP-PROTOCOL-EXTENSION ::= {
 }
 
 PDUSessionResourceSetupRequestTransfer ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ {PDUSessionResourceSetupRequestTransferIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per PDUSessionResourceSetupRequestTransferIEs below, ADR-0031/ADR-0096
 	...
 }
 

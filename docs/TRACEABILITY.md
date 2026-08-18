@@ -1569,3 +1569,40 @@ of `Amf3GppAccessRegistration`. Takes UDR's real resource-type coverage from 9 t
 registration path does not yet call this endpoint -- same disclosed "surface first, wire consumers
 later" precedent as `provisioned-data`, ADR-0069) -- task #106 remains open, ~32 resources still a
 real, disclosed gap.
+
+## ADR-0095 -- real concurrent NGAP association handling (prerequisite for N2 handover)
+
+| Requirement | Test |
+|---|---|
+| `run_ngap_lifecycle` can hold two gNB associations open at the same time (was strictly sequential, ADR-0031) | Live: `amf-ngap: gNB association established` logged twice while the first (a real UERANSIM gNB, mid-registration) was still alive |
+| Each spawned association thread gets its own dedicated AUSF/PCF/SMF clients (fixing a real shared-non-thread-safe-client race the concurrency change would otherwise introduce) | Code review + live: a real UERANSIM registration (AUSF/PCF/SMF calls) completed correctly while a second, concurrent association was also open |
+| `GnbAssociationRegistry` real cross-thread send-and-await-reply | See ADR-0096's own live verification -- this is the mechanism that made it possible |
+| No regression | `amf` built clean; full `conformance_tests` unchanged pass count (no new committed automated test, same disclosed manual-live-verification precedent) |
+
+Real, disclosed: this does not add a coordinated shutdown path for in-flight association threads
+(detached, same class as every other fire-and-forget thread in this project), nor a generic
+multi-relay-per-gNB correlation scheme (one relay in flight per target gNB at a time, a real,
+disclosed lab-scope simplification). See ADR-0095 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0096 -- gap-closure task #100: real N2-based handover (HandoverRequired through HandoverNotify)
+
+| Requirement | Test |
+|---|---|
+| Real `HandoverRequired` decode via cold lookup (AMF-UE-NGAP-ID/RAN-UE-NGAP-ID from the message itself, not association-local state) | Live: `ho_source_trigger` sent HandoverRequired over a THIRD, brand-new connection (not UERANSIM's own registration association) referencing the real captured AMF-UE-NGAP-ID=1/RAN-UE-NGAP-ID=1/PDU-session=1 -- AMF's own log confirms it found the real persisted UE context |
+| Real `HandoverRequest` sent to the target gNB's own live association via cross-thread relay | AMF's own log: `"sending real HandoverRequest (178 bytes) to target gNB..."`; `ho_target_gnb`'s own independent decode confirmed `PDUSessionResourceSetupListHOReq`/`SecurityContext`/`GUAMI` all present |
+| Real `HandoverRequestAcknowledge` received back and correctly correlated across threads | AMF's own log: `"real HandoverRequestAcknowledge received from target gNB..."` |
+| Real `HandoverCommand` sent to source with the target's own relayed `TargetToSource-TransparentContainer` content | `ho_source_trigger`'s own independent decode: content read back byte-for-byte as `"fake-t2s-rrc-container"`, the exact string `ho_target_gnb` sent -- proves correct cross-process content relay, not just a correlated boolean |
+| Real `HandoverNotify` triggers a real, AMF-initiated `UEContextReleaseCommand` to the source (closing the real, previously-disclosed ADR-0078 gap) and re-points `NgapUeRegistry` | AMF's own log, full sequence: `HandoverNotify received` -> `sent real AMF-initiated UEContextReleaseCommand` -> `re-pointed NGAP registry entry... to the new RAN-UE-NGAP-ID=4242` -> `UEContextReleaseComplete received` |
+| Real, third-party interop confirmation | UERANSIM's own real, unmodified gNB (`gnb.log`) independently logged `"UE Context Release Command received"` / `"Releasing RRC connection for UE[1]"` in direct response -- not this project's own tooling |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent ADR-0090/ADR-0091/ADR-0092 established), zero regressions; `amf` built clean |
+
+Real, disclosed scope narrowing: `TargetID` only supports the real `globalGNB-ID` CHOICE arm;
+`SourceToTarget`/`TargetToSource-TransparentContainer` relayed opaque/byte-for-byte per the real
+spec's own design; `SecurityContext` reuses ADR-0090's own `derive_kgnb`/`derive_nh` call (NCC=0);
+`PDUSessionResourceSetupListHOReq`'s own per-session transfer is structurally real (one real QoS
+flow, 5QI=9 non-dynamic, a genuine standard TS 23.501 value) but its mandatory
+`UL-NGU-UP-TNLInformation` is a disclosed placeholder (no real AMF->SMF relay built this pass,
+same class of gap as ADR-0090/ADR-0092's own "AMF doesn't call SMF yet" disclosure);
+`HandoverCancel`/`HandoverCancelAcknowledge` remain real, open, out of this pass's scope (a
+separate elementary procedure). See ADR-0096 in `docs/DECISIONS.md` for full disclosure --
+**task #100 is closed for its real, scoped chain** (`HandoverRequired` through `HandoverNotify`).

@@ -166,12 +166,26 @@ mostly open, tracked as the remaining scope of task #100/#101.
 `PathSwitchRequestFailure` (the AMF-facing tail of Xn-based handover, TS 38.413 §8.4.4) are now
 real and live-verified -- a genuine, previously-missing `amf_ue_ngap_id -> tmsi` cross-association
 index and real TS 33.501 Annex A.9/A.10 vertical key derivation (KgNB/NH) were built along the
-way. `HandoverRequired`/`HandoverRequest`/`HandoverRequestAcknowledge`/`HandoverCommand`/
-`HandoverNotify`/`HandoverCancel` (the real N2-based handover chain -- 5 messages, 2 live gNB
-associations) remain fully open, a genuinely larger body of work than `PathSwitchRequest` alone.
-See ADR-0090 for the full real, disclosed scope (including a real, found-in-passing correction to
-`ngap_task.hpp`'s own pre-existing "one thread per association" claim -- this project's real NGAP
-accept loop is single-association-at-a-time, sequential).
+way. See ADR-0090 for the full real, disclosed scope (including a real, found-in-passing correction
+to `ngap_task.hpp`'s own pre-existing "one thread per association" claim -- confirmed at the time
+to be single-association-at-a-time, sequential; that specific limitation is what ADR-0095 below
+fixes for real).
+
+**Closed, ADR-0095/ADR-0096**: the real N2-based handover chain (`HandoverRequired`/
+`HandoverRequest`/`HandoverRequestAcknowledge`/`HandoverCommand`/`HandoverPreparationFailure`/
+`HandoverFailure`/`HandoverNotify`) is now real and live-verified with two genuinely,
+simultaneously-open gNB associations -- the real architectural prerequisite this remaining scope
+needed (`run_ngap_lifecycle`'s accept loop was strictly sequential, confirmed above; ADR-0095
+rearchitected it to one real `std::thread` per association plus a new `GnbAssociationRegistry` for
+real cross-thread relay/correlation). Live-verified against a real, unmodified UERANSIM
+registration plus two hand-crafted scratch gNB clients, including a genuine, unplanned bonus
+confirmation: UERANSIM's own real gNB correctly processed a real, new AMF-initiated
+`UEContextReleaseCommand` this same pass added (closing the exact gap ADR-0078 disclosed as the
+"AMF-INITIATED direction... not implemented" below). Real, disclosed remaining gap:
+`HandoverCancel`/`HandoverCancelAcknowledge` (a separate elementary procedure, not part of the
+closed chain), and `HandoverRequest`'s own per-session PDU transfer content is real but carries a
+placeholder N3 address (no real AMF->SMF relay built for handover, same disclosed class as
+`PathSwitchRequest`'s own still-open "AMF doesn't call SMF yet" gap two rows below).
 
 **Real NGAP gap found via live interop, closed the same way it was found**: attempting to
 trigger a real `ServiceRequest` naturally (gNB-initiated idle-mode re-entry via UERANSIM's
@@ -516,9 +530,9 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | NF | Scale ratio (ref/ours) | Highest-priority real gap |
 |---|---|---|
 | NRF | ~1-1.3x | NFProfile semantic validation; active heartbeat-expiry timer (open5GS only) |
-| AMF | ~10-14x | `ServiceRequest`: CLOSED (ADR-0076). N2 handover: `PathSwitchRequest` slice CLOSED (task #100, ADR-0090); the real N2-based `HandoverRequired`/.../`Notify` chain remains open -- still the highest-impact remaining finding in the whole sweep |
+| AMF | ~10-14x | `ServiceRequest`: CLOSED (ADR-0076). N2 handover: CLOSED in full (task #100, ADR-0090 `PathSwitchRequest` slice + ADR-0095/ADR-0096 real concurrent associations + the full `HandoverRequired`...`HandoverNotify` chain); `HandoverCancel` and real AMF->SMF PDU-session-transfer depth remain a real, disclosed, smaller open gap |
 | AUSF | ~3-5x | `Nausf_SoRProtection`, ProSe auth (free5GC-only, both) |
-| SMF | ~10-16x | `UpdateSMContext`: `PATH_SWITCH_REQ`/`_ACK` slice CLOSED (task #101, ADR-0092, real downlink FAR/GTP-U control-plane); the other 20 real N2SmInfoType values remain a stub -- still couples to AMF's own remaining handover gap |
+| SMF | ~10-16x | `UpdateSMContext`: `PATH_SWITCH_REQ`/`_ACK` slice CLOSED (task #101, ADR-0092, real downlink FAR/GTP-U control-plane); the other 20 real N2SmInfoType values remain a stub. AMF's own N2 handover NGAP side is now closed (ADR-0095/ADR-0096), but AMF still doesn't call SMF during handover -- the real AMF->SMF relay wiring for handover-triggered PDU session resource re-setup remains a real, disclosed open gap |
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
 | UDR | ~2.5-10x | Resource-type breadth (~10 of 42+ real TS 29.504 resources) |

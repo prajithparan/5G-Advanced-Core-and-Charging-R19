@@ -299,6 +299,12 @@ int main() {
     // amf_ue_ngap_id -> tmsi index -- see amf_ue_id_index_store.hpp's own header for why
     // PathSwitchRequest needs it. Shares the same Redis connection as ue_security_contexts above.
     amf::AmfUeIdIndexStore amf_ue_id_index(redis);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #100, ADR-0095): real cross-association
+    // relay registry a genuine N2-based handover needs -- see gnb_association_registry.hpp's own
+    // header for why. In-process only (no Redis backing), matching NgapUeRegistry's own scope:
+    // both hold live, non-owning references into associations' own stack frames, meaningless
+    // across a restart.
+    amf::ngap::GnbAssociationRegistry gnb_associations;
     amf::UeN1N2SubscriptionStore ue_n1n2_subs("n1n2sub-");
     amf::NonUeN2SubscriptionStore non_ue_n2_subs("nonuen2sub-");
     amf::AmfStatusSubscriptionStore amf_status_subs("amfstatussub-");
@@ -772,6 +778,7 @@ int main() {
                 std::ref(ue_ngap_registry),
                 std::ref(ue_security_contexts),
                 std::ref(amf_ue_id_index),
+                std::ref(gnb_associations),
                 amf_region_id,
                 amf_set_id,
                 amf_pointer)

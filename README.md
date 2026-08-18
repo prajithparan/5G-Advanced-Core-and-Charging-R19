@@ -69,15 +69,22 @@ vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR (real
 persistence, now 10 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
 context-data, ADR-0094), and UPF (task #107 closed in full: PFCP Association Update/Release, PFD
 Management, Node Report). CHF closed real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even
-free5GC's own CDR module doesn't fully match in scope on this project's own terms. **Still open**:
-the real N2-based `HandoverRequired`/.../`HandoverNotify` handover chain (AMF/SMF's own remaining
-19 `N2SmInfoType` values beyond `PATH_SWITCH_REQ`), the remaining ~32 of UDR's ~42+ real TS 29.504
-resources, ProSe's PAnF-dependent returning-UE path, and NSSF/NEF/SCP/BSF (whole Tier-1 NFs not
-yet built at all). CI note: `.github/workflows/ci.yml`'s two `ctest` invocations were found
-(2026-08-18) to be missing the same known-flaky-test exclusion (`UdrIntegration.
-AmfContextLifecycle`/`UdmIntegration.SdmDataRetrievalAndSubscriptions`, a real, disclosed,
-unroot-caused hang since ADR-0071) local runs have always used — fixed in ADR-0093 so CI matches
-established local verification practice; the underlying flake itself remains open.
+free5GC's own CDR module doesn't fully match in scope on this project's own terms. AMF's real
+N2-based handover chain (`HandoverRequired` through `HandoverNotify`, TS 38.413 §8.4.2–§8.4.4) is
+now closed too (ADR-0095/ADR-0096) — a real architectural prerequisite was found and fixed along
+the way (AMF's NGAP layer could only ever hold one gNB association open at a time; now real
+concurrent associations via a new `GnbAssociationRegistry` cross-thread relay), live-verified with
+two genuinely simultaneous gNB associations and, as an unplanned bonus, real interop confirmation
+from UERANSIM's own unmodified gNB correctly reacting to a new AMF-initiated
+`UEContextReleaseCommand`. **Still open**: `HandoverCancel`, the real AMF→SMF relay that would
+replace handover's own placeholder N3 addressing, SMF's remaining 19 `N2SmInfoType` values beyond
+`PATH_SWITCH_REQ`, the remaining ~32 of UDR's ~42+ real TS 29.504 resources, ProSe's
+PAnF-dependent returning-UE path, and NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all). CI
+note: `.github/workflows/ci.yml`'s two `ctest` invocations were found (2026-08-18) to be missing
+the same known-flaky-test exclusion (`UdrIntegration.AmfContextLifecycle`/`UdmIntegration.
+SdmDataRetrievalAndSubscriptions`, a real, disclosed, unroot-caused hang since ADR-0071) local
+runs have always used — fixed in ADR-0093 so CI matches established local verification practice;
+the underlying flake itself remains open.
 
 ## Repository layout
 
