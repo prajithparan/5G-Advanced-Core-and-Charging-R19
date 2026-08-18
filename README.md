@@ -60,16 +60,24 @@ and open5GS's own actual source (not just their docs) — see
 rather than just unit-tested. Closed so far: NRF (NFProfile validation, heartbeat-expiry timer),
 AMF (`ServiceRequest`, RAN-initiated `UEContextRelease`, and — ADR-0090 — the `PathSwitchRequest`
 slice of N2 handover, live-verified with a hand-crafted NGAP test client since UERANSIM has no
-CLI-triggerable handover scenario), AUSF (`Nausf_SoRProtection`, and — ADR-0091 — real TS 33.503
-5G ProSe authentication, live-verified with an independently-computed EAP-AKA' response against
-real TS 35.207 test vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR
-(real PostgreSQL persistence plus a first slice of TS 29.504 resource breadth), and UPF (task
-#107 closed in full: PFCP Association Update/Release, PFD Management, Node Report). CHF closed
-real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even free5GC's own CDR module doesn't
-fully match in scope on this project's own terms. **Still open**: the real N2-based
-`HandoverRequired`/.../`HandoverNotify` handover chain (AMF), SMF's `UpdateSMContext` (coupled to
-it), the remainder of UDR's ~42+ real TS 29.504 resource surface, ProSe's PAnF-dependent
-returning-UE path, and NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all).
+CLI-triggerable handover scenario), SMF (ADR-0092 — real `UpdateSMContext` `PATH_SWITCH_REQ`
+dispatch, this project's first real downlink GTP-U FAR/`OuterHeaderCreation`, cross-process
+live-verified against AMF's own PathSwitchRequest slice and a real UPF PFCP Session Modification),
+AUSF (`Nausf_SoRProtection`, and — ADR-0091 — real TS 33.503 5G ProSe authentication,
+live-verified with an independently-computed EAP-AKA' response against real TS 35.207 test
+vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR (real PostgreSQL
+persistence, now 10 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
+context-data, ADR-0094), and UPF (task #107 closed in full: PFCP Association Update/Release, PFD
+Management, Node Report). CHF closed real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even
+free5GC's own CDR module doesn't fully match in scope on this project's own terms. **Still open**:
+the real N2-based `HandoverRequired`/.../`HandoverNotify` handover chain (AMF/SMF's own remaining
+19 `N2SmInfoType` values beyond `PATH_SWITCH_REQ`), the remaining ~32 of UDR's ~42+ real TS 29.504
+resources, ProSe's PAnF-dependent returning-UE path, and NSSF/NEF/SCP/BSF (whole Tier-1 NFs not
+yet built at all). CI note: `.github/workflows/ci.yml`'s two `ctest` invocations were found
+(2026-08-18) to be missing the same known-flaky-test exclusion (`UdrIntegration.
+AmfContextLifecycle`/`UdmIntegration.SdmDataRetrievalAndSubscriptions`, a real, disclosed,
+unroot-caused hang since ADR-0071) local runs have always used — fixed in ADR-0093 so CI matches
+established local verification practice; the underlying flake itself remains open.
 
 ## Repository layout
 

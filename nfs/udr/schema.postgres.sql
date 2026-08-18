@@ -16,6 +16,15 @@ CREATE TABLE IF NOT EXISTS udr_amf_context (
     context JSONB NOT NULL
 );
 
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0093): a real, distinct resource
+-- from udr_amf_context above -- TS29505_Subscription_Data.yaml's own
+-- /subscription-data/{ueId}/context-data/amf-non-3gpp-access is a separate real path/schema
+-- (AmfNon3GppAccessRegistration), not the same document reused.
+CREATE TABLE IF NOT EXISTS udr_amf_non3gpp_context (
+    ue_id   TEXT PRIMARY KEY,
+    context JSONB NOT NULL
+);
+
 -- Composite primary key (ue_id, pdu_session_id) matches the real spec resource path
 -- /subscription-data/{ueId}/context-data/smf-registrations/{pduSessionId} exactly -- one row per
 -- UE+PDU-session, same shape QuerySmfRegList's real "list every registration for a given ueId"

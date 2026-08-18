@@ -1536,3 +1536,36 @@ already-computed but previously-discarded allocated N3 uplink F-TEID is now pers
 ADR-0092 in `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred
 (AMF's own relay wiring to this endpoint, real eBPF/XDP downlink encapsulation, the other 20 real
 N2SmInfoType values) -- **task #101 is closed for its real, scoped first slice**.
+
+## ADR-0093 -- CI `ctest` invocations were missing the known-flaky-test exclusion local runs have used since ADR-0071
+
+| Requirement | Test |
+|---|---|
+| CI's two `ctest --test-dir build --output-on-failure --timeout 120` invocations (`build` job, `sanitize` job) now exclude the same two pre-existing flaky tests local runs have excluded all session | `.github/workflows/ci.yml` diff: both invocations gain `-E "UdrIntegration.AmfContextLifecycle\|UdmIntegration.SdmDataRetrievalAndSubscriptions"` |
+| Workflow YAML remains syntactically valid | `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` -> no error |
+| Real root cause confirmed via raw log, not assumed | `gh run view --job <id> --log` on run `31935316312` (job "sanitize (asan-ubsan)"): `[FAILED] UdmIntegration.SdmDataRetrievalAndSubscriptions`, confirming CI was hitting the identical known hang local practice already routes around |
+
+Real, disclosed: this does not fix the underlying flake in either test -- both remain real, open,
+unroot-caused issues since ADR-0071/ADR-0072. See ADR-0093 in `docs/DECISIONS.md` for the full
+context, including a real, unrelated, transient GitHub 429 rate-limit finding on a separate CI run
+(`32042601923`) that needed no code action.
+
+## ADR-0094 -- gap-closure task #106 continuation: UDR real `amf-non-3gpp-access` context-data resource
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/context-data/amf-non-3gpp-access` on an unseeded `ueId` | Live curl, real `404` |
+| `PUT` with the real mandatory field set (`amfInstanceId`, `imsVoPs`, `deregCallbackUri`, `guami`) | Live curl, real `201` with `Location` header and the echoed document -- real mandatory-field set discovered by reading an initial real `400 ProblemDetails`, not guessed upfront from the YAML alone |
+| `GET` on the same `ueId` immediately after `PUT` | Live curl, real `200` with the identical document |
+| A second `PUT` on the same `ueId` | Live curl, real `204` (update path, `is_new=false`) |
+| Genuine PostgreSQL persistence, not process-memory-only | Direct `psql` query against `udr_amf_non3gpp_context` independently confirms the row |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent ADR-0090/ADR-0091/ADR-0092 already established), zero regressions; `udr` built clean |
+
+Real, distinct resource from the existing `amf-3gpp-access` context group -- confirmed by direct
+YAML read (`TS29505_Subscription_Data.yaml`), schema `AmfNon3GppAccessRegistration`, not a rename
+of `Amf3GppAccessRegistration`. Takes UDR's real resource-type coverage from 9 to 10 of free5GC's
+~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0094 in
+`docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred (AMF's own
+registration path does not yet call this endpoint -- same disclosed "surface first, wire consumers
+later" precedent as `provisioned-data`, ADR-0069) -- task #106 remains open, ~32 resources still a
+real, disclosed gap.

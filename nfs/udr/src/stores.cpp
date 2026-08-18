@@ -30,6 +30,32 @@ std::optional<nlohmann::json> AmfContextStore::get(const std::string& ue_id) {
     return std::make_optional(nlohmann::json::parse(result.front()["context"].as<std::string>()));
 }
 
+AmfNon3GppContextStore::AmfNon3GppContextStore(const std::string& conninfo) : conn_(conninfo) {}
+
+bool AmfNon3GppContextStore::put(const std::string& ue_id, nlohmann::json context) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto row =
+        txn.exec("INSERT INTO udr_amf_non3gpp_context (ue_id, context) VALUES ($1, $2::jsonb) "
+                 "ON CONFLICT (ue_id) DO UPDATE SET context = EXCLUDED.context "
+                 "RETURNING (xmax = 0) AS inserted",
+                 pqxx::params{ue_id, context.dump()})
+            .one_row();
+    txn.commit();
+    return row["inserted"].as<bool>();
+}
+
+std::optional<nlohmann::json> AmfNon3GppContextStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT context FROM udr_amf_non3gpp_context WHERE ue_id = $1",
+                                 pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["context"].as<std::string>()));
+}
+
 std::optional<nlohmann::json> AmfContextStore::apply_patch(const std::string& ue_id,
                                                            const nlohmann::json& patch_ops) {
     std::lock_guard<std::mutex> lock(mutex_);

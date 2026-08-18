@@ -49,6 +49,26 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0093): backs the AMF non-3GPP-access
+// context group (QueryAmfContextNon3gpp, CreateAmfContextNon3gpp -- real
+// TS29505_Subscription_Data.yaml `/subscription-data/{ueId}/context-data/amf-non-3gpp-access`).
+// Deliberately NOT the same class/table as AmfContextStore above -- a real, distinct resource per
+// spec (schema `AmfNon3GppAccessRegistration`, not `Amf3GppAccessRegistration`), same "one UE can
+// have both a 3GPP and a non-3GPP AMF context simultaneously" real architecture the two separate
+// spec paths already imply. Real, confirmed (not assumed): no PATCH/DELETE operation exists for
+// this resource in the spec, same as its 3GPP-access sibling.
+class AmfNon3GppContextStore {
+public:
+    explicit AmfNon3GppContextStore(const std::string& conninfo);
+
+    bool put(const std::string& ue_id, nlohmann::json context);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 // Backs the SMF registration context group (QuerySmfRegList, QuerySmfRegistration,
 // CreateOrUpdateSmfRegistration, UpdateSmfContext, DeleteSmfRegistration). Keyed by
 // (ueId, pduSessionId), same nested-key shape as nfs/udm's SmfRegistrationStore and for the same

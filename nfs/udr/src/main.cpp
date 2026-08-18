@@ -43,8 +43,14 @@
 // same "build the surface first, wire consumers in a dedicated later turn" precedent this
 // project already used for UDR's own provisioned-data group (ADR-0069) and PCF itself (ADR-0028).
 //
+// UPDATE (ADR-0093, gap-closure task #106): the AMF non-3GPP-access context group
+// (QueryAmfContextNon3gpp/CreateAmfContextNon3gpp, real GET+PUT) is now implemented -- a real,
+// distinct resource/table from the 3GPP one above (schema `AmfNon3GppAccessRegistration`, not
+// `Amf3GppAccessRegistration`), same "no PATCH/DELETE exists for this resource" scope its 3GPP
+// sibling already has.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
-// context-data's other sub-resources (non-3gpp-access, smsf-3gpp/non-3gpp, ip-sm-gw, mwd,
+// context-data's other sub-resources (smsf-3gpp/non-3gpp, ip-sm-gw, mwd,
 // roaming-information, pei-info, ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // operator-specific-data; lcs-*; pp-data; group-data; shared-data; subs-to-notify; policy-data's
 // own other resources (ue-policy-set, sponsor-connectivity-data, bdt-data, slice-control-data,
@@ -239,6 +245,8 @@ int main() {
     sbi_core::jwt::Verifier verifier(CERTS_DIR "/nrf-jwt/public.pem", kNrfInstanceId);
 
     udr::AmfContextStore amf_contexts(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0093).
+    udr::AmfNon3GppContextStore amf_non3gpp_contexts(conninfo);
     udr::SmfRegistrationStore smf_registrations(conninfo);
     udr::ProvisionedDataStore provisioned_data(conninfo);
     udr::SmPolicyDataStore sm_policy_data(conninfo);
@@ -276,6 +284,9 @@ int main() {
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0093).
+    auto amf_non3gpp_ctx_write_counter = meter->CreateUInt64Counter(
+        "udr_amf_non3gpp_context_write_total", "Total CreateAmfContextNon3gpp calls");
     auto smf_reg_write_counter =
         meter->CreateUInt64Counter("udr_smf_registration_write_total",
                                    "Total CreateOrUpdateSmfRegistration/UpdateSmfContext calls");
@@ -385,6 +396,63 @@ int main() {
             amf_ctx_write_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
+            return resp;
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0093): real
+    // QueryAmfContextNon3gpp/CreateAmfContextNon3gpp -- GET+PUT, mirrors the 3GPP-access group
+    // above exactly (same real spec shape: no PATCH/DELETE for this resource either), backed by
+    // its own distinct table/store (a real, separate resource, not a rename of the 3GPP one).
+    const std::string amf_non3gpp_ctx_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/amf-non-3gpp-access";
+
+    server.add_route(
+        "GET",
+        amf_non3gpp_ctx_path_pattern,
+        [&verifier, &amf_non3gpp_contexts](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto context = amf_non3gpp_contexts.get(ue_id);
+            if (!context.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AMF non-3GPP-access context for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, context->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        amf_non3gpp_ctx_path_pattern,
+        [&verifier,
+         &amf_non3gpp_contexts,
+         &amf_non3gpp_ctx_write_counter,
+         amf_non3gpp_ctx_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::AmfNon3GppAccessRegistration>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json j = *body;
+            const bool is_new = amf_non3gpp_contexts.put(ue_id, j);
+            amf_non3gpp_ctx_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", amf_non3gpp_ctx_path_pattern);
+            resp.body = j.dump();
             return resp;
         });
 
