@@ -775,4 +775,34 @@ std::optional<nlohmann::json> SharedDataStore::get(const std::string& shared_dat
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+OperatorSpecificDataStore::OperatorSpecificDataStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+std::optional<nlohmann::json> OperatorSpecificDataStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_operator_specific_data WHERE ue_id = $1",
+                                 pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+nlohmann::json OperatorSpecificDataStore::apply_patch(const std::string& ue_id,
+                                                      const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_operator_specific_data WHERE ue_id = $1",
+                                 pqxx::params{ue_id});
+    auto doc = result.empty() ? nlohmann::json::object()
+                              : nlohmann::json::parse(result.front()["data"].as<std::string>());
+    doc = doc.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("INSERT INTO udr_operator_specific_data (ue_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, doc.dump()});
+    txn.commit();
+    return doc;
+}
+
 } // namespace udr

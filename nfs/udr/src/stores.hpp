@@ -451,4 +451,23 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0111). Backs the real
+// Operator-Specific Data Container (Document) resource (QueryOperSpecData/ModifyOperSpecData --
+// real GET+PATCH, RFC 6902, no PUT/DELETE exists for this resource in the spec). No POST/create
+// operation exists either, so apply_patch() is upsert-capable -- same disclosed, deliberate
+// precedent already established for PpDataStore.
+class OperatorSpecificDataStore {
+public:
+    explicit OperatorSpecificDataStore(const std::string& conninfo);
+
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    // Throws nlohmann::json::exception on a malformed patch -- caller turns that into a 400
+    // ProblemDetails, same as PpDataStore's own apply_patch.
+    nlohmann::json apply_patch(const std::string& ue_id, const nlohmann::json& patch_ops);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

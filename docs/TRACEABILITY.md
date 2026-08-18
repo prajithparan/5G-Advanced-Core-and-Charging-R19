@@ -1893,3 +1893,24 @@ ADR-0110 in `docs/DECISIONS.md` for full disclosure, including what remains deli
 (the real sibling collection resource `GetSharedData`, which needs array-query-parameter parsing
 this project has no precedent for yet; no NF currently calls this new endpoint) -- task #106
 remains open, ~17 resources still a real, disclosed gap.
+
+## ADR-0111 -- gap-closure task #106 continuation: UDR real Operator-Specific Data Container (Document)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/operator-specific-data` on an unseeded `ueId` | Live curl, real `404` |
+| `PATCH` (`application/json-patch+json`, RFC 6902 `add` on `/customFlag`) with no prior document | Live curl, real `200` with the document originated via upsert -- no `PUT`/`POST` exists for this resource |
+| `GET` immediately after the originating `PATCH` | Live curl, real `200` confirming persistence |
+| `PATCH` again (RFC 6902 `replace` on `/customFlag/value`) | Live curl, real `200` with the updated document |
+| `GET` after the update `PATCH` | Live curl, real `200` confirming the update |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_operator_specific_data` confirms the persisted document matches the API's final response |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real `GET`+`PATCH`-only resource (no PUT/DELETE, no POST/create -- confirmed by direct YAML read),
+`OperatorSpecificDataStore::apply_patch()` byte-for-byte matching `PpDataStore`'s own
+upsert-capable RFC 6902 pattern; real response shape is a raw map (no top-level wrapper struct),
+same as `PpDataStore`'s own established handling. Takes UDR's real resource-type coverage from 25
+to 26 of free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0111
+in `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred (no NF
+currently calls these new endpoints) -- task #106 remains open, ~16 resources still a real,
+disclosed gap.

@@ -300,3 +300,18 @@ CREATE TABLE IF NOT EXISTS udr_shared_data (
     shared_data_id TEXT PRIMARY KEY,
     data           JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0111). Real Nudr_DataRepository
+-- Operator-Specific Data Container (Document) resource
+-- (/subscription-data/{ueId}/operator-specific-data, real response shape: a map keyed by operator
+-- specific data element name, values real schema OperatorSpecificDataContainer -- mandatory
+-- dataType+value each -- TS29505_Subscription_Data.yaml, no top-level wrapper struct). Confirmed
+-- by direct YAML read: real GET (QueryOperSpecData) + real PATCH (ModifyOperSpecData,
+-- application/json-patch+json -- RFC 6902, same standard as udr_pp_data's own patch) -- no
+-- PUT/DELETE exists for this resource. No POST/create operation exists either, so -- same
+-- disclosed, deliberate precedent already established for udr_pp_data -- apply_patch is
+-- upsert-capable (missing ueId = start from an empty document).
+CREATE TABLE IF NOT EXISTS udr_operator_specific_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
