@@ -198,3 +198,14 @@ CREATE TABLE IF NOT EXISTS udr_coverage_restriction_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0103). Real Nudr_DataRepository LCS
+-- Privacy Subscription Data resource (/subscription-data/{ueId}/lcs-privacy-data, real schema
+-- LcsPrivacyData -- $ref'd verbatim from TS29503_Nudm_SDM.yaml). Confirmed by grepping every
+-- operationId referencing this path: genuinely GET-only (QueryLcsPrivacyData), same real
+-- "provisioned out-of-band, seeded at startup" shape as udr_coverage_restriction_data/
+-- udr_provisioned_data above.
+CREATE TABLE IF NOT EXISTS udr_lcs_privacy_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

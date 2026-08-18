@@ -1732,3 +1732,21 @@ free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See A
 `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred
 (`ecRestrictionDataWb` left unpopulated in the seed data, no NF currently calls this new endpoint)
 -- task #106 remains open, ~25 resources still a real, disclosed gap.
+
+## ADR-0103 -- gap-closure task #106 continuation: UDR real LCS Privacy Subscription Data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/lcs-privacy-data` for the real seeded SUPI `imsi-999700000000001` | Live curl, real `200` with the exact seeded `lpi.locationPrivacyInd` document |
+| `GET` for an unseeded SUPI | Live curl, real `404` |
+| Genuine PostgreSQL persistence across startup | Direct `psql` query against `udr_lcs_privacy_data` confirms both real seeded rows (`imsi-999700000000001`/`...002`) persisted correctly |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions; `udr` built clean |
+
+Real, genuinely GET-only resource (confirmed by grepping every operationId referencing this path,
+no create/update operation exists at all in the spec), same shape as `CoverageRestrictionDataStore`
+(ADR-0102) -- seeded at startup with a real enum value (`LOCATION_ALLOWED` from
+`LocationPrivacyInd`), not a fabricated field. Takes UDR's real resource-type coverage from 17 to
+18 of free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0103 in
+`docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred (most of
+`LcsPrivacyData`'s own other optional fields left unpopulated in the seed data, no NF currently
+calls this new endpoint) -- task #106 remains open, ~24 resources still a real, disclosed gap.

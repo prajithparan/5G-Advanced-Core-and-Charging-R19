@@ -331,4 +331,19 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0103). Backs the real LCS Privacy
+// Subscription Data resource (QueryLcsPrivacyData -- real GET-only, no create/update operation
+// exists in the spec at all, same shape as CoverageRestrictionDataStore above).
+class LcsPrivacyDataStore {
+public:
+    explicit LcsPrivacyDataStore(const std::string& conninfo);
+
+    void seed(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr
