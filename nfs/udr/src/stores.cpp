@@ -922,4 +922,55 @@ std::optional<nlohmann::json> SponsorConnectivityDataStore::get(const std::strin
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+BdtDataStore::BdtDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void BdtDataStore::put(const std::string& bdt_ref_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_bdt_data (bdt_ref_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (bdt_ref_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{bdt_ref_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> BdtDataStore::get(const std::string& bdt_ref_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_bdt_data WHERE bdt_ref_id = $1", pqxx::params{bdt_ref_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::optional<nlohmann::json> BdtDataStore::merge_patch(const std::string& bdt_ref_id,
+                                                        const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_bdt_data WHERE bdt_ref_id = $1", pqxx::params{bdt_ref_id});
+    if (result.empty()) {
+        // Real, disclosed: unlike AmPolicyDataStore/UePolicySetStore, this PATCH is NOT
+        // upsert-capable -- the real spec documents a real 404 for UpdateIndividualBdtData when
+        // the resource doesn't already exist (PUT is the real create path for this resource).
+        return std::nullopt;
+    }
+    auto doc = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    doc.merge_patch(patch);
+    txn.exec("UPDATE udr_bdt_data SET data = $2::jsonb WHERE bdt_ref_id = $1",
+             pqxx::params{bdt_ref_id, doc.dump()});
+    txn.commit();
+    return std::make_optional(doc);
+}
+
+bool BdtDataStore::remove(const std::string& bdt_ref_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM udr_bdt_data WHERE bdt_ref_id = $1", pqxx::params{bdt_ref_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr

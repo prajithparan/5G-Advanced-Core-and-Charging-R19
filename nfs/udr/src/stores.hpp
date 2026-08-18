@@ -541,4 +541,27 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0116). Backs the real
+// `policy-data` group's individual BDT (Background Data Transfer) Data resource
+// (ReadIndividualBdtData/CreateIndividualBdtData/UpdateIndividualBdtData/
+// DeleteIndividualBdtData -- real GET+PUT+PATCH+DELETE). Real, disclosed: put() is internally
+// upsert-capable (idempotent-safe for retries) but the real spec's own PUT documents ONLY `201`
+// as a success response (operationId literally "Create...", no update-via-PUT status
+// documented) -- the caller always responds 201, not 204, matching the real spec literally.
+class BdtDataStore {
+public:
+    explicit BdtDataStore(const std::string& conninfo);
+
+    void put(const std::string& bdt_ref_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& bdt_ref_id);
+    // Real RFC 7396 JSON Merge Patch.
+    std::optional<nlohmann::json> merge_patch(const std::string& bdt_ref_id,
+                                              const nlohmann::json& patch);
+    bool remove(const std::string& bdt_ref_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

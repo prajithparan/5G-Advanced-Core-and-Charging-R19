@@ -2002,3 +2002,28 @@ existence-based store shape as every other GET-only UDR resource. Takes UDR's re
 coverage from 29 to 30 of free5GC's ~42+ real TS 29.504 resources
 (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0115 in `docs/DECISIONS.md` for full disclosure --
 task #106 remains open, ~12 resources still a real, disclosed gap.
+
+## ADR-0116 -- gap-closure task #106 continuation: UDR real individual BDT Data (richest policy-data resource yet)
+
+| Requirement | Test |
+|---|---|
+| `GET /policy-data/bdt-data/{bdtReferenceId}` on an unseeded `bdtReferenceId` | Live curl, real `404` |
+| `PATCH` on that same unseeded `bdtReferenceId` | Live curl, real `404` -- confirms `PATCH` is genuinely NOT upsert-capable for this resource (unlike every prior merge-patch resource) |
+| `PUT` with `{"aspId":"asp1","numOfUes":10}` on a new key | Live curl, real `201` |
+| `GET` immediately after the create `PUT` | Live curl, real `200` |
+| `PUT` again with different values | Live curl, real `201` again (**not** `204`) -- confirms the real spec's single documented PUT status is honored literally |
+| `PATCH` (`application/merge-patch+json`) with `{"numOfUes":30}` | Live curl, real `200` with the merged document (`aspId` unchanged, `numOfUes` updated) |
+| `GET` after the `PATCH` | Live curl, real `200` confirming the merge |
+| `DELETE`, then `GET` again | Live curl, real `204` then real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_bdt_data` confirms zero rows remain after the delete |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real, richest `policy-data` operation set closed so far (`GET`+`PUT`+`PATCH`+`DELETE`), with two
+genuinely new, disclosed behavioral distinctions verified live: the real `PUT` only documents
+`201` (no update-via-PUT status, unlike `ue-policy-set`'s own 201/200/204), and the real `PATCH`
+is NOT upsert-capable (real `404` if the resource doesn't already exist, unlike `am-data`/
+`ue-policy-set`'s own upsert-capable merge-patch). Takes UDR's real resource-type coverage from 30
+to 31 of free5GC's ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0116
+in `docs/DECISIONS.md` for full disclosure, including what remains deliberately deferred (the real
+sibling collection resource, array-query-param parsing gap, no NF currently calls these new
+endpoints) -- task #106 remains open, ~11 resources still a real, disclosed gap.

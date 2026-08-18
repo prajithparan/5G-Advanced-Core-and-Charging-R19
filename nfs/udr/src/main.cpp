@@ -140,12 +140,19 @@
 // `204` ("found but no data") vs `404` ("not found") is not modeled -- this store's simple
 // existence-based model only distinguishes 200-with-data vs 404-not-provisioned.
 //
+// UPDATE (ADR-0116, gap-closure task #106): the `policy-data` group's individual BDT
+// (Background Data Transfer) Data resource (ReadIndividualBdtData/CreateIndividualBdtData/
+// UpdateIndividualBdtData/DeleteIndividualBdtData, real GET+PUT+PATCH+DELETE) is now implemented
+// -- real, disclosed: PUT only documents `201` (no update-via-PUT status), so the route always
+// responds 201; PATCH is NOT upsert-capable (real 404 if the resource doesn't already exist,
+// unlike am-data/ue-policy-set's own upsert-capable PATCH).
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
 // group-data (including ee-profile-data's own group-keyed sibling);
 // subs-to-notify; policy-data's
-// own other resources (bdt-data, slice-control-data,
+// own other resources (slice-control-data,
 // and others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
 // not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn).
 //
@@ -383,6 +390,8 @@ int main() {
     udr::PolicyOperatorSpecificDataStore policy_operator_specific_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0115).
     udr::SponsorConnectivityDataStore sponsor_connectivity_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0116).
+    udr::BdtDataStore bdt_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -603,6 +612,14 @@ int main() {
         "udr_policy_operator_specific_data_patch_total", "Total UpdateOperatorSpecificData calls");
     auto sponsor_connectivity_data_get_counter = meter->CreateUInt64Counter(
         "udr_sponsor_connectivity_data_get_total", "Total ReadSponsorConnectivityData calls");
+    auto bdt_data_write_counter = meter->CreateUInt64Counter("udr_bdt_data_write_total",
+                                                             "Total CreateIndividualBdtData calls");
+    auto bdt_data_get_counter =
+        meter->CreateUInt64Counter("udr_bdt_data_get_total", "Total ReadIndividualBdtData calls");
+    auto bdt_data_patch_counter = meter->CreateUInt64Counter("udr_bdt_data_patch_total",
+                                                             "Total UpdateIndividualBdtData calls");
+    auto bdt_data_delete_counter = meter->CreateUInt64Counter(
+        "udr_bdt_data_delete_total", "Total DeleteIndividualBdtData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2110,6 +2127,99 @@ int main() {
             }
             sponsor_connectivity_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: policy-data group, individual BDT Data resource (ADR-0116,
+    // gap-closure task #106) -- real GET+PUT+PATCH(RFC 7396)+DELETE per
+    // TS29519_Policy_Data.yaml. ---
+
+    const std::string bdt_data_path_pattern =
+        std::string(kApiRoot) + "/policy-data/bdt-data/{bdtReferenceId}";
+
+    server.add_route(
+        "GET",
+        bdt_data_path_pattern,
+        [&verifier, &bdt_data, &bdt_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto bdt_ref_id = req.path_params.at("bdtReferenceId");
+            auto data = bdt_data.get(bdt_ref_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No BDT data for bdtReferenceId " + bdt_ref_id);
+            }
+            bdt_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        bdt_data_path_pattern,
+        [&verifier, &bdt_data, &bdt_data_write_counter, bdt_data_path_pattern](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto bdt_ref_id = req.path_params.at("bdtReferenceId");
+            bdt_data.put(bdt_ref_id, body);
+            bdt_data_write_counter->Add(1);
+            // Real spec: CreateIndividualBdtData documents ONLY 201 as a success response (no
+            // update-via-PUT status) -- confirmed by direct read, this route always responds 201,
+            // matching the real spec literally rather than inventing an undocumented 204.
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", bdt_data_path_pattern);
+            resp.body = body.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        bdt_data_path_pattern,
+        [&verifier, &bdt_data, &bdt_data_patch_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch;
+            try {
+                patch = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto bdt_ref_id = req.path_params.at("bdtReferenceId");
+            const auto patched = bdt_data.merge_patch(bdt_ref_id, patch);
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No BDT data for bdtReferenceId " + bdt_ref_id);
+            }
+            bdt_data_patch_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        bdt_data_path_pattern,
+        [&verifier, &bdt_data, &bdt_data_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto bdt_ref_id = req.path_params.at("bdtReferenceId");
+            if (!bdt_data.remove(bdt_ref_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No BDT data for bdtReferenceId " + bdt_ref_id);
+            }
+            bdt_data_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

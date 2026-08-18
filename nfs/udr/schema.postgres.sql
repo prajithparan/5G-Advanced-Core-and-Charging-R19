@@ -377,3 +377,23 @@ CREATE TABLE IF NOT EXISTS udr_sponsor_connectivity_data (
     sponsor_id TEXT PRIMARY KEY,
     data       JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0116). Real Nudr_DataRepository
+-- `policy-data` group's individual BDT (Background Data Transfer) Data resource
+-- (/policy-data/bdt-data/{bdtReferenceId}, real schema BdtData -- aspId/transPolicy/bdtRefId/
+-- nwAreaInfo/numOfUes/volPerUe/dnn/snssai/trafficDes/bdtpStatus/warnNotifEnabled, every field
+-- optional). Confirmed by direct YAML read: real GET (ReadIndividualBdtData) + real PUT
+-- (CreateIndividualBdtData -- real, disclosed: the spec documents ONLY `201` as a success
+-- response for this PUT, unlike ue-policy-set's own PUT which documents 201/200/204; this
+-- project's own store is still upsert-capable internally for idempotent retries, but the route
+-- always responds `201`, matching the real spec's own single documented status literally rather
+-- than inventing an undocumented 204) + real PATCH (UpdateIndividualBdtData,
+-- application/merge-patch+json -- RFC 7396, same standard as udr_ue_policy_set's own patch) +
+-- real DELETE (DeleteIndividualBdtData). Keyed by bdt_ref_id (BdtReferenceId, a plain string per
+-- TS 29.154 clause 5.3.3), genuinely NOT per-UE. Real sibling collection resource
+-- (/policy-data/bdt-data, optional bdt-ref-ids array query filter) deferred -- same real
+-- array-query-parameter parsing gap already disclosed for shared-data's own list sibling.
+CREATE TABLE IF NOT EXISTS udr_bdt_data (
+    bdt_ref_id TEXT PRIMARY KEY,
+    data       JSONB NOT NULL
+);
