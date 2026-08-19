@@ -494,3 +494,13 @@ CREATE TABLE IF NOT EXISTS udr_identity_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0123). Real Query ODB Data by SUPI
+-- or GPSI resource (/subscription-data/{ueId}/operator-determined-barring-data, real schema
+-- OdbData -- roamingOdb: optional RoamingOdb enum). Confirmed by direct YAML read: this resource
+-- is genuinely GET-only (GetOdbData) -- no create/update operation exists at all, same real
+-- "provisioned out-of-band, seeded at startup" shape as udr_coverage_restriction_data above.
+CREATE TABLE IF NOT EXISTS udr_odb_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

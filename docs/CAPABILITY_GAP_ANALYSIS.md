@@ -393,7 +393,7 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 37 real resource endpoints (36 real
+This project's UDR (`nfs/udr/src/main.cpp`) implements 38 real resource endpoints (37 real
 `Nudr_DataRepository` resources plus, as of ADR-0120, one real `Nudr_GroupIDmap` resource,
 `GetRoutingIDs` -- a genuinely distinct Nudr API, not counted in the `Nudr_DataRepository`-vs-free5GC
 comparison below): AMF 3GPP-access
@@ -416,19 +416,21 @@ individual BDT Data (ADR-0116 -- see below, richest policy-data resource yet), P
 Control Data (ADR-0119 -- see below, same GET+PATCH-only upsert-capable shape, plain-string key),
 NIDD Authorization Info context-data (ADR-0121 -- see below, real PUT+GET+PATCH+DELETE, a
 self-correction of an earlier bundled deferral), Identity Data by SUPI or GPSI (ADR-0122 -- see
-below, real GET+PATCH, RFC 6902, upsert-capable),
+below, real GET+PATCH, RFC 6902, upsert-capable), ODB Data (ADR-0123 -- see below, real GET-only,
+seeded at startup),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`, and -- ADR-0106 -- `lcs-bca-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
 (`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
 semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
-ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 36
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 37
 of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, 13
 as of ADR-0098, 14 as of ADR-0099, 15 as of ADR-0100, 16 as of ADR-0101, 17 as of ADR-0102, 18 as
 of ADR-0103, 19 as of ADR-0104, 20 as of ADR-0105, 21 as of ADR-0106, 22 as of ADR-0107, 23 as of
 ADR-0108, 24 as of ADR-0109, 25 as of ADR-0110, 26 as of ADR-0111, 27 as of ADR-0112, 28 as of
 ADR-0113, 29 as of ADR-0114, 30 as of ADR-0115, 31 as of ADR-0116, 32 as of ADR-0117, 33 as of
-ADR-0118, 34 as of ADR-0119, 35 as of ADR-0121, now 36 as of ADR-0122 -- see below).
+ADR-0118, 34 as of ADR-0119, 35 as of ADR-0121, 36 as of ADR-0122, now 37 as of ADR-0123 -- see
+below).
 
 **Highest-priority missing resources** (the ones with real, direct behavioral impact elsewhere in
 this project, not just data-model completeness): Authentication Data / Authentication Status
@@ -560,7 +562,10 @@ confirmed genuinely deeply-nested subscription-lifecycle resources (server-gener
 `POST`, further nested `amf-`/`smf-`/`hss-subscriptions` sub-collections, plus a parallel
 `group-data`-scoped tree), and `/policy-data/subs-to-notify` is confirmed a real `POST`-based
 collection with a server-generated `Location` and real webhook callback registration -- all three
-remain genuine, disclosed gaps, not silently re-deferred.
+remain genuine, disclosed gaps, not silently re-deferred. **Closed, docs/DECISIONS.md ADR-0123**:
+ODB Data (`GetOdbData`, real GET-only, seeded at startup, same shape as
+`coverage-restriction-data`) -- taking UDR from 36 to 37 of free5GC's ~42+ real
+`Nudr_DataRepository` resource types.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 

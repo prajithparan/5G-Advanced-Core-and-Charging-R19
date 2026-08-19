@@ -197,6 +197,10 @@
 // server-generated Location header and real webhook callback registration
 // (`{$request.body#/notificationUri}`), no existing project precedent for either.
 //
+// UPDATE (ADR-0123, gap-closure task #106): the real Query ODB Data by SUPI or GPSI resource
+// (GetOdbData -- real GET-only, no create/update operation exists at all) is now implemented,
+// seeded at startup, same shape as coverage-restriction-data.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -461,6 +465,8 @@ int main() {
     udr::NiddAuthorizationInfoStore nidd_authorization_info(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0122).
     udr::IdentityDataStore identity_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0123).
+    udr::OdbDataStore odb_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -615,6 +621,17 @@ int main() {
         routing_ids.seed("UDM", "udm-group-1", routing_id);
     }
 
+    // Real seed data (ADR-0123, gap-closure task #106) -- the real ODB Data resource is genuinely
+    // GET-only per spec, same "no live provisioning path yet" reasoning as above.
+    // `roamingOdb: "OUTSIDE_HOME_PLMN"` is a real enum value from RoamingOdb
+    // (TS29571_CommonData.yaml), this project's own representative test choice.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json odb;
+        odb["roamingOdb"] = "OUTSIDE_HOME_PLMN";
+        odb_data.seed(supi, odb);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -735,6 +752,8 @@ int main() {
         meter->CreateUInt64Counter("udr_identity_data_get_total", "Total GetIdentityData calls");
     auto identity_data_patch_counter = meter->CreateUInt64Counter("udr_identity_data_patch_total",
                                                                   "Total ModifyIdentityData calls");
+    auto odb_data_get_counter =
+        meter->CreateUInt64Counter("udr_odb_data_get_total", "Total GetOdbData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2645,6 +2664,30 @@ int main() {
             }
             identity_data_patch_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    // --- Nudr_DataRepository: Query ODB Data by SUPI or GPSI resource (ADR-0123, gap-closure
+    // task #106) -- real GET-only per TS29505_Subscription_Data.yaml, seeded at startup (no
+    // create/update operation exists in the spec, same shape as coverage-restriction-data). ---
+
+    const std::string odb_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/operator-determined-barring-data";
+
+    server.add_route(
+        "GET",
+        odb_data_path_pattern,
+        [&verifier, &odb_data, &odb_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = odb_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No ODB Data for ueId " + ue_id);
+            }
+            odb_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

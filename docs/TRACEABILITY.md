@@ -2165,3 +2165,19 @@ webhook callback registration, no existing project precedent for either. Takes U
 resource-type coverage from 35 to 36 of free5GC's ~42+ real `Nudr_DataRepository` resources
 (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0122 in `docs/DECISIONS.md` for full disclosure -- task
 #106 remains open, ~6 resources still a real, disclosed gap.
+
+## ADR-0123 -- gap-closure task #106 continuation: UDR real ODB Data (Query by SUPI or GPSI)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/operator-determined-barring-data` on the seeded SUPI (`imsi-999700000000001`) | Live curl, real `200` with `{"roamingOdb":"OUTSIDE_HOME_PLMN"}` |
+| `GET` on an unseeded SUPI (`imsi-999700000000099`) | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_odb_data` confirms both seeded rows match |
+| No regression | Full `conformance_tests`: unchanged pass count (same disclosed manual-live-verification precedent already established for every GET-only seeded resource in this series), zero regressions (325/325); `udr` built clean |
+
+Real `GET`-only resource (`GetOdbData`), same "provisioned out-of-band, seeded at startup" shape
+as every other GET-only resource in this series -- no create/update operation exists for it at
+all. Takes UDR's real resource-type coverage from 36 to 37 of free5GC's ~42+ real
+`Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0123 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~5 resources still a real,
+disclosed gap.
