@@ -1133,4 +1133,33 @@ bool NiddAuthorizationInfoStore::remove(const std::string& ue_id) {
     return result.affected_rows() > 0;
 }
 
+IdentityDataStore::IdentityDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+std::optional<nlohmann::json> IdentityDataStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_identity_data WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+nlohmann::json IdentityDataStore::apply_patch(const std::string& ue_id,
+                                              const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_identity_data WHERE ue_id = $1", pqxx::params{ue_id});
+    auto doc = result.empty() ? nlohmann::json::object()
+                              : nlohmann::json::parse(result.front()["data"].as<std::string>());
+    doc = doc.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("INSERT INTO udr_identity_data (ue_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, doc.dump()});
+    txn.commit();
+    return doc;
+}
+
 } // namespace udr

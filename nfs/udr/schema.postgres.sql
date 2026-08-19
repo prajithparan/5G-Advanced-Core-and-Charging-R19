@@ -478,3 +478,19 @@ CREATE TABLE IF NOT EXISTS udr_nidd_authorization_info (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0122). Real Query/Modify Identity
+-- Data by SUPI or GPSI resource (/subscription-data/{ueId}/identity-data, real schema
+-- IdentityData -- supiList/gpsiList/allowedAfIds, all optional arrays). Confirmed by direct YAML
+-- read: real GET (GetIdentityData) + real PATCH (ModifyIdentityData, real RFC 6902
+-- application/json-patch+json, NOT RFC 7396 merge-patch like slice-control-data/
+-- group-control-data's own PATCH standard) -- no PUT/POST create operation exists at all, so
+-- (same disclosed, deliberate precedent already established for PpDataStore/
+-- OperatorSpecificDataStore) apply_patch is upsert-capable. Real, disclosed simplification: the
+-- real spec's optional `app-port-id` query param and conditional-request headers
+-- (If-None-Match/If-Modified-Since, Cache-Control/ETag/Last-Modified) are not implemented -- same
+-- "no conditional-GET semantics anywhere in this project yet" gap as every other GET route.
+CREATE TABLE IF NOT EXISTS udr_identity_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

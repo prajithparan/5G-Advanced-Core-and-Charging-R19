@@ -185,11 +185,21 @@
 // shape as amf-3gpp-access's own real distinct-201-vs-204 PUT + RFC 6902 PATCH, plus a real
 // DELETE (which amf-3gpp-access's own resource lacks).
 //
+// UPDATE (ADR-0122, gap-closure task #106): the real Query/Modify Identity Data by SUPI or GPSI
+// resource (GetIdentityData/ModifyIdentityData, real GET+PATCH, no PUT/POST create operation
+// exists at all) is now implemented -- apply_patch is upsert-capable, same precedent as
+// pp-data/operator-specific-data. Real RFC 6902 JSON Patch, not merge-patch. Confirmed while
+// surveying: `ee-subscriptions`/`sdm-subscriptions` ARE genuinely deeply-nested
+// subscription-lifecycle resources (collection -> individual -> amf-/smf-/hss-subscriptions
+// sub-collections, plus a parallel group-data-scoped tree, server-generated subsId via POST) --
+// the original deferral for those two was correct, unlike nidd-authorizations above.
+// `subs-to-notify` also confirmed genuinely deferred: real POST-based collection with a
+// server-generated Location header and real webhook callback registration
+// (`{$request.body#/notificationUri}`), no existing project precedent for either.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
-// ee-subscriptions, sdm-subscriptions -- genuinely deeply-nested subscription-lifecycle
-// resources, not yet individually re-verified against the real YAML the way nidd-authorizations
-// was above);
+// ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
 // group-data (including ee-profile-data's own group-keyed sibling);
 // subs-to-notify; policy-data's
 // own other resources (mbs-session-pol-data -- real, disclosed: its MbsSessPolDataId key is a
@@ -449,6 +459,8 @@ int main() {
     udr::RoutingIdStore routing_ids(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0121).
     udr::NiddAuthorizationInfoStore nidd_authorization_info(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0122).
+    udr::IdentityDataStore identity_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -719,6 +731,10 @@ int main() {
         "Total CreateNIDDAuthorizationInfo/ModifyNiddAuthorizationInfo calls");
     auto nidd_authorization_delete_counter = meter->CreateUInt64Counter(
         "udr_nidd_authorization_delete_total", "Total RemoveNiddAuthorizationInfo calls");
+    auto identity_data_get_counter =
+        meter->CreateUInt64Counter("udr_identity_data_get_total", "Total GetIdentityData calls");
+    auto identity_data_patch_counter = meter->CreateUInt64Counter("udr_identity_data_patch_total",
+                                                                  "Total ModifyIdentityData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2579,6 +2595,56 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Nudr_DataRepository: Query/Modify Identity Data by SUPI or GPSI resource (ADR-0122,
+    // gap-closure task #106) -- real GET+PATCH per TS29505_Subscription_Data.yaml, no PUT/POST
+    // create operation exists, so apply_patch is upsert-capable (same precedent as pp-data). ---
+
+    const std::string identity_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/identity-data";
+
+    server.add_route(
+        "GET",
+        identity_data_path_pattern,
+        [&verifier, &identity_data, &identity_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = identity_data.get(ue_id);
+            identity_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Identity Data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        identity_data_path_pattern,
+        [&verifier, &identity_data, &identity_data_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json patched;
+            try {
+                patched = identity_data.apply_patch(ue_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            identity_data_patch_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched.dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

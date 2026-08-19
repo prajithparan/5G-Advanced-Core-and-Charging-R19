@@ -66,7 +66,7 @@ live-verified against AMF's own PathSwitchRequest slice and a real UPF PFCP Sess
 AUSF (`Nausf_SoRProtection`, and — ADR-0091 — real TS 33.503 5G ProSe authentication,
 live-verified with an independently-computed EAP-AKA' response against real TS 35.207 test
 vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR (real PostgreSQL
-persistence, now 35 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
+persistence, now 36 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
 context-data (ADR-0094), SMSF 3GPP/non-3GPP-access context-data (ADR-0097), IP-SM-GW
 Registration context-data (ADR-0098, real PUT+GET+PATCH+DELETE, the first UDR context-data
 resource with all four real operations together), Message Waiting Data (Document) context-data
@@ -97,10 +97,11 @@ upsert-capable, same precedent as am-data), group-specific Policy Control Data (
 GET+PATCH-only upsert-capable shape, plain-string intGroupId key with no encoding ambiguity), and
 NIDD Authorization Info context-data (ADR-0121, real PUT+GET+PATCH+DELETE, same shape as
 amf-3gpp-access's own resource — a self-correction of an earlier pass that had wrongly bundled it
-in with the still-deferred ee-subscriptions/sdm-subscriptions as a deeply-nested resource)).
+in with the still-deferred ee-subscriptions/sdm-subscriptions as a deeply-nested resource), and
+Identity Data by SUPI or GPSI (ADR-0122, real GET+PATCH, RFC 6902, upsert-capable)).
 UDR also now implements one real `Nudr_GroupIDmap` resource (`GetRoutingIDs`/`/routing-ids`,
 ADR-0120) — a genuinely distinct real Nudr API (`/nudr-group-id-map/v1`, not `/nudr-dr/v2`) hosted
-by the same binary; this does not count toward the "35 of ~42+" `Nudr_DataRepository` figure above,
+by the same binary; this does not count toward the "36 of ~42+" `Nudr_DataRepository` figure above,
 which tracks specifically against free5GC's own `Nudr_DataRepository` resource set. And UPF (task #107
 closed in full: PFCP Association Update/Release, PFD
 Management, Node Report). CHF closed real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even
@@ -113,7 +114,7 @@ two genuinely simultaneous gNB associations and, as an unplanned bonus, real int
 from UERANSIM's own unmodified gNB correctly reacting to a new AMF-initiated
 `UEContextReleaseCommand`. **Still open**: `HandoverCancel`, the real AMF→SMF relay that would
 replace handover's own placeholder N3 addressing, SMF's remaining 19 `N2SmInfoType` values beyond
-`PATH_SWITCH_REQ`, the remaining ~7 of UDR's ~42+ real TS 29.504 resources (25 more now closed —
+`PATH_SWITCH_REQ`, the remaining ~6 of UDR's ~42+ real TS 29.504 resources (26 more now closed —
 SMSF 3GPP/non-3GPP-access context-data (ADR-0097), IP-SM-GW Registration context-data (ADR-0098),
 Message Waiting Data (Document) context-data (ADR-0099), Roaming Information (Document)
 context-data (ADR-0100), PEI Information (Document) context-data (ADR-0101), Enhanced
@@ -125,8 +126,9 @@ pp-data-store (ADR-0109), individual Shared Data (ADR-0110), Operator-Specific D
 Container (Document) (ADR-0111), Event Exposure Data (Document) (ADR-0112), UE Policy Set
 (ADR-0113), policy-data Operator-Specific Data (ADR-0114), Sponsor Connectivity Data
 (ADR-0115), individual BDT Data (ADR-0116), PLMN UE Policy Set (ADR-0117), Slice-specific
-Policy Control Data (ADR-0118), group-specific Policy Control Data (ADR-0119), and NIDD
-Authorization Info context-data (ADR-0121), 35 of ~42+ total), ProSe's
+Policy Control Data (ADR-0118), group-specific Policy Control Data (ADR-0119), NIDD
+Authorization Info context-data (ADR-0121), and Identity Data by SUPI or GPSI (ADR-0122), 36 of
+~42+ total), ProSe's
 PAnF-dependent
 returning-UE path, and
 NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all). CI note: `.github/workflows/ci.yml`'s

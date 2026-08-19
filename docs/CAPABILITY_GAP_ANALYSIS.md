@@ -393,7 +393,7 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 36 real resource endpoints (35 real
+This project's UDR (`nfs/udr/src/main.cpp`) implements 37 real resource endpoints (36 real
 `Nudr_DataRepository` resources plus, as of ADR-0120, one real `Nudr_GroupIDmap` resource,
 `GetRoutingIDs` -- a genuinely distinct Nudr API, not counted in the `Nudr_DataRepository`-vs-free5GC
 comparison below): AMF 3GPP-access
@@ -415,19 +415,20 @@ individual BDT Data (ADR-0116 -- see below, richest policy-data resource yet), P
 (ADR-0118 -- see below, real GET+PATCH-only, upsert-capable merge-patch), group-specific Policy
 Control Data (ADR-0119 -- see below, same GET+PATCH-only upsert-capable shape, plain-string key),
 NIDD Authorization Info context-data (ADR-0121 -- see below, real PUT+GET+PATCH+DELETE, a
-self-correction of an earlier bundled deferral),
+self-correction of an earlier bundled deferral), Identity Data by SUPI or GPSI (ADR-0122 -- see
+below, real GET+PATCH, RFC 6902, upsert-capable),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`, and -- ADR-0106 -- `lcs-bca-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
 (`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
 semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
-ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 35
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 36
 of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, 13
 as of ADR-0098, 14 as of ADR-0099, 15 as of ADR-0100, 16 as of ADR-0101, 17 as of ADR-0102, 18 as
 of ADR-0103, 19 as of ADR-0104, 20 as of ADR-0105, 21 as of ADR-0106, 22 as of ADR-0107, 23 as of
 ADR-0108, 24 as of ADR-0109, 25 as of ADR-0110, 26 as of ADR-0111, 27 as of ADR-0112, 28 as of
 ADR-0113, 29 as of ADR-0114, 30 as of ADR-0115, 31 as of ADR-0116, 32 as of ADR-0117, 33 as of
-ADR-0118, 34 as of ADR-0119, now 35 as of ADR-0121 -- see below).
+ADR-0118, 34 as of ADR-0119, 35 as of ADR-0121, now 36 as of ADR-0122 -- see below).
 
 **Highest-priority missing resources** (the ones with real, direct behavioral impact elsewhere in
 this project, not just data-model completeness): Authentication Data / Authentication Status
@@ -549,6 +550,17 @@ resource plus a real DELETE) -- taking UDR from 34 to 35 of free5GC's ~42+ real
 "ee-subscriptions/sdm-subscriptions/nidd-authorizations" bundle without an individual real YAML
 read; it is genuinely a flat per-UE document, not a nested sub-subscription resource.
 `ee-subscriptions`/`sdm-subscriptions` were NOT re-verified and remain genuinely deferred.
+**Closed, docs/DECISIONS.md ADR-0122**: Identity Data by SUPI or GPSI
+(`GetIdentityData`/`ModifyIdentityData`, real GET+PATCH, real RFC 6902 JSON Patch (not
+merge-patch), no `PUT`/`POST` create operation exists at all so `apply_patch` is upsert-capable,
+same precedent as `pp-data`/`operator-specific-data`) -- taking UDR from 35 to 36 of free5GC's
+~42+ real `Nudr_DataRepository` resource types. This ADR also individually re-verified (not
+re-bundled) the three items still named as deferred: `ee-subscriptions`/`sdm-subscriptions` are
+confirmed genuinely deeply-nested subscription-lifecycle resources (server-generated `subsId` via
+`POST`, further nested `amf-`/`smf-`/`hss-subscriptions` sub-collections, plus a parallel
+`group-data`-scoped tree), and `/policy-data/subs-to-notify` is confirmed a real `POST`-based
+collection with a server-generated `Location` and real webhook callback registration -- all three
+remain genuine, disclosed gaps, not silently re-deferred.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 

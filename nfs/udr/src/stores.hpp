@@ -668,4 +668,28 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0122). Backs the real Query/Modify
+// Identity Data by SUPI or GPSI resource (GetIdentityData/ModifyIdentityData -- real GET+PATCH,
+// no PUT/POST create operation exists at all -- confirmed by direct YAML read). Same disclosed,
+// deliberate "no create operation exists, so apply_patch is upsert-capable" precedent already
+// established for PpDataStore/OperatorSpecificDataStore (real RFC 6902 JSON Patch, not RFC 7396
+// merge-patch, unlike slice-control-data/group-control-data's own PATCH standard). Real, disclosed
+// simplification: the real spec's optional `app-port-id` query param (GET) and conditional-request
+// headers (If-None-Match/If-Modified-Since, Cache-Control/ETag/Last-Modified on the response) are
+// not implemented -- same "no conditional-GET semantics anywhere in this project yet" gap as every
+// other GET route.
+class IdentityDataStore {
+public:
+    explicit IdentityDataStore(const std::string& conninfo);
+
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    // Throws nlohmann::json::exception on a malformed patch -- caller turns that into a 400
+    // ProblemDetails, same as PpDataStore's own apply_patch.
+    nlohmann::json apply_patch(const std::string& ue_id, const nlohmann::json& patch_ops);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

@@ -2140,3 +2140,28 @@ deferred. Takes UDR's real resource-type coverage from 34 to 35 of free5GC's ~42
 `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0121 in
 `docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~7 resources still a real,
 disclosed gap.
+
+## ADR-0122 -- gap-closure task #106 continuation: UDR real Identity Data by SUPI or GPSI (plus re-verification of prior deferrals)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/identity-data` on an unseeded `ueId` | Live curl, real `404` |
+| `PATCH` (`application/json-patch+json`) with a real `add` op on `/gpsiList`, no prior create | Live curl, real `200` with the newly-originated document -- confirms `apply_patch` is genuinely upsert-capable (no `PUT`/`POST` exists for this resource) |
+| `GET` immediately after the originating `PATCH` | Live curl, real `200` matching |
+| `PATCH` again with a real `add` op on `/supiList` | Live curl, real `200` with both fields present |
+| `GET` after the second `PATCH` | Live curl, real `200` confirming both fields persist |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_identity_data` confirms the persisted document matches the API's final response exactly |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real `GET`+`PATCH` resource (`GetIdentityData`/`ModifyIdentityData`, real RFC 6902 JSON Patch, NOT
+merge-patch) -- no `PUT`/`POST` create operation exists at all, so `apply_patch` is
+upsert-capable, same precedent as `pp-data`/`operator-specific-data`. Also individually
+re-verified this pass (not re-bundled): `ee-subscriptions`/`sdm-subscriptions` are confirmed
+genuinely deeply-nested subscription-lifecycle resources (server-generated `subsId` via `POST`,
+further nested `amf-`/`smf-`/`hss-subscriptions` sub-collections, plus a parallel
+`group-data`-scoped tree) -- the original deferral was correct. `/policy-data/subs-to-notify` also
+confirmed genuinely deferred: real `POST`-based collection, server-generated `Location`, real
+webhook callback registration, no existing project precedent for either. Takes UDR's real
+resource-type coverage from 35 to 36 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0122 in `docs/DECISIONS.md` for full disclosure -- task
+#106 remains open, ~6 resources still a real, disclosed gap.
