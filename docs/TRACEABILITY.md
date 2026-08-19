@@ -2090,3 +2090,27 @@ inventing a serialization. Takes UDR's real resource-type coverage from 33 to 34
 ~42+ real TS 29.504 resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0119 in
 `docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~8 resources still a real,
 disclosed gap.
+
+## ADR-0120 -- gap-closure task #106 continuation: UDR real GetRoutingIDs (Nudr_GroupIDmap, a distinct Nudr API)
+
+| Requirement | Test |
+|---|---|
+| `GET /routing-ids` with both `nf-type` and `nf-group-id` query parameters missing | Live curl, real `400` |
+| `GET` with only `nf-type` present | Live curl, real `400` |
+| `GET` with the seeded pair (`nf-type=UDM&nf-group-id=udm-group-1`) | Live curl, real `200` with `{"routingIndicators":["0001"]}` |
+| `GET` with an unseeded pair (`nf-type=SMF&nf-group-id=nonexistent`) | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_routing_ids` confirms exactly one row, `(UDM, udm-group-1)`, matching the seeded body |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `structural_conformance` passed; `udr` built clean |
+
+Real `GET`-only resource from a genuinely **different** real Nudr API,
+`TS29504_Nudr_GroupIDmap.yaml`'s `Nudr_GroupIDmap` service (`/nudr-group-id-map/v1`, scope
+`nudr-group-id-map`) -- not `Nudr_DataRepository` (`/nudr-dr/v2`) like every other resource closed
+in this series. Both are real Nudr APIs hosted by the same NF per TS 29.504, so implementing this
+inside the existing `udr` binary is correct, but it does **NOT** count toward the "N of free5GC's
+~42+ `Nudr_DataRepository` resources" metric -- still 34, unchanged from ADR-0119. Two real
+required scalar query parameters, no path-parameter encoding ambiguity and no array-query-param
+parsing needed. Chosen after explicit user confirmation once both remaining real
+`Nudr_DataRepository` list-siblings turned out blocked (ADR-0119). See ADR-0120 in
+`docs/DECISIONS.md` for full disclosure, including the real array-query-param gap also found on
+`Nudr_GroupIDmap`'s own `/nf-group-ids` sibling -- task #106 remains open, ~8 real
+`Nudr_DataRepository` resources still a disclosed gap (unchanged by this ADR).

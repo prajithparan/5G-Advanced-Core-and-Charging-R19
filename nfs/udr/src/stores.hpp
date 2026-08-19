@@ -620,4 +620,24 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0120). Backs the real GetRoutingIDs
+// resource (/routing-ids, TS29504_Nudr_GroupIDmap.yaml -- a genuinely DIFFERENT real Nudr API from
+// every other store in this file, `Nudr_GroupIDmap` not `Nudr_DataRepository`: distinct real
+// server base path (`/nudr-group-id-map/v1`, not `/nudr-dr/v2`) and distinct real OAuth2 scope
+// (`nudr-group-id-map`, not `nudr-dr`). Real GET-only, no create/update operation exists for this
+// resource at all -- same "provisioned out-of-band, seeded at startup" shape as every other
+// GET-only store in this file, composite-keyed by (nf_type, nf_group_id) per the real spec's own
+// two required query parameters, matching PpDataEntryStore's own composite-key precedent.
+class RoutingIdStore {
+public:
+    explicit RoutingIdStore(const std::string& conninfo);
+
+    void seed(const std::string& nf_type, const std::string& nf_group_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& nf_type, const std::string& nf_group_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

@@ -393,7 +393,10 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 34 real resource endpoints: AMF 3GPP-access
+This project's UDR (`nfs/udr/src/main.cpp`) implements 35 real resource endpoints (34 real
+`Nudr_DataRepository` resources plus, as of ADR-0120, one real `Nudr_GroupIDmap` resource,
+`GetRoutingIDs` -- a genuinely distinct Nudr API, not counted in the `Nudr_DataRepository`-vs-free5GC
+comparison below): AMF 3GPP-access
 context-data, AMF non-3GPP-access context-data (docs/DECISIONS.md ADR-0093), SMSF 3GPP-access and
 non-3GPP-access context-data (ADR-0097 -- see below), IP-SM-GW Registration context-data
 (ADR-0098 -- see below), Message Waiting Data (Document) context-data (ADR-0099 -- see below),
@@ -528,7 +531,14 @@ UDR from 33 to 34 of free5GC's ~42+ real resource types. Real, disclosed while s
 resource's siblings: `mbs-session-pol-data`'s own key (`MbsSessPolDataId`) is a deeply nested
 `oneOf`/`anyOf` object with no documented bare-path-segment encoding and no existing project
 precedent to reuse (genuinely worse than `snssai`'s own flat shape) -- left deferred rather than
-inventing a serialization.
+inventing a serialization. With both remaining real `Nudr_DataRepository` list-siblings blocked,
+**Closed, docs/DECISIONS.md ADR-0120** (asked and confirmed, not silently added): `GetRoutingIDs`
+(`/routing-ids`) -- real, but from a genuinely **different** real Nudr API,
+`TS29504_Nudr_GroupIDmap.yaml`'s `Nudr_GroupIDmap` service (`/nudr-group-id-map/v1`), not
+`Nudr_DataRepository` (`/nudr-dr/v2`) -- hosted by the same UDR binary per TS 29.504, but does
+**NOT** count toward this section's own "N of free5GC's ~42+ `Nudr_DataRepository` resources"
+metric, still 34. `Nudr_GroupIDmap`'s own remaining resources (`/nf-group-ids`, blocked on the
+same array-query-param gap; the subscription-lifecycle endpoints, not surveyed) remain open.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 

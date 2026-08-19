@@ -94,8 +94,11 @@ Policy Set (ADR-0117, real GET-only, reuses the UePolicySet schema but keyed by 
 ueId — a genuinely distinct, H-PLMN-scoped resource), and Slice-specific Policy Control Data
 (ADR-0118, real GET+PATCH-only, no PUT/POST create operation exists at all so the merge-patch is
 upsert-capable, same precedent as am-data), and group-specific Policy Control Data (ADR-0119, same
-GET+PATCH-only upsert-capable shape, plain-string intGroupId key with no encoding ambiguity)), and
-UPF (task #107
+GET+PATCH-only upsert-capable shape, plain-string intGroupId key with no encoding ambiguity)).
+UDR also now implements one real `Nudr_GroupIDmap` resource (`GetRoutingIDs`/`/routing-ids`,
+ADR-0120) — a genuinely distinct real Nudr API (`/nudr-group-id-map/v1`, not `/nudr-dr/v2`) hosted
+by the same binary; this does not count toward the "34 of ~42+" `Nudr_DataRepository` figure above,
+which tracks specifically against free5GC's own `Nudr_DataRepository` resource set. And UPF (task #107
 closed in full: PFCP Association Update/Release, PFD
 Management, Node Report). CHF closed real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even
 free5GC's own CDR module doesn't fully match in scope on this project's own terms. AMF's real

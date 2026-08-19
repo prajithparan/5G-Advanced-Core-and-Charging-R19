@@ -1053,4 +1053,31 @@ nlohmann::json GroupPolicyDataStore::merge_patch(const std::string& int_group_id
     return doc;
 }
 
+RoutingIdStore::RoutingIdStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void RoutingIdStore::seed(const std::string& nf_type,
+                          const std::string& nf_group_id,
+                          nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_routing_ids (nf_type, nf_group_id, data) "
+             "VALUES ($1, $2, $3::jsonb) "
+             "ON CONFLICT (nf_type, nf_group_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{nf_type, nf_group_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> RoutingIdStore::get(const std::string& nf_type,
+                                                  const std::string& nf_group_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_routing_ids WHERE nf_type = $1 AND nf_group_id = $2",
+                 pqxx::params{nf_type, nf_group_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr

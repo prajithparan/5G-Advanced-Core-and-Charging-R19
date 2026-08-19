@@ -444,3 +444,21 @@ CREATE TABLE IF NOT EXISTS udr_group_control_data (
     int_group_id TEXT PRIMARY KEY,
     data         JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0120). Real GetRoutingIDs resource
+-- (/routing-ids, real schema RoutingIdResult -- routingIndicators: array of strings, pattern
+-- ^[0-9]{1,4}$, minItems 1). Genuinely DIFFERENT real Nudr API from every other table in this
+-- file: TS29504_Nudr_GroupIDmap.yaml's Nudr_GroupIDmap service (real server base path
+-- `/nudr-group-id-map/v1`, real OAuth2 scope `nudr-group-id-map`), not Nudr_DataRepository's own
+-- `/nudr-dr/v2` -- does NOT count toward the "N of free5GC's ~42+ Nudr_DataRepository resources"
+-- metric tracked elsewhere in this file's own comments. Confirmed by direct YAML read: real
+-- GET-only (GetRoutingIDs), no create/update operation exists at all, same "provisioned
+-- out-of-band, seeded at startup" shape as every other GET-only resource in this project.
+-- Composite-keyed by (nf_type, nf_group_id) per the real spec's own two required query
+-- parameters (`nf-type`: real NFType enum string, `nf-group-id`: real NfGroupId plain string).
+CREATE TABLE IF NOT EXISTS udr_routing_ids (
+    nf_type      TEXT NOT NULL,
+    nf_group_id  TEXT NOT NULL,
+    data         JSONB NOT NULL,
+    PRIMARY KEY (nf_type, nf_group_id)
+);

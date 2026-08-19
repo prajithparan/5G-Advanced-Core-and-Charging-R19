@@ -167,6 +167,15 @@
 // same precedent as slice-control-data above. Keyed by the real GroupId schema (plain string, no
 // encoding ambiguity, unlike slice-control-data's own snssai key).
 //
+// UPDATE (ADR-0120, gap-closure task #106): the real GetRoutingIDs resource (/routing-ids) is now
+// implemented -- real, disclosed: this is a genuinely DIFFERENT real Nudr API
+// (TS29504_Nudr_GroupIDmap.yaml's Nudr_GroupIDmap service, server base path
+// `/nudr-group-id-map/v1`, OAuth2 scope `nudr-group-id-map`), not Nudr_DataRepository
+// (`/nudr-dr/v2`) like every other resource in this file -- does NOT count toward the "N of
+// free5GC's ~42+ Nudr_DataRepository resources" metric tracked in this file's own UPDATE entries
+// above. Real GET-only, composite-keyed by the two real required query parameters (nf-type,
+// nf-group-id), no PUT/POST/PATCH exists at all.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions, nidd-authorizations);
@@ -232,6 +241,10 @@ using nlohmann::json;
 
 constexpr const char* kNfType = "UDR";
 constexpr const char* kApiRoot = "/nudr-dr/v2";
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0120). Real, distinct server base
+// path for TS29504_Nudr_GroupIDmap.yaml's own Nudr_GroupIDmap service -- a genuinely different
+// real Nudr API from Nudr_DataRepository above, not a typo/duplicate of kApiRoot.
+constexpr const char* kGroupIdMapApiRoot = "/nudr-group-id-map/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -421,6 +434,8 @@ int main() {
     udr::SlicePolicyDataStore slice_control_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0119).
     udr::GroupPolicyDataStore group_control_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0120).
+    udr::RoutingIdStore routing_ids(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -562,6 +577,19 @@ int main() {
         plmn_ue_policy_set.seed("99970", plmn_ue_policy);
     }
 
+    // Real seed data (ADR-0120, gap-closure task #106) -- the real GetRoutingIDs resource
+    // (Nudr_GroupIDmap, genuinely distinct API from Nudr_DataRepository above) is genuinely
+    // GET-only per spec, same "no live provisioning path yet" reasoning as above. Composite-keyed
+    // by (nf_type, nf_group_id); "UDM" matches this project's own real, already-built NF type
+    // (TS29510_Nnrf_NFManagement.yaml's own NFType enum). "udm-group-1" is this project's own
+    // arbitrary representative test NfGroupId, not fabricated spec content. "0001" is a real
+    // RoutingIndicator per its own documented pattern (^[0-9]{1,4}$).
+    {
+        json routing_id;
+        routing_id["routingIndicators"] = json::array({"0001"});
+        routing_ids.seed("UDM", "udm-group-1", routing_id);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -671,6 +699,8 @@ int main() {
         "udr_group_control_data_get_total", "Total ReadGroupPolCtrlData calls");
     auto group_control_data_patch_counter = meter->CreateUInt64Counter(
         "udr_group_control_data_patch_total", "Total ModifyGroupPolCtrlData calls");
+    auto routing_ids_get_counter =
+        meter->CreateUInt64Counter("udr_routing_ids_get_total", "Total GetRoutingIDs calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2390,6 +2420,40 @@ int main() {
             const auto patched = group_control_data.merge_patch(int_group_id, patch);
             group_control_data_patch_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    // --- Nudr_GroupIDmap: GetRoutingIDs (ADR-0120, gap-closure task #106) -- real GET-only per
+    // TS29504_Nudr_GroupIDmap.yaml, a genuinely different real Nudr API from Nudr_DataRepository
+    // above (see this file's own header comment for the full disclosure). Two real required
+    // query parameters, nf-type and nf-group-id; no path parameters. ---
+
+    const std::string routing_ids_path_pattern = std::string(kGroupIdMapApiRoot) + "/routing-ids";
+
+    server.add_route(
+        "GET",
+        routing_ids_path_pattern,
+        [&verifier, &routing_ids, &routing_ids_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto nf_type_it = req.query_params.find("nf-type");
+            const auto nf_group_id_it = req.query_params.find("nf-group-id");
+            if (nf_type_it == req.query_params.end() || nf_group_id_it == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "nf-type and nf-group-id are both required query parameters");
+            }
+            auto data = routing_ids.get(nf_type_it->second, nf_group_id_it->second);
+            routing_ids_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(404,
+                                                         "Not Found",
+                                                         "No Routing IDs for nf-type " +
+                                                             nf_type_it->second + " nf-group-id " +
+                                                             nf_group_id_it->second);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();
