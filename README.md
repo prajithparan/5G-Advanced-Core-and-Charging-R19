@@ -25,126 +25,64 @@ spec text. Full conventions are in [`CLAUDE.md`](CLAUDE.md).
 
 | Phase | What | Status |
 |---|---|---|
-| 0 | Foundations: CMake+vcpkg skeleton, `libs/sbi-core` (HTTP/2, OAuth2, ProblemDetails, headers, logging, tracing), hello-nf/stub-nrf proof of concept | Done |
+| 0 | Foundations: CMake+vcpkg skeleton, `libs/sbi-core` (HTTP/2, OAuth2, ProblemDetails, headers, logging, tracing), TLS 1.3 + mTLS | Done |
 | 1 | Codegen spine: `tools/sbi-codegen`, generated DTOs/serializers from the R19 YAML | Done |
-| — | TLS 1.3 + mTLS across `libs/sbi-core` (closes ADR-0005, required before Phase 2 per ADR-0009) | Done |
 | 2 | Control-plane core: NRF, AMF, SMF, UDM, UDR, AUSF, PCF; UE registration + PDU session establishment end-to-end | Done |
-| 3 | User plane: N4/PFCP, UPF datapath | **Done, fully live-verified** (Stage 0-3: PFCP codec, UPF registers with NRF and answers Heartbeat/Association Setup/Session Establishment, SMF discovers UPF via real Nnrf_NFDiscovery, establishes a real Sx Association, and creates a real N4 session as part of every PDU Session Establishment. Stage 4, eBPF/XDP: the real XDP program passes the BPF verifier, real PFCP Session Establishment registers TEIDs in the live BPF map, and — after root-causing a same-network-namespace overlapping-route bug that was breaking ARP — a real GTP-U packet carrying a genuinely PFCP-allocated TEID is decapsulated and delivered to the TUN device end to end). See `docs/DECISIONS.md` ADR-0043 |
-| 4 | Charging + TM Forum SID/BSS layer | CHF live-verified end to end for the full charging lifecycle: `Nchf_ConvergedCharging_Create`/`_Update`/`_Release` wired to real SMF triggers, real quota-consumption tracking/re-authorization (UPF eBPF/XDP usage measurement → SMF PFCP Session Report → CHF re-authorization → SMF PFCP Session Modification back into the live datapath, ADR-0050), real rating against real seeded product-catalog data. Real legacy-interconnect breadth added: SS7 M3UA+SCCP, TCAP, MAP (`insertSubscriberData`), CAP (CAMEL charging), and a Diameter Gy/Rf server — all live-verified, not just unit-tested (P4.5, ADR-0059–ADR-0065). Real TM Forum BSS layer: `bss/product-catalog` (TMF620), `bss/balance-management` (TMF654), `bss/subscriber-management` (TMF632), `bss/roaming-interconnect` (TMF651) — four standalone services, all real PostgreSQL-backed, live-verified over mTLS (ADR-0047/ADR-0056/ADR-0066). Real GSMA TAP3 roaming-CDR codec (`libs/tap3-core`, hand-rolled BER per the real spec, all 9 `CallEventDetail` variants) wired into `RoamingCdrFileStore` (ADR-0067). A real, ongoing gap-closure effort against free5GC/open5gs' own actual source (not just their docs) is adding real UDR PostgreSQL persistence, real UDM↔UDR wiring, and real SUCI de-concealment (ECIES Profile A/B per TS 33.501 Annex C, independently verified against the spec's own official test vectors) — see `docs/DECISIONS.md` ADR-0068–ADR-0070 onward for what's closed so far. `docs/CHARGING_MAPPING.md` covers the SID/BSS field mapping; real, disclosed gaps (no forwarding stop on quota exhaustion, no VOLTH/VOLQU trigger differentiation, several SID/TMF entities still deferred) are itemized per-ADR, not hidden |
+| 3 | User plane: N4/PFCP, UPF datapath (including a real eBPF/XDP fast path) | Done |
+| 4 | Charging + TM Forum SID/BSS layer | Live-verified end to end |
 | 5 | NWDAF + AI/ML pipelines | Not started |
 | 6 | R19 feature NFs (AIOTF, 5MBS, SEPP, ...) | Not started |
 | 7 | GUI / operations console | Not started |
 | 8 | Lab packaging (`make lab-up`) | Not started |
 
-All 7 Phase 2 NFs are implemented, and both target procedures (TS 23.502 §4.2.2.2.2 UE
-Registration, §4.3.2.2.1 PDU Session Establishment) are wired end-to-end in both directions — real
-NGAP/N2 (SCTP + ASN.1 PER) and NAS-5GS, through AUSF/PCF/SMF, no narrowed slice — and verified in a
-single real `nr-gnb`/`nr-ue` interop run, first attempt, with zero retries or failures anywhere in
-the procedure: NG Setup → Initial Registration (including a real SQN resynchronization,
-TS 33.102 §6.3.3) → SecurityModeCommand/Complete → RegistrationAccept → a real AM Policy
-Association with PCF → a real PDU Session Establishment Request → a real SM context with SMF → a
-real PDU Session Establishment Accept, built from PCF's actual QoS decision and delivered back to
-the UE via `Namf_Communication`'s `N1N2MessageTransfer`. `nr-ue`'s own log: `PDU Session
-Establishment Accept received` → `PDU Session establishment is successful` — see
-`docs/DECISIONS.md` ADR-0032–ADR-0038 and `docs/TRACEABILITY.md` for exactly what was proven how.
+**Phase 2** — all 7 NFs implemented; both target procedures (TS 23.502 §4.2.2.2.2 UE Registration,
+§4.3.2.2.1 PDU Session Establishment) verified end-to-end over real NGAP/N2 (SCTP + ASN.1 PER) and
+NAS-5GS in a single `nr-gnb`/`nr-ue` interop run: NG Setup → Initial Registration (including a real
+SQN resynchronization) → SecurityModeCommand/Complete → RegistrationAccept → AM Policy Association
+with PCF → PDU Session Establishment, built from PCF's real QoS decision and delivered to the UE
+via `Namf_Communication`. See `docs/DECISIONS.md` ADR-0032–ADR-0038 and
+[`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) for exactly what was proven how.
 
-Full phase plan: [`PROMPT.md`](PROMPT.md). Per-procedure spec traceability:
-[`docs/TRACEABILITY.md`](docs/TRACEABILITY.md).
+**Phase 3** — UPF registers with NRF, answers PFCP Heartbeat/Association/Session Establishment;
+SMF discovers UPF via `Nnrf_NFDiscovery` and creates a real N4 session on every PDU Session
+Establishment. The eBPF/XDP datapath passes the BPF verifier, registers TEIDs from real PFCP
+signalling in a live BPF map, and decapsulates a real GTP-U packet end-to-end to the TUN device.
+See ADR-0043.
 
-### Capability-completeness gap-closure (ADR-0075 onward)
+**Phase 4** — CHF live-verified for the full charging lifecycle (`Nchf_ConvergedCharging`
+Create/Update/Release, real quota-consumption tracking and re-authorization closing the loop
+through UPF usage measurement and a live PFCP Session Modification, ADR-0050). Real legacy
+interconnect (SS7 M3UA+SCCP, TCAP, MAP, CAP/CAMEL, Diameter Gy/Rf) and a real TM Forum BSS layer
+(product-catalog/TMF620, balance-management/TMF654, subscriber-management/TMF632,
+roaming-interconnect/TMF651) are all live-verified over mTLS. GSMA TAP3 roaming-CDR encoding is
+wired end-to-end. See [`docs/CHARGING_MAPPING.md`](docs/CHARGING_MAPPING.md) for the SID/BSS field
+mapping.
 
-Alongside the phase plan, an ongoing effort closes real capability gaps found against free5GC's
-and open5GS's own actual source (not just their docs) — see
-[`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md) for the evidence base and
-`docs/DECISIONS.md` ADR-0075 onward for what's closed, each real, live-verified, and disclosed
-rather than just unit-tested. Closed so far: NRF (NFProfile validation, heartbeat-expiry timer),
-AMF (`ServiceRequest`, RAN-initiated `UEContextRelease`, and — ADR-0090 — the `PathSwitchRequest`
-slice of N2 handover, live-verified with a hand-crafted NGAP test client since UERANSIM has no
-CLI-triggerable handover scenario), SMF (ADR-0092 — real `UpdateSMContext` `PATH_SWITCH_REQ`
-dispatch, this project's first real downlink GTP-U FAR/`OuterHeaderCreation`, cross-process
-live-verified against AMF's own PathSwitchRequest slice and a real UPF PFCP Session Modification),
-AUSF (`Nausf_SoRProtection`, and — ADR-0091 — real TS 33.503 5G ProSe authentication,
-live-verified with an independently-computed EAP-AKA' response against real TS 35.207 test
-vectors), PCF (`Npcf_PolicyAuthorization`), UDM (`Nudm_EE`/`Nudm_PP`), UDR (real PostgreSQL
-persistence, now 37 of free5GC's ~42+ real TS 29.504 resources including AMF non-3GPP-access
-context-data (ADR-0094), SMSF 3GPP/non-3GPP-access context-data (ADR-0097), IP-SM-GW
-Registration context-data (ADR-0098, real PUT+GET+PATCH+DELETE, the first UDR context-data
-resource with all four real operations together), Message Waiting Data (Document) context-data
-(ADR-0099, real distinct 201-vs-204 PUT response codes), Roaming Information (Document)
-context-data (ADR-0100, same distinct 201-vs-204 PUT shape), PEI Information (Document)
-context-data (ADR-0101, real allOf-composed schema flattened by sbi-codegen), Enhanced
-Coverage Restriction Data (ADR-0102, real GET-only, seeded at startup), LCS Privacy
-Subscription Data (ADR-0103, same GET-only seeded shape), LCS Subscription Data (ADR-0104,
-same shape), LCS Mobile Originated Subscription Data (ADR-0105, same shape), LCS Broadcast
-Assistance Data (ADR-0106, added as a 4th column on the existing provisioned-data group),
-Parameter Provision (Document) (ADR-0107, real GET+PATCH RFC 6902, upsert-capable),
-Parameter Provision profile Data (Document) (ADR-0108, same GET-only seeded shape),
-Provisioned Parameter Data Entry / pp-data-store (ADR-0109, real PUT+GET+DELETE plus a real
-sibling collection GET, composite (ueId, afInstanceId) key), individual Shared Data
-(ADR-0110, the first UDR resource genuinely not keyed per-UE), Operator-Specific Data
-Container (Document) (ADR-0111, real GET+PATCH RFC 6902, upsert-capable), Event Exposure
-Data (Document) (ADR-0112, real GET-only, seeded at startup), UE Policy Set (ADR-0113, real
-GET+PUT+PATCH combining create-or-replace and RFC 7396 merge-patch), policy-data
-Operator-Specific Data (ADR-0114, genuinely distinct from the subscription-data-scoped sibling),
-Sponsor Connectivity Data (ADR-0115, second non-per-UE UDR resource), and individual BDT Data
-(ADR-0116, real GET+PUT+PATCH+DELETE, richest policy-data resource yet — PUT always returns
-`201` per the real spec's single documented status, and PATCH is genuinely NOT upsert-capable,
-both a deliberate divergence from this project's own general conventions elsewhere), PLMN UE
-Policy Set (ADR-0117, real GET-only, reuses the UePolicySet schema but keyed by plmnId rather than
-ueId — a genuinely distinct, H-PLMN-scoped resource), and Slice-specific Policy Control Data
-(ADR-0118, real GET+PATCH-only, no PUT/POST create operation exists at all so the merge-patch is
-upsert-capable, same precedent as am-data), group-specific Policy Control Data (ADR-0119, same
-GET+PATCH-only upsert-capable shape, plain-string intGroupId key with no encoding ambiguity), and
-NIDD Authorization Info context-data (ADR-0121, real PUT+GET+PATCH+DELETE, same shape as
-amf-3gpp-access's own resource — a self-correction of an earlier pass that had wrongly bundled it
-in with the still-deferred ee-subscriptions/sdm-subscriptions as a deeply-nested resource), and
-Identity Data by SUPI or GPSI (ADR-0122, real GET+PATCH, RFC 6902, upsert-capable), and ODB Data
-(ADR-0123, real GET-only, seeded at startup)).
-UDR also now implements one real `Nudr_GroupIDmap` resource (`GetRoutingIDs`/`/routing-ids`,
-ADR-0120) — a genuinely distinct real Nudr API (`/nudr-group-id-map/v1`, not `/nudr-dr/v2`) hosted
-by the same binary; this does not count toward the "37 of ~42+" `Nudr_DataRepository` figure above,
-which tracks specifically against free5GC's own `Nudr_DataRepository` resource set. And UPF (task #107
-closed in full: PFCP Association Update/Release, PFD
-Management, Node Report). CHF closed real TS 32.298 CDR (BER) encoding (ADR-0089), a real gap even
-free5GC's own CDR module doesn't fully match in scope on this project's own terms. AMF's real
-N2-based handover chain (`HandoverRequired` through `HandoverNotify`, TS 38.413 §8.4.2–§8.4.4) is
-now closed too (ADR-0095/ADR-0096) — a real architectural prerequisite was found and fixed along
-the way (AMF's NGAP layer could only ever hold one gNB association open at a time; now real
-concurrent associations via a new `GnbAssociationRegistry` cross-thread relay), live-verified with
-two genuinely simultaneous gNB associations and, as an unplanned bonus, real interop confirmation
-from UERANSIM's own unmodified gNB correctly reacting to a new AMF-initiated
-`UEContextReleaseCommand`. **Still open**: `HandoverCancel`, the real AMF→SMF relay that would
-replace handover's own placeholder N3 addressing, SMF's remaining 19 `N2SmInfoType` values beyond
-`PATH_SWITCH_REQ`, the remaining ~5 of UDR's ~42+ real TS 29.504 resources (27 more now closed —
-SMSF 3GPP/non-3GPP-access context-data (ADR-0097), IP-SM-GW Registration context-data (ADR-0098),
-Message Waiting Data (Document) context-data (ADR-0099), Roaming Information (Document)
-context-data (ADR-0100), PEI Information (Document) context-data (ADR-0101), Enhanced
-Coverage Restriction Data (ADR-0102), LCS Privacy Subscription Data (ADR-0103), LCS
-Subscription Data (ADR-0104), LCS Mobile Originated Subscription Data (ADR-0105), LCS
-Broadcast Assistance Data (ADR-0106), Parameter Provision (Document) (ADR-0107), Parameter
-Provision profile Data (Document) (ADR-0108), Provisioned Parameter Data Entry /
-pp-data-store (ADR-0109), individual Shared Data (ADR-0110), Operator-Specific Data
-Container (Document) (ADR-0111), Event Exposure Data (Document) (ADR-0112), UE Policy Set
-(ADR-0113), policy-data Operator-Specific Data (ADR-0114), Sponsor Connectivity Data
-(ADR-0115), individual BDT Data (ADR-0116), PLMN UE Policy Set (ADR-0117), Slice-specific
-Policy Control Data (ADR-0118), group-specific Policy Control Data (ADR-0119), NIDD
-Authorization Info context-data (ADR-0121), Identity Data by SUPI or GPSI (ADR-0122), and ODB
-Data (ADR-0123), 37 of ~42+ total), ProSe's
-PAnF-dependent
-returning-UE path, and
-NSSF/NEF/SCP/BSF (whole Tier-1 NFs not yet built at all). CI note: `.github/workflows/ci.yml`'s
-two `ctest` invocations were found (2026-08-18) to be missing the same known-flaky-test exclusion
-(`UdrIntegration.AmfContextLifecycle`/`UdmIntegration.SdmDataRetrievalAndSubscriptions`, a real,
-disclosed, unroot-caused hang since ADR-0071) local runs have always used — fixed in ADR-0093 so
-CI matches established local verification practice; the underlying flake itself remains open.
-Separately, a real memory leak found and fixed in the new handover code (ADR-0096 follow-up) and
-the resulting `ngap_task.cpp`/`ngap_handover.cpp` split (real engineering improvement — the file
-had grown to 2658 lines) were both verified clean via full local reproduction under CI's exact
-ASan configuration (325/325 pass), but as of 2026-08-18 the `sanitize (asan-ubsan)` CI job has
-failed 4 consecutive times (including 2 full workflow restarts) for an external reason unrelated
-to code — a consistent ~9.5-minute runner termination, while `sanitize (tsan)`/`build`/`lint` all
-pass clean in the same runs. Real, disclosed, not yet resolved — likely a GitHub-side
-account/runner-pool constraint specific to that one job, out of reach from within this repo.
+Full phase plan: [`PROMPT.md`](PROMPT.md).
+
+## Capability-completeness gap-closure
+
+Alongside the phase plan, an ongoing effort closes real gaps found by comparing this project
+against free5GC's and open5GS's own actual source (not just their docs) — every change is real,
+live-verified, and tracked as its own ADR rather than just unit-tested. NRF, AMF, SMF, AUSF, PCF,
+UDM, CHF, and UPF have each closed multiple real procedure/resource gaps this way (N2 handover,
+5G ProSe authentication, TS 32.298 CDR encoding, the full PFCP Association lifecycle, and more).
+UDR is the largest single target: it now implements the large majority of free5GC's real
+`Nudr_DataRepository` resource types, plus a distinct `Nudr_GroupIDmap` resource.
+
+The full evidence base, current per-resource breakdown, and what's still open lives in
+[`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
+onward) is in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+## Known limitations
+
+This is **not yet a carrier-grade or commercially benchmarked system** (ADR-0049): no
+performance/reliability comparison against free5GC has been run, there is no HA/clustering across
+NF instances, and the SBI HTTP/2 client is currently synchronous. NSSF, NEF, SCP, and BSF are not
+yet built; NWDAF/AI-ML pipelines and the GUI haven't started. Standing engineering debt (build
+warnings, known-flaky tests, unresolved CI runner issues, per-resource gaps) is tracked in
+[`docs/DECISIONS.md`](docs/DECISIONS.md) and
+[`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md), not hidden here.
 
 ## Repository layout
 
