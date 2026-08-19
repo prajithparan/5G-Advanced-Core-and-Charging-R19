@@ -176,9 +176,20 @@
 // above. Real GET-only, composite-keyed by the two real required query parameters (nf-type,
 // nf-group-id), no PUT/POST/PATCH exists at all.
 //
+// UPDATE (ADR-0121, gap-closure task #106): the NIDD Authorization Info context-data resource
+// (CreateNIDDAuthorizationInfo/GetNiddAuthorizationInfo/ModifyNiddAuthorizationInfo/
+// RemoveNiddAuthorizationInfo, real PUT+GET+PATCH+DELETE) is now implemented. Real, disclosed
+// correction: earlier UPDATE entries above lumped `nidd-authorizations` in with
+// `ee-subscriptions`/`sdm-subscriptions` as a deferred deeply-nested sub-subscription shape
+// without individually checking the real YAML -- it is genuinely a flat per-UE document, same
+// shape as amf-3gpp-access's own real distinct-201-vs-204 PUT + RFC 6902 PATCH, plus a real
+// DELETE (which amf-3gpp-access's own resource lacks).
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
-// ee-subscriptions, sdm-subscriptions, nidd-authorizations);
+// ee-subscriptions, sdm-subscriptions -- genuinely deeply-nested subscription-lifecycle
+// resources, not yet individually re-verified against the real YAML the way nidd-authorizations
+// was above);
 // group-data (including ee-profile-data's own group-keyed sibling);
 // subs-to-notify; policy-data's
 // own other resources (mbs-session-pol-data -- real, disclosed: its MbsSessPolDataId key is a
@@ -436,6 +447,8 @@ int main() {
     udr::GroupPolicyDataStore group_control_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0120).
     udr::RoutingIdStore routing_ids(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0121).
+    udr::NiddAuthorizationInfoStore nidd_authorization_info(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -701,6 +714,11 @@ int main() {
         "udr_group_control_data_patch_total", "Total ModifyGroupPolCtrlData calls");
     auto routing_ids_get_counter =
         meter->CreateUInt64Counter("udr_routing_ids_get_total", "Total GetRoutingIDs calls");
+    auto nidd_authorization_write_counter = meter->CreateUInt64Counter(
+        "udr_nidd_authorization_write_total",
+        "Total CreateNIDDAuthorizationInfo/ModifyNiddAuthorizationInfo calls");
+    auto nidd_authorization_delete_counter = meter->CreateUInt64Counter(
+        "udr_nidd_authorization_delete_total", "Total RemoveNiddAuthorizationInfo calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2454,6 +2472,113 @@ int main() {
                                                              nf_group_id_it->second);
             }
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: NIDD Authorization Info context-data resource (ADR-0121,
+    // gap-closure task #106) -- real PUT+GET+PATCH+DELETE per TS29505_Subscription_Data.yaml,
+    // real distinct 201-vs-204 PUT response codes (same shape as amf-3gpp-access's own resource),
+    // real RFC 6902 application/json-patch+json PATCH. ---
+
+    const std::string nidd_authorization_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/nidd-authorizations";
+
+    server.add_route(
+        "PUT",
+        nidd_authorization_path_pattern,
+        [&verifier,
+         &nidd_authorization_info,
+         &nidd_authorization_write_counter,
+         nidd_authorization_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::NiddAuthorizationInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json j = *body;
+            const bool is_new = nidd_authorization_info.put(ue_id, j);
+            nidd_authorization_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", nidd_authorization_path_pattern);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        nidd_authorization_path_pattern,
+        [&verifier, &nidd_authorization_info](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = nidd_authorization_info.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No NIDD Authorization Info for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        nidd_authorization_path_pattern,
+        [&verifier, &nidd_authorization_info, &nidd_authorization_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            std::optional<json> patched;
+            try {
+                patched = nidd_authorization_info.apply_patch(ue_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No NIDD Authorization Info for ueId " + ue_id);
+            }
+            nidd_authorization_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        nidd_authorization_path_pattern,
+        [&verifier, &nidd_authorization_info, &nidd_authorization_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!nidd_authorization_info.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No NIDD Authorization Info for ueId " + ue_id);
+            }
+            nidd_authorization_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

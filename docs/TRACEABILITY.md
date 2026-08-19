@@ -2114,3 +2114,29 @@ parsing needed. Chosen after explicit user confirmation once both remaining real
 `docs/DECISIONS.md` for full disclosure, including the real array-query-param gap also found on
 `Nudr_GroupIDmap`'s own `/nf-group-ids` sibling -- task #106 remains open, ~8 real
 `Nudr_DataRepository` resources still a disclosed gap (unchanged by this ADR).
+
+## ADR-0121 -- gap-closure task #106 continuation: UDR real NIDD Authorization Info context-data (self-correction)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/context-data/nidd-authorizations` on an unseeded `ueId` | Live curl, real `404` |
+| `PATCH` on that same unseeded `ueId` | Live curl, real `404` |
+| `PUT` with a real spec-valid `AuthorizationInfo` body on a new key | Live curl, real `201` with the created document |
+| `GET` immediately after the create `PUT` | Live curl, real `200` matching |
+| `PUT` again with a different `authUpdateCallbackUri` | Live curl, real `204` (not `201`) -- confirms the real distinct-status UPSERT behavior |
+| `PATCH` (`application/json-patch+json`) with a real `replace` op on `/dnn` | Live curl, real `204` |
+| `GET` after the `PATCH` | Live curl, real `200` confirming the patched `dnn` |
+| `DELETE`, then `GET` again | Live curl, real `204` then real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_nidd_authorization_info` confirms zero rows remain after the delete |
+| No regression | Full `conformance_tests`: unchanged pass count (no new committed automated test this pass, same disclosed manual-live-verification precedent already established), zero regressions (325/325); `udr` built clean |
+
+Real `PUT`+`GET`+`PATCH`+`DELETE` resource, same shape as `amf-3gpp-access`'s own context-data
+resource (real distinct `201`-vs-`204` PUT, real RFC 6902 PATCH) plus a real `DELETE`. This ADR is
+a self-correction: an earlier pass had lumped `nidd-authorizations` together with
+`ee-subscriptions`/`sdm-subscriptions` as a deferred "deeply nested sub-subscription" bundle
+without individually checking the real YAML -- it is genuinely a flat per-UE document.
+`ee-subscriptions`/`sdm-subscriptions` were NOT re-verified this pass and remain genuinely
+deferred. Takes UDR's real resource-type coverage from 34 to 35 of free5GC's ~42+ real
+`Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0121 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~7 resources still a real,
+disclosed gap.

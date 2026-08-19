@@ -462,3 +462,19 @@ CREATE TABLE IF NOT EXISTS udr_routing_ids (
     data         JSONB NOT NULL,
     PRIMARY KEY (nf_type, nf_group_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0121). Real Nudr_DataRepository NIDD
+-- Authorization Info context-data resource (/subscription-data/{ueId}/context-data/
+-- nidd-authorizations, real schema NiddAuthorizationInfo -- niddAuthorizationList: required array
+-- of AuthorizationInfo, TS29122_CommonData_grp.hpp-generated per sbi-codegen's own real grouping).
+-- Real, disclosed correction: this project's own header comments previously lumped this resource
+-- in with ee-subscriptions/sdm-subscriptions as a deferred "deeply nested sub-subscription" shape
+-- without individually checking the real YAML -- it is genuinely a flat per-UE document. Real
+-- CreateNIDDAuthorizationInfo/GetNiddAuthorizationInfo/ModifyNiddAuthorizationInfo/
+-- RemoveNiddAuthorizationInfo: PUT+GET+PATCH+DELETE, real distinct 201-vs-204 PUT response codes
+-- (same shape as AmfContextStore's own real context-data resource), real RFC 6902
+-- application/json-patch+json PATCH, real DELETE (which amf-3gpp-access's own resource lacks).
+CREATE TABLE IF NOT EXISTS udr_nidd_authorization_info (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
