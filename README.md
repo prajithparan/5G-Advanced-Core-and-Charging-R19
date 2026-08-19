@@ -74,15 +74,9 @@ The full evidence base, current per-resource breakdown, and what's still open li
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
 onward) is in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
-## Known limitations
-
-This is **not yet a carrier-grade or commercially benchmarked system** (ADR-0049): no
-performance/reliability comparison against free5GC has been run, there is no HA/clustering across
-NF instances, and the SBI HTTP/2 client is currently synchronous. NSSF, NEF, SCP, and BSF are not
-yet built; NWDAF/AI-ML pipelines and the GUI haven't started. Standing engineering debt (build
-warnings, known-flaky tests, unresolved CI runner issues, per-resource gaps) is tracked in
+Standing engineering debt and what's left before carrier-grade status (ADR-0049) is tracked in
 [`docs/DECISIONS.md`](docs/DECISIONS.md) and
-[`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md), not hidden here.
+[`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md).
 
 ## Repository layout
 
