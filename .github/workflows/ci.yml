@@ -20,6 +20,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Real fix (docs/DECISIONS.md ADR-0138): actions/checkout and actions/cache were pinned to @v4,
+# which declare `using: node20` in their own action.yml (confirmed via `gh api
+# repos/actions/<name>/contents/action.yml?ref=v4`) -- the real source of the "Node.js 20 is
+# deprecated... forced to run on Node.js 24" warning GitHub emits on every job. Bumped to
+# actions/checkout@v7 and actions/cache@v6 (latest real major releases, confirmed via `gh api
+# repos/actions/<name>/releases/latest`), both of which declare `using: node24` natively --
+# eliminates the warning at its source instead of relying on GitHub's forced-runtime shim. Real,
+# checked: every call site in this file uses only the stable, unchanged-since-v4 core inputs
+# (bare checkout; cache's path/key/restore-keys), so this is a safe version bump for this repo's
+# actual usage, not a blind major-version jump.
+
 env:
   VCPKG_ROOT: ${{ github.workspace }}/vcpkg
   VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-cache,readwrite"
@@ -139,10 +150,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache vcpkg binary cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-bincache-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
@@ -172,7 +183,7 @@ jobs:
         run: pip install -r tools/sbi-codegen/requirements.txt
 
       - name: Cache asn1c toolchain (libs/ngap-generated needs it, ADR-0030/ADR-0031)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/build-tools/asn1c
           key: asn1c-${{ runner.os }}-${{ hashFiles('scripts/setup-asn1c.sh', 'scripts/patches/asn1c-aligned-per.patch') }}
@@ -368,10 +379,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache vcpkg binary cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-bincache-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
@@ -395,7 +406,7 @@ jobs:
         run: pip install -r tools/sbi-codegen/requirements.txt
 
       - name: Cache asn1c toolchain (libs/ngap-generated needs it, ADR-0030/ADR-0031)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/build-tools/asn1c
           key: asn1c-${{ runner.os }}-${{ hashFiles('scripts/setup-asn1c.sh', 'scripts/patches/asn1c-aligned-per.patch') }}
@@ -460,7 +471,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install clang tooling
         # bison/flex: see the build/sanitize jobs' "Install Ninja" step comment -- same libpq
@@ -473,7 +484,7 @@ jobs:
           find libs nfs tests -name '*.hpp' -o -name '*.cpp' | xargs clang-format-18 --dry-run --Werror
 
       - name: Cache vcpkg binary cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-bincache-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
@@ -489,7 +500,7 @@ jobs:
         run: pip install -r tools/sbi-codegen/requirements.txt
 
       - name: Cache asn1c toolchain (libs/ngap-generated needs it, ADR-0030/ADR-0031)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/build-tools/asn1c
           key: asn1c-${{ runner.os }}-${{ hashFiles('scripts/setup-asn1c.sh', 'scripts/patches/asn1c-aligned-per.patch') }}
