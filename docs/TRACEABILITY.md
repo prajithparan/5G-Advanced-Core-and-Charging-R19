@@ -2608,3 +2608,35 @@ free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSI
 ADR-0144 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; the remainder of
 `group-data`, bare `/subscription-data/{ueId}`, and the genuinely deferred subsystems remain
 real, disclosed gaps.
+
+## ADR-0145 -- gap-closure task #106 continuation: UDR real group-data individual 5G MBS Group Membership resource
+
+| Requirement | Test |
+|---|---|
+| `GET .../mbs-group-membership/{externalGroupId}` before any `PUT` | Live curl, real `404` |
+| `PUT` with `multicastGroupMemb`/`afInstanceId` | Live curl, real `201`, body echoed back |
+| `GET` after `PUT` | Live curl, real `200` with matching body |
+| `PATCH` (real RFC 6902 `application/json-patch+json`, `add` to `multicastGroupMemb`) | Live curl, real `204` |
+| `GET` after `PATCH` | Live curl, real `200` with the new member present, `afInstanceId` unchanged |
+| `PATCH` against a nonexistent `externalGroupId` | Live curl, real `404` (confirms `apply_patch` NOT upsert-capable) |
+| `DELETE` | Live curl, real `204` |
+| `GET` after `DELETE` | Live curl, real `404` |
+| Sibling `5g-vn-groups/{externalGroupId}` resource on the same `externalGroupId` (separate table) unaffected | Live curl, real `404` (never created there) |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_mbs_group_membership` independently confirms the row (and its absence after `DELETE`) |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean before and after `clang-format-18` |
+
+Real GET+PUT+PATCH+DELETE resource (`Create5GmbsGroup`/`GetMulticastMbsGroupMemb`/
+`Modify5GmbsGroup`/`Delete5GmbsGroup`), schema `MulticastMbsGroupMemb` -- structurally an exact
+twin of `5g-vn-groups/{externalGroupId}` (ADR-0144): PUT documents only `201`, PATCH real RFC
+6902, NOT upsert-capable. Unlike `5GVnGroupConfiguration`, this schema's JSON keys match the C++
+struct field names exactly (checked proactively via the generated `to_json`, given ADR-0144's own
+disclosed test mistake). The sibling bare collection GET (`Query5GmbsGroup`) was surveyed and
+confirmed genuinely blocked on the identical `gpsis` `style: form, explode: false` array
+query-parameter class already disclosed for `5g-vn-groups`'s own `Query5GVnGroup` and
+`pdtq-data`/`nf-group-ids`. This closes the third real `group-data` sub-resource (after
+`group-identifiers`, ADR-0140, and `5g-vn-groups/{externalGroupId}`, ADR-0144) and takes UDR's
+real resource-type coverage from 55 to 56 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0145 in `docs/DECISIONS.md` for full disclosure --
+task #106 remains open; both bare collection GETs, the `/internal`/`/pp-profile-data` variants,
+bare `/subscription-data/{ueId}`, and the genuinely deferred subsystems remain real, disclosed
+gaps.

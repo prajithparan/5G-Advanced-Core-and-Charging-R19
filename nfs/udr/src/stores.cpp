@@ -1667,4 +1667,55 @@ bool FiveGVnGroupStore::remove(const std::string& ext_group_id) {
     return result.affected_rows() > 0;
 }
 
+MbsGroupMembershipStore::MbsGroupMembershipStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void MbsGroupMembershipStore::put(const std::string& ext_group_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_mbs_group_membership (ext_group_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ext_group_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ext_group_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> MbsGroupMembershipStore::get(const std::string& ext_group_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_mbs_group_membership WHERE ext_group_id = $1",
+                 pqxx::params{ext_group_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::optional<nlohmann::json>
+MbsGroupMembershipStore::apply_patch(const std::string& ext_group_id,
+                                     const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_mbs_group_membership WHERE ext_group_id = $1",
+                 pqxx::params{ext_group_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto data = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    data = data.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("UPDATE udr_mbs_group_membership SET data = $2::jsonb WHERE ext_group_id = $1",
+             pqxx::params{ext_group_id, data.dump()});
+    txn.commit();
+    return std::make_optional(data);
+}
+
+bool MbsGroupMembershipStore::remove(const std::string& ext_group_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_mbs_group_membership WHERE ext_group_id = $1",
+                                 pqxx::params{ext_group_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr

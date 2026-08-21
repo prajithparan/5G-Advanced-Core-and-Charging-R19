@@ -335,16 +335,29 @@
 // NOT upsert-capable. Second real `group-data` sub-resource closed, after `group-identifiers`
 // (ADR-0140).
 //
+// UPDATE (ADR-0145, gap-closure task #106): the real `group-data` individual 5G MBS Group
+// Membership resource (`group-data/mbs-group-membership/{externalGroupId}`, real spec operations
+// `Create5GmbsGroup`/`GetMulticastMbsGroupMemb`/`Modify5GmbsGroup`/`Delete5GmbsGroup`, schema
+// `MulticastMbsGroupMemb` -- real GET+PUT+PATCH+DELETE) is now implemented. Structurally an exact
+// twin of `5g-vn-groups/{externalGroupId}` above (same 201-only PUT, same real RFC 6902 PATCH,
+// NOT upsert-capable). Its own bare collection GET sibling (`group-data/mbs-group-membership`,
+// real spec `Query5GmbsGroup`) was surveyed and confirmed the same genuinely blocked
+// `gpsis` `style: form, explode: false` array-query-param shape as `5g-vn-groups`'s own
+// `Query5GVnGroup` -- left deferred, not silently skipped. Third real `group-data` sub-resource
+// closed.
+//
 // Deliberately still deferred, not dropped:
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
 // the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
-// `group-data/5g-vn-groups`, real spec `Query5GVnGroup` -- distinct from the individual resource
-// just closed -- confirmed genuinely blocked: its `gpsis` query parameter is a real
-// `style: form, explode: false` array, the same unsupported-parsing class already disclosed for
-// `pdtq-data`/`nf-group-ids`; and `5g-vn-groups`'s own `/internal`/`/pp-profile-data` variants,
-// `mbs-group-membership`, `ee-profile-data`'s own group-keyed sibling -- `group-identifiers` and
-// the individual `5g-vn-groups/{externalGroupId}` resource itself closed, see ADR-0140/ADR-0144
+// `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
+// collection GET, real spec `Query5GmbsGroup` -- both confirmed genuinely blocked: their `gpsis`
+// query parameter is a real `style: form, explode: false` array, the same unsupported-parsing
+// class already disclosed for `pdtq-data`/`nf-group-ids`; and `5g-vn-groups`'s/
+// `mbs-group-membership`'s own `/internal`/`/pp-profile-data` variants, `ee-profile-data`'s own
+// group-keyed sibling -- `group-identifiers` and the individual `5g-vn-groups/{externalGroupId}`/
+// `mbs-group-membership/{externalGroupId}` resources themselves closed, see
+// ADR-0140/ADR-0144/ADR-0145
 // above);
 // subs-to-notify; policy-data's
 // own other resources (mbs-session-pol-data -- real, disclosed: its MbsSessPolDataId key is a
@@ -639,6 +652,8 @@ int main() {
     udr::UpuDataStore upu_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0144).
     udr::FiveGVnGroupStore five_g_vn_groups(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0145).
+    udr::MbsGroupMembershipStore mbs_group_membership(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1123,6 +1138,12 @@ int main() {
         "udr_5g_vn_groups_get_total", "Total Get5GVnGroupConfiguration calls");
     auto five_g_vn_groups_delete_counter =
         meter->CreateUInt64Counter("udr_5g_vn_groups_delete_total", "Total Delete5GVnGroup calls");
+    auto mbs_group_membership_write_counter = meter->CreateUInt64Counter(
+        "udr_mbs_group_membership_write_total", "Total Create5GmbsGroup/Modify5GmbsGroup calls");
+    auto mbs_group_membership_get_counter = meter->CreateUInt64Counter(
+        "udr_mbs_group_membership_get_total", "Total GetMulticastMbsGroupMemb calls");
+    auto mbs_group_membership_delete_counter = meter->CreateUInt64Counter(
+        "udr_mbs_group_membership_delete_total", "Total Delete5GmbsGroup calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -3861,6 +3882,119 @@ int main() {
                     404, "Not Found", "No 5G VN Group for externalGroupId " + ext_group_id);
             }
             five_g_vn_groups_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: group-data individual 5G MBS Group Membership resource (ADR-0145,
+    // gap-closure task #106) -- real GET+PUT+PATCH+DELETE per TS29505_Subscription_Data.yaml,
+    // structurally an exact twin of the 5g-vn-groups resource above (PUT documents ONLY `201`,
+    // PATCH real RFC 6902, NOT upsert-capable). Keyed by externalGroupId. Second real `group-data`
+    // sub-resource closed after 5g-vn-groups/{externalGroupId} (ADR-0144). ---
+
+    const std::string mbs_group_membership_path_pattern =
+        std::string(kApiRoot) +
+        "/subscription-data/group-data/mbs-group-membership/{externalGroupId}";
+
+    server.add_route(
+        "GET",
+        mbs_group_membership_path_pattern,
+        [&verifier, &mbs_group_membership, &mbs_group_membership_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id = req.path_params.at("externalGroupId");
+            auto data = mbs_group_membership.get(ext_group_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No 5G MBS Group Membership for externalGroupId " + ext_group_id);
+            }
+            mbs_group_membership_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        mbs_group_membership_path_pattern,
+        [&verifier,
+         &mbs_group_membership,
+         &mbs_group_membership_write_counter,
+         mbs_group_membership_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::MulticastMbsGroupMemb>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ext_group_id = req.path_params.at("externalGroupId");
+            json j = *body;
+            mbs_group_membership.put(ext_group_id, j);
+            mbs_group_membership_write_counter->Add(1);
+            // Real spec: Create5GmbsGroup documents ONLY 201 as a success response (no
+            // update-via-PUT status) -- confirmed by direct read, same precedent as 5g-vn-groups.
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", mbs_group_membership_path_pattern);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        mbs_group_membership_path_pattern,
+        [&verifier, &mbs_group_membership, &mbs_group_membership_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ext_group_id = req.path_params.at("externalGroupId");
+            std::optional<json> patched;
+            try {
+                patched = mbs_group_membership.apply_patch(ext_group_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No 5G MBS Group Membership for externalGroupId " + ext_group_id);
+            }
+            mbs_group_membership_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        mbs_group_membership_path_pattern,
+        [&verifier, &mbs_group_membership, &mbs_group_membership_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id = req.path_params.at("externalGroupId");
+            if (!mbs_group_membership.remove(ext_group_id)) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No 5G MBS Group Membership for externalGroupId " + ext_group_id);
+            }
+            mbs_group_membership_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

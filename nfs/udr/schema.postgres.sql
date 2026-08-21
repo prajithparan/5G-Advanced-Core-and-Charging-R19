@@ -755,3 +755,18 @@ CREATE TABLE IF NOT EXISTS udr_5g_vn_groups (
     ext_group_id TEXT PRIMARY KEY,
     data         JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0145). Real group-data individual
+-- 5G MBS Group Membership resource
+-- (/subscription-data/group-data/mbs-group-membership/{externalGroupId}, real schema
+-- MulticastMbsGroupMemb -- required multicastGroupMemb (array of Gpsi) plus optional
+-- afInstanceId/internalGroupIdentifier). Real Create5GmbsGroup/GetMulticastMbsGroupMemb/
+-- Modify5GmbsGroup/Delete5GmbsGroup: real GET+PUT+PATCH+DELETE, structurally an exact twin of
+-- udr_5g_vn_groups above (real PUT documents ONLY `201`, PATCH real RFC 6902
+-- application/json-patch+json, NOT upsert-capable). Keyed by ext_group_id (real path schema is
+-- ExtGroupId, a plain string). Second real group-data sub-resource closed after
+-- 5g-vn-groups/{externalGroupId} (ADR-0144).
+CREATE TABLE IF NOT EXISTS udr_mbs_group_membership (
+    ext_group_id TEXT PRIMARY KEY,
+    data         JSONB NOT NULL
+);

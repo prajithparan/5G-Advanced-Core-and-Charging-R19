@@ -1029,4 +1029,27 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0145). Backs the real
+// `group-data`/`mbs-group-membership/{externalGroupId}` individual 5G MBS Group Membership
+// resource (Create5GmbsGroup/GetMulticastMbsGroupMemb/Modify5GmbsGroup/Delete5GmbsGroup -- real
+// GET+PUT+PATCH+DELETE per TS29505_Subscription_Data.yaml, schema `MulticastMbsGroupMemb`).
+// Structurally an exact twin of `FiveGVnGroupStore` above: `put()` internally upsert-capable but
+// the real PUT documents ONLY `201`; PATCH is real RFC 6902, NOT upsert-capable. Keyed by
+// `externalGroupId` (real schema `ExtGroupId`, a plain string). Second real `group-data`
+// sub-resource closed, after `5g-vn-groups/{externalGroupId}` (ADR-0144).
+class MbsGroupMembershipStore {
+public:
+    explicit MbsGroupMembershipStore(const std::string& conninfo);
+
+    void put(const std::string& ext_group_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ext_group_id);
+    std::optional<nlohmann::json> apply_patch(const std::string& ext_group_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ext_group_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr
