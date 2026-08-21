@@ -2640,3 +2640,27 @@ real resource-type coverage from 55 to 56 of free5GC's ~42+ real `Nudr_DataRepos
 task #106 remains open; both bare collection GETs, the `/internal`/`/pp-profile-data` variants,
 bare `/subscription-data/{ueId}`, and the genuinely deferred subsystems remain real, disclosed
 gaps.
+
+## ADR-0146 -- gap-closure task #106 continuation: UDR real group-data Event Exposure Data for a group resource
+
+| Requirement | Test |
+|---|---|
+| `GET .../group-data/anyUE/ee-profile-data` (seeded) | Live curl, real `200` with an empty JSON object (real, all-optional schema) |
+| `GET` on an unseeded group id (`extgroupid-nope@example.com`) | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_group_ee_profile_data` independently confirms the single seeded `anyUE` row |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean before and after `clang-format-18` |
+
+Real GET-only resource (`QueryGroupEEData`), schema `EeGroupProfileData` -- every field optional.
+No create/update operation exists in the spec at all. Genuinely NOT per-UE -- keyed by
+`ueGroupId` (real schema `VarUeGroupId`, a plain string matching `anyUE` or
+`extgroupid-...@...`, no encoding ambiguity), a real, distinct sibling of the already-closed
+per-UE `{ueId}/ee-profile-data` resource (same resource name, different real path and keying).
+Seeded at startup for the `"anyUE"` test case, same "surface first, wire consumers later"
+precedent as other GET-only UDR resources. This closes the fourth real `group-data` sub-resource
+(after `group-identifiers`, ADR-0140; `5g-vn-groups/{externalGroupId}`, ADR-0144;
+`mbs-group-membership/{externalGroupId}`, ADR-0145) and takes UDR's real resource-type coverage
+from 56 to 57 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0146 in `docs/DECISIONS.md` for full disclosure --
+task #106 remains open; both bare collection GETs, the `/internal`/`/pp-profile-data` variants,
+bare `/subscription-data/{ueId}`, and the genuinely deferred subsystems remain real, disclosed
+gaps.

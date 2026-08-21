@@ -346,6 +346,15 @@
 // `Query5GVnGroup` -- left deferred, not silently skipped. Third real `group-data` sub-resource
 // closed.
 //
+// UPDATE (ADR-0146, gap-closure task #106): the real `group-data` Event Exposure Data for a group
+// resource (`group-data/{ueGroupId}/ee-profile-data`, real spec operation `QueryGroupEEData`,
+// schema `EeGroupProfileData` -- every field optional) is now implemented. Real GET-only, no
+// create/update operation exists at all -- genuinely NOT per-UE, keyed by `ueGroupId` (real
+// schema `VarUeGroupId`, a plain string matching `anyUE` or `extgroupid-...@...`, no encoding
+// ambiguity), a real, distinct sibling of the already-closed per-UE `ee-profile-data` resource.
+// Seeded at startup for this project's own "anyUE" test case. Fourth real `group-data`
+// sub-resource closed.
+//
 // Deliberately still deferred, not dropped:
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -354,10 +363,10 @@
 // collection GET, real spec `Query5GmbsGroup` -- both confirmed genuinely blocked: their `gpsis`
 // query parameter is a real `style: form, explode: false` array, the same unsupported-parsing
 // class already disclosed for `pdtq-data`/`nf-group-ids`; and `5g-vn-groups`'s/
-// `mbs-group-membership`'s own `/internal`/`/pp-profile-data` variants, `ee-profile-data`'s own
-// group-keyed sibling -- `group-identifiers` and the individual `5g-vn-groups/{externalGroupId}`/
-// `mbs-group-membership/{externalGroupId}` resources themselves closed, see
-// ADR-0140/ADR-0144/ADR-0145
+// `mbs-group-membership`'s own `/internal`/`/pp-profile-data` variants (same real blocked
+// class) -- `group-identifiers`, the individual `5g-vn-groups/{externalGroupId}`/
+// `mbs-group-membership/{externalGroupId}` resources, and `{ueGroupId}/ee-profile-data` themselves
+// closed, see ADR-0140/ADR-0144/ADR-0145/ADR-0146
 // above);
 // subs-to-notify; policy-data's
 // own other resources (mbs-session-pol-data -- real, disclosed: its MbsSessPolDataId key is a
@@ -654,6 +663,8 @@ int main() {
     udr::FiveGVnGroupStore five_g_vn_groups(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0145).
     udr::MbsGroupMembershipStore mbs_group_membership(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0146).
+    udr::GroupEeProfileDataStore group_ee_profile_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -802,6 +813,14 @@ int main() {
         sponsor["aspIds"] = json::array({"asp1"});
         sponsor_connectivity_data.seed("sponsor1", sponsor);
     }
+
+    // Real seed data (ADR-0146, gap-closure task #106) -- the real Event Exposure Data for a
+    // group resource is genuinely GET-only per spec, same "no live provisioning path yet"
+    // reasoning as above. Genuinely NOT per-UE (keyed by VarUeGroupId, "anyUE" or
+    // "extgroupid-...@..."), so seeded once for this project's own real "anyUE" test case -- every
+    // real field on EeGroupProfileData is optional, so an empty object is a genuine, real,
+    // schema-valid response, not a fabricated placeholder.
+    { group_ee_profile_data.seed("anyUE", json::object()); }
 
     // Real seed data (ADR-0117, gap-closure task #106) -- the real PLMN UE Policy Set resource is
     // genuinely GET-only per spec, same "no live provisioning path yet" reasoning as above.
@@ -1144,6 +1163,8 @@ int main() {
         "udr_mbs_group_membership_get_total", "Total GetMulticastMbsGroupMemb calls");
     auto mbs_group_membership_delete_counter = meter->CreateUInt64Counter(
         "udr_mbs_group_membership_delete_total", "Total Delete5GmbsGroup calls");
+    auto group_ee_profile_data_get_counter = meter->CreateUInt64Counter(
+        "udr_group_ee_profile_data_get_total", "Total QueryGroupEEData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -3998,6 +4019,32 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Nudr_DataRepository: group-data Event Exposure Data for a group resource (ADR-0146,
+    // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml, no
+    // create/update operation exists at all, genuinely NOT per-UE (keyed by ueGroupId, real
+    // schema VarUeGroupId). Seeded at startup for this project's own "anyUE" test case. ---
+
+    const std::string group_ee_profile_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/group-data/{ueGroupId}/ee-profile-data";
+
+    server.add_route(
+        "GET",
+        group_ee_profile_data_path_pattern,
+        [&verifier, &group_ee_profile_data, &group_ee_profile_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            auto data = group_ee_profile_data.get(ue_group_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Group EE Profile Data for ueGroupId " + ue_group_id);
+            }
+            group_ee_profile_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

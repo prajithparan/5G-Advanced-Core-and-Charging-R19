@@ -1052,4 +1052,23 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0146). Backs the real `group-data`
+// Event Exposure Data for a group resource (`{ueGroupId}/ee-profile-data`, real spec operation
+// `QueryGroupEEData` -- real GET-only, no create/update operation exists in the spec at all,
+// schema `EeGroupProfileData`). Genuinely NOT per-UE -- keyed by `ueGroupId` (real schema
+// `VarUeGroupId`, a plain string), a real, distinct sibling of the already-closed per-UE
+// `ee-profile-data` resource. Same "seed at startup, no live provisioning path" shape as
+// `SponsorConnectivityDataStore`/`PlmnUePolicySetStore`.
+class GroupEeProfileDataStore {
+public:
+    explicit GroupEeProfileDataStore(const std::string& conninfo);
+
+    void seed(const std::string& ue_group_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_group_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

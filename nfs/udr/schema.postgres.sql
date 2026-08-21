@@ -770,3 +770,17 @@ CREATE TABLE IF NOT EXISTS udr_mbs_group_membership (
     ext_group_id TEXT PRIMARY KEY,
     data         JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0146). Real group-data Event
+-- Exposure Data for a group resource (/subscription-data/group-data/{ueGroupId}/ee-profile-data,
+-- real schema EeGroupProfileData -- every field optional: restrictedEventTypes/
+-- allowedMtcProvider/supportedFeatures/iwkEpcRestricted/extGroupId/hssGroupId). Real
+-- QueryGroupEEData: real GET-only, no create/update operation exists in the spec at all, genuinely
+-- NOT per-UE -- keyed by ueGroupId (real path schema VarUeGroupId, a plain string matching
+-- `^(extgroupid-[^@]+@[^@]+|anyUE)$`, no encoding ambiguity), a real, distinct sibling of the
+-- already-closed per-UE `ee-profile-data` resource. Seeded at startup, same "surface first, wire
+-- consumers later" precedent as other GET-only UDR resources.
+CREATE TABLE IF NOT EXISTS udr_group_ee_profile_data (
+    ue_group_id TEXT PRIMARY KEY,
+    data        JSONB NOT NULL
+);
