@@ -2200,3 +2200,21 @@ real resource-type coverage from 37 to 38 of free5GC's ~42+ real `Nudr_DataRepos
 found during the same survey and is a strong next candidate, deliberately left for its own turn.
 See ADR-0125 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~4 resources
 still a real, disclosed gap.
+
+## ADR-0126 -- gap-closure task #106 continuation: UDR real SMS Subscription Data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/{servingPlmnId}/provisioned-data/sms-data` on the seeded (SUPI, PLMN) pair | Live curl, real `200` with `{"smsSubscribed":true}` |
+| `GET` on the same SUPI with an unseeded PLMN | Live curl, real `404` |
+| Sibling `sms-mng-data` resource on the same row independently returns its own distinct body | Live curl, real `200` with `{"mtSmsSubscribed":true}` -- confirms the two resources are genuinely separate, not aliases |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_provisioned_data` confirms both seeded rows' `sms_data` and `sms_mng_data` columns hold their own distinct values |
+| No regression | Full `conformance_tests`: unchanged pass count (same disclosed manual-live-verification precedent already established for every GET-only seeded resource in this series), zero regressions (325/325); `udr` built clean |
+
+Real `GET`-only resource (`QuerySmsData`), added as a new column on the existing
+`udr_provisioned_data` table -- same real precedent ADR-0106 established for `lcs-bca-data`.
+Genuinely distinct real resource from `sms-mng-data` (ADR-0125) -- separate operationId, separate
+schema, confirmed by live side-by-side verification. Takes UDR's real resource-type coverage from
+38 to 39 of free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md).
+See ADR-0126 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~3 resources
+still a real, disclosed gap.

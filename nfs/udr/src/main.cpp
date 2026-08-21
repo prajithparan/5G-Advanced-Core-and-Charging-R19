@@ -207,6 +207,11 @@
 // ADR-0106 already established for lcs-bca-data (same provisioned-data group,
 // same (ueId, servingPlmnId) key).
 //
+// UPDATE (ADR-0126, gap-closure task #106): the real SMS Subscription Data resource (QuerySmsData
+// -- real GET-only, no create/update operation exists at all) is now implemented as a new
+// `sms_data` column on `udr_provisioned_data`, same precedent, genuinely distinct from
+// sms-mng-data above (real, separate schema, separate operationId).
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -492,7 +497,10 @@ int main() {
     // own arbitrary representative test payload, not real 3GPP assistance-data content (ADR-0106,
     // gap-closure task #106). sms_mng_data.mtSmsSubscribed is a real optional boolean field
     // (TS29503_Nudm_SDM.yaml's SmsManagementSubscriptionData) -- true is this project's own
-    // representative test choice (ADR-0125, gap-closure task #106).
+    // representative test choice (ADR-0125, gap-closure task #106). sms_data.smsSubscribed is a
+    // real optional boolean field (TS29503_Nudm_SDM.yaml's SmsSubscriptionData, genuinely
+    // distinct from SmsManagementSubscriptionData's own mtSmsSubscribed above) -- true is this
+    // project's own representative test choice (ADR-0126, gap-closure task #106).
     for (const std::string& supi :
          {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
         json am_data;
@@ -503,13 +511,16 @@ int main() {
         lcs_bca_data["locationAssistanceType"] = "dGVzdA==";
         json sms_mng_data;
         sms_mng_data["mtSmsSubscribed"] = true;
+        json sms_data;
+        sms_data["smsSubscribed"] = true;
         provisioned_data.seed(supi,
                               "99970",
                               std::make_optional(am_data),
                               std::make_optional(json::object()),
                               std::make_optional(sm_data),
                               std::make_optional(lcs_bca_data),
-                              std::make_optional(sms_mng_data));
+                              std::make_optional(sms_mng_data),
+                              std::make_optional(sms_data));
     }
 
     // Real seed data (ADR-0102, gap-closure task #106) -- the real Enhanced Coverage Restriction
@@ -1140,6 +1151,28 @@ int main() {
             if (!data.has_value()) {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No provisioned sms-mng-data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // ADR-0126, gap-closure task #106: real SMS Subscription Data (QuerySmsData), same real
+    // GET-only (ueId, servingPlmnId) shape as the routes above -- genuinely distinct from
+    // sms-mng-data above, not a duplicate.
+    server.add_route(
+        "GET",
+        provisioned_data_path_pattern + "/sms-data",
+        [&verifier, &provisioned_data, &provisioned_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto serving_plmn_id = req.path_params.at("servingPlmnId");
+            auto data = provisioned_data.get_sms_data(ue_id, serving_plmn_id);
+            provisioned_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No provisioned sms-data for ueId " + ue_id);
             }
             return sbi_core::http2::Response::json(200, data->dump());
         });

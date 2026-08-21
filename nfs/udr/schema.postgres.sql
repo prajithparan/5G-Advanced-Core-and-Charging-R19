@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS udr_smf_registration (
 -- `.../provisioned-data/sms-mng-data` resource (real schema `SmsManagementSubscriptionData`,
 -- QuerySmsMngData, same real GET-only shape, same (ue_id, serving_plmn_id) key) -- a genuinely
 -- distinct real sub-resource under this same group, not a rename.
+--
+-- Gap-closure (task #106, ADR-0126): `sms_data` column added -- the real, sibling
+-- `.../provisioned-data/sms-data` resource (real schema `SmsSubscriptionData`, QuerySmsData,
+-- same real GET-only shape, same (ue_id, serving_plmn_id) key) -- a genuinely distinct real
+-- sub-resource under this same group, not a rename, and NOT the same as UDM's own
+-- `sms-subscription-data` naming elsewhere -- this is the real Nudr_DataRepository resource name.
 CREATE TABLE IF NOT EXISTS udr_provisioned_data (
     ue_id            TEXT NOT NULL,
     serving_plmn_id  TEXT NOT NULL,
@@ -63,6 +69,7 @@ CREATE TABLE IF NOT EXISTS udr_provisioned_data (
     sm_data          JSONB,
     lcs_bca_data     JSONB,
     sms_mng_data     JSONB,
+    sms_data         JSONB,
     PRIMARY KEY (ue_id, serving_plmn_id)
 );
 
@@ -71,6 +78,7 @@ CREATE TABLE IF NOT EXISTS udr_provisioned_data (
 -- add the new columns to an existing real database.
 ALTER TABLE udr_provisioned_data ADD COLUMN IF NOT EXISTS lcs_bca_data JSONB;
 ALTER TABLE udr_provisioned_data ADD COLUMN IF NOT EXISTS sms_mng_data JSONB;
+ALTER TABLE udr_provisioned_data ADD COLUMN IF NOT EXISTS sms_data JSONB;
 
 -- ADR-0072 (gap-closure: real N28 end-to-end): the real Nudr_DataRepository `policy-data` group's
 -- SM policy resource (TS29519_Policy_Data.yaml's /policy-data/ues/{ueId}/sm-data, real schema
