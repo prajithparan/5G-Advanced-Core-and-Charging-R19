@@ -1102,4 +1102,29 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0149). Backs the real Subs To
+// Notify collection (`subscription-data/subs-to-notify`, real spec operations
+// `SubscriptionDataSubscriptions`/`QuerySubsToNotify`) and individual document
+// (`subscription-data/subs-to-notify/{subsId}`, real spec operations
+// `QuerySubscriptionDataSubscriptions`/`ModifysubscriptionDataSubscription`/
+// `RemovesubscriptionDataSubscriptions` -- GET+PATCH+DELETE, genuinely no PUT). `subsId` is
+// caller-generated (same precedent as `EeSubscriptionsStore`). `list_by_ue_id` backs the real,
+// required `ue-id` query-param filter on the collection GET. `apply_patch` is real RFC 6902, NOT
+// upsert-capable.
+class SubsToNotifyStore {
+public:
+    explicit SubsToNotifyStore(const std::string& conninfo);
+
+    void create(const std::string& subs_id, const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& subs_id);
+    std::vector<nlohmann::json> list_by_ue_id(const std::string& ue_id);
+    std::optional<nlohmann::json> apply_patch(const std::string& subs_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& subs_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

@@ -381,6 +381,21 @@
 // `sdm-subscriptions` (a real, separate resource) was not re-surveyed in this pass and also
 // remains deferred.
 //
+// UPDATE (ADR-0149, gap-closure task #106): the real Subs To Notify collection
+// (`subscription-data/subs-to-notify`, real spec operations
+// `SubscriptionDataSubscriptions`/`QuerySubsToNotify`) and individual document
+// (`subscription-data/subs-to-notify/{subsId}`, real spec operations
+// `QuerySubscriptionDataSubscriptions`/`ModifysubscriptionDataSubscription`/
+// `RemovesubscriptionDataSubscriptions` -- GET+PATCH+DELETE, genuinely no PUT) are now
+// implemented. This resource's original ADR-0122-era deferral reason ("no existing project
+// precedent for [a] server-generated Location header") is now resolved by `ee-subscriptions`'s
+// own precedent (ADR-0148) -- `subsId` generation reuses the same `sbi_core::generate_uuid_v4()`
+// approach. Real, disclosed scope narrowing kept from the original finding: the real webhook
+// callback itself (`onDataChange`, `{$request.body#/notificationUri}`) is NOT implemented --
+// this project stores subscriptions and answers CRUD on them, but does not yet send real
+// `DataChangeNotify` callbacks to the caller-supplied URI when underlying data changes (no
+// project precedent yet for outbound webhook delivery on data-change events).
+//
 // Deliberately still deferred, not dropped:
 // context-data's other sub-resources (
 // ee-subscriptions' own amf-/smf-/hss-subscriptions nested sub-collections, sdm-subscriptions --
@@ -395,7 +410,7 @@
 // `mbs-group-membership/{externalGroupId}` resources, and `{ueGroupId}/ee-profile-data` themselves
 // closed, see ADR-0140/ADR-0144/ADR-0145/ADR-0146
 // above);
-// subs-to-notify; policy-data's
+// policy-data's
 // own other resources (mbs-session-pol-data -- real, disclosed: its MbsSessPolDataId key is a
 // deeply nested oneOf/anyOf object (mbsSessionId -> tmgi/ssm/nid, or afAppId) with no documented
 // bare-path-segment string encoding at all, genuinely more ambiguous than snssai's own flat
@@ -694,6 +709,8 @@ int main() {
     udr::GroupEeProfileDataStore group_ee_profile_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0148).
     udr::EeSubscriptionsStore ee_subscriptions(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0149).
+    udr::SubsToNotifyStore subs_to_notify(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1193,6 +1210,16 @@ int main() {
                                    "Total UpdateEesubscriptions/ModifyEesubscription calls");
     auto ee_subscriptions_delete_counter = meter->CreateUInt64Counter(
         "udr_ee_subscriptions_delete_total", "Total RemoveeeSubscriptions calls");
+    auto subs_to_notify_create_counter = meter->CreateUInt64Counter(
+        "udr_subs_to_notify_create_total", "Total SubscriptionDataSubscriptions calls");
+    auto subs_to_notify_list_counter = meter->CreateUInt64Counter("udr_subs_to_notify_list_total",
+                                                                  "Total QuerySubsToNotify calls");
+    auto subs_to_notify_get_counter = meter->CreateUInt64Counter(
+        "udr_subs_to_notify_get_total", "Total QuerySubscriptionDataSubscriptions calls");
+    auto subs_to_notify_write_counter = meter->CreateUInt64Counter(
+        "udr_subs_to_notify_write_total", "Total ModifysubscriptionDataSubscription calls");
+    auto subs_to_notify_delete_counter = meter->CreateUInt64Counter(
+        "udr_subs_to_notify_delete_total", "Total RemovesubscriptionDataSubscriptions calls");
     auto five_g_vn_groups_write_counter = meter->CreateUInt64Counter(
         "udr_5g_vn_groups_write_total", "Total Create5GVnGroup/Modify5GVnGroup calls");
     auto five_g_vn_groups_get_counter = meter->CreateUInt64Counter(
@@ -4043,6 +4070,139 @@ int main() {
                     404, "Not Found", "No EE Subscription for subsId " + subs_id);
             }
             ee_subscriptions_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: Subs To Notify collection + individual document (ADR-0149,
+    // gap-closure task #106) -- real GET+POST on the collection (GET requires a real, non-array
+    // `ue-id` query filter), GET+PATCH+DELETE on the individual document (genuinely no PUT exists
+    // for this resource), per TS29505_Subscription_Data.yaml. Real, disclosed: `subsId` is
+    // server-generated (real UUID v4, same precedent as ee-subscriptions); this project stores the
+    // POST body's own optional `ueId` field to back the real `ue-id` collection filter. ---
+
+    const std::string subs_to_notify_collection_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/subs-to-notify";
+    const std::string subs_to_notify_individual_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/subs-to-notify/{subsId}";
+
+    server.add_route(
+        "GET",
+        subs_to_notify_collection_path_pattern,
+        [&verifier, &subs_to_notify, &subs_to_notify_list_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id_it = req.query_params.find("ue-id");
+            if (ue_id_it == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "Required query parameter ue-id is missing");
+            }
+            auto subs = subs_to_notify.list_by_ue_id(ue_id_it->second);
+            json arr = json::array();
+            for (auto& s : subs) {
+                arr.push_back(std::move(s));
+            }
+            subs_to_notify_list_counter->Add(1);
+            return sbi_core::http2::Response::json(200, arr.dump());
+        });
+
+    server.add_route(
+        "POST",
+        subs_to_notify_collection_path_pattern,
+        [&verifier,
+         &subs_to_notify,
+         &subs_to_notify_create_counter,
+         subs_to_notify_collection_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::SubscriptionDataSubscriptions>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto subs_id = sbi_core::generate_uuid_v4();
+            const std::string ue_id = body->ueId.value_or("");
+            json j = *body;
+            subs_to_notify.create(subs_id, ue_id, j);
+            subs_to_notify_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 subs_to_notify_collection_path_pattern + "/" + subs_id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        subs_to_notify_individual_path_pattern,
+        [&verifier, &subs_to_notify, &subs_to_notify_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto subs_id = req.path_params.at("subsId");
+            auto data = subs_to_notify.get(subs_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Subs To Notify for subsId " + subs_id);
+            }
+            subs_to_notify_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        subs_to_notify_individual_path_pattern,
+        [&verifier, &subs_to_notify, &subs_to_notify_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto subs_id = req.path_params.at("subsId");
+            std::optional<json> patched;
+            try {
+                patched = subs_to_notify.apply_patch(subs_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Subs To Notify for subsId " + subs_id);
+            }
+            subs_to_notify_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        subs_to_notify_individual_path_pattern,
+        [&verifier, &subs_to_notify, &subs_to_notify_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto subs_id = req.path_params.at("subsId");
+            if (!subs_to_notify.remove(subs_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Subs To Notify for subsId " + subs_id);
+            }
+            subs_to_notify_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

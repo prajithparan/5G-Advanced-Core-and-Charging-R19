@@ -1820,4 +1820,66 @@ bool EeSubscriptionsStore::remove(const std::string& ue_id, const std::string& s
     return result.affected_rows() > 0;
 }
 
+SubsToNotifyStore::SubsToNotifyStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void SubsToNotifyStore::create(const std::string& subs_id,
+                               const std::string& ue_id,
+                               nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_subs_to_notify (subs_id, ue_id, data) VALUES ($1, $2, $3::jsonb)",
+             pqxx::params{subs_id, ue_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> SubsToNotifyStore::get(const std::string& subs_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_subs_to_notify WHERE subs_id = $1", pqxx::params{subs_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::vector<nlohmann::json> SubsToNotifyStore::list_by_ue_id(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_subs_to_notify WHERE ue_id = $1", pqxx::params{ue_id});
+    std::vector<nlohmann::json> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
+std::optional<nlohmann::json> SubsToNotifyStore::apply_patch(const std::string& subs_id,
+                                                             const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_subs_to_notify WHERE subs_id = $1", pqxx::params{subs_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto data = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    data = data.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("UPDATE udr_subs_to_notify SET data = $2::jsonb WHERE subs_id = $1",
+             pqxx::params{subs_id, data.dump()});
+    txn.commit();
+    return std::make_optional(data);
+}
+
+bool SubsToNotifyStore::remove(const std::string& subs_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM udr_subs_to_notify WHERE subs_id = $1", pqxx::params{subs_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr

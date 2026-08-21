@@ -2725,3 +2725,36 @@ ADR-0148 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `
 remaining genuinely-blocked resources, bare `/subscription-data/{ueId}`/`{ueId}/context-data`,
 `ee-subscriptions`'s own nested sub-collections, `sdm-subscriptions`, and the other genuinely
 deferred subsystems remain real, disclosed gaps.
+
+## ADR-0149 -- gap-closure task #106 continuation: UDR real Subs To Notify collection + individual document resource
+
+| Requirement | Test |
+|---|---|
+| `GET` collection with no `ue-id` query param | Live curl, real `400` |
+| `GET` collection with `ue-id` before any `POST` | Live curl, real `200` with an empty array |
+| `POST` with `ueId`/`callbackReference`/`monitoredResourceUris` | Live curl, real `201`, real freshly-generated UUID v4 `subsId` in `Location`, body echoed back |
+| `GET` collection with the matching `ue-id` after `POST` | Live curl, real `200` with a one-element array |
+| `GET` collection with a *different* `ue-id` | Live curl, real `200` with an empty array (confirms the filter is genuinely enforced) |
+| `GET` individual by `subsId` | Live curl, real `200` with matching body |
+| `PATCH` (real RFC 6902 `application/json-patch+json`) | Live curl, real `204`; `GET` after reflects the patched value |
+| `PATCH` against a nonexistent `subsId` | Live curl, real `404` (confirms `apply_patch` NOT upsert-capable) |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_subs_to_notify` independently confirms the row matches curl's response |
+| `DELETE` | Live curl, real `204`; individual `GET` after real `404`; collection `GET` after real `200` with an empty array |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real collection GET+POST and individual document GET+PATCH+DELETE (genuinely no PUT exists for
+this resource) -- `SubscriptionDataSubscriptions`/`QuerySubsToNotify`/
+`QuerySubscriptionDataSubscriptions`/`ModifysubscriptionDataSubscription`/
+`RemovesubscriptionDataSubscriptions`, schema `SubscriptionDataSubscriptions`. Resolves half of
+this resource's original ADR-0122-era deferral reason (no server-generated-ID precedent) using
+`ee-subscriptions`'s own newly-established precedent (ADR-0148, same session). Real design
+decision: the collection isn't path-scoped under `{ueId}`, so this project stores the POST body's
+own optional `ueId` field to back the real, required, non-array `ue-id` GET filter. Real,
+disclosed, deliberately NOT built: the second half of the original deferral, the real
+`onDataChange` webhook callback -- this project answers CRUD on subscriptions but has no outbound
+webhook-delivery mechanism and no data-change-detection to trigger one. This closes UDR resource
+#60 of free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See
+ADR-0149 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `group-data`'s
+remaining genuinely-blocked resources, bare `/subscription-data/{ueId}`/`{ueId}/context-data`,
+`ee-subscriptions`'s own nested sub-collections, `sdm-subscriptions`, and the other genuinely
+deferred subsystems remain real, disclosed gaps.

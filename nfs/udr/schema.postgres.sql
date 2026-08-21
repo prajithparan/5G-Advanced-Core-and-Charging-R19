@@ -815,3 +815,24 @@ CREATE TABLE IF NOT EXISTS udr_ee_subscriptions (
     data    JSONB NOT NULL,
     PRIMARY KEY (ue_id, subs_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0149). Real Subs To Notify
+-- collection (/subscription-data/subs-to-notify, real spec operations
+-- SubscriptionDataSubscriptions [POST]/QuerySubsToNotify [GET]) and individual document
+-- (/subscription-data/subs-to-notify/{subsId}, real spec operations
+-- QuerySubscriptionDataSubscriptions/ModifysubscriptionDataSubscription/
+-- RemovesubscriptionDataSubscriptions -- GET+PATCH+DELETE, genuinely no PUT operation exists at
+-- all for this resource), real schema SubscriptionDataSubscriptions -- required
+-- callbackReference (Uri) + monitoredResourceUris (array of Uri), plus a real dozen-plus optional
+-- fields including its own optional ueId. Real, disclosed: subsId is server-generated (real UUID
+-- v4, same precedent as ee-subscriptions, ADR-0148). This collection is genuinely NOT scoped
+-- under {ueId} in its own path (unlike ee-subscriptions) -- QuerySubsToNotify's own real,
+-- required `ue-id` query parameter is a plain string (VarUeId, not an array), so this project
+-- stores the POST body's own optional `ueId` field (empty string if the caller omits it) as a
+-- real, queryable column to back that real filter. PATCH is real RFC 6902
+-- application/json-patch+json, NOT upsert-capable.
+CREATE TABLE IF NOT EXISTS udr_subs_to_notify (
+    subs_id TEXT PRIMARY KEY,
+    ue_id   TEXT NOT NULL,
+    data    JSONB NOT NULL
+);
