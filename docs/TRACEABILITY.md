@@ -2390,3 +2390,25 @@ alone, so backed by its own new `udr_rangingsl_privacy_data` table/store, same s
 (`group-data/*`, `ranging-slpos-data`, `5mbs-data`, and others) and the genuinely deferred
 subsystems (`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`, `pdtq-data`,
 `mbs-session-pol-data`, `nidd-authorization-data`) remain real, disclosed gaps.
+
+## ADR-0136 -- gap-closure task #106 continuation: UDR real Ranging and Sidelink Positioning Service Subscription Data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/ranging-slpos-data` on the seeded SUPI (`imsi-999700000000001`) | Live curl, real `200` with `{"rangingSlPosAuth":{"rgSlPosPc5Auth":"AUTHORIZED"}}` |
+| `GET` on an unseeded SUPI (`imsi-999700000000099`) | Live curl, real `404` |
+| Sibling `rangingsl-privacy-data` resource on the same UE (separate table) unaffected | Live curl, real `200` with the unchanged expected body |
+| Second seeded SUPI (`imsi-999700000000002`) | Live curl, real `200` with matching body |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_ranging_slpos_data` confirms both seeded rows match |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean |
+
+Real `GET`-only resource (`QueryRangingSlPosData`), schema `RangingSlPosSubscriptionData`
+(`TS29503_Nudm_SDM.yaml`) -- every top-level field optional, no complex or required query
+parameters at all. Genuinely NOT part of the `provisioned-data` group -- keyed by `ueId` alone, so
+backed by its own new `udr_ranging_slpos_data` table/store, same shape as `rangingsl-privacy-data`
+(ADR-0135). Takes UDR's real resource-type coverage from 47 to 48 of free5GC's ~42+ real
+`Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0136 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open; the not-yet-surveyed remainder
+(`group-data/*`, `5mbs-data`, and others) and the genuinely deferred subsystems
+(`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`, `pdtq-data`, `mbs-session-pol-data`,
+`nidd-authorization-data`) remain real, disclosed gaps.

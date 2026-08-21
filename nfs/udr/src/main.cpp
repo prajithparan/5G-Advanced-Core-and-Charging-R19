@@ -267,6 +267,11 @@
 // explode=false) for field-selection filtering is not honored -- the full stored document is
 // always returned.
 //
+// UPDATE (ADR-0136, gap-closure task #106): the real Ranging and Sidelink Positioning Service
+// Subscription Data resource (real spec operationId `QueryRangingSlPosData`, schema
+// `RangingSlPosSubscriptionData` -- TS29503_Nudm_SDM.yaml -- every top-level field optional --
+// real GET-only, no create/update operation exists at all) is now implemented, seeded at startup.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -547,6 +552,8 @@ int main() {
     udr::A2xDataStore a2x_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0135).
     udr::RangingSlPrivacyDataStore rangingsl_privacy_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0136).
+    udr::RangingSlPosDataStore ranging_slpos_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -821,6 +828,18 @@ int main() {
         rangingsl_privacy_data.seed(supi, rangingsl_privacy);
     }
 
+    // Real seed data (ADR-0136, gap-closure task #106) -- the real Ranging and Sidelink
+    // Positioning Service Subscription Data resource is genuinely GET-only per spec, same "no
+    // live provisioning path yet" reasoning as above. `rangingSlPosAuth.rgSlPosPc5Auth:
+    // "AUTHORIZED"` is a real enum value from UeAuth (TS29571_CommonData.yaml), this project's
+    // own representative test choice.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json ranging_slpos;
+        ranging_slpos["rangingSlPosAuth"]["rgSlPosPc5Auth"] = "AUTHORIZED";
+        ranging_slpos_data.seed(supi, ranging_slpos);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -957,6 +976,8 @@ int main() {
         meter->CreateUInt64Counter("udr_a2x_data_get_total", "Total QueryA2xData calls");
     auto rangingsl_privacy_data_get_counter = meter->CreateUInt64Counter(
         "udr_rangingsl_privacy_data_get_total", "Total QueryRangingSlPrivacyData calls");
+    auto ranging_slpos_data_get_counter = meter->CreateUInt64Counter(
+        "udr_ranging_slpos_data_get_total", "Total QueryRangingSlPosData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -3139,6 +3160,35 @@ int main() {
                         ue_id);
             }
             rangingsl_privacy_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: Ranging and Sidelink Positioning Service Subscription Data
+    // resource (ADR-0136, gap-closure task #106) -- real GET-only per
+    // TS29505_Subscription_Data.yaml (real spec operationId `QueryRangingSlPosData`), seeded at
+    // startup. Keyed by ueId alone. ---
+
+    const std::string ranging_slpos_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/ranging-slpos-data";
+
+    server.add_route(
+        "GET",
+        ranging_slpos_data_path_pattern,
+        [&verifier, &ranging_slpos_data, &ranging_slpos_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = ranging_slpos_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No Ranging and Sidelink Positioning Service Subscription Data for ueId " +
+                        ue_id);
+            }
+            ranging_slpos_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 

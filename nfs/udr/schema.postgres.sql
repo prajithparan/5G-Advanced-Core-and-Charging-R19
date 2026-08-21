@@ -620,3 +620,15 @@ CREATE TABLE IF NOT EXISTS udr_rangingsl_privacy_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0136). Real Ranging and Sidelink
+-- Positioning Service Subscription Data resource (/subscription-data/{ueId}/ranging-slpos-data,
+-- real schema RangingSlPosSubscriptionData (TS29503_Nudm_SDM.yaml) -- rangingSlPosAuth/
+-- rangingSlPosPlmn/rangingSlPosQos, every top-level field optional). Confirmed by direct YAML
+-- read: this resource is genuinely GET-only (real spec operationId QueryRangingSlPosData) -- no
+-- create/update operation exists at all, same real "provisioned out-of-band, seeded at startup"
+-- shape as udr_rangingsl_privacy_data above. Keyed by ue_id alone.
+CREATE TABLE IF NOT EXISTS udr_ranging_slpos_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
