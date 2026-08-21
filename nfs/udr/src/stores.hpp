@@ -962,4 +962,43 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0143). Backs the real Authentication
+// SoR (Document) resource (CreateAuthenticationSoR/QueryAuthSoR/UpdateAuthenticationSoR -- real
+// PUT+GET+PATCH per TS29505_Subscription_Data.yaml). Same real "204-only PUT" shape as
+// NssaiAckDataStore/CagAckDataStore (the spec documents only a single `204` PUT response, no
+// `201`), but genuinely richer than either: a real RFC 6902 application/json-patch+json PATCH
+// exists too. apply_patch is NOT upsert-capable (returns nullopt if ue_id doesn't exist) -- unlike
+// pp-data/operator-specific-data, this resource already has a real PUT create path, same
+// precedent as NiddAuthorizationInfoStore. Keyed by ue_id.
+class SorDataStore {
+public:
+    explicit SorDataStore(const std::string& conninfo);
+
+    void put(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    std::optional<nlohmann::json> apply_patch(const std::string& ue_id,
+                                              const nlohmann::json& patch_ops);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0143). Backs the real Authentication
+// UPU (Document) resource (CreateAuthenticationUPU/QueryAuthUPU -- real PUT+GET only, no
+// PATCH/DELETE operation exists in the spec at all -- genuinely narrower than SorDataStore above
+// despite sharing the same UeUpdateStatus-based schema shape). Same real "204-only PUT, no
+// create-vs-update distinction" shape as NssaiAckDataStore/CagAckDataStore. Keyed by ue_id.
+class UpuDataStore {
+public:
+    explicit UpuDataStore(const std::string& conninfo);
+
+    void put(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

@@ -393,7 +393,7 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 54 real resource endpoints (53 real
+This project's UDR (`nfs/udr/src/main.cpp`) implements 55 real resource endpoints (54 real
 `Nudr_DataRepository` resources plus, as of ADR-0120, one real `Nudr_GroupIDmap` resource,
 `GetRoutingIDs` -- a genuinely distinct Nudr API, not counted in the `Nudr_DataRepository`-vs-free5GC
 comparison below): AMF 3GPP-access
@@ -438,7 +438,11 @@ key), Group Identifiers mapping resource (ADR-0140 -- see below, real GET-only, 
 per-UE, first real group-data sub-resource closed), NSSAI update ack (Document) resource
 (ADR-0141 -- see below, real PUT+GET, no create-vs-update distinction, first real
 ue-update-confirmation-data sub-resource closed), CAG update ack (Document) resource (ADR-0142
--- see below, real PUT+GET, identical shape to NSSAI update ack),
+-- see below, real PUT+GET, identical shape to NSSAI update ack), Authentication SoR (Document)
+and Authentication UPU (Document) resources (ADR-0143 -- see below, sor-data real PUT+GET+PATCH
+including a real RFC 6902 PATCH, upu-data real PUT+GET only -- a genuine asymmetry between two
+otherwise same-shaped siblings, closes all four ue-update-confirmation-data sub-resources
+surveyed to date),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`, -- ADR-0106 -- `lcs-bca-data`, -- ADR-0125 -- `sms-mng-data`, -- ADR-0126 -- `sms-data`, and -- ADR-0127 -- `trace-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
@@ -453,8 +457,8 @@ ADR-0113, 29 as of ADR-0114, 30 as of ADR-0115, 31 as of ADR-0116, 32 as of ADR-
 ADR-0118, 34 as of ADR-0119, 35 as of ADR-0121, 36 as of ADR-0122, 37 as of ADR-0123, 38 as of
 ADR-0125, 39 as of ADR-0126, 40 as of ADR-0127, 41 as of ADR-0128, 42 as of ADR-0129, 43 as of
 ADR-0130, 44 as of ADR-0131, 45 as of ADR-0133, 46 as of ADR-0134, 47 as of ADR-0135, 48 as of
-ADR-0136, 49 as of ADR-0137, 50 as of ADR-0139, 51 as of ADR-0140, 52 as of ADR-0141, now 53 as of
-ADR-0142 -- see below). This is well past free5GC's own ~42+ figure for real
+ADR-0136, 49 as of ADR-0137, 50 as of ADR-0139, 51 as of ADR-0140, 52 as of ADR-0141, 53 as of
+ADR-0142, now 54 as of ADR-0143 -- see below). This is well past free5GC's own ~42+ figure for real
 `Nudr_DataRepository` resource types; the real, still-open gap from here is
 the not-yet-surveyed remainder of `TS29505_Subscription_Data.yaml` itself (`group-data/*`,
 `a2x-data`, `rangingsl-privacy-data`, `ranging-slpos-data`, `5mbs-data`, and others) plus the
@@ -679,10 +683,16 @@ complex-object-query-param (`single-nssai`) gaps already disclosed elsewhere. **
 docs/DECISIONS.md ADR-0142**: CAG update ack (Document) resource (`CreateCagUpdateAck`/
 `QueryCagAck`, schema `CagAckData` -- identical shape to `NssaiAckData`, same real 204-only-PUT,
 no create-vs-update distinction) -- taking UDR from 52 to 53 of free5GC's ~42+ real
-`Nudr_DataRepository` resource types. This is well past free5GC's own ~42+ figure; the real,
-still-open work from here is surveying the remainder of `TS29505_Subscription_Data.yaml` itself
-(the rest of `group-data`, `ue-update-confirmation-data`'s own `sor-data`/`upu-data` siblings,
-bare `/subscription-data/{ueId}`, and others), not chasing a shrinking comparison count.
+`Nudr_DataRepository` resource types. **Closed, docs/DECISIONS.md ADR-0143**: Authentication SoR
+(Document) and Authentication UPU (Document) resources (`CreateAuthenticationSoR`/`QueryAuthSoR`/
+`UpdateAuthenticationSoR` for `sor-data`, schema `SorData`, real PUT+GET+PATCH including a real
+RFC 6902 PATCH; `CreateAuthenticationUPU`/`QueryAuthUPU` for `upu-data`, schema `UpuData`, real
+PUT+GET only, no PATCH/DELETE at all -- a genuine, disclosed asymmetry between two otherwise
+same-shaped siblings) -- taking UDR from 53 to 54 of free5GC's ~42+ real `Nudr_DataRepository`
+resource types. This closes all four `ue-update-confirmation-data` sub-resources surveyed to date.
+This is well past free5GC's own ~42+ figure; the real, still-open work from here is surveying the
+remainder of `TS29505_Subscription_Data.yaml` itself (the rest of `group-data`, bare
+`/subscription-data/{ueId}`, and others), not chasing a shrinking comparison count.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 
@@ -800,7 +810,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | SMF | ~10-16x | `UpdateSMContext`: `PATH_SWITCH_REQ`/`_ACK` slice CLOSED (task #101, ADR-0092, real downlink FAR/GTP-U control-plane); the other 20 real N2SmInfoType values remain a stub. AMF's own N2 handover NGAP side is now closed (ADR-0095/ADR-0096), but AMF still doesn't call SMF during handover -- the real AMF->SMF relay wiring for handover-triggered PDU session resource re-setup remains a real, disclosed open gap |
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
-| UDR | ~2.5-10x | Resource-type breadth (~12 of 42+ real TS 29.504 resources) |
+| UDR | ~2.5-10x | Resource-type breadth (54 of 42+ real TS 29.504 resources closed, past parity -- remainder of `group-data`, bare `/subscription-data/{ueId}`, and several genuinely-blocked resources remain, see UDR section above) |
 | UPF | ~1x (task #107 fully closed: Association Update/Release, ADR-0084; PFD Management, ADR-0086; Node Report, ADR-0087; Session Set Deletion correctly found not applicable to this project's own N4/Sxc interface) | datapath (XDP) already ahead of both references on paper, unbenchmarked |
 | CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding: CLOSED (task #108, ADR-0089, narrower disclosed scope than free5GC's); already ahead on 5G-native service breadth + AI-native charging |
 

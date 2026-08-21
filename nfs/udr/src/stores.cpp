@@ -1558,4 +1558,65 @@ std::optional<nlohmann::json> CagAckDataStore::get(const std::string& ue_id) {
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+SorDataStore::SorDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void SorDataStore::put(const std::string& ue_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_sor_data (ue_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> SorDataStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_sor_data WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::optional<nlohmann::json> SorDataStore::apply_patch(const std::string& ue_id,
+                                                        const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_sor_data WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto data = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    data = data.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("UPDATE udr_sor_data SET data = $2::jsonb WHERE ue_id = $1",
+             pqxx::params{ue_id, data.dump()});
+    txn.commit();
+    return std::make_optional(data);
+}
+
+UpuDataStore::UpuDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void UpuDataStore::put(const std::string& ue_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_upu_data (ue_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> UpuDataStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_upu_data WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr

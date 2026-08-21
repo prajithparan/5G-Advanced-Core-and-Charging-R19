@@ -710,3 +710,30 @@ CREATE TABLE IF NOT EXISTS udr_cag_ack_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0143). Real Authentication SoR
+-- (Document) resource (/subscription-data/{ueId}/ue-update-confirmation-data/sor-data, real
+-- schema SorData -- required provisioningTime (DateTime) + ueUpdateStatus, plus optional
+-- sorXmacIue/sorMacIue/meSupportOfSorCmci/meSupportOfSorSnpnSi/meSupportOfSorSnpnSiLs). Real
+-- CreateAuthenticationSoR/QueryAuthSoR/UpdateAuthenticationSoR: real PUT+GET+PATCH. Real,
+-- disclosed: same as udr_nssai_ack_data/udr_cag_ack_data, the spec documents only a single `204`
+-- response for PUT (no `201`) -- no create-vs-update distinction exists, so put() returns void.
+-- Unlike either ack resource, a real RFC 6902 application/json-patch+json PATCH also exists here
+-- (apply_patch, NOT upsert-capable -- requires a prior PUT). Keyed by ue_id (real path schema is
+-- Supi).
+CREATE TABLE IF NOT EXISTS udr_sor_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0143). Real Authentication UPU
+-- (Document) resource (/subscription-data/{ueId}/ue-update-confirmation-data/upu-data, real
+-- schema UpuData -- required provisioningTime (DateTime) + ueUpdateStatus, plus optional
+-- upuXmacIue/upuMacIue/meSupportUHP). Real CreateAuthenticationUPU/QueryAuthUPU: real PUT+GET
+-- only, no PATCH/DELETE operation exists in the spec at all -- genuinely narrower than
+-- udr_sor_data above despite sharing the same UeUpdateStatus-based schema shape. Real, disclosed:
+-- same 204-only PUT, no create-vs-update distinction. Keyed by ue_id (real path schema is Supi).
+CREATE TABLE IF NOT EXISTS udr_upu_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

@@ -314,9 +314,19 @@
 // PATCH/DELETE operation exists at all, same real 204-only-PUT shape) is now implemented. Its
 // `sor-data`/`upu-data` siblings remain genuinely deferred, not dropped.
 //
-// Deliberately still deferred, not dropped: ue-update-confirmation-data's own `sor-data`/
-// `upu-data` siblings (`subscribed-snssais`/`subscribed-cag` themselves closed, see ADR-0141/
-// ADR-0142 above);
+// UPDATE (ADR-0143, gap-closure task #106): the real Authentication SoR (Document) and
+// Authentication UPU (Document) resources (real spec operations
+// `CreateAuthenticationSoR`/`QueryAuthSoR`/`UpdateAuthenticationSoR` for `sor-data`, schema
+// `SorData`; `CreateAuthenticationUPU`/`QueryAuthUPU` for `upu-data`, schema `UpuData` -- both
+// required `provisioningTime`/`ueUpdateStatus`, real PUT+GET, same 204-only-PUT shape as
+// `subscribed-snssais`/`subscribed-cag` above) are now implemented. Real, disclosed asymmetry:
+// `sor-data` genuinely also has a real RFC 6902 `application/json-patch+json` PATCH (`apply_patch`
+// NOT upsert-capable -- requires a prior PUT, same precedent as `nidd-authorizations`); `upu-data`
+// has no PATCH/DELETE at all per the spec, a genuine difference despite both resources sharing the
+// same `UeUpdateStatus`-based schema shape. This closes all four `ue-update-confirmation-data`
+// sub-resources this project has surveyed.
+//
+// Deliberately still deferred, not dropped:
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
 // the remainder of group-data (5g-vn-groups, mbs-group-membership, ee-profile-data's own
@@ -610,6 +620,9 @@ int main() {
     udr::NssaiAckDataStore nssai_ack_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0142).
     udr::CagAckDataStore cag_ack_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0143).
+    udr::SorDataStore sor_data(conninfo);
+    udr::UpuDataStore upu_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1080,6 +1093,14 @@ int main() {
                                                                  "Total CreateCagUpdateAck calls");
     auto cag_ack_data_get_counter =
         meter->CreateUInt64Counter("udr_cag_ack_data_get_total", "Total QueryCagAck calls");
+    auto sor_data_write_counter = meter->CreateUInt64Counter(
+        "udr_sor_data_write_total", "Total CreateAuthenticationSoR/UpdateAuthenticationSoR calls");
+    auto sor_data_get_counter =
+        meter->CreateUInt64Counter("udr_sor_data_get_total", "Total QueryAuthSoR calls");
+    auto upu_data_write_counter = meter->CreateUInt64Counter("udr_upu_data_write_total",
+                                                             "Total CreateAuthenticationUPU calls");
+    auto upu_data_get_counter =
+        meter->CreateUInt64Counter("udr_upu_data_get_total", "Total QueryAuthUPU calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -3584,6 +3605,133 @@ int main() {
                     404, "Not Found", "No CAG Ack Data for ueId " + ue_id);
             }
             cag_ack_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: Authentication SoR (Document) resource (ADR-0143, gap-closure task
+    // #106) -- real PUT+GET+PATCH per TS29505_Subscription_Data.yaml. Real, disclosed: same as
+    // subscribed-snssais/subscribed-cag above, the spec documents only a single `204` response for
+    // this PUT (no `201`) -- no create-vs-update distinction. Genuinely richer than either ack
+    // resource: a real RFC 6902 application/json-patch+json PATCH also exists (apply_patch is NOT
+    // upsert-capable -- requires a prior PUT, same precedent as nidd-authorizations). Keyed by
+    // ueId. ---
+
+    const std::string sor_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/ue-update-confirmation-data/sor-data";
+
+    server.add_route(
+        "PUT",
+        sor_data_path_pattern,
+        [&verifier, &sor_data, &sor_data_write_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SorData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json j = *body;
+            sor_data.put(ue_id, j);
+            sor_data_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        sor_data_path_pattern,
+        [&verifier, &sor_data, &sor_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = sor_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SoR Data for ueId " + ue_id);
+            }
+            sor_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        sor_data_path_pattern,
+        [&verifier, &sor_data, &sor_data_write_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            std::optional<json> patched;
+            try {
+                patched = sor_data.apply_patch(ue_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SoR Data for ueId " + ue_id);
+            }
+            sor_data_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: Authentication UPU (Document) resource (ADR-0143, gap-closure task
+    // #106) -- real PUT+GET only per TS29505_Subscription_Data.yaml, no PATCH/DELETE operation
+    // exists at all -- genuinely narrower than sor-data's own resource above despite sharing the
+    // same UeUpdateStatus-based schema shape. Real, disclosed: same 204-only PUT, no
+    // create-vs-update distinction. Keyed by ueId. ---
+
+    const std::string upu_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/ue-update-confirmation-data/upu-data";
+
+    server.add_route(
+        "PUT",
+        upu_data_path_pattern,
+        [&verifier, &upu_data, &upu_data_write_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::UpuData_Subscription_Data>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json j = *body;
+            upu_data.put(ue_id, j);
+            upu_data_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        upu_data_path_pattern,
+        [&verifier, &upu_data, &upu_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = upu_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No UPU Data for ueId " + ue_id);
+            }
+            upu_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 

@@ -2545,3 +2545,35 @@ resource-type coverage from 52 to 53 of free5GC's ~42+ real `Nudr_DataRepository
 task #106 remains open; the remainder of `group-data`, `ue-update-confirmation-data`'s own
 `sor-data`/`upu-data` siblings, bare `/subscription-data/{ueId}`, and the genuinely deferred
 subsystems remain real, disclosed gaps.
+
+## ADR-0143 -- gap-closure task #106 continuation: UDR real Authentication SoR + Authentication UPU (Document) resources
+
+| Requirement | Test |
+|---|---|
+| `GET .../sor-data` before any `PUT` | Live curl, real `404` |
+| `PUT sor-data` with `provisioningTime`/`ueUpdateStatus`/`meSupportOfSorCmci` | Live curl, real `204` |
+| `GET sor-data` after `PUT` | Live curl, real `200` with matching body |
+| `PATCH sor-data` (real RFC 6902 `application/json-patch+json`, `replace meSupportOfSorCmci`) | Live curl, real `204` |
+| `GET sor-data` after `PATCH` | Live curl, real `200` with `meSupportOfSorCmci` updated, other fields unchanged |
+| `GET .../upu-data` before any `PUT` | Live curl, real `404` |
+| `PUT upu-data` with `provisioningTime`/`ueUpdateStatus`/`meSupportUHP` | Live curl, real `204` |
+| `GET upu-data` after `PUT` | Live curl, real `200` with matching body |
+| Idempotent re-`PUT upu-data` (new `provisioningTime`, `meSupportUHP` omitted) | Live curl, real `204`; `GET` confirms genuine overwrite |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_sor_data` and `udr_upu_data` independently confirms both persisted rows |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean before and after `clang-format-18` |
+
+Real, disclosed asymmetry between the two sibling resources: `sor-data`
+(`CreateAuthenticationSoR`/`QueryAuthSoR`/`UpdateAuthenticationSoR`, schema `SorData`) has a real
+PUT+GET+PATCH -- the PATCH is RFC 6902, and per this project's established `nidd-authorizations`
+precedent always returns `204` rather than the spec's optional `200`-with-`PatchResult` variant.
+`upu-data` (`CreateAuthenticationUPU`/`QueryAuthUPU`, schema `UpuData`) has only PUT+GET, no
+PATCH/DELETE at all -- confirmed by reading past its response block, no third operation exists.
+Both PUTs are the same real 204-only shape as `subscribed-snssais`/`subscribed-cag` (no
+create-vs-update distinction). Used the already-generated `sbi_gen::SorData` and
+`sbi_gen::UpuData_Subscription_Data` DTOs directly (the latter suffixed since an unrelated,
+distinct `UpuData` also exists under `TS29509_Nausf_UPUProtection.yaml`). This closes all four
+`ue-update-confirmation-data` sub-resources surveyed to date and takes UDR's real resource-type
+coverage from 53 to 54 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0143 in `docs/DECISIONS.md` for full disclosure --
+task #106 remains open; the remainder of `group-data`, bare `/subscription-data/{ueId}`, and the
+genuinely deferred subsystems remain real, disclosed gaps.
