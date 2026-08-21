@@ -218,6 +218,12 @@
 // `TraceData` object or a bare `SharedDataId` string reference) -- handled as opaque JSON, no
 // special-casing needed since this store never strongly types sub-resource bodies.
 //
+// UPDATE (ADR-0128, gap-closure task #106): the real V2X Subscription Data resource (QueryV2xData
+// -- real GET-only, no create/update operation exists at all) is now implemented, seeded at
+// startup, same shape as coverage-restriction-data. Keyed by ueId alone, a genuinely new key
+// shape (not part of the provisioned-data group's own composite key), so a new
+// store/table rather than a new column.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -484,6 +490,8 @@ int main() {
     udr::IdentityDataStore identity_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0123).
     udr::OdbDataStore odb_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0128).
+    udr::V2xDataStore v2x_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -669,6 +677,17 @@ int main() {
         odb_data.seed(supi, odb);
     }
 
+    // Real seed data (ADR-0128, gap-closure task #106) -- the real V2X Subscription Data resource
+    // is genuinely GET-only per spec, same "no live provisioning path yet" reasoning as above.
+    // `nrV2xServicesAuth.vehicleUeAuth: "AUTHORIZED"` is a real enum value from UeAuth
+    // (TS29571_CommonData.yaml), this project's own representative test choice.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json v2x;
+        v2x["nrV2xServicesAuth"]["vehicleUeAuth"] = "AUTHORIZED";
+        v2x_data.seed(supi, v2x);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -791,6 +810,8 @@ int main() {
                                                                   "Total ModifyIdentityData calls");
     auto odb_data_get_counter =
         meter->CreateUInt64Counter("udr_odb_data_get_total", "Total GetOdbData calls");
+    auto v2x_data_get_counter =
+        meter->CreateUInt64Counter("udr_v2x_data_get_total", "Total QueryV2xData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2789,6 +2810,31 @@ int main() {
                     404, "Not Found", "No ODB Data for ueId " + ue_id);
             }
             odb_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: V2X Subscription Data resource (ADR-0128, gap-closure task #106)
+    // -- real GET-only per TS29505_Subscription_Data.yaml, seeded at startup (no create/update
+    // operation exists in the spec, same shape as coverage-restriction-data). Keyed by ueId
+    // alone, genuinely NOT part of the provisioned-data group's own composite key shape. ---
+
+    const std::string v2x_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/v2x-data";
+
+    server.add_route(
+        "GET",
+        v2x_data_path_pattern,
+        [&verifier, &v2x_data, &v2x_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = v2x_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No V2X Subscription Data for ueId " + ue_id);
+            }
+            v2x_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 

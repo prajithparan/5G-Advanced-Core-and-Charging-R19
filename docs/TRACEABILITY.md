@@ -2237,3 +2237,20 @@ bodies. Takes UDR's real resource-type coverage from 39 to 40 of free5GC's ~42+ 
 `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0127 in
 `docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~2 resources still a real,
 disclosed gap.
+
+## ADR-0128 -- gap-closure task #106 continuation: UDR real V2X Subscription Data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/v2x-data` on the seeded SUPI (`imsi-999700000000001`) | Live curl, real `200` with `{"nrV2xServicesAuth":{"vehicleUeAuth":"AUTHORIZED"}}` |
+| `GET` on an unseeded SUPI (`imsi-999700000000099`) | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_v2x_data` confirms both seeded rows match |
+| No regression | Full `conformance_tests`: unchanged pass count (same disclosed manual-live-verification precedent already established for every GET-only seeded resource in this series), zero regressions (325/325); `udr` built clean |
+
+Real `GET`-only resource (`QueryV2xData`), genuinely NOT part of the `provisioned-data` group --
+keyed by `ueId` alone, so backed by its own new `udr_v2x_data` table/store rather than another
+column on `udr_provisioned_data`. Takes UDR's real resource-type coverage from 40 to 41 of
+free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See
+ADR-0128 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; the not-yet-surveyed
+remainder (`prose-data`, `uc-data`, `time-sync-data`, `group-data/*`, `nidd-authorization-data`,
+and others) is real and larger than the "~1 left" free5GC-comparison figure alone suggests.

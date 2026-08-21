@@ -530,3 +530,15 @@ CREATE TABLE IF NOT EXISTS udr_odb_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0128). Real V2X Subscription Data
+-- resource (/subscription-data/{ueId}/v2x-data, real schema V2xSubscriptionData --
+-- nrV2xServicesAuth/lteV2xServicesAuth/nrUePc5Ambr/ltePc5Ambr, every field optional). Confirmed by
+-- direct YAML read: this resource is genuinely GET-only (QueryV2xData) -- no create/update
+-- operation exists at all, same real "provisioned out-of-band, seeded at startup" shape as
+-- udr_coverage_restriction_data above. Keyed by ue_id alone, genuinely NOT part of the
+-- provisioned-data group's own (ue_id, serving_plmn_id) composite key shape.
+CREATE TABLE IF NOT EXISTS udr_v2x_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

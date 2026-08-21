@@ -1212,4 +1212,26 @@ std::optional<nlohmann::json> OdbDataStore::get(const std::string& ue_id) {
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+V2xDataStore::V2xDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void V2xDataStore::seed(const std::string& ue_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_v2x_data (ue_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> V2xDataStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_v2x_data WHERE ue_id = $1", pqxx::params{ue_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr
