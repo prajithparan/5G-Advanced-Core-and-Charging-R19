@@ -393,7 +393,7 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 44 real resource endpoints (43 real
+This project's UDR (`nfs/udr/src/main.cpp`) implements 45 real resource endpoints (44 real
 `Nudr_DataRepository` resources plus, as of ADR-0120, one real `Nudr_GroupIDmap` resource,
 `GetRoutingIDs` -- a genuinely distinct Nudr API, not counted in the `Nudr_DataRepository`-vs-free5GC
 comparison below): AMF 3GPP-access
@@ -421,25 +421,28 @@ seeded at startup), V2X Subscription Data (ADR-0128 -- see below, real GET-only,
 part of the provisioned-data group, keyed by ueId alone), ProSe Service Subscription Data
 (ADR-0129 -- see below, real GET-only, genuinely NOT part of the provisioned-data group, keyed by
 ueId alone), User Consent Subscription Data (ADR-0130 -- see below, real GET-only, genuinely NOT
-part of the provisioned-data group, keyed by ueId alone),
+part of the provisioned-data group, keyed by ueId alone), Time Synchronization Subscription Data
+(ADR-0131 -- see below, real GET-only, genuinely NOT part of the provisioned-data group, keyed by
+ueId alone, real required fields unlike most other GET-only resources closed),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`, -- ADR-0106 -- `lcs-bca-data`, -- ADR-0125 -- `sms-mng-data`, -- ADR-0126 -- `sms-data`, and -- ADR-0127 -- `trace-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
 (`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
 semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
-ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 43
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 44
 of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, 13
 as of ADR-0098, 14 as of ADR-0099, 15 as of ADR-0100, 16 as of ADR-0101, 17 as of ADR-0102, 18 as
 of ADR-0103, 19 as of ADR-0104, 20 as of ADR-0105, 21 as of ADR-0106, 22 as of ADR-0107, 23 as of
 ADR-0108, 24 as of ADR-0109, 25 as of ADR-0110, 26 as of ADR-0111, 27 as of ADR-0112, 28 as of
 ADR-0113, 29 as of ADR-0114, 30 as of ADR-0115, 31 as of ADR-0116, 32 as of ADR-0117, 33 as of
 ADR-0118, 34 as of ADR-0119, 35 as of ADR-0121, 36 as of ADR-0122, 37 as of ADR-0123, 38 as of
-ADR-0125, 39 as of ADR-0126, 40 as of ADR-0127, 41 as of ADR-0128, 42 as of ADR-0129, now 43 as of
-ADR-0130 -- see below). This is now past free5GC's own ~42+ figure for real `Nudr_DataRepository`
-resource types; the real, still-open gap from here is the not-yet-surveyed remainder of
-`TS29505_Subscription_Data.yaml` itself (`time-sync-data`, `group-data/*`,
-`nidd-authorization-data`, and others) plus the genuinely deferred subsystems below, not a
-shrinking free5GC-comparison count.
+ADR-0125, 39 as of ADR-0126, 40 as of ADR-0127, 41 as of ADR-0128, 42 as of ADR-0129, 43 as of
+ADR-0130, now 44 as of ADR-0131 -- see below). This is well past free5GC's own ~42+ figure for
+real `Nudr_DataRepository` resource types; the real, still-open gap from here is the
+not-yet-surveyed remainder of `TS29505_Subscription_Data.yaml` itself (`group-data/*`,
+`nidd-authorization-data`, `a2x-data`, `rangingsl-privacy-data`, `ranging-slpos-data`,
+`5mbs-data`, and others) plus the genuinely deferred subsystems below, not a shrinking
+free5GC-comparison count.
 
 **Highest-priority missing resources** (the ones with real, direct behavioral impact elsewhere in
 this project, not just data-model completeness): Authentication Data / Authentication Status
@@ -600,10 +603,16 @@ docs/DECISIONS.md ADR-0130**: User Consent Subscription Data (`QueryUserConsentD
 `UcSubscriptionData` -- a single optional `userConsentPerPurposeList` map, no `required` fields at
 all; real GET-only, genuinely NOT part of the `provisioned-data` group -- keyed by `ueId` alone, so
 a new `udr_uc_data` table/store) -- taking UDR from 42 to 43 of free5GC's ~42+ real
-`Nudr_DataRepository` resource types. This is now past free5GC's own ~42+ figure; the real,
-still-open work from here is surveying the remainder of `TS29505_Subscription_Data.yaml` itself
-(`time-sync-data`, `group-data/*`, `nidd-authorization-data`, and others), not chasing a shrinking
-comparison count.
+`Nudr_DataRepository` resource types. **Closed, docs/DECISIONS.md ADR-0131**: Time
+Synchronization Subscription Data (`QueryTimeSyncSubscriptionData`, schema
+`TimeSyncSubscriptionData` -- unlike the last several GET-only resources closed, this one has real
+`required` fields, `afReqAuthorizations` and `serviceIds`; real GET-only, genuinely NOT part of
+the `provisioned-data` group -- keyed by `ueId` alone, so a new `udr_time_sync_data` table/store)
+-- taking UDR from 43 to 44 of free5GC's ~42+ real `Nudr_DataRepository` resource types. This is
+well past free5GC's own ~42+ figure; the real, still-open work from here is surveying the
+remainder of `TS29505_Subscription_Data.yaml` itself (`group-data/*`, `nidd-authorization-data`,
+`a2x-data`, `rangingsl-privacy-data`, `ranging-slpos-data`, `5mbs-data`, and others), not chasing a
+shrinking comparison count.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 

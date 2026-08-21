@@ -565,3 +565,16 @@ CREATE TABLE IF NOT EXISTS udr_uc_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0131). Real Time Synchronization
+-- Subscription Data resource (/subscription-data/{ueId}/time-sync-data, real schema
+-- TimeSyncSubscriptionData (TS29503_Nudm_SDM.yaml) -- required afReqAuthorizations (oneOf
+-- gptpAllowedInfoList/astiAllowedInfo) + required serviceIds array of TimeSyncServiceId, each
+-- requiring a `reference` string). Confirmed by direct YAML read: this resource is genuinely
+-- GET-only (real spec operationId QueryTimeSyncSubscriptionData) -- no create/update operation
+-- exists at all, same real "provisioned out-of-band, seeded at startup" shape as udr_uc_data
+-- above. Keyed by ue_id alone.
+CREATE TABLE IF NOT EXISTS udr_time_sync_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

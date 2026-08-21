@@ -2297,3 +2297,27 @@ in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; the not-ye
 remainder (`time-sync-data`, `group-data/*`, `nidd-authorization-data`, and others) and the
 genuinely deferred subsystems (`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`,
 `pdtq-data`, `mbs-session-pol-data`) remain real, disclosed gaps.
+
+## ADR-0131 -- gap-closure task #106 continuation: UDR real Time Synchronization Subscription Data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/time-sync-data` on the seeded SUPI (`imsi-999700000000001`) | Live curl, real `200` with `{"afReqAuthorizations":{"gptpAllowedInfoList":[{"dnn":"internet","gptpAllowed":true}]},"serviceIds":[{"reference":"ts-service-1"}]}` |
+| `GET` on an unseeded SUPI (`imsi-999700000000099`) | Live curl, real `404` |
+| Sibling `uc-data` resource on the same UE (separate table) unaffected | Live curl, real `200` with the unchanged expected body |
+| Second seeded SUPI (`imsi-999700000000002`) | Live curl, real `200` with matching body |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_time_sync_data` confirms both seeded rows match |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean |
+
+Real `GET`-only resource (`QueryTimeSyncSubscriptionData`), schema `TimeSyncSubscriptionData`
+(`TS29503_Nudm_SDM.yaml`) -- unlike the last several GET-only resources closed, this one has real
+`required` fields (`afReqAuthorizations`, `serviceIds`), so the seed data is a minimal but
+genuinely spec-valid body. Genuinely NOT part of the `provisioned-data` group -- keyed by `ueId`
+alone, so backed by its own new `udr_time_sync_data` table/store, same shape as `uc-data`
+(ADR-0130). Takes UDR's real resource-type coverage from 43 to 44 of free5GC's ~42+ real
+`Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0131 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open; the not-yet-surveyed remainder
+(`group-data/*`, `nidd-authorization-data`, `a2x-data`, `rangingsl-privacy-data`,
+`ranging-slpos-data`, `5mbs-data`, and others) and the genuinely deferred subsystems
+(`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`, `pdtq-data`, `mbs-session-pol-data`)
+remain real, disclosed gaps.

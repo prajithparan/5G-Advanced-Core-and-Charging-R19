@@ -238,6 +238,13 @@
 // work is the not-yet-surveyed remainder of TS29505_Subscription_Data.yaml and the genuinely
 // deferred subsystems below.
 //
+// UPDATE (ADR-0131, gap-closure task #106): the real Time Synchronization Subscription Data
+// resource (real spec operationId `QueryTimeSyncSubscriptionData`, schema
+// `TimeSyncSubscriptionData` -- TS29503_Nudm_SDM.yaml -- unlike the last several GET-only
+// resources closed, this one has real required fields (`afReqAuthorizations`, `serviceIds`) --
+// real GET-only, no create/update operation exists at all) is now implemented, seeded at startup
+// with a minimal real-shaped body, same shape as uc-data.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -510,6 +517,8 @@ int main() {
     udr::ProseDataStore prose_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0130).
     udr::UcDataStore uc_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0131).
+    udr::TimeSyncDataStore time_sync_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -729,6 +738,22 @@ int main() {
         uc_data.seed(supi, uc);
     }
 
+    // Real seed data (ADR-0131, gap-closure task #106) -- the real Time Synchronization
+    // Subscription Data resource is genuinely GET-only per spec, same "no live provisioning path
+    // yet" reasoning as above. Real schema TimeSyncSubscriptionData (TS29503_Nudm_SDM.yaml)
+    // requires both afReqAuthorizations (oneOf gptpAllowedInfoList/astiAllowedInfo) and
+    // serviceIds; the minimal real-shaped seed below uses gptpAllowedInfoList (an array of
+    // GptpAllowedInfo, every field inside optional) and a single TimeSyncServiceId (its own
+    // `reference` field is the only required one), this project's own representative test choice.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json time_sync;
+        time_sync["afReqAuthorizations"]["gptpAllowedInfoList"] =
+            json::array({json{{"dnn", "internet"}, {"gptpAllowed", true}}});
+        time_sync["serviceIds"] = json::array({json{{"reference", "ts-service-1"}}});
+        time_sync_data.seed(supi, time_sync);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -857,6 +882,8 @@ int main() {
         meter->CreateUInt64Counter("udr_prose_data_get_total", "Total QueryPorseData calls");
     auto uc_data_get_counter =
         meter->CreateUInt64Counter("udr_uc_data_get_total", "Total QueryUserConsentData calls");
+    auto time_sync_data_get_counter = meter->CreateUInt64Counter(
+        "udr_time_sync_data_get_total", "Total QueryTimeSyncSubscriptionData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2930,6 +2957,34 @@ int main() {
                     404, "Not Found", "No User Consent Subscription Data for ueId " + ue_id);
             }
             uc_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: Time Synchronization Subscription Data resource (ADR-0131,
+    // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml (real spec
+    // operationId `QueryTimeSyncSubscriptionData`), schema `TimeSyncSubscriptionData`
+    // (TS29503_Nudm_SDM.yaml), seeded at startup. Keyed by ueId alone. ---
+
+    const std::string time_sync_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/time-sync-data";
+
+    server.add_route(
+        "GET",
+        time_sync_data_path_pattern,
+        [&verifier, &time_sync_data, &time_sync_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = time_sync_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No Time Synchronization Subscription Data for ueId " + ue_id);
+            }
+            time_sync_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 

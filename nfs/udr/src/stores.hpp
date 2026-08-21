@@ -777,4 +777,22 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0131). Backs the real Time
+// Synchronization Subscription Data resource (QueryTimeSyncSubscriptionData -- real GET-only, no
+// create/update operation exists in the spec at all, same real "provisioned out-of-band, seeded
+// at startup" shape as UcDataStore above). Real schema `TimeSyncSubscriptionData`
+// (TS29503_Nudm_SDM.yaml) requires `afReqAuthorizations` + `serviceIds`, unlike the last several
+// GET-only resources closed which had every field optional. Keyed by `ueId` alone.
+class TimeSyncDataStore {
+public:
+    explicit TimeSyncDataStore(const std::string& conninfo);
+
+    void seed(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr
