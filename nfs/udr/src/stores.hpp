@@ -929,4 +929,21 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0141). Backs the real NSSAI update
+// ack (Document) resource (CreateOrUpdateNssaiAck/QueryNssaiAck -- real PUT+GET, no PATCH/DELETE
+// operation exists in the spec at all). Real, disclosed: unlike this project's other PUT
+// resources, the spec documents only a single `204` response for this PUT (no `201`) -- no
+// create-vs-update distinction exists, so put() returns void, not a bool. Keyed by ue_id.
+class NssaiAckDataStore {
+public:
+    explicit NssaiAckDataStore(const std::string& conninfo);
+
+    void put(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

@@ -2497,3 +2497,30 @@ coverage from 50 to 51 of free5GC's ~42+ real `Nudr_DataRepository` resources
 task #106 remains open; the remainder of `group-data`, bare `/subscription-data/{ueId}`,
 `ue-update-confirmation-data/subscribed-snssais`, `ue-update-confirmation-data/subscribed-cag`,
 and the genuinely deferred subsystems remain real, disclosed gaps.
+
+## ADR-0141 -- gap-closure task #106 continuation: UDR real NSSAI update ack (Document) resource
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/ue-update-confirmation-data/subscribed-snssais` before any `PUT` | Live curl, real `404` |
+| `PUT` with `provisioningTime`/`ueUpdateStatus` (create) | Live curl, real `204` |
+| `GET` after `PUT` | Live curl, real `200` with matching body |
+| `PUT` again with a different `ueUpdateStatus` (update) | Live curl, real `204` (not `201` -- no create-vs-update distinction exists per spec) |
+| `GET` after second `PUT` | Live curl, real `200` reflecting the updated value |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_nssai_ack_data` confirms the persisted, updated row |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean |
+
+Real PUT+GET resource (`CreateOrUpdateNssaiAck`/`QueryNssaiAck`), schema `NssaiAckData` --
+required `provisioningTime`/`ueUpdateStatus`. Real, disclosed: unlike every other PUT resource
+this project has closed, the spec documents only a single `204` response for this PUT (no `201`)
+-- genuinely no create-vs-update distinction, so `put()` returns `void`. Used the
+already-generated `sbi_gen::NssaiAckData` DTO directly. First real
+`ue-update-confirmation-data` sub-resource closed -- its siblings (`sor-data`, `upu-data`,
+`subscribed-cag`) remain genuinely deferred. Also confirmed bare `/subscription-data/{ueId}`
+genuinely blocked in the same pass: combines both the array-query-param (`dataset-names`) and
+complex-object-query-param (`single-nssai`) gaps already disclosed elsewhere. Takes UDR's real
+resource-type coverage from 51 to 52 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0141 in `docs/DECISIONS.md` for full disclosure --
+task #106 remains open; the remainder of `group-data`, `ue-update-confirmation-data`'s own
+`sor-data`/`upu-data`/`subscribed-cag` siblings, bare `/subscription-data/{ueId}` (now confirmed
+blocked), and the genuinely deferred subsystems remain real, disclosed gaps.

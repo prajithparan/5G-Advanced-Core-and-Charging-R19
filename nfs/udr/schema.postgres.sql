@@ -684,3 +684,16 @@ CREATE TABLE IF NOT EXISTS udr_group_identifiers (
     int_group_id TEXT NOT NULL UNIQUE,
     data         JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0141). Real NSSAI update ack
+-- (Document) resource (/subscription-data/{ueId}/ue-update-confirmation-data/subscribed-snssais,
+-- real schema NssaiAckData -- required provisioningTime (DateTime) + ueUpdateStatus (real
+-- UeUpdateStatus enum)). Real CreateOrUpdateNssaiAck/QueryNssaiAck: real PUT+GET, no PATCH/DELETE
+-- operation exists in the spec at all. Real, disclosed: unlike this project's other PUT
+-- resources, the spec documents only a single `204` response for this PUT (no `201`) -- no
+-- create-vs-update distinction exists for this resource, so put() always returns void, not a
+-- bool. Keyed by ue_id (real path schema is Supi, not the more general VarUeId used elsewhere).
+CREATE TABLE IF NOT EXISTS udr_nssai_ack_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
