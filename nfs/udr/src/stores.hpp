@@ -865,4 +865,21 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0137). Backs the real 5MBS
+// Subscription Data (Document) resource (Query5mbsData -- real GET-only, no create/update
+// operation exists in the spec at all, same real "provisioned out-of-band, seeded at startup"
+// shape as RangingSlPosDataStore above). Real schema `MbsSubscriptionData`
+// (TS29503_Nudm_SDM.yaml) has every field optional. Keyed by `ueId` alone.
+class MbsDataStore {
+public:
+    explicit MbsDataStore(const std::string& conninfo);
+
+    void seed(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

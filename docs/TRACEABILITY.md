@@ -2412,3 +2412,28 @@ backed by its own new `udr_ranging_slpos_data` table/store, same shape as `rangi
 (`group-data/*`, `5mbs-data`, and others) and the genuinely deferred subsystems
 (`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`, `pdtq-data`, `mbs-session-pol-data`,
 `nidd-authorization-data`) remain real, disclosed gaps.
+
+## ADR-0137 -- gap-closure task #106 continuation: UDR real 5MBS Subscription Data (Document)
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/5mbs-data` on the seeded SUPI (`imsi-999700000000001`) | Live curl, real `200` with `{"mbsAllowed":true}` |
+| `GET` on an unseeded SUPI (`imsi-999700000000099`) | Live curl, real `404` |
+| Sibling `ranging-slpos-data` resource on the same UE (separate table) unaffected | Live curl, real `200` with the unchanged expected body |
+| Second seeded SUPI (`imsi-999700000000002`) | Live curl, real `200` with matching body |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_5mbs_data` confirms both seeded rows match |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean |
+
+Real `GET`-only resource (`Query5mbsData`), schema `MbsSubscriptionData`
+(`TS29503_Nudm_SDM.yaml`) -- every field optional, no complex or required query parameters at
+all. Genuinely NOT part of the `provisioned-data` group -- keyed by `ueId` alone, so backed by
+its own new `udr_5mbs_data` table/store, same shape as `ranging-slpos-data` (ADR-0136). Takes
+UDR's real resource-type coverage from 48 to 49 of free5GC's ~42+ real `Nudr_DataRepository`
+resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0137 in `docs/DECISIONS.md` for full
+disclosure -- task #106 remains open; the not-yet-surveyed remainder (`group-data/*`,
+`service-specific-authorization-data/{serviceType}`,
+`context-data/service-specific-authorizations/{serviceType}`, bare `/subscription-data/{ueId}`,
+`ue-update-confirmation-data/subscribed-snssais`, `ue-update-confirmation-data/subscribed-cag`,
+and others) and the genuinely deferred subsystems (`ee-subscriptions`/`sdm-subscriptions`,
+`subs-to-notify`, `pdtq-data`, `mbs-session-pol-data`, `nidd-authorization-data`) remain real,
+disclosed gaps.

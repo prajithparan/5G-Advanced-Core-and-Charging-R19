@@ -632,3 +632,14 @@ CREATE TABLE IF NOT EXISTS udr_ranging_slpos_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0137). Real 5MBS Subscription Data
+-- (Document) resource (/subscription-data/{ueId}/5mbs-data, real schema MbsSubscriptionData
+-- (TS29503_Nudm_SDM.yaml) -- mbsAllowed/mbsSessionIdList/ueMbsAssistanceInfo, every field
+-- optional). Confirmed by direct YAML read: this resource is genuinely GET-only (real spec
+-- operationId Query5mbsData) -- no create/update operation exists at all, same real "provisioned
+-- out-of-band, seeded at startup" shape as udr_ranging_slpos_data above. Keyed by ue_id alone.
+CREATE TABLE IF NOT EXISTS udr_5mbs_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

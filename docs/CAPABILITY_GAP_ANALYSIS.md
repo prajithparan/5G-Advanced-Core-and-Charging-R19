@@ -393,7 +393,7 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 49 real resource endpoints (48 real
+This project's UDR (`nfs/udr/src/main.cpp`) implements 50 real resource endpoints (49 real
 `Nudr_DataRepository` resources plus, as of ADR-0120, one real `Nudr_GroupIDmap` resource,
 `GetRoutingIDs` -- a genuinely distinct Nudr API, not counted in the `Nudr_DataRepository`-vs-free5GC
 comparison below): AMF 3GPP-access
@@ -431,12 +431,14 @@ Sidelink Positioning Privacy Subscription Data (ADR-0135 -- see below, real GET-
 NOT part of the provisioned-data group, keyed by ueId alone, optional field-selection query
 parameter not honored), Ranging and Sidelink Positioning Service Subscription Data (ADR-0136 --
 see below, real GET-only, genuinely NOT part of the provisioned-data group, keyed by ueId alone),
+5MBS Subscription Data (Document) (ADR-0137 -- see below, real GET-only, genuinely NOT part of
+the provisioned-data group, keyed by ueId alone),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`, -- ADR-0106 -- `lcs-bca-data`, -- ADR-0125 -- `sms-mng-data`, -- ADR-0126 -- `sms-data`, and -- ADR-0127 -- `trace-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
 (`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
 semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
-ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 48
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 49
 of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, 13
 as of ADR-0098, 14 as of ADR-0099, 15 as of ADR-0100, 16 as of ADR-0101, 17 as of ADR-0102, 18 as
 of ADR-0103, 19 as of ADR-0104, 20 as of ADR-0105, 21 as of ADR-0106, 22 as of ADR-0107, 23 as of
@@ -444,9 +446,9 @@ ADR-0108, 24 as of ADR-0109, 25 as of ADR-0110, 26 as of ADR-0111, 27 as of ADR-
 ADR-0113, 29 as of ADR-0114, 30 as of ADR-0115, 31 as of ADR-0116, 32 as of ADR-0117, 33 as of
 ADR-0118, 34 as of ADR-0119, 35 as of ADR-0121, 36 as of ADR-0122, 37 as of ADR-0123, 38 as of
 ADR-0125, 39 as of ADR-0126, 40 as of ADR-0127, 41 as of ADR-0128, 42 as of ADR-0129, 43 as of
-ADR-0130, 44 as of ADR-0131, 45 as of ADR-0133, 46 as of ADR-0134, 47 as of ADR-0135, now 48 as of
-ADR-0136 -- see below). This is well past free5GC's own ~42+ figure for real `Nudr_DataRepository`
-resource types; the real, still-open gap from here is
+ADR-0130, 44 as of ADR-0131, 45 as of ADR-0133, 46 as of ADR-0134, 47 as of ADR-0135, 48 as of
+ADR-0136, now 49 as of ADR-0137 -- see below). This is well past free5GC's own ~42+ figure for
+real `Nudr_DataRepository` resource types; the real, still-open gap from here is
 the not-yet-surveyed remainder of `TS29505_Subscription_Data.yaml` itself (`group-data/*`,
 `a2x-data`, `rangingsl-privacy-data`, `ranging-slpos-data`, `5mbs-data`, and others) plus the
 genuinely deferred subsystems below (now including `nidd-authorization-data`, confirmed blocked on
@@ -639,10 +641,17 @@ Sidelink Positioning Service Subscription Data (`QueryRangingSlPosData`, schema
 `RangingSlPosSubscriptionData` -- every top-level field optional, no complex or required query
 parameters at all; real GET-only, genuinely NOT part of the `provisioned-data` group -- keyed by
 `ueId` alone, so a new `udr_ranging_slpos_data` table/store) -- taking UDR from 47 to 48 of
-free5GC's ~42+ real `Nudr_DataRepository` resource types. This is well past free5GC's own ~42+
-figure; the real, still-open work from here is surveying the remainder of
-`TS29505_Subscription_Data.yaml` itself (`group-data/*`, `5mbs-data`, and others), not chasing a
-shrinking comparison count.
+free5GC's ~42+ real `Nudr_DataRepository` resource types. **Closed, docs/DECISIONS.md ADR-0137**:
+5MBS Subscription Data (Document) (`Query5mbsData`, schema `MbsSubscriptionData` -- every field
+optional, no complex or required query parameters at all; real GET-only, genuinely NOT part of
+the `provisioned-data` group -- keyed by `ueId` alone, so a new `udr_5mbs_data` table/store) --
+taking UDR from 48 to 49 of free5GC's ~42+ real `Nudr_DataRepository` resource types. This is
+well past free5GC's own ~42+ figure; the real, still-open work from here is surveying the
+remainder of `TS29505_Subscription_Data.yaml` itself (`group-data/*`,
+`service-specific-authorization-data/{serviceType}`,
+`context-data/service-specific-authorizations/{serviceType}`, bare `/subscription-data/{ueId}`,
+`ue-update-confirmation-data/subscribed-snssais`, `ue-update-confirmation-data/subscribed-cag`,
+and others), not chasing a shrinking comparison count.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 
