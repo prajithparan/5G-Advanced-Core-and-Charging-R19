@@ -1071,4 +1071,35 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0148). Backs the real Event
+// Exposure Subscriptions collection + individual document resource (`context-data/
+// ee-subscriptions` / `context-data/ee-subscriptions/{subsId}`, real spec operations
+// `Queryeesubscriptions`/`CreateEeSubscriptions`/`QueryeeSubscription`/`UpdateEesubscriptions`/
+// `ModifyEesubscription`/`RemoveeeSubscriptions`, schema `EeSubscription`). Real, disclosed: the
+// caller (main.cpp) generates a real UUID v4 `subsId` via `sbi_core::generate_uuid_v4()` (same
+// generator this project's own NF instance IDs use) and passes it to `create()` -- no
+// client-supplied ID exists for this resource. `update()` is genuinely update-only, never create
+// (real spec 404 for a nonexistent resource) -- a real, disclosed departure from every other
+// single-key PUT resource this project has closed. `apply_patch` is real RFC 6902, NOT
+// upsert-capable. `list()` backs the collection GET, deliberately not honoring the real,
+// genuinely-optional `event-types`/`nf-identifiers` array filters (same "optional filter not
+// honored" precedent as `RangingSlPrivacyDataStore`). Composite key (ue_id, subs_id).
+class EeSubscriptionsStore {
+public:
+    explicit EeSubscriptionsStore(const std::string& conninfo);
+
+    void create(const std::string& ue_id, const std::string& subs_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id, const std::string& subs_id);
+    std::vector<nlohmann::json> list(const std::string& ue_id);
+    bool update(const std::string& ue_id, const std::string& subs_id, nlohmann::json data);
+    std::optional<nlohmann::json> apply_patch(const std::string& ue_id,
+                                              const std::string& subs_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ue_id, const std::string& subs_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

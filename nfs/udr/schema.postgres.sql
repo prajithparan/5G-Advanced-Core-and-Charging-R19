@@ -784,3 +784,34 @@ CREATE TABLE IF NOT EXISTS udr_group_ee_profile_data (
     ue_group_id TEXT PRIMARY KEY,
     data        JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0148). Real Event Exposure
+-- Subscriptions resource -- collection
+-- (/subscription-data/{ueId}/context-data/ee-subscriptions, real spec operations
+-- Queryeesubscriptions/CreateEeSubscriptions) and individual document
+-- (/subscription-data/{ueId}/context-data/ee-subscriptions/{subsId}, real spec operations
+-- QueryeeSubscription/UpdateEesubscriptions/ModifyEesubscription/RemoveeeSubscriptions), real
+-- schema EeSubscription -- required callbackReference (Uri) + monitoringConfigurations (opaque
+-- JSON), plus a real dozen-plus optional fields. Real, disclosed: subsId is genuinely
+-- server-generated on POST (real UUID v4 via sbi_core::generate_uuid_v4(), same generator this
+-- project's own NF instance IDs use) -- the real spec's own Location header format confirms this
+-- ("...ee-subscriptions/{subsId}"), no client-supplied ID exists for this resource. PUT
+-- (UpdateEesubscriptions) is genuinely update-only, never create -- the spec's own 404 response
+-- explicitly documents "update of non-existing resource is rejected", a real, new departure from
+-- every other single-key PUT resource this project has closed (all of which are either
+-- create-capable or upsert-capable). PATCH is real RFC 6902 application/json-patch+json, NOT
+-- upsert-capable (same precedent as sor-data/nidd-authorizations). Real, disclosed simplification:
+-- the collection GET's own optional event-types/nf-identifiers array query-param filters (both
+-- genuinely optional, unlike every other array-query-param this project has found and left
+-- blocked) are not honored -- always returns the full, unfiltered list for that UE, same
+-- "optional filter not honored" precedent already used for e.g. rangingsl-privacy-data's own
+-- `fields` parameter (ADR-0135). Scope, disclosed: only the collection + individual document are
+-- implemented -- the deeper amf-subscriptions/smf-subscriptions/hss-subscriptions nested
+-- sub-collections under each {subsId} remain genuinely deferred, not built. Composite key
+-- (ue_id, subs_id).
+CREATE TABLE IF NOT EXISTS udr_ee_subscriptions (
+    ue_id   TEXT NOT NULL,
+    subs_id TEXT NOT NULL,
+    data    JSONB NOT NULL,
+    PRIMARY KEY (ue_id, subs_id)
+);

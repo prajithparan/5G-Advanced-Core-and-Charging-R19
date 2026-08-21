@@ -2690,3 +2690,38 @@ ADR-0147 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `
 remaining genuinely-blocked resources, bare `/subscription-data/{ueId}`/`{ueId}/context-data`
 (both confirmed blocked on their own array-query-param requirements), and the other genuinely
 deferred subsystems remain real, disclosed gaps.
+
+## ADR-0148 -- gap-closure task #106 continuation: UDR real Event Exposure Subscriptions collection + individual document resource
+
+| Requirement | Test |
+|---|---|
+| `GET` collection before any `POST` | Live curl, real `200` with an empty array |
+| `POST` with `callbackReference`/`monitoringConfigurations` | Live curl, real `201`, real freshly-generated UUID v4 `subsId` in `Location`, body echoed back |
+| `GET` individual by that `subsId` | Live curl, real `200` with matching body |
+| `GET` collection after the `POST` | Live curl, real `200` with a one-element array containing it |
+| `PUT` update to the existing `subsId` | Live curl, real `204`; `GET` after reflects the update |
+| `PUT` to a nonexistent `subsId` | Live curl, real `404` (confirms update-only semantics, no create-via-PUT) |
+| `PATCH` (real RFC 6902 `application/json-patch+json`) | Live curl, real `204`; `GET` after reflects the patched value |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_ee_subscriptions` independently confirms the composite-key row matches curl's response |
+| `DELETE` | Live curl, real `204`; individual `GET` after real `404`; collection `GET` after real `200` with an empty array |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings, including a real `-Wsign-conversion` fix) before and after `clang-format-18` |
+
+Real collection GET+POST and individual document GET+PUT+PATCH+DELETE
+(`Queryeesubscriptions`/`CreateEeSubscriptions`/`QueryeeSubscription`/`UpdateEesubscriptions`/
+`ModifyEesubscription`/`RemoveeeSubscriptions`), schema `EeSubscription`. This corrects ADR-0122's
+own earlier blanket "genuinely deeply-nested" characterization of `ee-subscriptions`/
+`sdm-subscriptions` -- on direct read, the collection GET's own `event-types`/`nf-identifiers`
+array filters are genuinely optional (not the required-array-param class that blocks other
+resources), so this project simply doesn't honor them, same precedent as
+`rangingsl-privacy-data`'s own `fields` parameter. Three real, new shapes disclosed: server-generated
+`subsId` (real UUID v4 via `sbi_core::generate_uuid_v4()`); genuinely update-only PUT (real spec
+404 for a nonexistent resource, no create-via-PUT path); and a real collection+individual-document
+CRUD pair backed by one composite-key table, a genuinely new shape for this project. Real,
+disclosed scope narrowing: only the collection + individual document, NOT the deeper
+`amf-subscriptions`/`smf-subscriptions`/`hss-subscriptions` nested sub-collections under each
+`subsId`; `sdm-subscriptions` was not re-surveyed and remains deferred. This closes UDR resource
+#59 of free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See
+ADR-0148 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `group-data`'s
+remaining genuinely-blocked resources, bare `/subscription-data/{ueId}`/`{ueId}/context-data`,
+`ee-subscriptions`'s own nested sub-collections, `sdm-subscriptions`, and the other genuinely
+deferred subsystems remain real, disclosed gaps.
