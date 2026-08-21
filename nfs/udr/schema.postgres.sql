@@ -604,3 +604,19 @@ CREATE TABLE IF NOT EXISTS udr_a2x_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0135). Real Ranging and Sidelink
+-- Positioning Privacy Subscription Data resource (/subscription-data/{ueId}/rangingsl-privacy-data,
+-- real schema RangingSlPrivacyData (TS29503_Nudm_SDM.yaml) -- rslppi/rangingSlUnrelatedClass/
+-- rangingSlPlmnOperatorClasses/rangingSlEvtRptExpectedArea, every top-level field optional).
+-- Confirmed by direct YAML read: this resource is genuinely GET-only (real spec operationId
+-- QueryRangingSlPrivacyData) -- no create/update operation exists at all, same real "provisioned
+-- out-of-band, seeded at startup" shape as udr_a2x_data. Real, disclosed simplification: the
+-- spec's own optional (not required) array-style `fields` query parameter (RFC 6570 form-style,
+-- explode=false) for field-selection filtering is not honored -- the full stored document is
+-- always returned, same disclosed precedent as other GET-only resources in this project. Keyed by
+-- ue_id alone.
+CREATE TABLE IF NOT EXISTS udr_rangingsl_privacy_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

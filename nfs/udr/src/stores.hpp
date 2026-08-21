@@ -829,4 +829,22 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0135). Backs the real Ranging and
+// Sidelink Positioning Privacy Subscription Data resource (QueryRangingSlPrivacyData -- real
+// GET-only, no create/update operation exists in the spec at all, same real "provisioned
+// out-of-band, seeded at startup" shape as A2xDataStore above). Real, disclosed: the spec's own
+// optional `fields` query parameter for field-selection filtering is not honored -- the full
+// stored document is always returned. Keyed by `ueId` alone.
+class RangingSlPrivacyDataStore {
+public:
+    explicit RangingSlPrivacyDataStore(const std::string& conninfo);
+
+    void seed(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

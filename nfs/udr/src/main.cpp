@@ -259,6 +259,14 @@
 // optional, same shape as v2x-data/prose-data -- real GET-only, no create/update operation exists
 // at all) is now implemented, seeded at startup.
 //
+// UPDATE (ADR-0135, gap-closure task #106): the real Ranging and Sidelink Positioning Privacy
+// Subscription Data resource (real spec operationId `QueryRangingSlPrivacyData`, schema
+// `RangingSlPrivacyData` -- TS29503_Nudm_SDM.yaml -- every top-level field optional -- real
+// GET-only, no create/update operation exists at all) is now implemented, seeded at startup. Real,
+// disclosed: the spec's own optional `fields` query parameter (RFC 6570 form-style array,
+// explode=false) for field-selection filtering is not honored -- the full stored document is
+// always returned.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -537,6 +545,8 @@ int main() {
     udr::LocationDataStore location_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0134).
     udr::A2xDataStore a2x_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0135).
+    udr::RangingSlPrivacyDataStore rangingsl_privacy_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -799,6 +809,18 @@ int main() {
         a2x_data.seed(supi, a2x);
     }
 
+    // Real seed data (ADR-0135, gap-closure task #106) -- the real Ranging and Sidelink
+    // Positioning Privacy Subscription Data resource is genuinely GET-only per spec, same "no
+    // live provisioning path yet" reasoning as above. `rslppi.rangingSlPrivacyInd:
+    // "RANGINGSL_ALLOWED"` is a real enum value from RangingSlPrivacyInd
+    // (TS29503_Nudm_SDM.yaml), this project's own representative test choice.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json rangingsl_privacy;
+        rangingsl_privacy["rslppi"]["rangingSlPrivacyInd"] = "RANGINGSL_ALLOWED";
+        rangingsl_privacy_data.seed(supi, rangingsl_privacy);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -933,6 +955,8 @@ int main() {
         meter->CreateUInt64Counter("udr_location_data_get_total", "Total QueryUeLocation calls");
     auto a2x_data_get_counter =
         meter->CreateUInt64Counter("udr_a2x_data_get_total", "Total QueryA2xData calls");
+    auto rangingsl_privacy_data_get_counter = meter->CreateUInt64Counter(
+        "udr_rangingsl_privacy_data_get_total", "Total QueryRangingSlPrivacyData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -3084,6 +3108,37 @@ int main() {
                     404, "Not Found", "No A2X Subscription Data for ueId " + ue_id);
             }
             a2x_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: Ranging and Sidelink Positioning Privacy Subscription Data
+    // resource (ADR-0135, gap-closure task #106) -- real GET-only per
+    // TS29505_Subscription_Data.yaml (real spec operationId `QueryRangingSlPrivacyData`), seeded
+    // at startup. Keyed by ueId alone. Real, disclosed: the spec's own optional `fields` query
+    // parameter for field-selection filtering is not honored -- the full stored document is
+    // always returned. ---
+
+    const std::string rangingsl_privacy_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/rangingsl-privacy-data";
+
+    server.add_route(
+        "GET",
+        rangingsl_privacy_data_path_pattern,
+        [&verifier, &rangingsl_privacy_data, &rangingsl_privacy_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = rangingsl_privacy_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No Ranging and Sidelink Positioning Privacy Subscription Data for ueId " +
+                        ue_id);
+            }
+            rangingsl_privacy_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 
