@@ -1619,4 +1619,52 @@ std::optional<nlohmann::json> UpuDataStore::get(const std::string& ue_id) {
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+FiveGVnGroupStore::FiveGVnGroupStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void FiveGVnGroupStore::put(const std::string& ext_group_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_5g_vn_groups (ext_group_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (ext_group_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ext_group_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> FiveGVnGroupStore::get(const std::string& ext_group_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_5g_vn_groups WHERE ext_group_id = $1",
+                                 pqxx::params{ext_group_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::optional<nlohmann::json> FiveGVnGroupStore::apply_patch(const std::string& ext_group_id,
+                                                             const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_5g_vn_groups WHERE ext_group_id = $1",
+                                 pqxx::params{ext_group_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto data = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    data = data.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("UPDATE udr_5g_vn_groups SET data = $2::jsonb WHERE ext_group_id = $1",
+             pqxx::params{ext_group_id, data.dump()});
+    txn.commit();
+    return std::make_optional(data);
+}
+
+bool FiveGVnGroupStore::remove(const std::string& ext_group_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_5g_vn_groups WHERE ext_group_id = $1",
+                                 pqxx::params{ext_group_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr

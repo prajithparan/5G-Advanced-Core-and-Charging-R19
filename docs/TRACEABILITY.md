@@ -2577,3 +2577,34 @@ coverage from 53 to 54 of free5GC's ~42+ real `Nudr_DataRepository` resources
 (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0143 in `docs/DECISIONS.md` for full disclosure --
 task #106 remains open; the remainder of `group-data`, bare `/subscription-data/{ueId}`, and the
 genuinely deferred subsystems remain real, disclosed gaps.
+
+## ADR-0144 -- gap-closure task #106 continuation: UDR real group-data individual 5G VN Group Configuration resource
+
+| Requirement | Test |
+|---|---|
+| `GET .../5g-vn-groups/{externalGroupId}` before any `PUT` | Live curl, real `404` |
+| `PUT` with `5gVnGroupData.dnn`/`sNssai`/`5gVnGroupCommunicationInd` (real JSON keys, confirmed via generated `to_json`) | Live curl, real `201`, body echoed back |
+| `GET` after `PUT` | Live curl, real `200` with matching body |
+| `PATCH` (real RFC 6902 `application/json-patch+json`, `replace 5gVnGroupCommunicationInd`) | Live curl, real `204` |
+| `GET` after `PATCH` | Live curl, real `200` with the field updated, `dnn`/`sNssai` unchanged |
+| `PATCH` against a nonexistent `externalGroupId` | Live curl, real `404` (confirms `apply_patch` NOT upsert-capable) |
+| `DELETE` | Live curl, real `204` |
+| `GET`/second `DELETE` after `DELETE` | Live curl, real `404` both times |
+| Genuine PostgreSQL persistence at every step | Direct `psql` query against `udr_5g_vn_groups` independently confirms the row (and its absence after `DELETE`) |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean before and after `clang-format-18` |
+
+Real GET+PUT+PATCH+DELETE resource (`Create5GVnGroup`/`Get5GVnGroupConfiguration`/
+`Modify5GVnGroup`/`Delete5GVnGroup`), schema `5GVnGroupConfiguration` generated as
+`sbi_gen::N5GVnGroupConfiguration`. Real, disclosed: PUT documents only `201` (same precedent as
+`bdt-data`, ADR-0116); PATCH is real RFC 6902 (NOT `bdt-data`'s own RFC 7396 merge-patch). A real
+test-side mistake (using the C++ field name instead of the real JSON key, e.g.
+`n5gVnGroupCommunicationInd` vs. the real `5gVnGroupCommunicationInd`) was found and corrected
+mid-verification -- disclosed in ADR-0144, not silently fixed. The sibling bare collection GET
+(`Query5GVnGroup`) was surveyed and confirmed genuinely blocked on a real `style: form,
+explode: false` array query parameter, same class already disclosed for `pdtq-data`/
+`nf-group-ids`. This closes the second real `group-data` sub-resource (after
+`group-identifiers`, ADR-0140) and takes UDR's real resource-type coverage from 54 to 55 of
+free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See
+ADR-0144 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; the remainder of
+`group-data`, bare `/subscription-data/{ueId}`, and the genuinely deferred subsystems remain
+real, disclosed gaps.

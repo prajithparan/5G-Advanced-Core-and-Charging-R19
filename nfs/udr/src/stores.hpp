@@ -1001,4 +1001,32 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0144). Backs the real
+// `group-data`/`5g-vn-groups/{externalGroupId}` individual 5G VN Group Configuration resource
+// (Create5GVnGroup/Get5GVnGroupConfiguration/Modify5GVnGroup/Delete5GVnGroup -- real
+// GET+PUT+PATCH+DELETE per TS29505_Subscription_Data.yaml, schema `5GVnGroupConfiguration`
+// generated as `sbi_gen::N5GVnGroupConfiguration`). Real, disclosed: put() is internally
+// upsert-capable (idempotent-safe for retries) but the real spec's own PUT documents ONLY `201`
+// as a success response (operationId literally "Create...", no update-via-PUT status documented)
+// -- same real precedent as `BdtDataStore`, the caller always responds 201, not 204. PATCH is
+// real RFC 6902 `application/json-patch+json` (confirmed by direct YAML read, NOT the RFC 7396
+// merge-patch `BdtDataStore` itself uses) and is NOT upsert-capable -- PUT is the real create
+// path, same precedent as `SorDataStore`/`NiddAuthorizationInfoStore`. Keyed by `externalGroupId`
+// (real schema `ExtGroupId`, a plain string). First real `group-data` sub-resource closed since
+// `group-identifiers` (ADR-0140).
+class FiveGVnGroupStore {
+public:
+    explicit FiveGVnGroupStore(const std::string& conninfo);
+
+    void put(const std::string& ext_group_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ext_group_id);
+    std::optional<nlohmann::json> apply_patch(const std::string& ext_group_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ext_group_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

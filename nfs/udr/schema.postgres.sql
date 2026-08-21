@@ -737,3 +737,21 @@ CREATE TABLE IF NOT EXISTS udr_upu_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0144). Real group-data individual
+-- 5G VN Group Configuration resource
+-- (/subscription-data/group-data/5g-vn-groups/{externalGroupId}, real schema
+-- 5GVnGroupConfiguration generated as sbi_gen::N5GVnGroupConfiguration -- an optional
+-- N5GVnGroupData wrapping required dnn/sNssai plus several optional fields). Real
+-- Create5GVnGroup/Get5GVnGroupConfiguration/Modify5GVnGroup/Delete5GVnGroup: real
+-- GET+PUT+PATCH+DELETE. Real, disclosed: same as udr_bdt_data, the real PUT documents ONLY `201`
+-- (operationId literally "Create...", no update-via-PUT status), so this project's own route
+-- always responds 201, not 204, even though put() is internally upsert-capable. PATCH is real RFC
+-- 6902 application/json-patch+json (confirmed by direct YAML read -- NOT the RFC 7396 merge-patch
+-- udr_bdt_data itself uses), apply_patch NOT upsert-capable (PUT is the real create path). Keyed
+-- by ext_group_id (real path schema is ExtGroupId, a plain string). First real group-data
+-- sub-resource closed since group-identifiers (ADR-0140).
+CREATE TABLE IF NOT EXISTS udr_5g_vn_groups (
+    ext_group_id TEXT PRIMARY KEY,
+    data         JSONB NOT NULL
+);
