@@ -2254,3 +2254,24 @@ free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSI
 ADR-0128 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; the not-yet-surveyed
 remainder (`prose-data`, `uc-data`, `time-sync-data`, `group-data/*`, `nidd-authorization-data`,
 and others) is real and larger than the "~1 left" free5GC-comparison figure alone suggests.
+
+## ADR-0129 -- gap-closure task #106 continuation: UDR real ProSe Service Subscription Data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/prose-data` on the seeded SUPI (`imsi-999700000000001`) | Live curl, real `200` with `{"proseServiceAuth":{"proseDirectDiscoveryAuth":"AUTHORIZED"}}` |
+| `GET` on an unseeded SUPI (`imsi-999700000000099`) | Live curl, real `404` |
+| Sibling `v2x-data` resource on the same UE (separate table) unaffected | Live curl, real `200` with the unchanged expected body |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_prose_data` confirms both seeded rows match |
+| No regression | Full `conformance_tests`: unchanged pass count (same disclosed manual-live-verification precedent already established for every GET-only seeded resource in this series), zero regressions (325/325); `udr` built clean |
+
+Real `GET`-only resource (spec `operationId` literally `QueryPorseData` -- a real typo in
+`TS29505_Subscription_Data.yaml` itself, cited as-is, not corrected), genuinely NOT part of the
+`provisioned-data` group -- keyed by `ueId` alone, so backed by its own new `udr_prose_data`
+table/store, same shape as `v2x-data` (ADR-0128). Takes UDR's real resource-type coverage from 41
+to 42 of free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md) --
+UDR now matches or exceeds free5GC's own count on this specific comparison metric. See ADR-0129 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open; the not-yet-surveyed remainder
+(`uc-data`, `time-sync-data`, `group-data/*`, `nidd-authorization-data`, and others) and the
+genuinely deferred subsystems (`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`,
+`pdtq-data`, `mbs-session-pol-data`) remain real, disclosed gaps.

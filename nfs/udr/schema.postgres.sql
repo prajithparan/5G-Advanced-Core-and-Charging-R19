@@ -542,3 +542,15 @@ CREATE TABLE IF NOT EXISTS udr_v2x_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0129). Real ProSe Service
+-- Subscription Data resource (/subscription-data/{ueId}/prose-data, real schema
+-- ProseSubscriptionData -- proseServiceAuth/nrUePc5Ambr/proseAllowedPlmn, every field optional).
+-- Confirmed by direct YAML read: this resource is genuinely GET-only (real spec operationId
+-- `QueryPorseData` -- a real, literal typo in TS29505_Subscription_Data.yaml itself, cited as-is,
+-- not corrected) -- no create/update operation exists at all, same real "provisioned out-of-band,
+-- seeded at startup" shape as udr_v2x_data above. Keyed by ue_id alone.
+CREATE TABLE IF NOT EXISTS udr_prose_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

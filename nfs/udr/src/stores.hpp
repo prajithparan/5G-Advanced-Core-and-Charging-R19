@@ -742,4 +742,22 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0129). Backs the real ProSe Service
+// Subscription Data resource -- real GET-only, no create/update operation exists in the spec at
+// all, same real "provisioned out-of-band, seeded at startup" shape as V2xDataStore above. Real,
+// disclosed: the spec's own operationId for this path is `QueryPorseData` (a real, literal typo
+// in TS29505_Subscription_Data.yaml -- "Porse" not "Prose"), cited as-is, not corrected, since
+// this project never invents or "fixes" spec text. Keyed by `ueId` alone.
+class ProseDataStore {
+public:
+    explicit ProseDataStore(const std::string& conninfo);
+
+    void seed(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

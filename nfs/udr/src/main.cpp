@@ -224,6 +224,11 @@
 // shape (not part of the provisioned-data group's own composite key), so a new
 // store/table rather than a new column.
 //
+// UPDATE (ADR-0129, gap-closure task #106): the real ProSe Service Subscription Data resource
+// (real spec operationId `QueryPorseData` -- a literal typo in the spec itself, cited as-is, not
+// corrected -- real GET-only, no create/update operation exists at all) is now implemented,
+// seeded at startup, same shape as v2x-data.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -492,6 +497,8 @@ int main() {
     udr::OdbDataStore odb_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0128).
     udr::V2xDataStore v2x_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0129).
+    udr::ProseDataStore prose_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -688,6 +695,18 @@ int main() {
         v2x_data.seed(supi, v2x);
     }
 
+    // Real seed data (ADR-0129, gap-closure task #106) -- the real ProSe Service Subscription
+    // Data resource is genuinely GET-only per spec, same "no live provisioning path yet"
+    // reasoning as above. `proseServiceAuth.proseDirectDiscoveryAuth: "AUTHORIZED"` is a real
+    // enum value from UeAuth (TS29571_CommonData.yaml), this project's own representative test
+    // choice.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json prose;
+        prose["proseServiceAuth"]["proseDirectDiscoveryAuth"] = "AUTHORIZED";
+        prose_data.seed(supi, prose);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -812,6 +831,8 @@ int main() {
         meter->CreateUInt64Counter("udr_odb_data_get_total", "Total GetOdbData calls");
     auto v2x_data_get_counter =
         meter->CreateUInt64Counter("udr_v2x_data_get_total", "Total QueryV2xData calls");
+    auto prose_data_get_counter =
+        meter->CreateUInt64Counter("udr_prose_data_get_total", "Total QueryPorseData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2835,6 +2856,31 @@ int main() {
                     404, "Not Found", "No V2X Subscription Data for ueId " + ue_id);
             }
             v2x_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: ProSe Service Subscription Data resource (ADR-0129, gap-closure
+    // task #106) -- real GET-only per TS29505_Subscription_Data.yaml (real spec operationId
+    // `QueryPorseData`, a literal spec typo, cited as-is), seeded at startup. Keyed by ueId
+    // alone. ---
+
+    const std::string prose_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/prose-data";
+
+    server.add_route(
+        "GET",
+        prose_data_path_pattern,
+        [&verifier, &prose_data, &prose_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = prose_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No ProSe Service Subscription Data for ueId " + ue_id);
+            }
+            prose_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 
