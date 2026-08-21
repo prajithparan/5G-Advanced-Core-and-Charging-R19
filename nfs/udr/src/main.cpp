@@ -277,6 +277,18 @@
 // -- every field optional -- real GET-only, no create/update operation exists at all) is now
 // implemented, seeded at startup.
 //
+// UPDATE (ADR-0139, gap-closure task #106): the real Service Specific Authorization Info
+// (Document) context-data resource (real PUT+GET+PATCH+DELETE, schema
+// `ServiceSpecificAuthorizationInfo` -- TS29505_Subscription_Data.yaml -- required
+// serviceSpecificAuthorizationList, a map of AuthorizationInfo keyed by authId, real distinct
+// 201-vs-204 PUT response codes, real RFC 6902 JSON Patch, same shape as nidd-authorizations's
+// own resource) is now implemented. Composite (ueId, serviceType) key, same precedent as
+// pp-data-store. Its real sibling GET-only resource at
+// /subscription-data/{ueId}/service-specific-authorization-data/{serviceType} was surveyed in
+// the same pass and confirmed genuinely blocked (not attempted): real required complex-object
+// query parameters this project has no parsing precedent for, same class of gap already
+// disclosed for nidd-authorization-data.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -561,6 +573,8 @@ int main() {
     udr::RangingSlPosDataStore ranging_slpos_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0137).
     udr::MbsDataStore mbs_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0139).
+    udr::ServiceSpecificAuthorizationInfoStore service_specific_authorization_info(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -998,6 +1012,13 @@ int main() {
         "udr_ranging_slpos_data_get_total", "Total QueryRangingSlPosData calls");
     auto mbs_data_get_counter =
         meter->CreateUInt64Counter("udr_5mbs_data_get_total", "Total Query5mbsData calls");
+    auto service_specific_auth_write_counter = meter->CreateUInt64Counter(
+        "udr_service_specific_auth_write_total",
+        "Total CreateServiceSpecificAuthorizationInfo/ModifyServiceSpecificAuthorizationInfo "
+        "calls");
+    auto service_specific_auth_delete_counter =
+        meter->CreateUInt64Counter("udr_service_specific_auth_delete_total",
+                                   "Total RemoveServiceSpecificAuthorizationInfo calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -3234,6 +3255,134 @@ int main() {
             }
             mbs_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: Service Specific Authorization Info (Document) context-data
+    // resource (ADR-0139, gap-closure task #106) -- real PUT+GET+PATCH+DELETE per
+    // TS29505_Subscription_Data.yaml, real distinct 201-vs-204 PUT response codes (same shape as
+    // nidd-authorizations's own resource), real RFC 6902 application/json-patch+json PATCH.
+    // Composite (ueId, serviceType) key. Real, disclosed: the sibling GET-only resource at
+    // /subscription-data/{ueId}/service-specific-authorization-data/{serviceType} is genuinely
+    // blocked, not attempted -- real required complex-object query parameters this project has
+    // no parsing precedent for, same class of gap already disclosed for nidd-authorization-data.
+    // ---
+
+    const std::string service_specific_auth_path_pattern =
+        std::string(kApiRoot) +
+        "/subscription-data/{ueId}/context-data/service-specific-authorizations/{serviceType}";
+
+    server.add_route(
+        "PUT",
+        service_specific_auth_path_pattern,
+        [&verifier,
+         &service_specific_authorization_info,
+         &service_specific_auth_write_counter,
+         service_specific_auth_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::ServiceSpecificAuthorizationInfo>(
+                req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto service_type = req.path_params.at("serviceType");
+            json j = *body;
+            const bool is_new = service_specific_authorization_info.put(ue_id, service_type, j);
+            service_specific_auth_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", service_specific_auth_path_pattern);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        service_specific_auth_path_pattern,
+        [&verifier, &service_specific_authorization_info](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto service_type = req.path_params.at("serviceType");
+            auto data = service_specific_authorization_info.get(ue_id, service_type);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No Service Specific Authorization Info for ueId/serviceType " + ue_id + "/" +
+                        service_type);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        service_specific_auth_path_pattern,
+        [&verifier, &service_specific_authorization_info, &service_specific_auth_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto service_type = req.path_params.at("serviceType");
+            std::optional<json> patched;
+            try {
+                patched =
+                    service_specific_authorization_info.apply_patch(ue_id, service_type, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No Service Specific Authorization Info for ueId/serviceType " + ue_id + "/" +
+                        service_type);
+            }
+            service_specific_auth_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        service_specific_auth_path_pattern,
+        [&verifier, &service_specific_authorization_info, &service_specific_auth_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto service_type = req.path_params.at("serviceType");
+            if (!service_specific_authorization_info.remove(ue_id, service_type)) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No Service Specific Authorization Info for ueId/serviceType " + ue_id + "/" +
+                        service_type);
+            }
+            service_specific_auth_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

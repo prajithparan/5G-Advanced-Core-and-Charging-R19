@@ -2437,3 +2437,39 @@ disclosure -- task #106 remains open; the not-yet-surveyed remainder (`group-dat
 and others) and the genuinely deferred subsystems (`ee-subscriptions`/`sdm-subscriptions`,
 `subs-to-notify`, `pdtq-data`, `mbs-session-pol-data`, `nidd-authorization-data`) remain real,
 disclosed gaps.
+
+## ADR-0139 -- gap-closure task #106 continuation: UDR real Service Specific Authorization Info (Document)
+
+| Requirement | Test |
+|---|---|
+| `PUT /subscription-data/{ueId}/context-data/service-specific-authorizations/{serviceType}` (create) | Live curl, real `201` with the created resource echoed back |
+| `GET` after create | Live curl, real `200` with matching body |
+| `PUT` again on the same key (update) | Live curl, real `204` (not `201`) |
+| `GET` on an unseeded `serviceType` for the same SUPI | Live curl, real `404` |
+| `PATCH` (real RFC 6902 `add` op) | Live curl, real `204`; subsequent `GET` reflects the added entry |
+| `DELETE` | Live curl, real `204`; subsequent `GET` -> real `404` |
+| Composite-key isolation (second SUPI/serviceType pair) | Live curl, real `201`, independently persisted |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_service_specific_auth_info` confirms the composite-key row |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean |
+
+Real PUT+GET+PATCH+DELETE resource (`CreateServiceSpecificAuthorizationInfo`/
+`GetServiceSpecificAuthorizationInfo`/`ModifyServiceSpecificAuthorizationInfo`/
+`RemoveServiceSpecificAuthorizationInfo`), schema `ServiceSpecificAuthorizationInfo` -- required
+`serviceSpecificAuthorizationList`, a map of `AuthorizationInfo` (`TS29503_Nudm_NIDDAU.yaml`)
+keyed by `authId`, each requiring `snssai`/`dnn`/`mtcProviderInformation`/
+`authUpdateCallbackUri`. Used the already-generated `sbi_gen::ServiceSpecificAuthorizationInfo`/
+`sbi_gen::AuthorizationInfo` DTOs directly, no hand-written DTO. Real distinct 201-vs-204 PUT
+response codes, real RFC 6902 `application/json-patch+json` PATCH, same shape as
+`nidd-authorizations`'s own resource (ADR-0121). Composite `(ueId, serviceType)` key, same
+precedent as `PpDataEntryStore` (ADR-0109). Its real sibling GET-only resource at
+`service-specific-authorization-data/{serviceType}` was surveyed in the same pass and confirmed
+genuinely blocked (not attempted): real required complex-object query parameters this project has
+no parsing precedent for, the same class of gap already disclosed for `nidd-authorization-data`.
+Takes UDR's real resource-type coverage from 49 to 50 of free5GC's ~42+ real
+`Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0139 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open; the not-yet-surveyed remainder
+(`group-data/*`, bare `/subscription-data/{ueId}`,
+`ue-update-confirmation-data/subscribed-snssais`, `ue-update-confirmation-data/subscribed-cag`,
+and others) and the genuinely deferred subsystems (`ee-subscriptions`/`sdm-subscriptions`,
+`subs-to-notify`, `pdtq-data`, `mbs-session-pol-data`, `nidd-authorization-data`,
+`service-specific-authorization-data/{serviceType}`) remain real, disclosed gaps.

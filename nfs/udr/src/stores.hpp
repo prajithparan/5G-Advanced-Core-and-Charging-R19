@@ -882,4 +882,32 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0139). Backs the real Service
+// Specific Authorization Info (Document) context-data resource
+// (CreateServiceSpecificAuthorizationInfo/GetServiceSpecificAuthorizationInfo/
+// ModifyServiceSpecificAuthorizationInfo/RemoveServiceSpecificAuthorizationInfo -- real
+// PUT+GET+PATCH+DELETE, same shape as NiddAuthorizationInfoStore). Composite key (ue_id,
+// service_type) matches PpDataEntryStore's own precedent -- serviceType is a real plain-string
+// enum, no encoding ambiguity.
+class ServiceSpecificAuthorizationInfoStore {
+public:
+    explicit ServiceSpecificAuthorizationInfoStore(const std::string& conninfo);
+
+    // Returns true if this was a new entry (for 201-vs-204 response selection).
+    bool put(const std::string& ue_id, const std::string& service_type, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id, const std::string& service_type);
+    // Real RFC 6902 JSON Patch (already parsed) via nlohmann::json's built-in .patch(). Throws
+    // nlohmann::json::exception on a malformed patch -- caller turns that into a 400
+    // ProblemDetails, same as NiddAuthorizationInfoStore's own apply_patch. Returns nullopt if
+    // the (ue_id, service_type) pair doesn't exist.
+    std::optional<nlohmann::json> apply_patch(const std::string& ue_id,
+                                              const std::string& service_type,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ue_id, const std::string& service_type);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

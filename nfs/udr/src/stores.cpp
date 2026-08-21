@@ -1411,4 +1411,68 @@ std::optional<nlohmann::json> MbsDataStore::get(const std::string& ue_id) {
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+ServiceSpecificAuthorizationInfoStore::ServiceSpecificAuthorizationInfoStore(
+    const std::string& conninfo)
+    : conn_(conninfo) {}
+
+bool ServiceSpecificAuthorizationInfoStore::put(const std::string& ue_id,
+                                                const std::string& service_type,
+                                                nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto row =
+        txn.exec("INSERT INTO udr_service_specific_auth_info (ue_id, service_type, data) "
+                 "VALUES ($1, $2, $3::jsonb) "
+                 "ON CONFLICT (ue_id, service_type) DO UPDATE SET data = EXCLUDED.data "
+                 "RETURNING (xmax = 0) AS inserted",
+                 pqxx::params{ue_id, service_type, data.dump()})
+            .one_row();
+    txn.commit();
+    return row["inserted"].as<bool>();
+}
+
+std::optional<nlohmann::json>
+ServiceSpecificAuthorizationInfoStore::get(const std::string& ue_id,
+                                           const std::string& service_type) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_service_specific_auth_info "
+                                 "WHERE ue_id = $1 AND service_type = $2",
+                                 pqxx::params{ue_id, service_type});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::optional<nlohmann::json> ServiceSpecificAuthorizationInfoStore::apply_patch(
+    const std::string& ue_id, const std::string& service_type, const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_service_specific_auth_info "
+                                 "WHERE ue_id = $1 AND service_type = $2",
+                                 pqxx::params{ue_id, service_type});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto data = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    data = data.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("UPDATE udr_service_specific_auth_info SET data = $3::jsonb "
+             "WHERE ue_id = $1 AND service_type = $2",
+             pqxx::params{ue_id, service_type, data.dump()});
+    txn.commit();
+    return std::make_optional(data);
+}
+
+bool ServiceSpecificAuthorizationInfoStore::remove(const std::string& ue_id,
+                                                   const std::string& service_type) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_service_specific_auth_info "
+                                 "WHERE ue_id = $1 AND service_type = $2",
+                                 pqxx::params{ue_id, service_type});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr

@@ -643,3 +643,25 @@ CREATE TABLE IF NOT EXISTS udr_5mbs_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0139). Real Service Specific
+-- Authorization Info (Document) context-data resource
+-- (/subscription-data/{ueId}/context-data/service-specific-authorizations/{serviceType}, real
+-- schema ServiceSpecificAuthorizationInfo -- required serviceSpecificAuthorizationList, a map of
+-- AuthorizationInfo keyed by authId). Real CreateServiceSpecificAuthorizationInfo/
+-- GetServiceSpecificAuthorizationInfo/ModifyServiceSpecificAuthorizationInfo/
+-- RemoveServiceSpecificAuthorizationInfo: PUT+GET+PATCH+DELETE, real distinct 201-vs-204 PUT
+-- response codes, real RFC 6902 application/json-patch+json PATCH (same shape as
+-- udr_nidd_authorization_info's own resource, ADR-0121). Composite key (ue_id, service_type)
+-- matches PpDataEntryStore's own precedent (ADR-0109) -- serviceType is a real plain-string enum
+-- (TS29503_Nudm_SSAU.yaml), no path-segment encoding ambiguity. Real, disclosed: the sibling
+-- GET-only resource at /subscription-data/{ueId}/service-specific-authorization-data/{serviceType}
+-- (GetSSAuData) is genuinely blocked, not attempted -- its spec requires a complex-object query
+-- parameter (single-nssai via content: application/json) this project has no parsing precedent
+-- for, same class of gap already disclosed for nidd-authorization-data.
+CREATE TABLE IF NOT EXISTS udr_service_specific_auth_info (
+    ue_id        TEXT NOT NULL,
+    service_type TEXT NOT NULL,
+    data         JSONB NOT NULL,
+    PRIMARY KEY (ue_id, service_type)
+);
