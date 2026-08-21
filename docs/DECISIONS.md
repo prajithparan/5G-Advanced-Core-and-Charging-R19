@@ -12021,3 +12021,55 @@ the not-yet-surveyed remainder of `TS29505_Subscription_Data.yaml` (`group-data/
 `ue-update-confirmation-data/subscribed-cag`, and others) and the genuinely deferred subsystems
 (`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`, `pdtq-data`, `mbs-session-pol-data`,
 `Nudr_GroupIDmap`'s own `/nf-group-ids`) remain real, open, disclosed gaps.
+
+## ADR-0132: CI workflow -- add a `concurrency` group to cancel superseded runs
+
+### Context
+
+At the user's repeated, explicit insistence on resolving GitHub Actions errors before continuing
+any other work, re-examined the recurring `sanitize (asan-ubsan)` runner-shutdown pattern
+(ADR-0124: `ninja: build stopped: interrupted by user` / `The runner has received a shutdown
+signal` / exit 143) with a specific question ADR-0124 had not asked: is the repository's own push
+cadence itself a contributing cause, even though no in-repo code defect was found?
+
+Real, observable fact: this session pushes a new commit to `main` roughly every 15-30 minutes
+(one per UDR gap-closure ADR), and each push triggers a brand-new, complete 4-job CI run (`build`,
+`lint`, `sanitize (asan-ubsan)`, `sanitize (tsan)`). The sanitizer jobs (especially
+`asan-ubsan`, an instrumented build of the entire monorepo) routinely take longer than the gap
+between pushes to finish. `.github/workflows/ci.yml` had no `concurrency:` block at all (confirmed
+by ADR-0124's own direct grep), so GitHub never cancelled a superseded run for an older commit on
+the same ref -- every one of those runs kept its 4 jobs alive and contending for the account's
+finite concurrent-runner capacity until each ran to completion or failure. This is a real,
+plausible mechanism for GitHub's own scheduler reclaiming a runner mid-job under contention,
+consistent with every piece of evidence ADR-0124 already gathered: it is always the slowest job
+(`asan-ubsan`) that gets killed, never `build` or `lint`, and it happens specifically when multiple
+runs are stacked up in the run list.
+
+### Implementation
+
+Added to `.github/workflows/ci.yml`:
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+This is standard GitHub Actions practice: when a new commit lands on the same ref (`main`) while
+an earlier run for that ref is still in progress, GitHub cancels the earlier run outright instead
+of letting both run concurrently. For this repo's push cadence, that means at most one full CI run
+is ever alive for `main` at a time, directly eliminating the pile-up this session's own commit
+frequency was creating.
+
+### What this ADR does NOT include
+
+This is disclosed as a **real, standard mitigation for the evidenced pattern, not a proven
+root-cause fix**. ADR-0124 already noted that a GitHub Actions minutes/concurrency quota (billing
+page, not accessible from this session's `gh` auth scope) is a plausible alternate or contributing
+explanation this repository cannot rule out or confirm on its own. If the `asan-ubsan`
+runner-shutdown signature recurs after this change ships and takes effect on the next few pushes,
+that is real evidence against the "self-inflicted pile-up" hypothesis and points back toward an
+account-level quota the user would need to check directly (Settings -> Billing -> Actions). No
+retry logic, `timeout-minutes`, or other workflow change is added here -- keeping this change
+minimal and attributable, so its effect (or lack of one) is clearly observable in the next several
+runs.

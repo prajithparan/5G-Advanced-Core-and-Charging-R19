@@ -6,6 +6,20 @@ on:
   pull_request:
     branches: [main]
 
+# Real fix (docs/DECISIONS.md ADR-0132): this repo pushes small commits in rapid succession
+# (~15-30 min apart), each triggering a full 4-job run (build/lint/sanitize x2) that takes longer
+# than that to finish, especially the asan-ubsan and tsan sanitizer builds. With no concurrency
+# group, superseded runs for the same ref were never cancelled, so multiple full runs piled up and
+# contended for the account's limited concurrent-runner capacity -- the leading suspected cause
+# (ADR-0124) of GitHub reclaiming a runner mid-job ("The runner has received a shutdown signal"),
+# consistently hitting the slowest job (sanitize (asan-ubsan)) first. Cancelling stale in-progress
+# runs when a newer commit lands on the same ref directly reduces concurrent job count. Disclosed:
+# this is a real, standard mitigation for the evidenced pattern, not a proven root-cause fix --
+# GitHub's own external scheduling behavior is not something a workflow file can fully control.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   VCPKG_ROOT: ${{ github.workspace }}/vcpkg
   VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-cache,readwrite"
