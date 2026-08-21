@@ -554,3 +554,14 @@ CREATE TABLE IF NOT EXISTS udr_prose_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0130). Real User Consent
+-- Subscription Data resource (/subscription-data/{ueId}/uc-data, real schema UcSubscriptionData
+-- (TS29503_Nudm_SDM.yaml) -- a single optional userConsentPerPurposeList map, no required fields
+-- at all). Confirmed by direct YAML read: this resource is genuinely GET-only (real spec
+-- operationId QueryUserConsentData) -- no create/update operation exists at all, same real
+-- "provisioned out-of-band, seeded at startup" shape as udr_prose_data above. Keyed by ue_id alone.
+CREATE TABLE IF NOT EXISTS udr_uc_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

@@ -2275,3 +2275,25 @@ UDR now matches or exceeds free5GC's own count on this specific comparison metri
 (`uc-data`, `time-sync-data`, `group-data/*`, `nidd-authorization-data`, and others) and the
 genuinely deferred subsystems (`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`,
 `pdtq-data`, `mbs-session-pol-data`) remain real, disclosed gaps.
+
+## ADR-0130 -- gap-closure task #106 continuation: UDR real User Consent Subscription Data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/uc-data` on the seeded SUPI (`imsi-999700000000001`) | Live curl, real `200` with `{"userConsentPerPurposeList":{"ANALYTICS":"CONSENT_GIVEN"}}` |
+| `GET` on an unseeded SUPI (`imsi-999700000000099`) | Live curl, real `404` |
+| Sibling `prose-data` resource on the same UE (separate table) unaffected | Live curl, real `200` with the unchanged expected body |
+| Second seeded SUPI (`imsi-999700000000002`) | Live curl, real `200` with matching body |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_uc_data` confirms both seeded rows match |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean |
+
+Real `GET`-only resource (`QueryUserConsentData`), schema `UcSubscriptionData`
+(`TS29503_Nudm_SDM.yaml`) -- a single optional `userConsentPerPurposeList` map, no `required`
+fields at all. Genuinely NOT part of the `provisioned-data` group -- keyed by `ueId` alone, so
+backed by its own new `udr_uc_data` table/store, same shape as `prose-data` (ADR-0129). Takes
+UDR's real resource-type coverage from 42 to 43 of free5GC's ~42+ real `Nudr_DataRepository`
+resources (docs/CAPABILITY_GAP_ANALYSIS.md) -- past the free5GC comparison baseline. See ADR-0130
+in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; the not-yet-surveyed
+remainder (`time-sync-data`, `group-data/*`, `nidd-authorization-data`, and others) and the
+genuinely deferred subsystems (`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`,
+`pdtq-data`, `mbs-session-pol-data`) remain real, disclosed gaps.

@@ -229,6 +229,15 @@
 // corrected -- real GET-only, no create/update operation exists at all) is now implemented,
 // seeded at startup, same shape as v2x-data.
 //
+// UPDATE (ADR-0130, gap-closure task #106): the real User Consent Subscription Data resource
+// (real spec operationId `QueryUserConsentData`, schema `UcSubscriptionData` --
+// TS29503_Nudm_SDM.yaml -- a single optional userConsentPerPurposeList map, no required fields at
+// all -- real GET-only, no create/update operation exists at all) is now implemented, seeded at
+// startup, same shape as prose-data. Takes UDR's real Nudr_DataRepository resource-type coverage
+// to 43 of free5GC's ~42+ real resources -- past the free5GC-comparison baseline; real remaining
+// work is the not-yet-surveyed remainder of TS29505_Subscription_Data.yaml and the genuinely
+// deferred subsystems below.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -499,6 +508,8 @@ int main() {
     udr::V2xDataStore v2x_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0129).
     udr::ProseDataStore prose_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0130).
+    udr::UcDataStore uc_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -707,6 +718,17 @@ int main() {
         prose_data.seed(supi, prose);
     }
 
+    // Real seed data (ADR-0130, gap-closure task #106) -- the real User Consent Subscription Data
+    // resource is genuinely GET-only per spec, same "no live provisioning path yet" reasoning as
+    // above. `ANALYTICS`/`CONSENT_GIVEN` are real enum values from UcPurpose/UserConsent
+    // (TS29503_Nudm_SDM.yaml), this project's own representative test choice.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json uc;
+        uc["userConsentPerPurposeList"]["ANALYTICS"] = "CONSENT_GIVEN";
+        uc_data.seed(supi, uc);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -833,6 +855,8 @@ int main() {
         meter->CreateUInt64Counter("udr_v2x_data_get_total", "Total QueryV2xData calls");
     auto prose_data_get_counter =
         meter->CreateUInt64Counter("udr_prose_data_get_total", "Total QueryPorseData calls");
+    auto uc_data_get_counter =
+        meter->CreateUInt64Counter("udr_uc_data_get_total", "Total QueryUserConsentData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2881,6 +2905,31 @@ int main() {
                     404, "Not Found", "No ProSe Service Subscription Data for ueId " + ue_id);
             }
             prose_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: User Consent Subscription Data resource (ADR-0130, gap-closure
+    // task #106) -- real GET-only per TS29505_Subscription_Data.yaml (real spec operationId
+    // `QueryUserConsentData`), schema `UcSubscriptionData` (TS29503_Nudm_SDM.yaml), seeded at
+    // startup. Keyed by ueId alone. ---
+
+    const std::string uc_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/uc-data";
+
+    server.add_route(
+        "GET",
+        uc_data_path_pattern,
+        [&verifier, &uc_data, &uc_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = uc_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No User Consent Subscription Data for ueId " + ue_id);
+            }
+            uc_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 

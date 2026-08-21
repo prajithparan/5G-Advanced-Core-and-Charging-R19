@@ -760,4 +760,21 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0130). Backs the real User Consent
+// Subscription Data resource (QueryUserConsentData -- real GET-only, no create/update operation
+// exists in the spec at all, same real "provisioned out-of-band, seeded at startup" shape as
+// ProseDataStore above). Real schema `UcSubscriptionData` (TS29503_Nudm_SDM.yaml) is a single
+// optional `userConsentPerPurposeList` map, no `required` fields at all. Keyed by `ueId` alone.
+class UcDataStore {
+public:
+    explicit UcDataStore(const std::string& conninfo);
+
+    void seed(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr
