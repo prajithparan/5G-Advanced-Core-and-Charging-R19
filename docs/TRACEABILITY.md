@@ -2181,3 +2181,22 @@ all. Takes UDR's real resource-type coverage from 36 to 37 of free5GC's ~42+ rea
 `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0123 in
 `docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~5 resources still a real,
 disclosed gap.
+
+## ADR-0125 -- gap-closure task #106 continuation: UDR real SMS Management Subscription Data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/{servingPlmnId}/provisioned-data/sms-mng-data` on the seeded (SUPI, PLMN) pair | Live curl, real `200` with `{"mtSmsSubscribed":true}` |
+| `GET` on the same SUPI with an unseeded PLMN | Live curl, real `404` |
+| Sibling `am-data` column on the same row unaffected | Live curl, real `200` with the unchanged expected `nssai` body |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_provisioned_data` confirms both seeded rows' `sms_mng_data` column matches |
+| No regression | Full `conformance_tests`: unchanged pass count (same disclosed manual-live-verification precedent already established for every GET-only seeded resource in this series), zero regressions (325/325); `udr` built clean |
+
+Real `GET`-only resource (`QuerySmsMngData`), added as a new column on the existing
+`udr_provisioned_data` table rather than a new table -- same real precedent ADR-0106 established
+for `lcs-bca-data` (same `provisioned-data` group, same `(ueId, servingPlmnId)` key). Takes UDR's
+real resource-type coverage from 37 to 38 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). The real sibling `.../provisioned-data/sms-data` resource was
+found during the same survey and is a strong next candidate, deliberately left for its own turn.
+See ADR-0125 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open, ~4 resources
+still a real, disclosed gap.

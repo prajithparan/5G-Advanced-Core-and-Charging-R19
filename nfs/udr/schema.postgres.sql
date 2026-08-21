@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS udr_smf_registration (
 -- `.../provisioned-data/lcs-bca-data` resource (real schema `LcsBroadcastAssistanceTypesData`,
 -- QueryLcsBcaData, same real GET-only shape, same (ue_id, serving_plmn_id) key) -- a genuinely
 -- distinct real sub-resource under this same group, not a rename.
+--
+-- Gap-closure (task #106, ADR-0125): `sms_mng_data` column added -- the real, sibling
+-- `.../provisioned-data/sms-mng-data` resource (real schema `SmsManagementSubscriptionData`,
+-- QuerySmsMngData, same real GET-only shape, same (ue_id, serving_plmn_id) key) -- a genuinely
+-- distinct real sub-resource under this same group, not a rename.
 CREATE TABLE IF NOT EXISTS udr_provisioned_data (
     ue_id            TEXT NOT NULL,
     serving_plmn_id  TEXT NOT NULL,
@@ -57,13 +62,15 @@ CREATE TABLE IF NOT EXISTS udr_provisioned_data (
     smf_sel_data     JSONB,
     sm_data          JSONB,
     lcs_bca_data     JSONB,
+    sms_mng_data     JSONB,
     PRIMARY KEY (ue_id, serving_plmn_id)
 );
 
 -- `CREATE TABLE IF NOT EXISTS` above is a no-op against an already-existing table from a prior
--- run (real persistence property this whole schema relies on) -- this ALTER is what actually adds
--- the new column to an existing real database.
+-- run (real persistence property this whole schema relies on) -- these ALTERs are what actually
+-- add the new columns to an existing real database.
 ALTER TABLE udr_provisioned_data ADD COLUMN IF NOT EXISTS lcs_bca_data JSONB;
+ALTER TABLE udr_provisioned_data ADD COLUMN IF NOT EXISTS sms_mng_data JSONB;
 
 -- ADR-0072 (gap-closure: real N28 end-to-end): the real Nudr_DataRepository `policy-data` group's
 -- SM policy resource (TS29519_Policy_Data.yaml's /policy-data/ues/{ueId}/sm-data, real schema

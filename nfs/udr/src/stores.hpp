@@ -108,7 +108,8 @@ public:
               std::optional<nlohmann::json> am_data,
               std::optional<nlohmann::json> smf_sel_data,
               std::optional<nlohmann::json> sm_data,
-              std::optional<nlohmann::json> lcs_bca_data);
+              std::optional<nlohmann::json> lcs_bca_data,
+              std::optional<nlohmann::json> sms_mng_data);
 
     std::optional<nlohmann::json> get_am_data(const std::string& ue_id,
                                               const std::string& serving_plmn_id);
@@ -119,6 +120,10 @@ public:
     // ADR-0106, gap-closure task #106: real LCS Broadcast Assistance Subscription Data
     // (QueryLcsBcaData), same real GET-only path shape as the other three sub-resources above.
     std::optional<nlohmann::json> get_lcs_bca_data(const std::string& ue_id,
+                                                   const std::string& serving_plmn_id);
+    // ADR-0125, gap-closure task #106: real SMS Management Subscription Data (QuerySmsMngData),
+    // same real GET-only path shape as the other sub-resources above.
+    std::optional<nlohmann::json> get_sms_mng_data(const std::string& ue_id,
                                                    const std::string& serving_plmn_id);
 
 private:
