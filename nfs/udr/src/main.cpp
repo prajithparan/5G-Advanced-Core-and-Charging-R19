@@ -212,6 +212,12 @@
 // `sms_data` column on `udr_provisioned_data`, same precedent, genuinely distinct from
 // sms-mng-data above (real, separate schema, separate operationId).
 //
+// UPDATE (ADR-0127, gap-closure task #106): the real Trace Data resource (QueryTraceData -- real
+// GET-only, no create/update operation exists at all) is now implemented as a new `trace_data`
+// column on `udr_provisioned_data`, same precedent. Real response schema is a `oneOf` (full
+// `TraceData` object or a bare `SharedDataId` string reference) -- handled as opaque JSON, no
+// special-casing needed since this store never strongly types sub-resource bodies.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -501,6 +507,11 @@ int main() {
     // real optional boolean field (TS29503_Nudm_SDM.yaml's SmsSubscriptionData, genuinely
     // distinct from SmsManagementSubscriptionData's own mtSmsSubscribed above) -- true is this
     // project's own representative test choice (ADR-0126, gap-closure task #106).
+    // trace_data.traceRef/traceDepth are real fields (TS29571_CommonData.yaml's TraceData) --
+    // "99970-A1B2C3" matches the real cited traceRef pattern (MCC+MNC + "-" + 3-octet hex Trace
+    // ID per TS 32.422) for this project's own real lab PLMN, and "MEDIUM" is a real TraceDepth
+    // enum value, this project's own representative test choice (ADR-0127, gap-closure task
+    // #106).
     for (const std::string& supi :
          {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
         json am_data;
@@ -513,6 +524,9 @@ int main() {
         sms_mng_data["mtSmsSubscribed"] = true;
         json sms_data;
         sms_data["smsSubscribed"] = true;
+        json trace_data;
+        trace_data["traceRef"] = "99970-A1B2C3";
+        trace_data["traceDepth"] = "MEDIUM";
         provisioned_data.seed(supi,
                               "99970",
                               std::make_optional(am_data),
@@ -520,7 +534,8 @@ int main() {
                               std::make_optional(sm_data),
                               std::make_optional(lcs_bca_data),
                               std::make_optional(sms_mng_data),
-                              std::make_optional(sms_data));
+                              std::make_optional(sms_data),
+                              std::make_optional(trace_data));
     }
 
     // Real seed data (ADR-0102, gap-closure task #106) -- the real Enhanced Coverage Restriction
@@ -1173,6 +1188,28 @@ int main() {
             if (!data.has_value()) {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No provisioned sms-data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // ADR-0127, gap-closure task #106: real Trace Data (QueryTraceData), same real GET-only
+    // (ueId, servingPlmnId) shape as the routes above. Real response schema is a `oneOf` (full
+    // `TraceData` object or a bare `SharedDataId` string) -- returned as opaque JSON.
+    server.add_route(
+        "GET",
+        provisioned_data_path_pattern + "/trace-data",
+        [&verifier, &provisioned_data, &provisioned_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto serving_plmn_id = req.path_params.at("servingPlmnId");
+            auto data = provisioned_data.get_trace_data(ue_id, serving_plmn_id);
+            provisioned_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No provisioned trace-data for ueId " + ue_id);
             }
             return sbi_core::http2::Response::json(200, data->dump());
         });
