@@ -2346,3 +2346,24 @@ coverage from 44 to 45 of free5GC's ~42+ real `Nudr_DataRepository` resources
 `rangingsl-privacy-data`, `ranging-slpos-data`, `5mbs-data`, and others) and the genuinely deferred
 subsystems (`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`, `pdtq-data`,
 `mbs-session-pol-data`, `nidd-authorization-data`) remain real, disclosed gaps.
+
+## ADR-0134 -- gap-closure task #106 continuation: UDR real A2X Subscription Data
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/a2x-data` on the seeded SUPI (`imsi-999700000000001`) | Live curl, real `200` with `{"nrA2xServicesAuth":{"uavUeAuth":"AUTHORIZED"}}` |
+| `GET` on an unseeded SUPI (`imsi-999700000000099`) | Live curl, real `404` |
+| Sibling `context-data/location` resource on the same UE (separate table) unaffected | Live curl, real `200` with the unchanged expected body |
+| Second seeded SUPI (`imsi-999700000000002`) | Live curl, real `200` with matching body |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_a2x_data` confirms both seeded rows match |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean |
+
+Real `GET`-only resource (`QueryA2xData`), schema `A2xSubscriptionData` (`TS29503_Nudm_SDM.yaml`)
+-- every field optional, same shape as `v2x-data`/`prose-data`. Genuinely NOT part of the
+`provisioned-data` group -- keyed by `ueId` alone, so backed by its own new `udr_a2x_data`
+table/store. Takes UDR's real resource-type coverage from 45 to 46 of free5GC's ~42+ real
+`Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0134 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open; the not-yet-surveyed remainder
+(`group-data/*`, `rangingsl-privacy-data`, `ranging-slpos-data`, `5mbs-data`, and others) and the
+genuinely deferred subsystems (`ee-subscriptions`/`sdm-subscriptions`, `subs-to-notify`,
+`pdtq-data`, `mbs-session-pol-data`, `nidd-authorization-data`) remain real, disclosed gaps.

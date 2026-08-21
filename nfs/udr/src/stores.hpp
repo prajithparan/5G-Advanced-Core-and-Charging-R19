@@ -812,4 +812,21 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0134). Backs the real A2X
+// Subscription Data resource (QueryA2xData -- real GET-only, no create/update operation exists in
+// the spec at all, same real "provisioned out-of-band, seeded at startup" shape as
+// LocationDataStore above). Real schema `A2xSubscriptionData` (TS29503_Nudm_SDM.yaml) has every
+// field optional, same shape as V2xDataStore/ProseDataStore. Keyed by `ueId` alone.
+class A2xDataStore {
+public:
+    explicit A2xDataStore(const std::string& conninfo);
+
+    void seed(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

@@ -593,3 +593,14 @@ CREATE TABLE IF NOT EXISTS udr_location_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0134). Real A2X Subscription Data
+-- resource (/subscription-data/{ueId}/a2x-data, real schema A2xSubscriptionData
+-- (TS29503_Nudm_SDM.yaml) -- nrA2xServicesAuth/lteA2xServicesAuth/nrUePc5Ambr/ltePc5Ambr, every
+-- field optional). Confirmed by direct YAML read: this resource is genuinely GET-only (real spec
+-- operationId QueryA2xData) -- no create/update operation exists at all, same real "provisioned
+-- out-of-band, seeded at startup" shape as udr_v2x_data/udr_prose_data. Keyed by ue_id alone.
+CREATE TABLE IF NOT EXISTS udr_a2x_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

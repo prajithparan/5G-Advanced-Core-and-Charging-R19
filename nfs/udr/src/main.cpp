@@ -254,6 +254,11 @@
 // (`single-nssai` passed as `content: application/json` in the query string) this project has no
 // precedent for parsing, same class of gap already disclosed for `pdtq-data`.
 //
+// UPDATE (ADR-0134, gap-closure task #106): the real A2X Subscription Data resource (real spec
+// operationId `QueryA2xData`, schema `A2xSubscriptionData` -- TS29503_Nudm_SDM.yaml -- every field
+// optional, same shape as v2x-data/prose-data -- real GET-only, no create/update operation exists
+// at all) is now implemented, seeded at startup.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -530,6 +535,8 @@ int main() {
     udr::TimeSyncDataStore time_sync_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0133).
     udr::LocationDataStore location_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0134).
+    udr::A2xDataStore a2x_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -781,6 +788,17 @@ int main() {
         location_data.seed(supi, location);
     }
 
+    // Real seed data (ADR-0134, gap-closure task #106) -- the real A2X Subscription Data
+    // resource is genuinely GET-only per spec, same "no live provisioning path yet" reasoning as
+    // above. `nrA2xServicesAuth.uavUeAuth: "AUTHORIZED"` is a real enum value from UeAuth
+    // (TS29571_CommonData.yaml), this project's own representative test choice.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json a2x;
+        a2x["nrA2xServicesAuth"]["uavUeAuth"] = "AUTHORIZED";
+        a2x_data.seed(supi, a2x);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -913,6 +931,8 @@ int main() {
         "udr_time_sync_data_get_total", "Total QueryTimeSyncSubscriptionData calls");
     auto location_data_get_counter =
         meter->CreateUInt64Counter("udr_location_data_get_total", "Total QueryUeLocation calls");
+    auto a2x_data_get_counter =
+        meter->CreateUInt64Counter("udr_a2x_data_get_total", "Total QueryA2xData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -3040,6 +3060,30 @@ int main() {
                     404, "Not Found", "No Location Information for ueId " + ue_id);
             }
             location_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: A2X Subscription Data resource (ADR-0134, gap-closure task #106)
+    // -- real GET-only per TS29505_Subscription_Data.yaml (real spec operationId
+    // `QueryA2xData`), seeded at startup. Keyed by ueId alone. ---
+
+    const std::string a2x_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/a2x-data";
+
+    server.add_route(
+        "GET",
+        a2x_data_path_pattern,
+        [&verifier, &a2x_data, &a2x_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = a2x_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No A2X Subscription Data for ueId " + ue_id);
+            }
+            a2x_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 
