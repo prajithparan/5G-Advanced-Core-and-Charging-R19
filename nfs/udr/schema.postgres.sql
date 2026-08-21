@@ -578,3 +578,18 @@ CREATE TABLE IF NOT EXISTS udr_time_sync_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0133). Real UE's Location
+-- Information (Document) resource (/subscription-data/{ueId}/context-data/location, real schema
+-- LocationInfo (TS29503_Nudm_UECM.yaml) -- required registrationLocationInfoList array of
+-- RegistrationLocationInfo, each requiring amfInstanceId + accessTypeList). Confirmed by direct
+-- YAML read: this resource is genuinely GET-only (real spec operationId QueryUeLocation), no
+-- required/complex query parameters (unlike the sibling nidd-authorization-data resource, which
+-- is genuinely blocked on real complex-object query-param parsing this project has no precedent
+-- for -- deliberately skipped, not attempted) -- no create/update operation exists at all, same
+-- real "provisioned out-of-band, seeded at startup" shape as udr_time_sync_data above. Keyed by
+-- ue_id alone.
+CREATE TABLE IF NOT EXISTS udr_location_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

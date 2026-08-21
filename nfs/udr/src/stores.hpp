@@ -795,4 +795,21 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0133). Backs the real UE's Location
+// Information (Document) resource (QueryUeLocation -- real GET-only, no create/update operation
+// exists in the spec at all, same real "provisioned out-of-band, seeded at startup" shape as
+// TimeSyncDataStore above). Real schema `LocationInfo` (TS29503_Nudm_UECM.yaml) requires a
+// non-empty `registrationLocationInfoList`. Keyed by `ueId` alone.
+class LocationDataStore {
+public:
+    explicit LocationDataStore(const std::string& conninfo);
+
+    void seed(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

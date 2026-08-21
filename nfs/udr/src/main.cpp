@@ -245,6 +245,15 @@
 // real GET-only, no create/update operation exists at all) is now implemented, seeded at startup
 // with a minimal real-shaped body, same shape as uc-data.
 //
+// UPDATE (ADR-0133, gap-closure task #106): the real UE's Location Information (Document)
+// resource (real spec operationId `QueryUeLocation`, schema `LocationInfo` --
+// TS29503_Nudm_UECM.yaml -- requires a non-empty registrationLocationInfoList -- real GET-only,
+// no create/update operation exists at all) is now implemented, seeded at startup, same shape as
+// time-sync-data. Its real sibling `nidd-authorization-data` was surveyed in the same pass and is
+// genuinely blocked (not attempted): its spec requires real complex-object query parameters
+// (`single-nssai` passed as `content: application/json` in the query string) this project has no
+// precedent for parsing, same class of gap already disclosed for `pdtq-data`.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -519,6 +528,8 @@ int main() {
     udr::UcDataStore uc_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0131).
     udr::TimeSyncDataStore time_sync_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0133).
+    udr::LocationDataStore location_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -754,6 +765,22 @@ int main() {
         time_sync_data.seed(supi, time_sync);
     }
 
+    // Real seed data (ADR-0133, gap-closure task #106) -- the real UE's Location Information
+    // resource is genuinely GET-only per spec, same "no live provisioning path yet" reasoning as
+    // above. Real schema LocationInfo (TS29503_Nudm_UECM.yaml) requires a non-empty
+    // registrationLocationInfoList; each RegistrationLocationInfo requires amfInstanceId (a real
+    // UUID-format NfInstanceId) and accessTypeList (real AccessType enum,
+    // TS29571_CommonData.yaml). Synthetic test AMF instance ID and `3GPP_ACCESS`, this project's
+    // own representative test choice.
+    for (const std::string& supi :
+         {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
+        json location;
+        location["registrationLocationInfoList"] =
+            json::array({json{{"amfInstanceId", "00000000-0000-4000-8000-00000000a001"},
+                              {"accessTypeList", json::array({"3GPP_ACCESS"})}}});
+        location_data.seed(supi, location);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -884,6 +911,8 @@ int main() {
         meter->CreateUInt64Counter("udr_uc_data_get_total", "Total QueryUserConsentData calls");
     auto time_sync_data_get_counter = meter->CreateUInt64Counter(
         "udr_time_sync_data_get_total", "Total QueryTimeSyncSubscriptionData calls");
+    auto location_data_get_counter =
+        meter->CreateUInt64Counter("udr_location_data_get_total", "Total QueryUeLocation calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2985,6 +3014,32 @@ int main() {
                     "No Time Synchronization Subscription Data for ueId " + ue_id);
             }
             time_sync_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: UE's Location Information (Document) resource (ADR-0133,
+    // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml (real spec
+    // operationId `QueryUeLocation`), schema `LocationInfo` (TS29503_Nudm_UECM.yaml), seeded at
+    // startup. Keyed by ueId alone. ---
+
+    const std::string location_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/location";
+
+    server.add_route(
+        "GET",
+        location_data_path_pattern,
+        [&verifier, &location_data, &location_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = location_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Location Information for ueId " + ue_id);
+            }
+            location_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 
