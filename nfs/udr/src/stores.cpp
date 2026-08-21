@@ -1475,4 +1475,43 @@ bool ServiceSpecificAuthorizationInfoStore::remove(const std::string& ue_id,
     return result.affected_rows() > 0;
 }
 
+GroupIdentifiersStore::GroupIdentifiersStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void GroupIdentifiersStore::seed(const std::string& ext_group_id,
+                                 const std::string& int_group_id,
+                                 nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_group_identifiers (ext_group_id, int_group_id, data) "
+             "VALUES ($1, $2, $3::jsonb) "
+             "ON CONFLICT (ext_group_id) DO UPDATE SET int_group_id = EXCLUDED.int_group_id, "
+             "data = EXCLUDED.data",
+             pqxx::params{ext_group_id, int_group_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json>
+GroupIdentifiersStore::get_by_ext_group_id(const std::string& ext_group_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_group_identifiers WHERE ext_group_id = $1",
+                                 pqxx::params{ext_group_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::optional<nlohmann::json>
+GroupIdentifiersStore::get_by_int_group_id(const std::string& int_group_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_group_identifiers WHERE int_group_id = $1",
+                                 pqxx::params{int_group_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr

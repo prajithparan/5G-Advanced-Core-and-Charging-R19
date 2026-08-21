@@ -665,3 +665,22 @@ CREATE TABLE IF NOT EXISTS udr_service_specific_auth_info (
     data         JSONB NOT NULL,
     PRIMARY KEY (ue_id, service_type)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0140). Real Group Identifiers
+-- mapping resource (/subscription-data/group-data/group-identifiers, real schema
+-- GroupIdentifiers -- extGroupId/intGroupId/ueIdList/allowedAfIds, every field optional).
+-- Confirmed by direct YAML read: this resource is genuinely GET-only (real spec operationId
+-- GetGroupIdentifiers), genuinely NOT per-UE and has no path parameters at all -- real, optional
+-- query parameters ext-group-id and int-group-id (both plain strings, no encoding ambiguity)
+-- select which group to look up. Real, disclosed simplification: since the spec marks both
+-- filters optional with no defined "list all groups" behavior this project has any precedent for
+-- returning, at least one of ext-group-id/int-group-id is required by this implementation (400
+-- otherwise) -- same "no unfiltered collection scan" precedent as this project's other resources.
+-- The real ue-id-ind query parameter (controls whether ueIdList is included in the response) is
+-- not honored -- ueIdList is always included regardless, a disclosed simplification. Both
+-- ext_group_id and int_group_id are real alternate lookup keys for the same seeded record.
+CREATE TABLE IF NOT EXISTS udr_group_identifiers (
+    ext_group_id TEXT PRIMARY KEY,
+    int_group_id TEXT NOT NULL UNIQUE,
+    data         JSONB NOT NULL
+);

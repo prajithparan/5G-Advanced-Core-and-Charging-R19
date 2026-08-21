@@ -2473,3 +2473,27 @@ Takes UDR's real resource-type coverage from 49 to 50 of free5GC's ~42+ real
 and others) and the genuinely deferred subsystems (`ee-subscriptions`/`sdm-subscriptions`,
 `subs-to-notify`, `pdtq-data`, `mbs-session-pol-data`, `nidd-authorization-data`,
 `service-specific-authorization-data/{serviceType}`) remain real, disclosed gaps.
+
+## ADR-0140 -- gap-closure task #106 continuation: UDR real Group Identifiers mapping resource
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/group-data/group-identifiers?ext-group-id=...` | Live curl, real `200` with the full seeded record |
+| `GET` with `int-group-id=...` (alternate key, same record) | Live curl, real `200` with the identical record |
+| `GET` with an unseeded `ext-group-id` | Live curl, real `404` |
+| `GET` with neither filter supplied | Live curl, real `400` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_group_identifiers` confirms the seeded row and its dual keys |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean |
+
+Real `GET`-only resource (`GetGroupIdentifiers`), schema `GroupIdentifiers` -- every field
+optional, no path parameters, genuinely NOT per-UE. Two real, optional query parameters
+(`ext-group-id`/`int-group-id`) are alternate lookup keys for the same seeded record. Real,
+disclosed simplifications: at least one filter is required (`400` otherwise, since the spec
+defines no "list all groups" behavior this project has precedent for); the real `ue-id-ind`
+parameter is not honored -- `ueIdList` is always included. First real `group-data` sub-resource
+closed -- the rest of `group-data` remains genuinely deferred. Takes UDR's real resource-type
+coverage from 50 to 51 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0140 in `docs/DECISIONS.md` for full disclosure --
+task #106 remains open; the remainder of `group-data`, bare `/subscription-data/{ueId}`,
+`ue-update-confirmation-data/subscribed-snssais`, `ue-update-confirmation-data/subscribed-cag`,
+and the genuinely deferred subsystems remain real, disclosed gaps.

@@ -289,10 +289,22 @@
 // query parameters this project has no parsing precedent for, same class of gap already
 // disclosed for nidd-authorization-data.
 //
+// UPDATE (ADR-0140, gap-closure task #106): the real Group Identifiers mapping resource (real
+// spec operationId `GetGroupIdentifiers`, schema `GroupIdentifiers` -- every field optional --
+// real GET-only, no path parameters, genuinely NOT per-UE) is now implemented, seeded at
+// startup. Real, disclosed: `extGroupId`/`intGroupId` are alternate lookup keys for the same
+// seeded record (at least one required, no unfiltered "list all" behavior implemented); the real
+// `ue-id-ind` query parameter is not honored -- `ueIdList` is always included. This is the first
+// real `group-data` sub-resource closed -- the rest of `group-data` (`5g-vn-groups`,
+// `mbs-group-membership`, `ee-profile-data`'s own group-keyed sibling, and their own
+// `/internal`/`/pp-profile-data` variants) remains genuinely deferred, not dropped.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data (SoR/UPU);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
-// group-data (including ee-profile-data's own group-keyed sibling);
+// the remainder of group-data (5g-vn-groups, mbs-group-membership, ee-profile-data's own
+// group-keyed sibling, and their own /internal and /pp-profile-data variants -- group-identifiers
+// itself closed, see ADR-0140 above);
 // subs-to-notify; policy-data's
 // own other resources (mbs-session-pol-data -- real, disclosed: its MbsSessPolDataId key is a
 // deeply nested oneOf/anyOf object (mbsSessionId -> tmgi/ssm/nid, or afAppId) with no documented
@@ -575,6 +587,8 @@ int main() {
     udr::MbsDataStore mbs_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0139).
     udr::ServiceSpecificAuthorizationInfoStore service_specific_authorization_info(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0140).
+    udr::GroupIdentifiersStore group_identifiers(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -872,6 +886,22 @@ int main() {
         mbs_data.seed(supi, mbs);
     }
 
+    // Real seed data (ADR-0140, gap-closure task #106) -- the real Group Identifiers mapping
+    // resource is genuinely GET-only per spec, same "no live provisioning path yet" reasoning as
+    // above. Real, disclosed test values matching each field's own real pattern:
+    // "extgroupid-group1@example.com" (ExtGroupId, ^extgroupid-[^@]+@[^@]+$),
+    // "A1B2C3D4-001-01-AB" (GroupId/intGroupId,
+    // ^[A-Fa-f0-9]{8}-[0-9]{3}-[0-9]{2,3}-([A-Fa-f0-9][A-Fa-f0-9]){1,10}$). ueIdList uses the same
+    // two real test SUPIs every other seeded resource uses.
+    {
+        json group;
+        group["extGroupId"] = "extgroupid-group1@example.com";
+        group["intGroupId"] = "A1B2C3D4-001-01-AB";
+        group["ueIdList"] = json::array(
+            {json{{"supi", "imsi-999700000000001"}}, json{{"supi", "imsi-999700000000002"}}});
+        group_identifiers.seed("extgroupid-group1@example.com", "A1B2C3D4-001-01-AB", group);
+    }
+
     auto meter = sbi_core::get_meter("udr");
     auto amf_ctx_write_counter = meter->CreateUInt64Counter(
         "udr_amf_context_write_total", "Total CreateAmfContext3gpp/AmfContext3gpp calls");
@@ -1019,6 +1049,8 @@ int main() {
     auto service_specific_auth_delete_counter =
         meter->CreateUInt64Counter("udr_service_specific_auth_delete_total",
                                    "Total RemoveServiceSpecificAuthorizationInfo calls");
+    auto group_identifiers_get_counter = meter->CreateUInt64Counter(
+        "udr_group_identifiers_get_total", "Total GetGroupIdentifiers calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -3383,6 +3415,48 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Nudr_DataRepository: Group Identifiers mapping resource (ADR-0140, gap-closure task
+    // #106) -- real GET-only per TS29505_Subscription_Data.yaml (real spec operationId
+    // `GetGroupIdentifiers`), seeded at startup. Genuinely NOT per-UE, no path parameters --
+    // real, optional query parameters `ext-group-id`/`int-group-id` select the lookup key. Real,
+    // disclosed: at least one of the two is required by this implementation (400 otherwise,
+    // since the spec defines no "list all groups" behavior this project has any precedent for
+    // returning); the real `ue-id-ind` query parameter is not honored -- `ueIdList` is always
+    // included in the response regardless. ---
+
+    const std::string group_identifiers_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/group-data/group-identifiers";
+
+    server.add_route(
+        "GET",
+        group_identifiers_path_pattern,
+        [&verifier, &group_identifiers, &group_identifiers_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id_it = req.query_params.find("ext-group-id");
+            const auto int_group_id_it = req.query_params.find("int-group-id");
+            std::optional<json> data;
+            std::string lookup_desc;
+            if (ext_group_id_it != req.query_params.end()) {
+                data = group_identifiers.get_by_ext_group_id(ext_group_id_it->second);
+                lookup_desc = "ext-group-id " + ext_group_id_it->second;
+            } else if (int_group_id_it != req.query_params.end()) {
+                data = group_identifiers.get_by_int_group_id(int_group_id_it->second);
+                lookup_desc = "int-group-id " + int_group_id_it->second;
+            } else {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "At least one of ext-group-id or int-group-id is required");
+            }
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Group Identifiers for " + lookup_desc);
+            }
+            group_identifiers_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();

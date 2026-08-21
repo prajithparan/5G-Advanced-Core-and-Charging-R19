@@ -910,4 +910,23 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0140). Backs the real Group
+// Identifiers mapping resource (GetGroupIdentifiers -- real GET-only, genuinely NOT per-UE, no
+// path parameters at all). Real, disclosed: `extGroupId` and `intGroupId` are alternate lookup
+// keys for the same seeded record; `ueIdInd` (whether to include ueIdList) is not honored --
+// ueIdList is always included.
+class GroupIdentifiersStore {
+public:
+    explicit GroupIdentifiersStore(const std::string& conninfo);
+
+    void
+    seed(const std::string& ext_group_id, const std::string& int_group_id, nlohmann::json data);
+    std::optional<nlohmann::json> get_by_ext_group_id(const std::string& ext_group_id);
+    std::optional<nlohmann::json> get_by_int_group_id(const std::string& int_group_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr
