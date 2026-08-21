@@ -2524,3 +2524,24 @@ resource-type coverage from 51 to 52 of free5GC's ~42+ real `Nudr_DataRepository
 task #106 remains open; the remainder of `group-data`, `ue-update-confirmation-data`'s own
 `sor-data`/`upu-data`/`subscribed-cag` siblings, bare `/subscription-data/{ueId}` (now confirmed
 blocked), and the genuinely deferred subsystems remain real, disclosed gaps.
+
+## ADR-0142 -- gap-closure task #106 continuation: UDR real CAG update ack (Document) resource
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/ue-update-confirmation-data/subscribed-cag` before any `PUT` | Live curl, real `404` |
+| `PUT` with `provisioningTime`/`ueUpdateStatus` | Live curl, real `204` |
+| `GET` after `PUT` | Live curl, real `200` with matching body |
+| Sibling `subscribed-snssais` resource on the same UE (separate table) unaffected | Live curl, real `200` with the unchanged expected body |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_cag_ack_data` confirms the persisted row |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean |
+
+Real PUT+GET resource (`CreateCagUpdateAck`/`QueryCagAck`), schema `CagAckData` -- required
+`provisioningTime`/`ueUpdateStatus`, identical shape to `NssaiAckData`. Same real, disclosed
+204-only-PUT shape as its `subscribed-snssais` sibling (ADR-0141) -- no create-vs-update
+distinction. Used the already-generated `sbi_gen::CagAckData` DTO directly. Takes UDR's real
+resource-type coverage from 52 to 53 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0142 in `docs/DECISIONS.md` for full disclosure --
+task #106 remains open; the remainder of `group-data`, `ue-update-confirmation-data`'s own
+`sor-data`/`upu-data` siblings, bare `/subscription-data/{ueId}`, and the genuinely deferred
+subsystems remain real, disclosed gaps.

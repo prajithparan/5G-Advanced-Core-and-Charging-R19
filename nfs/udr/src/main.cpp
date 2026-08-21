@@ -308,8 +308,15 @@
 // `ue-update-confirmation-data` sub-resource closed -- its siblings (`sor-data`, `upu-data`,
 // `subscribed-cag`) remain genuinely deferred, not dropped.
 //
+// UPDATE (ADR-0142, gap-closure task #106): the real CAG update ack (Document) resource (real
+// spec operations `CreateCagUpdateAck`/`QueryCagAck`, schema `CagAckData` -- required
+// `provisioningTime`/`ueUpdateStatus`, identical shape to `NssaiAckData` -- real PUT+GET, no
+// PATCH/DELETE operation exists at all, same real 204-only-PUT shape) is now implemented. Its
+// `sor-data`/`upu-data` siblings remain genuinely deferred, not dropped.
+//
 // Deliberately still deferred, not dropped: ue-update-confirmation-data's own `sor-data`/
-// `upu-data`/`subscribed-cag` siblings (`subscribed-snssais` itself closed, see ADR-0141 above);
+// `upu-data` siblings (`subscribed-snssais`/`subscribed-cag` themselves closed, see ADR-0141/
+// ADR-0142 above);
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
 // the remainder of group-data (5g-vn-groups, mbs-group-membership, ee-profile-data's own
@@ -601,6 +608,8 @@ int main() {
     udr::GroupIdentifiersStore group_identifiers(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0141).
     udr::NssaiAckDataStore nssai_ack_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0142).
+    udr::CagAckDataStore cag_ack_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1067,6 +1076,10 @@ int main() {
         "udr_nssai_ack_data_write_total", "Total CreateOrUpdateNssaiAck calls");
     auto nssai_ack_data_get_counter =
         meter->CreateUInt64Counter("udr_nssai_ack_data_get_total", "Total QueryNssaiAck calls");
+    auto cag_ack_data_write_counter = meter->CreateUInt64Counter("udr_cag_ack_data_write_total",
+                                                                 "Total CreateCagUpdateAck calls");
+    auto cag_ack_data_get_counter =
+        meter->CreateUInt64Counter("udr_cag_ack_data_get_total", "Total QueryCagAck calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -3522,6 +3535,55 @@ int main() {
                     404, "Not Found", "No NSSAI Ack Data for ueId " + ue_id);
             }
             nssai_ack_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: CAG update ack (Document) resource (ADR-0142, gap-closure task
+    // #106) -- real PUT+GET per TS29505_Subscription_Data.yaml, no PATCH/DELETE operation exists
+    // at all, identical shape to subscribed-snssais's own resource above. Real, disclosed: the
+    // spec documents only a single `204` response for this PUT (no `201`) -- no create-vs-update
+    // distinction. Keyed by ueId. ---
+
+    const std::string cag_ack_data_path_pattern =
+        std::string(kApiRoot) +
+        "/subscription-data/{ueId}/ue-update-confirmation-data/subscribed-cag";
+
+    server.add_route(
+        "PUT",
+        cag_ack_data_path_pattern,
+        [&verifier, &cag_ack_data, &cag_ack_data_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::CagAckData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json j = *body;
+            cag_ack_data.put(ue_id, j);
+            cag_ack_data_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        cag_ack_data_path_pattern,
+        [&verifier, &cag_ack_data, &cag_ack_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = cag_ack_data.get(ue_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No CAG Ack Data for ueId " + ue_id);
+            }
+            cag_ack_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 

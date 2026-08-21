@@ -393,7 +393,7 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 53 real resource endpoints (52 real
+This project's UDR (`nfs/udr/src/main.cpp`) implements 54 real resource endpoints (53 real
 `Nudr_DataRepository` resources plus, as of ADR-0120, one real `Nudr_GroupIDmap` resource,
 `GetRoutingIDs` -- a genuinely distinct Nudr API, not counted in the `Nudr_DataRepository`-vs-free5GC
 comparison below): AMF 3GPP-access
@@ -437,13 +437,14 @@ context-data (ADR-0139 -- see below, real PUT+GET+PATCH+DELETE, composite (ueId,
 key), Group Identifiers mapping resource (ADR-0140 -- see below, real GET-only, genuinely NOT
 per-UE, first real group-data sub-resource closed), NSSAI update ack (Document) resource
 (ADR-0141 -- see below, real PUT+GET, no create-vs-update distinction, first real
-ue-update-confirmation-data sub-resource closed),
+ue-update-confirmation-data sub-resource closed), CAG update ack (Document) resource (ADR-0142
+-- see below, real PUT+GET, identical shape to NSSAI update ack),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`, -- ADR-0106 -- `lcs-bca-data`, -- ADR-0125 -- `sms-mng-data`, -- ADR-0126 -- `sms-data`, and -- ADR-0127 -- `trace-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
 (`SmPolicyData` with full `SmPolicySnssaiData -> SmPolicyDnnData` nesting and RFC 7396 merge-patch
 semantics -- genuinely more complete for THIS one resource than a bare CRUD document, per that
-ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 52
+ADR's own real, deliberate design). What's covered is solid; the real gap is breadth -- roughly 53
 of free5GC's ~42+ real resource types (9 as of ADR-0083, 10 as of ADR-0093, 12 as of ADR-0097, 13
 as of ADR-0098, 14 as of ADR-0099, 15 as of ADR-0100, 16 as of ADR-0101, 17 as of ADR-0102, 18 as
 of ADR-0103, 19 as of ADR-0104, 20 as of ADR-0105, 21 as of ADR-0106, 22 as of ADR-0107, 23 as of
@@ -452,9 +453,9 @@ ADR-0113, 29 as of ADR-0114, 30 as of ADR-0115, 31 as of ADR-0116, 32 as of ADR-
 ADR-0118, 34 as of ADR-0119, 35 as of ADR-0121, 36 as of ADR-0122, 37 as of ADR-0123, 38 as of
 ADR-0125, 39 as of ADR-0126, 40 as of ADR-0127, 41 as of ADR-0128, 42 as of ADR-0129, 43 as of
 ADR-0130, 44 as of ADR-0131, 45 as of ADR-0133, 46 as of ADR-0134, 47 as of ADR-0135, 48 as of
-ADR-0136, 49 as of ADR-0137, 50 as of ADR-0139, 51 as of ADR-0140, now 52 as of ADR-0141 -- see
-below). This is well past free5GC's own ~42+ figure for real `Nudr_DataRepository` resource
-types; the real, still-open gap from here is
+ADR-0136, 49 as of ADR-0137, 50 as of ADR-0139, 51 as of ADR-0140, 52 as of ADR-0141, now 53 as of
+ADR-0142 -- see below). This is well past free5GC's own ~42+ figure for real
+`Nudr_DataRepository` resource types; the real, still-open gap from here is
 the not-yet-surveyed remainder of `TS29505_Subscription_Data.yaml` itself (`group-data/*`,
 `a2x-data`, `rangingsl-privacy-data`, `ranging-slpos-data`, `5mbs-data`, and others) plus the
 genuinely deferred subsystems below (now including `nidd-authorization-data`, confirmed blocked on
@@ -674,11 +675,14 @@ UDR from 51 to 52 of free5GC's ~42+ real `Nudr_DataRepository` resource types. F
 `ue-update-confirmation-data` sub-resource closed -- its `sor-data`/`upu-data`/`subscribed-cag`
 siblings remain genuinely deferred. Bare `/subscription-data/{ueId}` was surveyed in the same pass
 and confirmed genuinely blocked: it combines both the array-query-param (`dataset-names`) and
-complex-object-query-param (`single-nssai`) gaps already disclosed elsewhere. This is well past
-free5GC's own ~42+ figure; the real, still-open work from here is surveying the remainder of
-`TS29505_Subscription_Data.yaml` itself (the rest of `group-data`, `ue-update-confirmation-data`'s
-own `sor-data`/`upu-data`/`subscribed-cag` siblings, bare `/subscription-data/{ueId}`, and
-others), not chasing a shrinking comparison count.
+complex-object-query-param (`single-nssai`) gaps already disclosed elsewhere. **Closed,
+docs/DECISIONS.md ADR-0142**: CAG update ack (Document) resource (`CreateCagUpdateAck`/
+`QueryCagAck`, schema `CagAckData` -- identical shape to `NssaiAckData`, same real 204-only-PUT,
+no create-vs-update distinction) -- taking UDR from 52 to 53 of free5GC's ~42+ real
+`Nudr_DataRepository` resource types. This is well past free5GC's own ~42+ figure; the real,
+still-open work from here is surveying the remainder of `TS29505_Subscription_Data.yaml` itself
+(the rest of `group-data`, `ue-update-confirmation-data`'s own `sor-data`/`upu-data` siblings,
+bare `/subscription-data/{ueId}`, and others), not chasing a shrinking comparison count.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 

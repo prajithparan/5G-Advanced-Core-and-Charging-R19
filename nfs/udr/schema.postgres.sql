@@ -697,3 +697,16 @@ CREATE TABLE IF NOT EXISTS udr_nssai_ack_data (
     ue_id TEXT PRIMARY KEY,
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0142). Real CAG update ack
+-- (Document) resource (/subscription-data/{ueId}/ue-update-confirmation-data/subscribed-cag,
+-- real schema CagAckData -- required provisioningTime (DateTime) + ueUpdateStatus (real
+-- UeUpdateStatus enum), identical shape to NssaiAckData). Real CreateCagUpdateAck/QueryCagAck:
+-- real PUT+GET, no PATCH/DELETE operation exists in the spec at all. Real, disclosed: same as
+-- udr_nssai_ack_data's own resource above, the spec documents only a single `204` response for
+-- this PUT (no `201`) -- no create-vs-update distinction exists, so put() returns void. Keyed by
+-- ue_id (real path schema is Supi).
+CREATE TABLE IF NOT EXISTS udr_cag_ack_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);

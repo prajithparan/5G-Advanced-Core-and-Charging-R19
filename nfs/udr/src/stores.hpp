@@ -946,4 +946,20 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0142). Backs the real CAG update
+// ack (Document) resource (CreateCagUpdateAck/QueryCagAck -- real PUT+GET, no PATCH/DELETE
+// operation exists in the spec at all, identical shape to NssaiAckDataStore above). Same real
+// disclosed "204-only PUT, no create-vs-update distinction" shape. Keyed by ue_id.
+class CagAckDataStore {
+public:
+    explicit CagAckDataStore(const std::string& conninfo);
+
+    void put(const std::string& ue_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr
