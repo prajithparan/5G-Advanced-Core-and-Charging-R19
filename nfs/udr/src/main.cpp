@@ -355,6 +355,15 @@
 // Seeded at startup for this project's own "anyUE" test case. Fourth real `group-data`
 // sub-resource closed.
 //
+// UPDATE (ADR-0147, gap-closure task #106): the real aggregate UE Update Confirmation Data
+// resource (bare `{ueId}/ue-update-confirmation-data`, real spec operation `QueryUeUpdConf`,
+// schema `UeUpdConfData` -- every field optional: `sorData`/`upuData`/`nssaiAckData`/
+// `cagAckData`) is now implemented. Real, disclosed design decision: composed live from the four
+// already-closed individual sub-resource stores at request time (NOT a fifth, duplicate table) --
+// always returns `200` (an empty object if all four sub-resources are absent), since this
+// "document" is a real view over four independently-stored-or-absent sub-resources, not itself a
+// stored entity with its own real create/update path to key a 404-vs-200 distinction off of.
+//
 // Deliberately still deferred, not dropped:
 // context-data's other sub-resources (
 // ee-subscriptions, sdm-subscriptions -- confirmed genuinely deeply-nested, see ADR-0122);
@@ -1151,6 +1160,8 @@ int main() {
                                                              "Total CreateAuthenticationUPU calls");
     auto upu_data_get_counter =
         meter->CreateUInt64Counter("udr_upu_data_get_total", "Total QueryAuthUPU calls");
+    auto ue_upd_conf_data_get_counter =
+        meter->CreateUInt64Counter("udr_ue_upd_conf_data_get_total", "Total QueryUeUpdConf calls");
     auto five_g_vn_groups_write_counter = meter->CreateUInt64Counter(
         "udr_5g_vn_groups_write_total", "Total Create5GVnGroup/Modify5GVnGroup calls");
     auto five_g_vn_groups_get_counter = meter->CreateUInt64Counter(
@@ -3797,6 +3808,51 @@ int main() {
             }
             upu_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: aggregate UE Update Confirmation Data resource (ADR-0147,
+    // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml, no
+    // create/update operation exists in the spec at all. Real, disclosed design decision: this
+    // resource is a real aggregate VIEW over the four already-closed individual sub-resources
+    // (subscribed-snssais/subscribed-cag/sor-data/upu-data, ADR-0141/ADR-0142/ADR-0143) -- composed
+    // live from their own existing stores at request time, not a fifth, duplicate table. The spec
+    // documents a `404` response code but every field on `UeUpdConfData` is optional and this
+    // "document" isn't itself a stored entity, only a live composition of four independently
+    // stored/absent sub-resources -- so this route always returns `200`, omitting whichever
+    // sub-resources are absent (an empty object if all four are absent), rather than inventing a
+    // rule for when the aggregate itself should 404. ---
+
+    const std::string ue_upd_conf_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/ue-update-confirmation-data";
+
+    server.add_route(
+        "GET",
+        ue_upd_conf_data_path_pattern,
+        [&verifier,
+         &sor_data,
+         &upu_data,
+         &nssai_ack_data,
+         &cag_ack_data,
+         &ue_upd_conf_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            json result = json::object();
+            if (auto v = sor_data.get(ue_id); v.has_value()) {
+                result["sorData"] = *v;
+            }
+            if (auto v = upu_data.get(ue_id); v.has_value()) {
+                result["upuData"] = *v;
+            }
+            if (auto v = nssai_ack_data.get(ue_id); v.has_value()) {
+                result["nssaiAckData"] = *v;
+            }
+            if (auto v = cag_ack_data.get(ue_id); v.has_value()) {
+                result["cagAckData"] = *v;
+            }
+            ue_upd_conf_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, result.dump());
         });
 
     // --- Nudr_DataRepository: group-data individual 5G VN Group Configuration resource

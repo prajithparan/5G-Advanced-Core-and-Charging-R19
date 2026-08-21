@@ -2664,3 +2664,29 @@ from 56 to 57 of free5GC's ~42+ real `Nudr_DataRepository` resources
 task #106 remains open; both bare collection GETs, the `/internal`/`/pp-profile-data` variants,
 bare `/subscription-data/{ueId}`, and the genuinely deferred subsystems remain real, disclosed
 gaps.
+
+## ADR-0147 -- gap-closure task #106 continuation: UDR real aggregate UE Update Confirmation Data resource
+
+| Requirement | Test |
+|---|---|
+| `GET .../ue-update-confirmation-data` before any sub-resource exists | Live curl, real `200` with an empty JSON object (deliberate design decision, not a `404`) |
+| `PUT sor-data` then `PUT subscribed-cag` for the same UE | Live curl, real `204` both times |
+| `GET` aggregate after both PUTs | Live curl, real `200` with `sorData`/`cagAckData` present (matching each PUT body), `upuData`/`nssaiAckData` genuinely absent |
+| Individual `sor-data` GET route unaffected by the aggregate | Live curl, real `200` with the identical body |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_sor_data`/`udr_cag_ack_data` independently confirms both rows match the aggregate's composed response |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean before and after `clang-format-18` |
+
+Real GET-only resource (`QueryUeUpdConf`), schema `UeUpdConfData` -- every field optional. Real,
+disclosed design decision: implemented as a live composition over the four already-existing
+sub-resource stores (`sor-data`/`upu-data`/`subscribed-snssais`/`subscribed-cag`, ADR-0141 through
+ADR-0143) rather than a fifth, duplicate table -- avoids a real two-copies-out-of-sync risk. Always
+returns `200` (empty object if nothing exists), since the aggregate document itself has no real
+create/update path of its own to key a 404-vs-200 distinction off of. Genuinely unblocked unlike
+every other bare-`{ueId}`-scoped aggregate surveyed so far (`context-data`'s own bare GET, bare
+`/subscription-data/{ueId}` itself) -- only the already-established, not-honored
+`supported-features` query parameter, no array/complex-object parameter. This closes UDR resource
+#58 of free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See
+ADR-0147 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `group-data`'s
+remaining genuinely-blocked resources, bare `/subscription-data/{ueId}`/`{ueId}/context-data`
+(both confirmed blocked on their own array-query-param requirements), and the other genuinely
+deferred subsystems remain real, disclosed gaps.
