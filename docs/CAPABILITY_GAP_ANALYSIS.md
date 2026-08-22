@@ -393,7 +393,7 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 67 real resource endpoints (66 real
+This project's UDR (`nfs/udr/src/main.cpp`) implements 68 real resource endpoints (67 real
 `Nudr_DataRepository` resources plus, as of ADR-0120, one real `Nudr_GroupIDmap` resource,
 `GetRoutingIDs` -- a genuinely distinct Nudr API, not counted in the `Nudr_DataRepository`-vs-free5GC
 comparison below): AMF 3GPP-access
@@ -474,7 +474,11 @@ disclosed spec inconsistency resolved via the ADR-0154 precedent, sdm-subscripti
 deferred nested sub-collection closed), Event Exposure Group Subscriptions collection +
 individual document, group-data-scoped (ADR-0156 -- see below, the group-data-scoped sibling of
 ee-subscriptions keyed by ueGroupId instead of ueId, same real fix for a disclosed
-Location-header bug also found and fixed in ee-subscriptions/sdm-subscriptions),
+Location-header bug also found and fixed in ee-subscriptions/sdm-subscriptions), AMF Group
+Subscription Info (Document), group-data-scoped (ADR-0157 -- see below, the group-data-scoped
+sibling of ee-subscriptions/{subsId}/amf-subscriptions, array-valued document, real distinct
+201-vs-204 PUT; this ADR also fixes the same Location-header bug project-wide across ~20 routes,
+not just the 3 already fixed in ADR-0156),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`, -- ADR-0106 -- `lcs-bca-data`, -- ADR-0125 -- `sms-mng-data`, -- ADR-0126 -- `sms-data`, and -- ADR-0127 -- `trace-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
@@ -493,7 +497,8 @@ ADR-0136, 49 as of ADR-0137, 50 as of ADR-0139, 51 as of ADR-0140, 52 as of ADR-
 ADR-0142, 54 as of ADR-0143, 55 as of ADR-0144, 56 as of ADR-0145, 57 as of ADR-0146, 58 as of
 ADR-0147, 59 as of ADR-0148, 60 as of ADR-0149, 61 as of ADR-0151 (ADR-0150 was a CHF-only CI fix,
 no UDR resource change), 62 as of ADR-0152, 63 as of ADR-0153, 64 as of ADR-0154, 65 as of
-ADR-0155, now 66 as of ADR-0156 -- see below). This is well past free5GC's own ~42+ figure for real
+ADR-0155, 66 as of ADR-0156, now 67 as of ADR-0157 -- see below). This is well past free5GC's
+own ~42+ figure for real
 `Nudr_DataRepository` resource types; the real, still-open gap from here is
 the not-yet-surveyed remainder of `TS29505_Subscription_Data.yaml` itself (`group-data/*`,
 `a2x-data`, `rangingsl-privacy-data`, `ranging-slpos-data`, `5mbs-data`, and others) plus the
@@ -820,7 +825,17 @@ Also fixes a real, disclosed pre-existing bug found while live-verifying this ne
 `Location` header on `ee-subscriptions`' and `sdm-subscriptions`' own `POST`-create handlers was
 returning the unsubstituted route-pattern placeholder (e.g. literal `{ueId}` text) instead of the
 real path-parameter value; confirmed pre-existing on both already-shipped siblings and fixed in
-all three resources in the same ADR.
+all three resources in the same ADR. **Closed, docs/DECISIONS.md ADR-0157**: AMF Group
+Subscription Info (Document), group-data-scoped (`CreateAmfGroupSubscriptions`/
+`GetAmfGroupSubscriptions`/`ModifyAmfGroupSubscriptions`/`RemoveAmfGroupSubscriptions` -- real
+GET+PUT+PATCH+DELETE, array-valued `AmfSubscriptionInfo[]` document, real distinct 201-vs-204
+PUT), the group-data-scoped sibling of `ee-subscriptions/{subsId}/amf-subscriptions` (ADR-0152)
+-- taking UDR from 66 to 67 of free5GC's ~42+ real `Nudr_DataRepository` resource types. This
+ADR also found the ADR-0156 Location-header bug was far more widespread than its own 3-occurrence
+fix: ~20 routes project-wide, including foundational Tier 1a resources predating any gap-closure
+ADR. Presented to the user via `AskUserQuestion`; user explicitly chose to fix all ~20 occurrences
+in this same turn via one new shared `resolved_location()` helper, rather than deferring or
+narrowing scope.
 This is well past free5GC's own ~42+ figure; the real, still-open work from here is surveying the
 remainder of `TS29505_Subscription_Data.yaml` itself (the rest of `group-data`, bare
 `/subscription-data/{ueId}`, and others), not chasing a shrinking comparison count.
@@ -941,7 +956,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | SMF | ~10-16x | `UpdateSMContext`: `PATH_SWITCH_REQ`/`_ACK` slice CLOSED (task #101, ADR-0092, real downlink FAR/GTP-U control-plane); the other 20 real N2SmInfoType values remain a stub. AMF's own N2 handover NGAP side is now closed (ADR-0095/ADR-0096), but AMF still doesn't call SMF during handover -- the real AMF->SMF relay wiring for handover-triggered PDU session resource re-setup remains a real, disclosed open gap |
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
-| UDR | ~2.5-10x | Resource-type breadth (66 of 42+ real TS 29.504 resources closed, past parity -- group-data-scoped amf-/smf-/hss-subscriptions nested sub-collections, bare `/subscription-data/{ueId}`, real webhook delivery, and several genuinely-blocked resources remain, see UDR section above) |
+| UDR | ~2.5-10x | Resource-type breadth (67 of 42+ real TS 29.504 resources closed, past parity -- group-data-scoped smf-/hss-subscriptions nested sub-collections, bare `/subscription-data/{ueId}`, real webhook delivery, and several genuinely-blocked resources remain, see UDR section above) |
 | UPF | ~1x (task #107 fully closed: Association Update/Release, ADR-0084; PFD Management, ADR-0086; Node Report, ADR-0087; Session Set Deletion correctly found not applicable to this project's own N4/Sxc interface) | datapath (XDP) already ahead of both references on paper, unbenchmarked |
 | CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding: CLOSED (task #108, ADR-0089, narrower disclosed scope than free5GC's); already ahead on 5G-native service breadth + AI-native charging |
 

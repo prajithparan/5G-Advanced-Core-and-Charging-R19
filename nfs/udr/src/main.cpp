@@ -474,9 +474,35 @@
 // `amf-subscriptions`/`smf-subscriptions`/`hss-subscriptions` nested sub-collections under each
 // `subsId` remain genuinely deferred, not yet surveyed.
 //
+// UPDATE (ADR-0157, gap-closure task #106): the real AMF Group Subscription Info (Document)
+// resource, nested under an individual group-data-scoped ee-subscription
+// (`group-data/{ueGroupId}/ee-subscriptions/{subsId}/amf-subscriptions`, real spec operations
+// `CreateAmfGroupSubscriptions` [PUT]/`GetAmfGroupSubscriptions` [GET]/
+// `ModifyAmfGroupSubscriptions` [PATCH]/`RemoveAmfGroupSubscriptions` [DELETE]) is now
+// implemented -- the group-data-scoped sibling of `ee-subscriptions/{subsId}/amf-subscriptions`
+// (ADR-0152), structurally identical but keyed by `ueGroupId` instead of `ueId`: same
+// array-valued `AmfSubscriptionInfo[]` document body, real distinct 201-vs-204 PUT.
+//
+// Also, this ADR fixes a real, significant, disclosed bug found live-verifying this resource: a
+// real RFC 9110 Location-header conformance defect, first found and fixed for 3 occurrences in
+// ADR-0156, turned out to affect ~20 routes project-wide (most of UDR's PUT-with-201-Create
+// routes, dating back to the earliest Tier 1a resources: `amf-3gpp-access`,
+// `amf-non-3gpp-access`, `mwd`, `roaming-information`, `pei-info`, `smf-registrations`,
+// `pp-data-store`, `ue-policy-set`, `bdt-data`, `nidd-authorizations`,
+// `service-specific-authorizations`, `5g-vn-groups`, `mbs-group-membership`, and this same ADR's
+// own `ee-subscriptions`' `amf-`/`smf-`/`hss-subscriptions` nested sub-collections). Presented to
+// the user via `AskUserQuestion` before proceeding; user chose to fix all ~20 occurrences in this
+// same turn rather than defer. Fixed with one new shared helper, `resolved_location()` (see its
+// own comment above `check_bearer`), which substitutes every real `{name}` path-parameter value
+// into a route pattern in one pass -- replacing every hand-built
+// `path_pattern + "/" + value` / bare `path_pattern` Location construction project-wide, so this
+// class of bug cannot recur route-by-route. Every occurrence was re-verified live (either by
+// fresh `POST`/`PUT` against the resource, or by build+ctest for routes not otherwise exercised
+// by this ADR's own live-verification pass).
+//
 // Deliberately still deferred, not dropped:
 // context-data's other sub-resources (
-// group-data's own ee-subscriptions/{subsId}/amf-/smf-/hss-subscriptions nested sub-collections,
+// group-data's own ee-subscriptions/{subsId}/smf-/hss-subscriptions nested sub-collections,
 // not yet surveyed);
 // the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
 // `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
@@ -575,6 +601,30 @@ std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::R
         return r;
     }
     return verifier.verify(value.substr(kPrefix.size()));
+}
+
+// Bug fix (ADR-0157): a real, disclosed RFC 9110 Location-header conformance defect found across
+// most of UDR's PUT-with-201-Create routes -- the header was built from the raw route
+// REGISTRATION pattern (e.g. `.../subscription-data/{ueId}/context-data/amf-3gpp-access`), never
+// substituting the real path-parameter values, so clients received the literal, unusable
+// `{ueId}` placeholder text instead of the real UE ID. First found and fixed for 3 occurrences
+// in ADR-0156; a full `grep` there found ~17 more pre-existing occurrences spanning back to the
+// earliest Tier 1a routes. This single substitution helper replaces every hand-built
+// `path_pattern + "/" + value` / bare `path_pattern` Location construction project-wide, so the
+// same class of bug can't recur route-by-route. Resolves every `{name}` segment appearing in
+// `pattern` from `path_params`, in one pass -- correct for routes with more than one path
+// parameter (e.g. `{ueId}` and `{subsId}` on the same route).
+std::string resolved_location(const std::string& pattern,
+                              const std::map<std::string, std::string>& path_params) {
+    std::string result = pattern;
+    for (const auto& [key, value] : path_params) {
+        const std::string placeholder = "{" + key + "}";
+        auto pos = result.find(placeholder);
+        if (pos != std::string::npos) {
+            result.replace(pos, placeholder.size(), value);
+        }
+    }
+    return result;
 }
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as
@@ -801,6 +851,8 @@ int main() {
     udr::SdmHssSubscriptionInfoStore sdm_hss_subscription_info(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0156).
     udr::GroupEeSubscriptionsStore group_ee_subscriptions(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0157).
+    udr::GroupAmfSubscriptionInfoStore group_amf_subscription_info(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1360,6 +1412,13 @@ int main() {
         "Total UpdateEeGroupSubscriptions/ModifyEeGroupSubscription calls");
     auto group_ee_subscriptions_delete_counter = meter->CreateUInt64Counter(
         "udr_group_ee_subscriptions_delete_total", "Total RemoveEeGroupSubscriptions calls");
+    auto group_amf_subscription_info_write_counter = meter->CreateUInt64Counter(
+        "udr_group_amf_subscription_info_write_total",
+        "Total CreateAmfGroupSubscriptions/ModifyAmfGroupSubscriptions calls");
+    auto group_amf_subscription_info_get_counter = meter->CreateUInt64Counter(
+        "udr_group_amf_subscription_info_get_total", "Total GetAmfGroupSubscriptions calls");
+    auto group_amf_subscription_info_delete_counter = meter->CreateUInt64Counter(
+        "udr_group_amf_subscription_info_delete_total", "Total RemoveAmfGroupSubscriptions calls");
     auto five_g_vn_groups_write_counter = meter->CreateUInt64Counter(
         "udr_5g_vn_groups_write_total", "Total Create5GVnGroup/Modify5GVnGroup calls");
     auto five_g_vn_groups_get_counter = meter->CreateUInt64Counter(
@@ -1425,7 +1484,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", amf_ctx_path_pattern);
+            resp.headers.emplace("location",
+                                 resolved_location(amf_ctx_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -1512,7 +1572,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", amf_non3gpp_ctx_path_pattern);
+            resp.headers.emplace("location",
+                                 resolved_location(amf_non3gpp_ctx_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -1583,7 +1644,9 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", smf_reg_list_path_pattern + "/" + pdu_session_id);
+            resp.headers.emplace("location",
+                                 resolved_location(smf_reg_list_path_pattern, req.path_params) +
+                                     "/" + pdu_session_id);
             resp.body = j.dump();
             return resp;
         });
@@ -2253,7 +2316,7 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", mwd_path_pattern);
+            resp.headers.emplace("location", resolved_location(mwd_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -2354,7 +2417,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", roaming_information_path_pattern);
+            resp.headers.emplace(
+                "location", resolved_location(roaming_information_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -2408,7 +2472,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", pei_info_path_pattern);
+            resp.headers.emplace("location",
+                                 resolved_location(pei_info_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -2668,8 +2733,10 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location",
-                                 pp_data_store_list_path_pattern + "/" + af_instance_id);
+            resp.headers.emplace(
+                "location",
+                resolved_location(pp_data_store_list_path_pattern, req.path_params) + "/" +
+                    af_instance_id);
             resp.body = j.dump();
             return resp;
         });
@@ -2844,7 +2911,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", ue_policy_set_path_pattern);
+            resp.headers.emplace("location",
+                                 resolved_location(ue_policy_set_path_pattern, req.path_params));
             resp.body = body.dump();
             return resp;
         });
@@ -2995,7 +3063,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", bdt_data_path_pattern);
+            resp.headers.emplace("location",
+                                 resolved_location(bdt_data_path_pattern, req.path_params));
             resp.body = body.dump();
             return resp;
         });
@@ -3230,7 +3299,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", nidd_authorization_path_pattern);
+            resp.headers.emplace(
+                "location", resolved_location(nidd_authorization_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -3656,7 +3726,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", service_specific_auth_path_pattern);
+            resp.headers.emplace(
+                "location", resolved_location(service_specific_auth_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -4110,12 +4181,12 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            // Bug fix (ADR-0156): the Location header must contain the real ueId, not the
-            // unsubstituted {ueId} route-pattern placeholder -- found live-verifying the
-            // group-data-scoped sibling below, confirmed to predate this ADR.
-            resp.headers.emplace("location",
-                                 std::string(kApiRoot) + "/subscription-data/" + ue_id +
-                                     "/context-data/ee-subscriptions/" + subs_id);
+            // Bug fix (ADR-0156, refactored onto the shared helper in ADR-0157): real ueId, not
+            // the unsubstituted {ueId} route-pattern placeholder.
+            resp.headers.emplace(
+                "location",
+                resolved_location(ee_subscriptions_collection_path_pattern, req.path_params) + "/" +
+                    subs_id);
             resp.body = j.dump();
             return resp;
         });
@@ -4275,11 +4346,12 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            // Bug fix (ADR-0156): the Location header must contain the real ueId, not the
-            // unsubstituted {ueId} route-pattern placeholder -- same fix as ee-subscriptions.
-            resp.headers.emplace("location",
-                                 std::string(kApiRoot) + "/subscription-data/" + ue_id +
-                                     "/context-data/sdm-subscriptions/" + subs_id);
+            // Bug fix (ADR-0156, refactored onto the shared helper in ADR-0157): real ueId, not
+            // the unsubstituted {ueId} route-pattern placeholder.
+            resp.headers.emplace(
+                "location",
+                resolved_location(sdm_subscriptions_collection_path_pattern, req.path_params) +
+                    "/" + subs_id);
             resp.body = j.dump();
             return resp;
         });
@@ -4443,7 +4515,9 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", ee_amf_subscription_info_path_pattern);
+            resp.headers.emplace(
+                "location",
+                resolved_location(ee_amf_subscription_info_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -4558,7 +4632,9 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", ee_smf_subscription_info_path_pattern);
+            resp.headers.emplace(
+                "location",
+                resolved_location(ee_smf_subscription_info_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -4676,7 +4752,9 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", ee_hss_subscription_info_path_pattern);
+            resp.headers.emplace(
+                "location",
+                resolved_location(ee_hss_subscription_info_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -4907,12 +4985,12 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            // Real ueGroupId substituted into the Location header, not the unsubstituted
-            // {ueGroupId} route-pattern placeholder (a bug found live-verifying this exact
-            // resource, also fixed in the pre-existing ee-/sdm-subscriptions siblings above).
-            resp.headers.emplace("location",
-                                 std::string(kApiRoot) + "/subscription-data/group-data/" +
-                                     ue_group_id + "/ee-subscriptions/" + subs_id);
+            // Bug fix (ADR-0156, refactored onto the shared helper in ADR-0157): real ueGroupId,
+            // not the unsubstituted {ueGroupId} route-pattern placeholder.
+            resp.headers.emplace(
+                "location",
+                resolved_location(group_ee_subscriptions_collection_path_pattern, req.path_params) +
+                    "/" + subs_id);
             resp.body = j.dump();
             return resp;
         });
@@ -5011,6 +5089,125 @@ int main() {
                     404, "Not Found", "No EE Group Subscription for subsId " + subs_id);
             }
             group_ee_subscriptions_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: AMF Group Subscription Info (Document), nested under an
+    // individual group-data-scoped ee-subscription (ADR-0157, gap-closure task #106) -- real
+    // GET+PUT+PATCH+DELETE per TS29505_Subscription_Data.yaml. The group-data-scoped sibling of
+    // ee-subscriptions/{subsId}/amf-subscriptions (ADR-0152), structurally identical but keyed
+    // by ueGroupId instead of ueId: same array-valued AmfSubscriptionInfo[] document body, real
+    // distinct 201-vs-204 PUT. ---
+
+    const std::string group_amf_subscription_info_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/group-data/{ueGroupId}/ee-subscriptions/"
+                                "{subsId}/amf-subscriptions";
+
+    server.add_route(
+        "GET",
+        group_amf_subscription_info_path_pattern,
+        [&verifier, &group_amf_subscription_info, &group_amf_subscription_info_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            auto data = group_amf_subscription_info.get(ue_group_id, subs_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AMF Group Subscription Info for subsId " + subs_id);
+            }
+            group_amf_subscription_info_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        group_amf_subscription_info_path_pattern,
+        [&verifier,
+         &group_amf_subscription_info,
+         &group_amf_subscription_info_write_counter,
+         group_amf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<std::vector<sbi_gen::AmfSubscriptionInfo>>(
+                req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            json j = *body;
+            const bool is_new = group_amf_subscription_info.put(ue_group_id, subs_id, j);
+            group_amf_subscription_info_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace(
+                "location",
+                resolved_location(group_amf_subscription_info_path_pattern, req.path_params));
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        group_amf_subscription_info_path_pattern,
+        [&verifier, &group_amf_subscription_info, &group_amf_subscription_info_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            std::optional<json> patched;
+            try {
+                patched = group_amf_subscription_info.apply_patch(ue_group_id, subs_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AMF Group Subscription Info for subsId " + subs_id);
+            }
+            group_amf_subscription_info_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        group_amf_subscription_info_path_pattern,
+        [&verifier, &group_amf_subscription_info, &group_amf_subscription_info_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            if (!group_amf_subscription_info.remove(ue_group_id, subs_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AMF Group Subscription Info for subsId " + subs_id);
+            }
+            group_amf_subscription_info_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -5203,7 +5400,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", five_g_vn_groups_path_pattern);
+            resp.headers.emplace("location",
+                                 resolved_location(five_g_vn_groups_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });
@@ -5312,7 +5510,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", mbs_group_membership_path_pattern);
+            resp.headers.emplace(
+                "location", resolved_location(mbs_group_membership_path_pattern, req.path_params));
             resp.body = j.dump();
             return resp;
         });

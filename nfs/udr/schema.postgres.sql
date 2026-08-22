@@ -967,3 +967,22 @@ CREATE TABLE IF NOT EXISTS udr_group_ee_subscriptions (
     data        JSONB NOT NULL,
     PRIMARY KEY (ue_group_id, subs_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0157). Real AMF Group Subscription
+-- Info (Document), nested under an individual group-data-scoped ee-subscription
+-- (/subscription-data/group-data/{ueGroupId}/ee-subscriptions/{subsId}/amf-subscriptions, real
+-- spec operations CreateAmfGroupSubscriptions [PUT]/GetAmfGroupSubscriptions [GET]/
+-- ModifyAmfGroupSubscriptions [PATCH]/RemoveAmfGroupSubscriptions [DELETE]) -- the group-data-
+-- scoped sibling of ee-subscriptions/{subsId}/amf-subscriptions (ADR-0152), structurally
+-- identical but keyed by ueGroupId instead of ueId: same array-valued AmfSubscriptionInfo[]
+-- document body, real distinct 201-vs-204 PUT. This same ADR also fixes a real, disclosed
+-- pre-existing RFC 9110 Location-header bug found live-verifying this resource -- see the
+-- resolved_location() helper added to nfs/udr/src/main.cpp and ADR-0157's own DECISIONS.md entry
+-- for the full, wide-reaching disclosure (fixed in ~20 routes project-wide, not just this one).
+-- Composite key (ue_group_id, subs_id).
+CREATE TABLE IF NOT EXISTS udr_group_amf_subscription_info (
+    ue_group_id TEXT NOT NULL,
+    subs_id     TEXT NOT NULL,
+    data        JSONB NOT NULL,
+    PRIMARY KEY (ue_group_id, subs_id)
+);

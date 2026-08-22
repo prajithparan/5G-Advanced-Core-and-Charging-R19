@@ -2956,3 +2956,31 @@ same ADR. This closes UDR resource #66 of free5GC's ~42+ real `Nudr_DataReposito
 task #106 remains open; the group-data-scoped `amf-subscriptions`/`smf-subscriptions`/
 `hss-subscriptions` nested sub-collections and the other genuinely deferred subsystems remain
 real, disclosed gaps.
+
+## ADR-0157 -- gap-closure task #106 continuation: UDR real AMF Group Subscription Info (Document), plus a project-wide fix for a real RFC 9110 Location-header conformance defect
+
+| Requirement | Test |
+|---|---|
+| `GET` before any `PUT` | Live curl, real `404` |
+| `PUT` with array-valued `AmfSubscriptionInfo[]` body | Live curl, real `201`, body echoed back |
+| `Location` header contains BOTH the real `ueGroupId` and real `subsId` (multi-path-parameter case for the new `resolved_location()` helper) | Live curl inspection of the response headers |
+| `GET` after `PUT` | Live curl, real `200` with matching body |
+| `PUT` again with different values | Live curl, real `204`; `GET` after confirms overwrite |
+| `PATCH` (real RFC 6902) | Live curl, real `204`; `GET` after reflects patched value |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_group_amf_subscription_info` independently confirms the row matches curl's response |
+| Sibling `udr_group_ee_subscriptions`/`udr_ee_amf_subscription_info` unaffected | Direct `psql` query, real `0` rows in both, confirms separate storage |
+| `DELETE` | Live curl, real `204`; `GET` after real `404`; `psql` confirms zero rows remained |
+| Pre-existing Location-header bug (found scoped to 3 routes in ADR-0156, found to affect ~20 project-wide this ADR) fixed via a shared `resolved_location()` helper | Presented to the user via `AskUserQuestion`; user chose "Fix all ~20 occurrences now"; the single-path-param case already proven live in ADR-0156, the multi-path-param case proven live by this ADR's own new resource; the remaining ~14 pre-existing occurrences share the same helper/code path, confirmed by a clean zero-warning build and full regression run rather than individually re-exercised live (disclosed narrowing, not glossed over) |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real GET+PUT+PATCH+DELETE resource (`CreateAmfGroupSubscriptions`/`GetAmfGroupSubscriptions`/
+`ModifyAmfGroupSubscriptions`/`RemoveAmfGroupSubscriptions`), the group-data-scoped sibling of
+`ee-subscriptions/{subsId}/amf-subscriptions` (ADR-0152), keyed by `ueGroupId` instead of `ueId`.
+Also fixes a real, disclosed, project-wide RFC 9110 Location-header conformance defect spanning
+~20 of UDR's own `PUT`-with-`201`-create routes, including foundational Tier 1a resources
+predating any gap-closure ADR -- user explicitly confirmed fixing all of them in this same turn
+rather than deferring. This closes UDR resource #67 of free5GC's ~42+ real
+`Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0157 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open; the group-data-scoped
+`smf-subscriptions`/`hss-subscriptions` nested sub-collections and the other genuinely deferred
+subsystems remain real, disclosed gaps.
