@@ -836,3 +836,24 @@ CREATE TABLE IF NOT EXISTS udr_subs_to_notify (
     ue_id   TEXT NOT NULL,
     data    JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0151). Real SDM Subscriptions
+-- collection (/subscription-data/{ueId}/context-data/sdm-subscriptions, real spec operations
+-- Querysdmsubscriptions [GET]/CreateSdmSubscriptions [POST]) and individual document
+-- (/subscription-data/{ueId}/context-data/sdm-subscriptions/{subsId}, real spec operations
+-- QuerysdmSubscription/Updatesdmsubscriptions/ModifysdmSubscription/RemovesdmSubscriptions --
+-- GET+PUT+PATCH+DELETE), real schema SdmSubscription -- required nfInstanceId + callbackReference
+-- (Uri) + monitoredResourceUris (array of Uri), plus a real dozen-plus optional fields. Real,
+-- disclosed: structurally identical to udr_ee_subscriptions (ADR-0148) -- server-generated
+-- subsId (real UUID v4), PUT genuinely update-only (real spec 404 "update of non-existing
+-- resource is rejected"). Corrects ADR-0122's own blanket "genuinely deeply-nested"
+-- characterization of ee-subscriptions/sdm-subscriptions together -- on direct, individual read,
+-- only the deeper hss-sdm-subscriptions nested sub-collection under each subsId is genuinely
+-- deferred; the collection + individual document themselves are buildable. Composite key
+-- (ue_id, subs_id).
+CREATE TABLE IF NOT EXISTS udr_sdm_subscriptions (
+    ue_id   TEXT NOT NULL,
+    subs_id TEXT NOT NULL,
+    data    JSONB NOT NULL,
+    PRIMARY KEY (ue_id, subs_id)
+);

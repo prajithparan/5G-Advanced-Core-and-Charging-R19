@@ -1127,4 +1127,31 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0151). Backs the real SDM
+// Subscriptions collection (`context-data/sdm-subscriptions`) and individual document
+// (`context-data/sdm-subscriptions/{subsId}`, real spec operations
+// `Querysdmsubscriptions`/`CreateSdmSubscriptions`/`QuerysdmSubscription`/
+// `Updatesdmsubscriptions`/`ModifysdmSubscription`/`RemovesdmSubscriptions`, schema
+// `SdmSubscription`). Structurally identical to `EeSubscriptionsStore` (ADR-0148):
+// server-generated `subsId` (caller-generated, passed to `create()`), `update()` genuinely
+// update-only never create (real spec 404 for a nonexistent resource), `apply_patch` real RFC
+// 6902 NOT upsert-capable. Composite key (ue_id, subs_id).
+class SdmSubscriptionsStore {
+public:
+    explicit SdmSubscriptionsStore(const std::string& conninfo);
+
+    void create(const std::string& ue_id, const std::string& subs_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id, const std::string& subs_id);
+    std::vector<nlohmann::json> list(const std::string& ue_id);
+    bool update(const std::string& ue_id, const std::string& subs_id, nlohmann::json data);
+    std::optional<nlohmann::json> apply_patch(const std::string& ue_id,
+                                              const std::string& subs_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ue_id, const std::string& subs_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

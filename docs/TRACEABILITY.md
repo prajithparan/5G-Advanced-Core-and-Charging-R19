@@ -2778,4 +2778,36 @@ two existing CHF AI env vars), documented in `deploy/docker/docker-compose.yml`.
 presented three real options (exclude the test / loosen the budget / leave as-is), user chose to
 loosen the budget. See ADR-0150 in `docs/DECISIONS.md` for full disclosure, including the
 explicit caveat that this is a best-effort mitigation from one data point, not a
-statistically-derived value.
+statistically-derived value. **Real, live CI verification**: the very next CI run confirmed the
+target test passes in real CI (0.16s), `100% tests passed, 0 tests failed out of 325`.
+
+## ADR-0151 -- gap-closure task #106 continuation: UDR real SDM Subscriptions collection + individual document resource
+
+| Requirement | Test |
+|---|---|
+| `GET` collection before any `POST` | Live curl, real `200` with an empty array |
+| `POST` with `nfInstanceId`/`callbackReference`/`monitoredResourceUris` | Live curl, real `201`, real freshly-generated UUID v4 `subsId` in `Location`, body echoed back |
+| `GET` individual by that `subsId` | Live curl, real `200` with matching body |
+| `GET` collection after the `POST` | Live curl, real `200` with a one-element array |
+| `PUT` update to the existing `subsId` | Live curl, real `204`; `GET` after reflects the update |
+| `PUT` to a nonexistent `subsId` | Live curl, real `404` (confirms update-only semantics, no create-via-PUT) |
+| `PATCH` (real RFC 6902 `application/json-patch+json`) | Live curl, real `204`; `GET` after reflects the patched value |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_sdm_subscriptions` independently confirms the row matches curl's response |
+| Sibling `ee-subscriptions` collection unaffected (separate table) | Live curl, real `200` with an empty array |
+| `DELETE` | Live curl, real `204`; individual `GET` after real `404`; collection `GET` after real `200` with an empty array |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real collection GET+POST and individual document GET+PUT+PATCH+DELETE
+(`Querysdmsubscriptions`/`CreateSdmSubscriptions`/`QuerysdmSubscription`/
+`Updatesdmsubscriptions`/`ModifysdmSubscription`/`RemovesdmSubscriptions`), schema
+`SdmSubscription` -- structurally identical to `ee-subscriptions` (ADR-0148): server-generated
+`subsId` (real UUID v4), PUT genuinely update-only (real spec 404, identical wording to
+`ee-subscriptions`'s own). This completes correcting ADR-0122's original bundled "genuinely
+deeply-nested" deferral of `ee-subscriptions`/`sdm-subscriptions` together -- both now
+individually surveyed and closed; only each one's own deeper nested sub-collection
+(`amf-`/`smf-`/`hss-subscriptions` for the former, `hss-sdm-subscriptions` for the latter) remains
+genuinely deferred. This closes UDR resource #61 of free5GC's ~42+ real `Nudr_DataRepository`
+resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0151 in `docs/DECISIONS.md` for full
+disclosure -- task #106 remains open; `group-data`'s remaining genuinely-blocked resources, bare
+`/subscription-data/{ueId}`/`{ueId}/context-data`, both subscription resources' own nested
+sub-collections, and the other genuinely deferred subsystems remain real, disclosed gaps.

@@ -396,10 +396,23 @@
 // `DataChangeNotify` callbacks to the caller-supplied URI when underlying data changes (no
 // project precedent yet for outbound webhook delivery on data-change events).
 //
+// UPDATE (ADR-0151, gap-closure task #106): the real SDM Subscriptions collection
+// (`context-data/sdm-subscriptions`, real spec operations
+// `Querysdmsubscriptions`/`CreateSdmSubscriptions`) and individual document
+// (`context-data/sdm-subscriptions/{subsId}`, real spec operations
+// `QuerysdmSubscription`/`Updatesdmsubscriptions`/`ModifysdmSubscription`/
+// `RemovesdmSubscriptions` -- GET+PUT+PATCH+DELETE) are now implemented, structurally identical
+// to `ee-subscriptions` (server-generated `subsId`, PUT genuinely update-only). This corrects
+// ADR-0122's own blanket "genuinely deeply-nested" characterization of
+// `ee-subscriptions`/`sdm-subscriptions` together for the second of the two resources -- on
+// direct, individual read (not re-trusting the old bundled deferral), only the deeper
+// `hss-sdm-subscriptions` nested sub-collection under each `subsId` is genuinely deferred.
+//
 // Deliberately still deferred, not dropped:
 // context-data's other sub-resources (
-// ee-subscriptions' own amf-/smf-/hss-subscriptions nested sub-collections, sdm-subscriptions --
-// the latter not yet re-surveyed since ADR-0122, see ADR-0148 above);
+// ee-subscriptions' own amf-/smf-/hss-subscriptions nested sub-collections,
+// sdm-subscriptions' own hss-sdm-subscriptions nested sub-collection -- both real, separate
+// resources, group-data-scoped tree not yet surveyed);
 // the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
 // `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
 // collection GET, real spec `Query5GmbsGroup` -- both confirmed genuinely blocked: their `gpsis`
@@ -711,6 +724,8 @@ int main() {
     udr::EeSubscriptionsStore ee_subscriptions(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0149).
     udr::SubsToNotifyStore subs_to_notify(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0151).
+    udr::SdmSubscriptionsStore sdm_subscriptions(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1220,6 +1235,17 @@ int main() {
         "udr_subs_to_notify_write_total", "Total ModifysubscriptionDataSubscription calls");
     auto subs_to_notify_delete_counter = meter->CreateUInt64Counter(
         "udr_subs_to_notify_delete_total", "Total RemovesubscriptionDataSubscriptions calls");
+    auto sdm_subscriptions_create_counter = meter->CreateUInt64Counter(
+        "udr_sdm_subscriptions_create_total", "Total CreateSdmSubscriptions calls");
+    auto sdm_subscriptions_list_counter = meter->CreateUInt64Counter(
+        "udr_sdm_subscriptions_list_total", "Total Querysdmsubscriptions calls");
+    auto sdm_subscriptions_get_counter = meter->CreateUInt64Counter(
+        "udr_sdm_subscriptions_get_total", "Total QuerysdmSubscription calls");
+    auto sdm_subscriptions_write_counter =
+        meter->CreateUInt64Counter("udr_sdm_subscriptions_write_total",
+                                   "Total Updatesdmsubscriptions/ModifysdmSubscription calls");
+    auto sdm_subscriptions_delete_counter = meter->CreateUInt64Counter(
+        "udr_sdm_subscriptions_delete_total", "Total RemovesdmSubscriptions calls");
     auto five_g_vn_groups_write_counter = meter->CreateUInt64Counter(
         "udr_5g_vn_groups_write_total", "Total Create5GVnGroup/Modify5GVnGroup calls");
     auto five_g_vn_groups_get_counter = meter->CreateUInt64Counter(
@@ -4070,6 +4096,167 @@ int main() {
                     404, "Not Found", "No EE Subscription for subsId " + subs_id);
             }
             ee_subscriptions_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: SDM Subscriptions collection + individual document (ADR-0151,
+    // gap-closure task #106) -- real GET+POST on the collection, GET+PUT+PATCH+DELETE on the
+    // individual document, per TS29505_Subscription_Data.yaml. Structurally identical to
+    // ee-subscriptions above: server-generated subsId (real UUID v4), PUT genuinely update-only
+    // (real spec 404 for a nonexistent resource). Corrects ADR-0122's own blanket
+    // "genuinely deeply-nested" characterization of ee-subscriptions/sdm-subscriptions together --
+    // on direct read, only the deeper hss-sdm-subscriptions nested sub-collection remains
+    // genuinely deferred. ---
+
+    const std::string sdm_subscriptions_collection_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/sdm-subscriptions";
+    const std::string sdm_subscriptions_individual_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/sdm-subscriptions/{subsId}";
+
+    server.add_route(
+        "GET",
+        sdm_subscriptions_collection_path_pattern,
+        [&verifier, &sdm_subscriptions, &sdm_subscriptions_list_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto subs = sdm_subscriptions.list(ue_id);
+            json arr = json::array();
+            for (auto& s : subs) {
+                arr.push_back(std::move(s));
+            }
+            sdm_subscriptions_list_counter->Add(1);
+            return sbi_core::http2::Response::json(200, arr.dump());
+        });
+
+    server.add_route(
+        "POST",
+        sdm_subscriptions_collection_path_pattern,
+        [&verifier,
+         &sdm_subscriptions,
+         &sdm_subscriptions_create_counter,
+         sdm_subscriptions_collection_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SdmSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = sbi_core::generate_uuid_v4();
+            json j = *body;
+            sdm_subscriptions.create(ue_id, subs_id, j);
+            sdm_subscriptions_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 sdm_subscriptions_collection_path_pattern + "/" + subs_id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        sdm_subscriptions_individual_path_pattern,
+        [&verifier, &sdm_subscriptions, &sdm_subscriptions_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            auto data = sdm_subscriptions.get(ue_id, subs_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SDM Subscription for subsId " + subs_id);
+            }
+            sdm_subscriptions_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        sdm_subscriptions_individual_path_pattern,
+        [&verifier, &sdm_subscriptions, &sdm_subscriptions_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SdmSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            json j = *body;
+            // Real spec: Updatesdmsubscriptions is genuinely update-only -- "update of
+            // non-existing resource is rejected" (real 404), no create-via-PUT path exists.
+            if (!sdm_subscriptions.update(ue_id, subs_id, j)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SDM Subscription for subsId " + subs_id);
+            }
+            sdm_subscriptions_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        sdm_subscriptions_individual_path_pattern,
+        [&verifier, &sdm_subscriptions, &sdm_subscriptions_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            std::optional<json> patched;
+            try {
+                patched = sdm_subscriptions.apply_patch(ue_id, subs_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SDM Subscription for subsId " + subs_id);
+            }
+            sdm_subscriptions_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        sdm_subscriptions_individual_path_pattern,
+        [&verifier, &sdm_subscriptions, &sdm_subscriptions_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            if (!sdm_subscriptions.remove(ue_id, subs_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SDM Subscription for subsId " + subs_id);
+            }
+            sdm_subscriptions_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
