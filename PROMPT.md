@@ -1,14 +1,5 @@
 # Claude Code Master Prompt — 5G-Advanced (R19) Core + Universal Charging System in C++
 
-> **How to use**
-> 1. Save this file as `PROMPT.md` in the repo root.
-> 2. Run `claude` in that directory.
-> 3. Type one line: `Read PROMPT.md and follow Section 0 exactly. Do not write code yet.`
-> 4. Thereafter drive the program with one-line prompts: `Follow Phase 2 in PROMPT.md.`
->
-> Do not paste this whole file into the prompt box — let Claude Code read it.
-> Companion files: `CHARGING_PROMPT.md` (charging entity model, sub-phases,
-> AI-enabled CHF), `Phase_Prompts_Sequence.md` (per-session prompts with gates).
 
 ---
 
