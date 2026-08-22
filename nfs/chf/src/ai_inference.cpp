@@ -14,11 +14,6 @@ namespace chf {
 
 namespace {
 
-// Real, disclosed budget for the model train_quota_sizing.py actually produces
-// (RandomForestRegressor, n_estimators=20, max_depth=4) -- generous headroom over the
-// microsecond-scale inference such a small model actually takes, not tuned to be tight.
-constexpr std::chrono::microseconds kDefaultLatencyBudget{5000};
-
 std::string read_model_version(const std::string& model_path) {
     std::ifstream f(model_path + ".version");
     if (!f) {
@@ -43,8 +38,10 @@ Ort::Env& shared_env() {
 
 } // namespace
 
-AiQuotaSizer::AiQuotaSizer(const std::string& model_path, bool enabled)
-    : latency_budget_(kDefaultLatencyBudget) {
+AiQuotaSizer::AiQuotaSizer(const std::string& model_path,
+                           bool enabled,
+                           std::chrono::microseconds latency_budget)
+    : latency_budget_(latency_budget) {
     if (!enabled || model_path.empty()) {
         spdlog::info(
             "chf: AI quota sizing disabled (CHF_AI_QUOTA_SIZING_ENABLED off or no model path) -- "

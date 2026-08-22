@@ -2758,3 +2758,24 @@ ADR-0149 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `
 remaining genuinely-blocked resources, bare `/subscription-data/{ueId}`/`{ueId}/context-data`,
 `ee-subscriptions`'s own nested sub-collections, `sdm-subscriptions`, and the other genuinely
 deferred subsystems remain real, disclosed gaps.
+
+## ADR-0150 -- CHF: raise AiQuotaSizer's hardcoded inference latency budget after a real, observed CI failure
+
+| Requirement | Test |
+|---|---|
+| `AiQuotaSizer.LoadsRealOnnxModelAndPredicts`, run 5x isolated via `--gtest_filter` | Passed all 5 runs locally (85-110ms each), previously failed once in real CI at 40777us vs the old 5000us budget |
+| No regression | Full `conformance_tests`: 325/325 pass (excluding the two disclosed, unrelated pre-existing flaky tests); `chf`/`conformance_tests` built clean |
+
+Real, observed CI failure (run 32508134662, carrying ADR-0149 -- unrelated UDR-only commit,
+confirming this was CI-runner-contention timing, not a code regression): the real ONNX inference
+call took 40777us on that runner, 8x over `AiQuotaSizer`'s own hardcoded 5000us latency budget,
+correctly triggering the class's own designed discard-on-budget fail-safe -- but the test asserts
+a value IS returned. Raised the default to `chf::kDefaultAiQuotaLatencyBudget{50000}` (50ms), a
+real, evidence-based value (headroom above the one observed 40777us data point, still tight
+relative to this project's own SBI response-time budgets), added an optional
+`CHF_AI_QUOTA_LATENCY_BUDGET_US` env var override (same never-hardcode-config precedent as the
+two existing CHF AI env vars), documented in `deploy/docker/docker-compose.yml`. User-directed:
+presented three real options (exclude the test / loosen the budget / leave as-is), user chose to
+loosen the budget. See ADR-0150 in `docs/DECISIONS.md` for full disclosure, including the
+explicit caveat that this is a best-effort mitigation from one data point, not a
+statistically-derived value.

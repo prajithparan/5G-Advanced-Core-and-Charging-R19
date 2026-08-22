@@ -348,6 +348,10 @@ services:
       # compose up` once a real model has been trained into the mounted models/ directory below.
       CHF_AI_QUOTA_SIZING_ENABLED: "${CHF_AI_QUOTA_SIZING_ENABLED:-false}"
       CHF_QUOTA_MODEL_PATH: /build/models/quota_sizing.onnx
+      # ADR-0150: optional override for the inference latency budget (microseconds), defaults to
+      # chf::kDefaultAiQuotaLatencyBudget (50000us) if unset -- see ai_inference.hpp's own header
+      # comment for why that default was raised from the original 5000us.
+      CHF_AI_QUOTA_LATENCY_BUDGET_US: "${CHF_AI_QUOTA_LATENCY_BUDGET_US:-50000}"
     volumes:
       - certs_data:/build/certs
       - ../../nfs/chf/training/models:/build/models:ro

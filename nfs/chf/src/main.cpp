@@ -400,7 +400,23 @@ int main() {
     }();
     const std::string quota_model_path =
         std::getenv("CHF_QUOTA_MODEL_PATH") ? std::getenv("CHF_QUOTA_MODEL_PATH") : "";
-    chf::AiQuotaSizer ai_quota_sizer(quota_model_path, ai_quota_sizing_enabled);
+    // Real, disclosed (ADR-0150): optional override for chf::kDefaultAiQuotaLatencyBudget
+    // (50000us as of ADR-0150, raised from the original 5000us after a real observed CI failure
+    // on a contended runner -- see ai_inference.hpp's own header comment). Same getenv-based
+    // never-hardcode-config precedent as the two env vars above.
+    const std::chrono::microseconds ai_quota_latency_budget = [] {
+        const char* env = std::getenv("CHF_AI_QUOTA_LATENCY_BUDGET_US");
+        if (env == nullptr) {
+            return chf::kDefaultAiQuotaLatencyBudget;
+        }
+        try {
+            return std::chrono::microseconds(std::stoll(env));
+        } catch (const std::exception&) {
+            return chf::kDefaultAiQuotaLatencyBudget;
+        }
+    }();
+    chf::AiQuotaSizer ai_quota_sizer(
+        quota_model_path, ai_quota_sizing_enabled, ai_quota_latency_budget);
     chf::QuotaFeatureStore quota_feature_store(redis);
 
     // CHF's own client to bss/product-catalog (ADR-0048) -- mTLS only, no OAuth2 (product-catalog

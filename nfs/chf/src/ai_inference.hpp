@@ -40,6 +40,18 @@ inline constexpr const char* kQuotaSizingFeatureNames[kQuotaSizingFeatureCount] 
 
 using QuotaSizingFeatures = std::array<double, kQuotaSizingFeatureCount>;
 
+// Real, disclosed default latency budget for the model train_quota_sizing.py actually produces
+// (RandomForestRegressor, n_estimators=20, max_depth=4). Originally 5000us -- raised to 50000us
+// (ADR-0150) after a real, observed CI failure: a run on a contended GitHub Actions runner took
+// 40777us for this same tiny model, 8x the old budget, correctly triggering the discard-on-budget
+// path (`predict()` returned `nullopt`) but failing `AiQuotaSizer.LoadsRealOnnxModelAndPredicts`,
+// which asserts a value IS returned. 50000us keeps real headroom above that specific observed
+// figure while remaining a materially tight bound relative to this project's own SBI response-time
+// budgets (hundreds of ms to seconds) -- a real, evidence-based default, not an arbitrary round
+// number. Overridable via `CHF_AI_QUOTA_LATENCY_BUDGET_US` (main.cpp), same getenv-based
+// never-hardcode-config precedent as `CHF_AI_QUOTA_SIZING_ENABLED`/`CHF_QUOTA_MODEL_PATH`.
+inline constexpr std::chrono::microseconds kDefaultAiQuotaLatencyBudget{50000};
+
 class AiQuotaSizer {
 public:
     // model_path: path to a .onnx file produced by train_quota_sizing.py. enabled: the real kill
@@ -48,8 +60,10 @@ public:
     // is false: is_enabled() returns false and predict() always returns std::nullopt -- the
     // deterministic grant path proceeds completely unaffected, matching every other
     // "degrade to logged no-op, never crash the charging path" store in this codebase
-    // (RatingDecisionStore, CdrWriter).
-    AiQuotaSizer(const std::string& model_path, bool enabled);
+    // (RatingDecisionStore, CdrWriter). latency_budget: see kDefaultAiQuotaLatencyBudget above.
+    explicit AiQuotaSizer(const std::string& model_path,
+                          bool enabled,
+                          std::chrono::microseconds latency_budget = kDefaultAiQuotaLatencyBudget);
     ~AiQuotaSizer();
     AiQuotaSizer(const AiQuotaSizer&) = delete;
     AiQuotaSizer& operator=(const AiQuotaSizer&) = delete;
