@@ -461,9 +461,23 @@
 // without re-asking, since it is the identical schema-citation error on a structurally parallel
 // resource.
 //
+// UPDATE (ADR-0156, gap-closure task #106): the real Event Exposure Group Subscriptions
+// collection (`group-data/{ueGroupId}/ee-subscriptions`, real spec operations
+// `QueryEeGroupSubscriptions`/`CreateEeGroupSubscriptions`) and individual document
+// (`group-data/{ueGroupId}/ee-subscriptions/{subsId}`, real spec operations
+// `QueryEeGroupSubscription`/`UpdateEeGroupSubscriptions`/`ModifyEeGroupSubscription`/
+// `RemoveEeGroupSubscriptions` -- GET+PUT+PATCH+DELETE) are now implemented -- the group-data-
+// scoped sibling of `ee-subscriptions` (ADR-0148), structurally identical but keyed by
+// `ueGroupId` instead of `ueId`: same `EeSubscription` schema, server-generated `subsId`, PUT
+// genuinely update-only. Real, disclosed scope narrowing kept from ADR-0148's own precedent:
+// only the collection + individual document are implemented -- the deeper group-data-scoped
+// `amf-subscriptions`/`smf-subscriptions`/`hss-subscriptions` nested sub-collections under each
+// `subsId` remain genuinely deferred, not yet surveyed.
+//
 // Deliberately still deferred, not dropped:
 // context-data's other sub-resources (
-// group-data's own parallel ee-subscriptions/{subsId}/... tree not yet surveyed);
+// group-data's own ee-subscriptions/{subsId}/amf-/smf-/hss-subscriptions nested sub-collections,
+// not yet surveyed);
 // the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
 // `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
 // collection GET, real spec `Query5GmbsGroup` -- both confirmed genuinely blocked: their `gpsis`
@@ -785,6 +799,8 @@ int main() {
     udr::EeHssSubscriptionInfoStore ee_hss_subscription_info(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0155).
     udr::SdmHssSubscriptionInfoStore sdm_hss_subscription_info(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0156).
+    udr::GroupEeSubscriptionsStore group_ee_subscriptions(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1333,6 +1349,17 @@ int main() {
         "udr_sdm_hss_subscription_info_get_total", "Total GetHssSDMSubscriptionInfo calls");
     auto sdm_hss_subscription_info_delete_counter = meter->CreateUInt64Counter(
         "udr_sdm_hss_subscription_info_delete_total", "Total RemoveHssSDMSubscriptionsInfo calls");
+    auto group_ee_subscriptions_create_counter = meter->CreateUInt64Counter(
+        "udr_group_ee_subscriptions_create_total", "Total CreateEeGroupSubscriptions calls");
+    auto group_ee_subscriptions_list_counter = meter->CreateUInt64Counter(
+        "udr_group_ee_subscriptions_list_total", "Total QueryEeGroupSubscriptions calls");
+    auto group_ee_subscriptions_get_counter = meter->CreateUInt64Counter(
+        "udr_group_ee_subscriptions_get_total", "Total QueryEeGroupSubscription calls");
+    auto group_ee_subscriptions_write_counter = meter->CreateUInt64Counter(
+        "udr_group_ee_subscriptions_write_total",
+        "Total UpdateEeGroupSubscriptions/ModifyEeGroupSubscription calls");
+    auto group_ee_subscriptions_delete_counter = meter->CreateUInt64Counter(
+        "udr_group_ee_subscriptions_delete_total", "Total RemoveEeGroupSubscriptions calls");
     auto five_g_vn_groups_write_counter = meter->CreateUInt64Counter(
         "udr_5g_vn_groups_write_total", "Total Create5GVnGroup/Modify5GVnGroup calls");
     auto five_g_vn_groups_get_counter = meter->CreateUInt64Counter(
@@ -4083,8 +4110,12 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
+            // Bug fix (ADR-0156): the Location header must contain the real ueId, not the
+            // unsubstituted {ueId} route-pattern placeholder -- found live-verifying the
+            // group-data-scoped sibling below, confirmed to predate this ADR.
             resp.headers.emplace("location",
-                                 ee_subscriptions_collection_path_pattern + "/" + subs_id);
+                                 std::string(kApiRoot) + "/subscription-data/" + ue_id +
+                                     "/context-data/ee-subscriptions/" + subs_id);
             resp.body = j.dump();
             return resp;
         });
@@ -4244,8 +4275,11 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
+            // Bug fix (ADR-0156): the Location header must contain the real ueId, not the
+            // unsubstituted {ueId} route-pattern placeholder -- same fix as ee-subscriptions.
             resp.headers.emplace("location",
-                                 sdm_subscriptions_collection_path_pattern + "/" + subs_id);
+                                 std::string(kApiRoot) + "/subscription-data/" + ue_id +
+                                     "/context-data/sdm-subscriptions/" + subs_id);
             resp.body = j.dump();
             return resp;
         });
@@ -4806,6 +4840,177 @@ int main() {
                     404, "Not Found", "No HSS SDM Subscription Info for subsId " + subs_id);
             }
             sdm_hss_subscription_info_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: Event Exposure Group Subscriptions collection + individual
+    // document (ADR-0156, gap-closure task #106) -- real GET+POST on the collection,
+    // GET+PUT+PATCH+DELETE on the individual document, per TS29505_Subscription_Data.yaml. The
+    // group-data-scoped sibling of ee-subscriptions (ADR-0148), structurally identical but keyed
+    // by ueGroupId instead of ueId: same EeSubscription schema, server-generated subsId (real
+    // UUID v4), PUT genuinely update-only (real spec 404 "update of non-existing resource is
+    // rejected"). The individual GET response schema has the same real `items:` (no
+    // `type: array`) authoring artifact already found and resolved in ADR-0148's own
+    // QueryeeSubscription -- treated identically here, returns a single EeSubscription object.
+    // Real, disclosed scope narrowing kept from ADR-0148's own precedent: only the collection +
+    // individual document are implemented -- the deeper group-data-scoped
+    // amf-subscriptions/smf-subscriptions/hss-subscriptions nested sub-collections under each
+    // subsId remain genuinely deferred. ---
+
+    const std::string group_ee_subscriptions_collection_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/group-data/{ueGroupId}/ee-subscriptions";
+    const std::string group_ee_subscriptions_individual_path_pattern =
+        std::string(kApiRoot) +
+        "/subscription-data/group-data/{ueGroupId}/ee-subscriptions/{subsId}";
+
+    server.add_route(
+        "GET",
+        group_ee_subscriptions_collection_path_pattern,
+        [&verifier, &group_ee_subscriptions, &group_ee_subscriptions_list_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            auto subs = group_ee_subscriptions.list(ue_group_id);
+            json arr = json::array();
+            for (auto& s : subs) {
+                arr.push_back(std::move(s));
+            }
+            group_ee_subscriptions_list_counter->Add(1);
+            return sbi_core::http2::Response::json(200, arr.dump());
+        });
+
+    server.add_route(
+        "POST",
+        group_ee_subscriptions_collection_path_pattern,
+        [&verifier,
+         &group_ee_subscriptions,
+         &group_ee_subscriptions_create_counter,
+         group_ee_subscriptions_collection_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::EeSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = sbi_core::generate_uuid_v4();
+            json j = *body;
+            group_ee_subscriptions.create(ue_group_id, subs_id, j);
+            group_ee_subscriptions_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            // Real ueGroupId substituted into the Location header, not the unsubstituted
+            // {ueGroupId} route-pattern placeholder (a bug found live-verifying this exact
+            // resource, also fixed in the pre-existing ee-/sdm-subscriptions siblings above).
+            resp.headers.emplace("location",
+                                 std::string(kApiRoot) + "/subscription-data/group-data/" +
+                                     ue_group_id + "/ee-subscriptions/" + subs_id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        group_ee_subscriptions_individual_path_pattern,
+        [&verifier, &group_ee_subscriptions, &group_ee_subscriptions_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            auto data = group_ee_subscriptions.get(ue_group_id, subs_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No EE Group Subscription for subsId " + subs_id);
+            }
+            group_ee_subscriptions_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        group_ee_subscriptions_individual_path_pattern,
+        [&verifier, &group_ee_subscriptions, &group_ee_subscriptions_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::EeSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            json j = *body;
+            // Real spec: UpdateEeGroupSubscriptions is genuinely update-only -- "update of
+            // non-existing resource is rejected" (real 404), no create-via-PUT path exists.
+            if (!group_ee_subscriptions.update(ue_group_id, subs_id, j)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No EE Group Subscription for subsId " + subs_id);
+            }
+            group_ee_subscriptions_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        group_ee_subscriptions_individual_path_pattern,
+        [&verifier, &group_ee_subscriptions, &group_ee_subscriptions_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            std::optional<json> patched;
+            try {
+                patched = group_ee_subscriptions.apply_patch(ue_group_id, subs_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No EE Group Subscription for subsId " + subs_id);
+            }
+            group_ee_subscriptions_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        group_ee_subscriptions_individual_path_pattern,
+        [&verifier, &group_ee_subscriptions, &group_ee_subscriptions_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            if (!group_ee_subscriptions.remove(ue_group_id, subs_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No EE Group Subscription for subsId " + subs_id);
+            }
+            group_ee_subscriptions_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

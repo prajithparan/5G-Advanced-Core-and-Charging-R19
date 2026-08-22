@@ -2925,3 +2925,34 @@ closes UDR resource #65 of free5GC's ~42+ real `Nudr_DataRepository` resources
 (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0155 in `docs/DECISIONS.md` for full disclosure --
 task #106 remains open; `group-data`'s own parallel tree and the other genuinely deferred
 subsystems remain real, disclosed gaps.
+
+## ADR-0156 -- gap-closure task #106 continuation: UDR real Event Exposure Group Subscriptions (group-data-scoped) collection + individual document, plus a real Location-header bug fix
+
+| Requirement | Test |
+|---|---|
+| `GET` collection for a fresh `ueGroupId` | Live curl, real `200 []` |
+| `POST` with `EeSubscription` body creates with server-generated `subsId` | Live curl, real `201`, body echoed back |
+| `Location` header contains the real `ueGroupId`, not the unsubstituted `{ueGroupId}` route-pattern placeholder (real bug found and fixed) | Live curl inspection of the response headers |
+| `GET` individual document returns a single `EeSubscription` object (real spec `items:`-without-`type:array` artifact, same handling as ADR-0148) | Live curl, real `200` |
+| `PUT` update | Live curl, real `204`; `GET` after confirms overwrite |
+| `PATCH` (real RFC 6902) | Live curl, real `204`; `GET` after reflects patched value |
+| `PUT` against a nonexistent `subsId` (update-only PUT) | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_group_ee_subscriptions` independently confirms rows match curl's responses |
+| Sibling `udr_ee_subscriptions` unaffected | Direct `psql` query confirms separate storage |
+| Pre-existing `Location`-header bug re-verified fixed on `ee-subscriptions` and `sdm-subscriptions` | Fresh live `POST` to each, real `Location` header confirmed to contain the real UE ID, not `{ueId}` |
+| `DELETE` | Live curl, real `204` per row; `psql` confirms zero `udr_group_ee_subscriptions` rows remained |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real GET+POST collection / GET+PUT+PATCH+DELETE individual-document resource
+(`QueryEeGroupSubscriptions`/`CreateEeGroupSubscriptions`/`QueryEeGroupSubscription`/
+`UpdateEeGroupSubscriptions`/`ModifyEeGroupSubscription`/`RemoveEeGroupSubscriptions`), the
+group-data-scoped sibling of `ee-subscriptions` (ADR-0148), keyed by `ueGroupId` instead of
+`ueId`. Also fixes a real, disclosed pre-existing bug: the `Location` header on `ee-subscriptions`'
+and `sdm-subscriptions`' own `POST`-create handlers was returning the unsubstituted route-pattern
+placeholder instead of the real path-parameter value -- found live-verifying this new resource,
+confirmed pre-existing by testing the already-shipped siblings, and fixed in all three in this
+same ADR. This closes UDR resource #66 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0156 in `docs/DECISIONS.md` for full disclosure --
+task #106 remains open; the group-data-scoped `amf-subscriptions`/`smf-subscriptions`/
+`hss-subscriptions` nested sub-collections and the other genuinely deferred subsystems remain
+real, disclosed gaps.

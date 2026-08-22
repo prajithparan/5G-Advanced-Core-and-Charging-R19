@@ -944,3 +944,26 @@ CREATE TABLE IF NOT EXISTS udr_sdm_hss_subscription_info (
     data    JSONB NOT NULL,
     PRIMARY KEY (ue_id, subs_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0156). Real Event Exposure Group
+-- Subscriptions collection (/subscription-data/group-data/{ueGroupId}/ee-subscriptions, real spec
+-- operations QueryEeGroupSubscriptions/CreateEeGroupSubscriptions) and individual document
+-- (/subscription-data/group-data/{ueGroupId}/ee-subscriptions/{subsId}, real spec operations
+-- QueryEeGroupSubscription/UpdateEeGroupSubscriptions/ModifyEeGroupSubscription/
+-- RemoveEeGroupSubscriptions -- GET+PUT+PATCH+DELETE), the group-data-scoped sibling of
+-- ee-subscriptions (ADR-0148), structurally identical but keyed by ueGroupId instead of ueId:
+-- same EeSubscription schema, server-generated subsId (real UUID v4, same generator), PUT
+-- genuinely update-only (real spec 404 text "update of non-existing resource is rejected", same
+-- as ADR-0148). The individual GET response schema has the same real `items:` (no `type: array`)
+-- authoring artifact already found and resolved in ADR-0148's own QueryeeSubscription -- treated
+-- identically, returns a single EeSubscription object. Real, disclosed scope narrowing kept from
+-- ADR-0148's own precedent: only the collection + individual document are implemented -- the
+-- deeper group-data-scoped amf-subscriptions/smf-subscriptions/hss-subscriptions nested
+-- sub-collections under each {subsId} remain genuinely deferred, not built. Composite key
+-- (ue_group_id, subs_id).
+CREATE TABLE IF NOT EXISTS udr_group_ee_subscriptions (
+    ue_group_id TEXT NOT NULL,
+    subs_id     TEXT NOT NULL,
+    data        JSONB NOT NULL,
+    PRIMARY KEY (ue_group_id, subs_id)
+);
