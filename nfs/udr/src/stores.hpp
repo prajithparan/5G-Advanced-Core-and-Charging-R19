@@ -1233,4 +1233,22 @@ private:
     pqxx::connection conn_;
 };
 
+// Real spec PUT documents only 204 (no 201) -- put() is void, always-upsert, same idiom as
+// SorDataStore/UpuDataStore (ADR-0143), just with a composite key (ADR-0155).
+class SdmHssSubscriptionInfoStore {
+public:
+    explicit SdmHssSubscriptionInfoStore(const std::string& conninfo);
+
+    void put(const std::string& ue_id, const std::string& subs_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id, const std::string& subs_id);
+    std::optional<nlohmann::json> apply_patch(const std::string& ue_id,
+                                              const std::string& subs_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ue_id, const std::string& subs_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

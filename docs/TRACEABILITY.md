@@ -2896,3 +2896,32 @@ HssSubscriptionInfo (Recommended)". This closes UDR resource #64 of free5GC's ~4
 disclosure -- task #106 remains open; `sdm-subscriptions`' own `hss-sdm-subscriptions`,
 `group-data`'s own parallel tree, and the other genuinely deferred subsystems remain real,
 disclosed gaps.
+
+## ADR-0155 -- gap-closure task #106 continuation: UDR real HSS SDM Subscription Info (Document) nested under an individual sdm-subscription
+
+| Requirement | Test |
+|---|---|
+| `GET` before any `PUT` | Live curl, real `404` |
+| `PUT` with a single `HssSubscriptionInfo` object wrapping `hssSubscriptionList` | Live curl, real `204` (real spec documents no `201` for this operation, unlike its `ee-subscriptions`-nested siblings; matches the existing `sor-data`/`upu-data` 204-only upsert-PUT precedent) |
+| `GET` after `PUT` returns `HssSubscriptionInfo`-shaped data (same real spec `SmfSubscriptionInfo` mis-citation as ADR-0154, same user-confirmed resolution applied without re-asking) | Live curl, real `200` with matching body |
+| `PUT` again with a different `hssInstanceId`/`subscriptionId` | Live curl, real `204`; `GET` after confirms a genuine wholesale overwrite |
+| `PATCH` (real RFC 6902, nested array-index path `/hssSubscriptionList/0/hssInstanceId`) | Live curl, real `204`; `GET` after reflects the patched value |
+| `PATCH` against a nonexistent `subsId` | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_sdm_hss_subscription_info` independently confirms the row matches curl's response |
+| Sibling `udr_ee_hss_subscription_info`/parent `udr_sdm_subscriptions` unaffected | Direct `psql` query, real `0` rows in both, confirms separate storage |
+| `DELETE` | Live curl, real `204`; `GET` after real `404`; `psql` confirms zero rows remained |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real GET+PUT+PATCH+DELETE resource ("Create HSS SDM Subscriptions"/`GetHssSDMSubscriptionInfo`/
+`ModifyHssSDMSubscriptionInfo`/`RemoveHssSDMSubscriptionsInfo`), nested under an individual
+`sdm-subscriptions/{subsId}` -- `sdm-subscriptions`' own final deferred nested sub-collection.
+Reuses the same `HssSubscriptionInfo` schema as `ee-subscriptions`' own `hss-subscriptions`
+sibling (ADR-0154). Two real, disclosed findings on direct read: (1) the real spec's own PUT
+documents only `204`, never `201` -- matches the existing `sor-data`/`upu-data` (ADR-0143)
+precedent, not invented; (2) the real spec's own `GetHssSDMSubscriptionInfo` response again
+literally cites `SmfSubscriptionInfo`, the identical typo class already resolved (and
+user-confirmed) in ADR-0154 for the sibling resource -- applied here without re-asking. This
+closes UDR resource #65 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0155 in `docs/DECISIONS.md` for full disclosure --
+task #106 remains open; `group-data`'s own parallel tree and the other genuinely deferred
+subsystems remain real, disclosed gaps.

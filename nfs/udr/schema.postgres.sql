@@ -919,3 +919,28 @@ CREATE TABLE IF NOT EXISTS udr_ee_hss_subscription_info (
     data    JSONB NOT NULL,
     PRIMARY KEY (ue_id, subs_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0155). Real HSS SDM Subscription
+-- Info (Document), nested under an individual sdm-subscription
+-- (/subscription-data/{ueId}/context-data/sdm-subscriptions/{subsId}/hss-sdm-subscriptions, real
+-- spec operations "Create HSS SDM Subscriptions" [PUT]/GetHssSDMSubscriptionInfo [GET]/
+-- ModifyHssSDMSubscriptionInfo [PATCH]/RemoveHssSDMSubscriptionsInfo [DELETE]). Reuses the same
+-- HssSubscriptionInfo schema as ee-subscriptions' own hss-subscriptions sibling (ADR-0154).
+-- Two real, disclosed findings from direct read: (1) the real spec's own PUT response list
+-- documents ONLY 204 -- no 201 anywhere -- genuinely unlike amf-/smf-/hss-subscriptions under
+-- ee-subscriptions (which all document a real distinct 201-vs-204); this matches the existing
+-- sor-data/upu-data precedent (ADR-0143) of a single-response-code (204-only) upsert PUT, not
+-- invented, confirmed by direct read of the real spec text. (2) GetHssSDMSubscriptionInfo's own
+-- 200 response again literally cites SmfSubscriptionInfo, not HssSubscriptionInfo -- the same
+-- typo class just resolved in ADR-0154 for the sibling resource under ee-subscriptions; applying
+-- the same, already-user-confirmed resolution (return HssSubscriptionInfo) rather than re-asking
+-- for the identical schema-citation error on a structurally parallel resource. No referential
+-- integrity enforced against the parent sdm-subscriptions resource (established project
+-- precedent). This is sdm-subscriptions' own final deferred nested sub-collection. Composite key
+-- (ue_id, subs_id).
+CREATE TABLE IF NOT EXISTS udr_sdm_hss_subscription_info (
+    ue_id   TEXT NOT NULL,
+    subs_id TEXT NOT NULL,
+    data    JSONB NOT NULL,
+    PRIMARY KEY (ue_id, subs_id)
+);
