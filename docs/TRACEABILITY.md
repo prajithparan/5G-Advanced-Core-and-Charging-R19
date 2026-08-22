@@ -2866,3 +2866,33 @@ resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0153 in `docs/DECISIONS.md`
 disclosure -- task #106 remains open; `ee-subscriptions`' own remaining `hss-subscriptions`
 sibling, `sdm-subscriptions`' own `hss-sdm-subscriptions`, `group-data`'s own parallel tree, and
 the other genuinely deferred subsystems remain real, disclosed gaps.
+
+## ADR-0154 -- gap-closure task #106 continuation: UDR real HSS Subscription Info (Document) nested under an individual ee-subscription
+
+| Requirement | Test |
+|---|---|
+| `GET` before any `PUT` | Live curl, real `404` |
+| `PUT` with a single `HssSubscriptionInfo` object wrapping `hssSubscriptionList` | Live curl, real `201`, body echoed back |
+| `GET` after `PUT` returns `HssSubscriptionInfo`-shaped data (user-confirmed resolution of the real spec's own `SmfSubscriptionInfo` mis-citation) | Live curl, real `200` with matching body |
+| `PUT` again with a different `hssInstanceId`/`subscriptionId` | Live curl, real `204` (is-new tracking correctly reports "update"); `GET` after confirms a genuine wholesale overwrite |
+| `PATCH` (real RFC 6902, nested array-index path `/hssSubscriptionList/0/hssInstanceId`) | Live curl, real `204`; `GET` after reflects the patched value |
+| `PATCH` against a nonexistent `subsId` | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_ee_hss_subscription_info` independently confirms the row matches curl's response |
+| Sibling `amf-subscriptions`/`smf-subscriptions` tables unaffected | Direct `psql` query, real `0` rows in both, confirms separate storage |
+| `DELETE` | Live curl, real `204`; `GET` after real `404`; `psql` confirms zero rows remained |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real GET+PUT+PATCH+DELETE resource ("Create HSS Subscriptions"/`GetHssSubscriptionInfo`/
+`ModifyHssSubscriptionInfo`/`RemoveHssSubscriptionsInfo`), nested under an individual
+`ee-subscriptions/{subsId}` -- the third and final of `ee-subscriptions`' own nested
+sub-collections, sibling of `amf-subscriptions` (ADR-0152) and `smf-subscriptions` (ADR-0153).
+Real, disclosed spec inconsistency found on direct read, asked and confirmed with the user before
+implementing: the real spec's own `GetHssSubscriptionInfo` response literally cites
+`SmfSubscriptionInfo`, not this resource's own `HssSubscriptionInfo` -- treated as a real spec
+typo (same precedent as ADR-0129's `QueryPorseData` typo) per the user's explicit answer "Return
+HssSubscriptionInfo (Recommended)". This closes UDR resource #64 of free5GC's ~42+ real
+`Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md), and completes all three of
+`ee-subscriptions`' own nested sub-collections. See ADR-0154 in `docs/DECISIONS.md` for full
+disclosure -- task #106 remains open; `sdm-subscriptions`' own `hss-sdm-subscriptions`,
+`group-data`'s own parallel tree, and the other genuinely deferred subsystems remain real,
+disclosed gaps.

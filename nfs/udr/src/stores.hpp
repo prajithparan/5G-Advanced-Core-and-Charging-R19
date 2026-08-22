@@ -1206,4 +1206,31 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0154). Backs the real HSS Event
+// Subscription Info (Document) resource nested under an individual ee-subscription
+// (`context-data/ee-subscriptions/{subsId}/hss-subscriptions`, real spec operations
+// `Create HSS Subscriptions`/`GetHssSubscriptionInfo`/`ModifyHssSubscriptionInfo`/
+// `RemoveHssSubscriptionsInfo`). Real, disclosed spec inconsistency, asked and confirmed: the
+// real spec's own `GetHssSubscriptionInfo` response schema literally cites `SmfSubscriptionInfo`,
+// not `HssSubscriptionInfo` -- treated as a real typo, `get()` stores/returns real
+// `HssSubscriptionInfo`-shaped data (wrapping `hssSubscriptionList`), matching this resource's own
+// PUT/PATCH/DELETE and every sibling's internally-consistent pattern. Structurally identical
+// store shape to `EeSmfSubscriptionInfoStore` otherwise. Third and final of `ee-subscriptions`'
+// own nested sub-collections closed. Composite key (ue_id, subs_id).
+class EeHssSubscriptionInfoStore {
+public:
+    explicit EeHssSubscriptionInfoStore(const std::string& conninfo);
+
+    bool put(const std::string& ue_id, const std::string& subs_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id, const std::string& subs_id);
+    std::optional<nlohmann::json> apply_patch(const std::string& ue_id,
+                                              const std::string& subs_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ue_id, const std::string& subs_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

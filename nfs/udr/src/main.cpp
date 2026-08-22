@@ -431,12 +431,24 @@
 // difference confirmed on direct read, not assumed from the sibling's shape. Same real, distinct
 // 201-vs-204 PUT.
 //
+// UPDATE (ADR-0154, gap-closure task #106): the real HSS Subscription Info (Document) resource,
+// nested under an individual ee-subscription (`context-data/ee-subscriptions/{subsId}/
+// hss-subscriptions`, real spec operations "Create HSS Subscriptions" [PUT]/GetHssSubscriptionInfo
+// [GET]/ModifyHssSubscriptionInfo [PATCH]/RemoveHssSubscriptionsInfo [DELETE]) is now
+// implemented -- the third and final of `ee-subscriptions`' own nested sub-collections
+// (siblings `amf-subscriptions`/`smf-subscriptions` closed in ADR-0152/ADR-0153). Real, disclosed
+// spec inconsistency, asked and confirmed with the user: the real spec YAML's own
+// GetHssSubscriptionInfo 200 response literally cites `SmfSubscriptionInfo`, not this resource's
+// own `HssSubscriptionInfo` (used consistently by its own PUT/PATCH/DELETE) -- treated as a real
+// spec typo (same precedent as ADR-0129's `QueryPorseData` typo), GET returns real
+// `HssSubscriptionInfo`-shaped data. Same single-object-document shape and real, distinct
+// 201-vs-204 PUT as `smf-subscriptions`. This closes all three of `ee-subscriptions`' own nested
+// sub-collections.
+//
 // Deliberately still deferred, not dropped:
 // context-data's other sub-resources (
-// ee-subscriptions' own hss-subscriptions nested sub-collection (sibling of the now-closed
-// amf-/smf-subscriptions), sdm-subscriptions' own hss-sdm-subscriptions nested
-// sub-collection -- both real, separate resources; group-data's own parallel
-// ee-subscriptions/{subsId}/... tree not yet surveyed);
+// sdm-subscriptions' own hss-sdm-subscriptions nested sub-collection -- a real, separate
+// resource; group-data's own parallel ee-subscriptions/{subsId}/... tree not yet surveyed);
 // the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
 // `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
 // collection GET, real spec `Query5GmbsGroup` -- both confirmed genuinely blocked: their `gpsis`
@@ -754,6 +766,8 @@ int main() {
     udr::EeAmfSubscriptionInfoStore ee_amf_subscription_info(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0153).
     udr::EeSmfSubscriptionInfoStore ee_smf_subscription_info(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0154).
+    udr::EeHssSubscriptionInfoStore ee_hss_subscription_info(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1288,6 +1302,13 @@ int main() {
         "udr_ee_smf_subscription_info_get_total", "Total GetSmfSubscriptionInfo calls");
     auto ee_smf_subscription_info_delete_counter = meter->CreateUInt64Counter(
         "udr_ee_smf_subscription_info_delete_total", "Total RemoveSmfSubscriptionsInfo calls");
+    auto ee_hss_subscription_info_write_counter = meter->CreateUInt64Counter(
+        "udr_ee_hss_subscription_info_write_total",
+        "Total Create HSS Subscriptions/ModifyHssSubscriptionInfo calls");
+    auto ee_hss_subscription_info_get_counter = meter->CreateUInt64Counter(
+        "udr_ee_hss_subscription_info_get_total", "Total GetHssSubscriptionInfo calls");
+    auto ee_hss_subscription_info_delete_counter = meter->CreateUInt64Counter(
+        "udr_ee_hss_subscription_info_delete_total", "Total RemoveHssSubscriptionsInfo calls");
     auto five_g_vn_groups_write_counter = meter->CreateUInt64Counter(
         "udr_5g_vn_groups_write_total", "Total Create5GVnGroup/Modify5GVnGroup calls");
     auto five_g_vn_groups_get_counter = meter->CreateUInt64Counter(
@@ -4531,6 +4552,124 @@ int main() {
                     404, "Not Found", "No SMF Subscription Info for subsId " + subs_id);
             }
             ee_smf_subscription_info_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: HSS Event Subscription Info (Document), nested under an
+    // individual ee-subscription (ADR-0154, gap-closure task #106) -- real
+    // GET+PUT+PATCH+DELETE per TS29505_Subscription_Data.yaml. Real, disclosed spec
+    // inconsistency, asked and confirmed: the real spec's own GetHssSubscriptionInfo response
+    // literally cites SmfSubscriptionInfo, not HssSubscriptionInfo -- treated as a real typo,
+    // this route returns real HssSubscriptionInfo-shaped data, matching PUT/PATCH/DELETE on this
+    // same resource and every sibling's own internally-consistent pattern. Real, distinct
+    // 201-vs-204 PUT. Third and final of ee-subscriptions' own nested sub-collections closed. ---
+
+    const std::string ee_hss_subscription_info_path_pattern =
+        std::string(kApiRoot) +
+        "/subscription-data/{ueId}/context-data/ee-subscriptions/{subsId}/hss-subscriptions";
+
+    server.add_route(
+        "GET",
+        ee_hss_subscription_info_path_pattern,
+        [&verifier, &ee_hss_subscription_info, &ee_hss_subscription_info_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            auto data = ee_hss_subscription_info.get(ue_id, subs_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No HSS Subscription Info for subsId " + subs_id);
+            }
+            ee_hss_subscription_info_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        ee_hss_subscription_info_path_pattern,
+        [&verifier,
+         &ee_hss_subscription_info,
+         &ee_hss_subscription_info_write_counter,
+         ee_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::HssSubscriptionInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            json j = *body;
+            const bool is_new = ee_hss_subscription_info.put(ue_id, subs_id, j);
+            ee_hss_subscription_info_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", ee_hss_subscription_info_path_pattern);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        ee_hss_subscription_info_path_pattern,
+        [&verifier, &ee_hss_subscription_info, &ee_hss_subscription_info_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            std::optional<json> patched;
+            try {
+                patched = ee_hss_subscription_info.apply_patch(ue_id, subs_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No HSS Subscription Info for subsId " + subs_id);
+            }
+            ee_hss_subscription_info_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        ee_hss_subscription_info_path_pattern,
+        [&verifier, &ee_hss_subscription_info, &ee_hss_subscription_info_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            if (!ee_hss_subscription_info.remove(ue_id, subs_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No HSS Subscription Info for subsId " + subs_id);
+            }
+            ee_hss_subscription_info_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

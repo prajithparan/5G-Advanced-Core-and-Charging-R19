@@ -897,3 +897,25 @@ CREATE TABLE IF NOT EXISTS udr_ee_smf_subscription_info (
     data    JSONB NOT NULL,
     PRIMARY KEY (ue_id, subs_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0154). Real HSS Event Subscription
+-- Info (Document), nested under an individual ee-subscription
+-- (/subscription-data/{ueId}/context-data/ee-subscriptions/{subsId}/hss-subscriptions, real spec
+-- operations "Create HSS Subscriptions" [PUT]/GetHssSubscriptionInfo [GET]/
+-- ModifyHssSubscriptionInfo [PATCH]/RemoveHssSubscriptionsInfo [DELETE]). Real, disclosed spec
+-- inconsistency, asked and confirmed rather than silently assumed: GetHssSubscriptionInfo's own
+-- 200 response literally cites schema SmfSubscriptionInfo, not HssSubscriptionInfo -- even though
+-- PUT/PATCH/DELETE on this identical resource all use HssSubscriptionInfo (a real, distinct,
+-- already-generated schema wrapping hssSubscriptionList, an array of HssSubscriptionItem), and
+-- every analogous sibling (amf-/smf-subscriptions) returns its own PUT-body type on GET. Treated
+-- as a real spec typo (same precedent as ADR-0129's QueryPorseData typo) -- GET returns
+-- HssSubscriptionInfo, matching this resource's own PUT/PATCH/DELETE and every sibling's
+-- internally-consistent pattern. Same real, distinct 201-vs-204 PUT and
+-- no-referential-integrity-against-parent precedent as amf-/smf-subscriptions. Third and final of
+-- ee-subscriptions' own nested sub-collections closed. Composite key (ue_id, subs_id).
+CREATE TABLE IF NOT EXISTS udr_ee_hss_subscription_info (
+    ue_id   TEXT NOT NULL,
+    subs_id TEXT NOT NULL,
+    data    JSONB NOT NULL,
+    PRIMARY KEY (ue_id, subs_id)
+);

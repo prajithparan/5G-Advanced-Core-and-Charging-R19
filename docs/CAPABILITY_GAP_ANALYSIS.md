@@ -393,7 +393,7 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 64 real resource endpoints (63 real
+This project's UDR (`nfs/udr/src/main.cpp`) implements 65 real resource endpoints (64 real
 `Nudr_DataRepository` resources plus, as of ADR-0120, one real `Nudr_GroupIDmap` resource,
 `GetRoutingIDs` -- a genuinely distinct Nudr API, not counted in the `Nudr_DataRepository`-vs-free5GC
 comparison below): AMF 3GPP-access
@@ -464,7 +464,10 @@ GET+PUT+PATCH+DELETE, array-valued document, real distinct 201-vs-204 PUT, first
 ee-subscriptions' own nested sub-collections closed), SMF Event Subscription Info (Document)
 nested under an individual ee-subscription (ADR-0153 -- see below, real GET+PUT+PATCH+DELETE,
 single-object document unlike its array-valued sibling, second of ee-subscriptions' own nested
-sub-collections closed),
+sub-collections closed), HSS Subscription Info (Document) nested under an individual
+ee-subscription (ADR-0154 -- see below, real GET+PUT+PATCH+DELETE, single-object document,
+real disclosed spec inconsistency resolved per user confirmation, third and final of
+ee-subscriptions' own nested sub-collections closed),
 SMF-registrations context-data (full CRUD,
 `{pduSessionId}`-scoped), provisioned-data (`am-data`, `smf-selection-subscription-data`,
 `sm-data`, -- ADR-0106 -- `lcs-bca-data`, -- ADR-0125 -- `sms-mng-data`, -- ADR-0126 -- `sms-data`, and -- ADR-0127 -- `trace-data`), and the real nested `policy-data/ues/{ueId}/sm-data` resource from ADR-0072
@@ -482,8 +485,8 @@ ADR-0130, 44 as of ADR-0131, 45 as of ADR-0133, 46 as of ADR-0134, 47 as of ADR-
 ADR-0136, 49 as of ADR-0137, 50 as of ADR-0139, 51 as of ADR-0140, 52 as of ADR-0141, 53 as of
 ADR-0142, 54 as of ADR-0143, 55 as of ADR-0144, 56 as of ADR-0145, 57 as of ADR-0146, 58 as of
 ADR-0147, 59 as of ADR-0148, 60 as of ADR-0149, 61 as of ADR-0151 (ADR-0150 was a CHF-only CI fix,
-no UDR resource change), 62 as of ADR-0152, now 63 as of ADR-0153 -- see below). This is well
-past free5GC's own ~42+ figure for real
+no UDR resource change), 62 as of ADR-0152, 63 as of ADR-0153, now 64 as of ADR-0154 -- see
+below). This is well past free5GC's own ~42+ figure for real
 `Nudr_DataRepository` resource types; the real, still-open gap from here is
 the not-yet-surveyed remainder of `TS29505_Subscription_Data.yaml` itself (`group-data/*`,
 `a2x-data`, `rangingsl-privacy-data`, `ranging-slpos-data`, `5mbs-data`, and others) plus the
@@ -781,7 +784,16 @@ schema `SmfSubscriptionInfo` -- real GET+PUT+PATCH+DELETE, single-object documen
 array-valued sibling, real distinct 201-vs-204 PUT) -- taking UDR from 62 to 63 of free5GC's
 ~42+ real `Nudr_DataRepository` resource types. Second of `ee-subscriptions`' own nested
 sub-collections closed; `hss-subscriptions` (sibling) and `sdm-subscriptions`' own
-`hss-sdm-subscriptions` remain deferred.
+`hss-sdm-subscriptions` remain deferred. **Closed, docs/DECISIONS.md ADR-0154**: HSS
+Subscription Info (Document), nested under an individual ee-subscription ("Create HSS
+Subscriptions"/`GetHssSubscriptionInfo`/`ModifyHssSubscriptionInfo`/`RemoveHssSubscriptionsInfo`,
+schema `HssSubscriptionInfo` -- real GET+PUT+PATCH+DELETE, single-object document body, real
+disclosed spec inconsistency (the real spec's own `GetHssSubscriptionInfo` response literally
+cites `SmfSubscriptionInfo`; treated as a real typo per explicit user confirmation, same
+precedent as ADR-0129's `QueryPorseData` typo), real distinct 201-vs-204 PUT) -- taking UDR from
+63 to 64 of free5GC's ~42+ real `Nudr_DataRepository` resource types. Third and final of
+`ee-subscriptions`' own nested sub-collections closed; `sdm-subscriptions`' own
+`hss-sdm-subscriptions` remains deferred.
 This is well past free5GC's own ~42+ figure; the real, still-open work from here is surveying the
 remainder of `TS29505_Subscription_Data.yaml` itself (the rest of `group-data`, bare
 `/subscription-data/{ueId}`, and others), not chasing a shrinking comparison count.
@@ -902,7 +914,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | SMF | ~10-16x | `UpdateSMContext`: `PATH_SWITCH_REQ`/`_ACK` slice CLOSED (task #101, ADR-0092, real downlink FAR/GTP-U control-plane); the other 20 real N2SmInfoType values remain a stub. AMF's own N2 handover NGAP side is now closed (ADR-0095/ADR-0096), but AMF still doesn't call SMF during handover -- the real AMF->SMF relay wiring for handover-triggered PDU session resource re-setup remains a real, disclosed open gap |
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
-| UDR | ~2.5-10x | Resource-type breadth (63 of 42+ real TS 29.504 resources closed, past parity -- remainder of `group-data`, bare `/subscription-data/{ueId}`, remaining subscription nested sub-collections (`hss-subscriptions`, `hss-sdm-subscriptions`), real webhook delivery, and several genuinely-blocked resources remain, see UDR section above) |
+| UDR | ~2.5-10x | Resource-type breadth (64 of 42+ real TS 29.504 resources closed, past parity -- remainder of `group-data`, bare `/subscription-data/{ueId}`, `sdm-subscriptions`' own `hss-sdm-subscriptions` nested sub-collection, real webhook delivery, and several genuinely-blocked resources remain, see UDR section above) |
 | UPF | ~1x (task #107 fully closed: Association Update/Release, ADR-0084; PFD Management, ADR-0086; Node Report, ADR-0087; Session Set Deletion correctly found not applicable to this project's own N4/Sxc interface) | datapath (XDP) already ahead of both references on paper, unbenchmarked |
 | CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding: CLOSED (task #108, ADR-0089, narrower disclosed scope than free5GC's); already ahead on 5G-native service breadth + AI-native charging |
 
