@@ -1154,4 +1154,31 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0152). Backs the real AMF
+// Subscription Info (Document) resource nested under an individual ee-subscription
+// (`context-data/ee-subscriptions/{subsId}/amf-subscriptions`, real spec operations
+// `Create AMF Subscriptions`/`GetAmfSubscriptionInfo`/`ModifyAmfSubscriptionInfo`/
+// `RemoveAmfSubscriptionsInfo`). Real, disclosed: the document body is a JSON ARRAY of
+// `AmfSubscriptionInfo` (not a single object) -- stored and returned as one JSONB array value per
+// (ue_id, subs_id), same as any other single-document store, just array-shaped at the JSON layer.
+// `put()` returns `true` for a new entry (201-vs-204 selection, same precedent as
+// `AmfContextStore`). No referential integrity enforced against `EeSubscriptionsStore` (this
+// project's own established precedent of not enforcing cross-resource existence checks). First
+// of `ee-subscriptions`' own nested sub-collections closed. Composite key (ue_id, subs_id).
+class EeAmfSubscriptionInfoStore {
+public:
+    explicit EeAmfSubscriptionInfoStore(const std::string& conninfo);
+
+    bool put(const std::string& ue_id, const std::string& subs_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id, const std::string& subs_id);
+    std::optional<nlohmann::json> apply_patch(const std::string& ue_id,
+                                              const std::string& subs_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ue_id, const std::string& subs_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

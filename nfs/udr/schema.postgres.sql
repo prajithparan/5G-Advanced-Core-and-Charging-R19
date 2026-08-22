@@ -857,3 +857,25 @@ CREATE TABLE IF NOT EXISTS udr_sdm_subscriptions (
     data    JSONB NOT NULL,
     PRIMARY KEY (ue_id, subs_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0152). Real AMF Subscription Info
+-- (Document), nested under an individual ee-subscription
+-- (/subscription-data/{ueId}/context-data/ee-subscriptions/{subsId}/amf-subscriptions, real spec
+-- operations "Create AMF Subscriptions" [PUT]/GetAmfSubscriptionInfo [GET]/
+-- ModifyAmfSubscriptionInfo [PATCH]/RemoveAmfSubscriptionsInfo [DELETE]). Real, disclosed: the
+-- real document body is a JSON ARRAY of AmfSubscriptionInfo (minItems 1), not a single object --
+-- schema AmfSubscriptionInfo: required amfInstanceId + subscriptionId (Uri), plus optional
+-- subsChangeNotifyCorrelationId/contextInfo. Real, distinct 201-vs-204 PUT (same
+-- is-new-tracking precedent as AmfContextStore). Real, disclosed simplification: no referential
+-- integrity is enforced against udr_ee_subscriptions (this project's own established precedent
+-- elsewhere, e.g. pp-data-store, of not enforcing cross-resource existence checks) -- this
+-- resource is addressable by any (ue_id, subs_id) pair regardless of whether that ee-subscription
+-- was itself ever created. First of ee-subscriptions' own nested sub-collections surveyed
+-- directly rather than left blanket-deferred (smf-subscriptions/hss-subscriptions and
+-- sdm-subscriptions' own hss-sdm-subscriptions remain deferred). Composite key (ue_id, subs_id).
+CREATE TABLE IF NOT EXISTS udr_ee_amf_subscription_info (
+    ue_id   TEXT NOT NULL,
+    subs_id TEXT NOT NULL,
+    data    JSONB NOT NULL,
+    PRIMARY KEY (ue_id, subs_id)
+);

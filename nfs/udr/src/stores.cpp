@@ -1961,4 +1961,64 @@ bool SdmSubscriptionsStore::remove(const std::string& ue_id, const std::string& 
     return result.affected_rows() > 0;
 }
 
+EeAmfSubscriptionInfoStore::EeAmfSubscriptionInfoStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+bool EeAmfSubscriptionInfoStore::put(const std::string& ue_id,
+                                     const std::string& subs_id,
+                                     nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto row = txn.exec("INSERT INTO udr_ee_amf_subscription_info (ue_id, subs_id, data) "
+                              "VALUES ($1, $2, $3::jsonb) "
+                              "ON CONFLICT (ue_id, subs_id) DO UPDATE SET data = EXCLUDED.data "
+                              "RETURNING (xmax = 0) AS inserted",
+                              pqxx::params{ue_id, subs_id, data.dump()})
+                         .one_row();
+    txn.commit();
+    return row["inserted"].as<bool>();
+}
+
+std::optional<nlohmann::json> EeAmfSubscriptionInfoStore::get(const std::string& ue_id,
+                                                              const std::string& subs_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_ee_amf_subscription_info WHERE ue_id = $1 AND subs_id = $2",
+                 pqxx::params{ue_id, subs_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::optional<nlohmann::json> EeAmfSubscriptionInfoStore::apply_patch(
+    const std::string& ue_id, const std::string& subs_id, const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_ee_amf_subscription_info WHERE ue_id = $1 AND subs_id = $2",
+                 pqxx::params{ue_id, subs_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto data = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    data = data.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("UPDATE udr_ee_amf_subscription_info SET data = $3::jsonb "
+             "WHERE ue_id = $1 AND subs_id = $2",
+             pqxx::params{ue_id, subs_id, data.dump()});
+    txn.commit();
+    return std::make_optional(data);
+}
+
+bool EeAmfSubscriptionInfoStore::remove(const std::string& ue_id, const std::string& subs_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM udr_ee_amf_subscription_info WHERE ue_id = $1 AND subs_id = $2",
+                 pqxx::params{ue_id, subs_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr

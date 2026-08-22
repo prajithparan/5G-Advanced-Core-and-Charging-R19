@@ -2811,3 +2811,31 @@ resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0151 in `docs/DECISIONS.md`
 disclosure -- task #106 remains open; `group-data`'s remaining genuinely-blocked resources, bare
 `/subscription-data/{ueId}`/`{ueId}/context-data`, both subscription resources' own nested
 sub-collections, and the other genuinely deferred subsystems remain real, disclosed gaps.
+
+## ADR-0152 -- gap-closure task #106 continuation: UDR real AMF Subscription Info (Document) nested under an individual ee-subscription
+
+| Requirement | Test |
+|---|---|
+| `GET` before any `PUT` | Live curl, real `404` |
+| `PUT` with a one-element `AmfSubscriptionInfo` array | Live curl, real `201`, body echoed back as the same array |
+| `GET` after `PUT` | Live curl, real `200` with matching array |
+| `PUT` again with a two-element array | Live curl, real `204` (confirms is-new tracking correctly reports "update"); `GET` after shows both elements |
+| `PATCH` (real RFC 6902 `[{"op":"remove","path":"/1"}]`, array-index operation) | Live curl, real `204`; `GET` after shows only the first element -- confirms RFC 6902 works against array-valued documents |
+| `PATCH` against a nonexistent `subsId` | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_ee_amf_subscription_info` independently confirms the row's JSONB array matches curl's response |
+| `DELETE` | Live curl, real `204`; `GET` after real `404` |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real GET+PUT+PATCH+DELETE resource ("Create AMF Subscriptions"/`GetAmfSubscriptionInfo`/
+`ModifyAmfSubscriptionInfo`/`RemoveAmfSubscriptionsInfo`), nested under an individual
+`ee-subscriptions/{subsId}` -- the first of `ee-subscriptions`' own nested sub-collections
+surveyed directly rather than left blanket-deferred. Two real, new shapes for this project: the
+document body is a JSON array of `AmfSubscriptionInfo` (`minItems: 1`), not a single object; PUT
+documents a real distinct `201`-vs-`204` (same is-new-tracking precedent as `amf-3gpp-access`).
+No referential integrity enforced against the parent `ee-subscriptions` resource (established
+project precedent). This closes UDR resource #62 of free5GC's ~42+ real `Nudr_DataRepository`
+resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0152 in `docs/DECISIONS.md` for full
+disclosure -- task #106 remains open; `ee-subscriptions`' own `smf-subscriptions`/
+`hss-subscriptions` sibling sub-collections, `sdm-subscriptions`' own `hss-sdm-subscriptions`,
+`group-data`'s own parallel tree, and the other genuinely deferred subsystems remain real,
+disclosed gaps.
