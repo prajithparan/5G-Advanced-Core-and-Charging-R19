@@ -509,10 +509,25 @@
 // (ADR-0153), structurally identical but keyed by `ueGroupId` instead of `ueId`: same
 // single-object `SmfSubscriptionInfo` document body, real distinct 201-vs-204 PUT.
 //
+// UPDATE (ADR-0159, gap-closure task #106): the real HSS Event Group Subscription Info
+// (Document) resource, nested under an individual group-data-scoped ee-subscription
+// (`group-data/{ueGroupId}/ee-subscriptions/{subsId}/hss-subscriptions`, real spec operations
+// `CreateHssGroupSubscriptions` [PUT]/`GetHssGroupSubscriptions` [GET]/
+// `ModifyHssGroupSubscriptions` [PATCH]/`RemoveHssGroupSubscriptions` [DELETE]) is now
+// implemented -- the group-data-scoped sibling of `ee-subscriptions/{subsId}/hss-subscriptions`
+// (ADR-0154), structurally identical but keyed by `ueGroupId` instead of `ueId`: same
+// single-object `HssSubscriptionInfo` document body, real distinct 201-vs-204 PUT.
+// `GetHssGroupSubscriptions` correctly cites `HssSubscriptionInfo` -- no response-schema typo
+// here, unlike its `ueId`-scoped and `sdm-subscriptions`-scoped siblings (ADR-0154/ADR-0155).
+// Real, disclosed spec inconsistency found on direct read: the real spec's own
+// DELETE/PATCH/GET operations on this path declare a parameter named `externalGroupId`, but the
+// actual URL path template has no such placeholder -- only `{ueGroupId}` and `{subsId}` (matching
+// PUT, and every sibling resource in this family). Not a genuine design ambiguity requiring a
+// choice between two real behaviors: `externalGroupId` isn't bindable from the real path at all,
+// so `ueGroupId` is used throughout. This completes all three of `group-data`'s own
+// `ee-subscriptions/{subsId}/...` nested sub-collections.
+//
 // Deliberately still deferred, not dropped:
-// context-data's other sub-resources (
-// group-data's own ee-subscriptions/{subsId}/hss-subscriptions nested sub-collection,
-// not yet surveyed);
 // the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
 // `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
 // collection GET, real spec `Query5GmbsGroup` -- both confirmed genuinely blocked: their `gpsis`
@@ -864,6 +879,8 @@ int main() {
     udr::GroupAmfSubscriptionInfoStore group_amf_subscription_info(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0158).
     udr::GroupSmfSubscriptionInfoStore group_smf_subscription_info(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0159).
+    udr::GroupHssSubscriptionInfoStore group_hss_subscription_info(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1437,6 +1454,13 @@ int main() {
         "udr_group_smf_subscription_info_get_total", "Total GetSmfGroupSubscriptions calls");
     auto group_smf_subscription_info_delete_counter = meter->CreateUInt64Counter(
         "udr_group_smf_subscription_info_delete_total", "Total RemoveSmfGroupSubscriptions calls");
+    auto group_hss_subscription_info_write_counter = meter->CreateUInt64Counter(
+        "udr_group_hss_subscription_info_write_total",
+        "Total CreateHssGroupSubscriptions/ModifyHssGroupSubscriptions calls");
+    auto group_hss_subscription_info_get_counter = meter->CreateUInt64Counter(
+        "udr_group_hss_subscription_info_get_total", "Total GetHssGroupSubscriptions calls");
+    auto group_hss_subscription_info_delete_counter = meter->CreateUInt64Counter(
+        "udr_group_hss_subscription_info_delete_total", "Total RemoveHssGroupSubscriptions calls");
     auto five_g_vn_groups_write_counter = meter->CreateUInt64Counter(
         "udr_5g_vn_groups_write_total", "Total Create5GVnGroup/Modify5GVnGroup calls");
     auto five_g_vn_groups_get_counter = meter->CreateUInt64Counter(
@@ -5344,6 +5368,132 @@ int main() {
                     404, "Not Found", "No SMF Group Subscription Info for subsId " + subs_id);
             }
             group_smf_subscription_info_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: HSS Event Group Subscription Info (Document), nested under an
+    // individual group-data-scoped ee-subscription (ADR-0159, gap-closure task #106) -- real
+    // GET+PUT+PATCH+DELETE per TS29505_Subscription_Data.yaml. The group-data-scoped sibling of
+    // ee-subscriptions/{subsId}/hss-subscriptions (ADR-0154), structurally identical but keyed
+    // by ueGroupId instead of ueId: same single-object HssSubscriptionInfo document body, real
+    // distinct 201-vs-204 PUT. GetHssGroupSubscriptions correctly cites HssSubscriptionInfo (no
+    // response-schema typo here, unlike its ueId-scoped and sdm-subscriptions-scoped siblings).
+    // Real, disclosed spec inconsistency: the real spec's own DELETE/PATCH/GET operations on
+    // this path declare a parameter named `externalGroupId`, but the actual URL path template
+    // has no such placeholder -- only `{ueGroupId}` and `{subsId}` (matching PUT, and every
+    // sibling resource in this family). Not a genuine design ambiguity: `externalGroupId` isn't
+    // bindable from the real path at all, so `ueGroupId` is used throughout, consistent with
+    // this resource's own PUT and its real URL. Completes all three of group-data's own
+    // ee-subscriptions/{subsId}/... nested sub-collections. ---
+
+    const std::string group_hss_subscription_info_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/group-data/{ueGroupId}/ee-subscriptions/"
+                                "{subsId}/hss-subscriptions";
+
+    server.add_route(
+        "GET",
+        group_hss_subscription_info_path_pattern,
+        [&verifier, &group_hss_subscription_info, &group_hss_subscription_info_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            auto data = group_hss_subscription_info.get(ue_group_id, subs_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No HSS Group Subscription Info for subsId " + subs_id);
+            }
+            group_hss_subscription_info_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        group_hss_subscription_info_path_pattern,
+        [&verifier,
+         &group_hss_subscription_info,
+         &group_hss_subscription_info_write_counter,
+         group_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::HssSubscriptionInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            json j = *body;
+            const bool is_new = group_hss_subscription_info.put(ue_group_id, subs_id, j);
+            group_hss_subscription_info_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace(
+                "location",
+                resolved_location(group_hss_subscription_info_path_pattern, req.path_params));
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        group_hss_subscription_info_path_pattern,
+        [&verifier, &group_hss_subscription_info, &group_hss_subscription_info_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            std::optional<json> patched;
+            try {
+                patched = group_hss_subscription_info.apply_patch(ue_group_id, subs_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No HSS Group Subscription Info for subsId " + subs_id);
+            }
+            group_hss_subscription_info_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        group_hss_subscription_info_path_pattern,
+        [&verifier, &group_hss_subscription_info, &group_hss_subscription_info_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_group_id = req.path_params.at("ueGroupId");
+            const auto subs_id = req.path_params.at("subsId");
+            if (!group_hss_subscription_info.remove(ue_group_id, subs_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No HSS Group Subscription Info for subsId " + subs_id);
+            }
+            group_hss_subscription_info_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

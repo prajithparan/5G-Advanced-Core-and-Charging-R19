@@ -1002,3 +1002,36 @@ CREATE TABLE IF NOT EXISTS udr_group_smf_subscription_info (
     data        JSONB NOT NULL,
     PRIMARY KEY (ue_group_id, subs_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0159). Real HSS Event Group
+-- Subscription Info (Document), nested under an individual group-data-scoped ee-subscription
+-- (/subscription-data/group-data/{ueGroupId}/ee-subscriptions/{subsId}/hss-subscriptions, real
+-- spec operations CreateHssGroupSubscriptions [PUT]/GetHssGroupSubscriptions [GET]/
+-- ModifyHssGroupSubscriptions [PATCH]/RemoveHssGroupSubscriptions [DELETE]) -- the group-data-
+-- scoped sibling of ee-subscriptions/{subsId}/hss-subscriptions (ADR-0154), structurally
+-- identical but keyed by ueGroupId instead of ueId: same single-object HssSubscriptionInfo
+-- document body, real distinct 201-vs-204 PUT. GetHssGroupSubscriptions correctly cites
+-- HssSubscriptionInfo -- no response-schema typo this time (unlike ADR-0154/ADR-0155's
+-- ueId-scoped and sdm-subscriptions-scoped hss-subscriptions siblings).
+--
+-- Real, disclosed spec inconsistency found on direct read: the real spec's own DELETE/PATCH/GET
+-- operations on this path declare a parameter named `externalGroupId`
+-- ($ref: TS29503_Nudm_SDM.yaml#/components/schemas/ExtGroupId), but the actual URL path template
+-- for this resource is literally `.../group-data/{ueGroupId}/ee-subscriptions/{subsId}/
+-- hss-subscriptions` -- there is no `{externalGroupId}` placeholder anywhere in the path, only
+-- `{ueGroupId}` and `{subsId}`. PUT on this same path correctly declares `ueGroupId`
+-- ($ref: #/components/schemas/VarUeGroupId), matching the real path template and every sibling
+-- resource in this family. Since the router binds strictly to the real, literal path template
+-- (the only thing that determines what's actually capturable from a request URL), this is not a
+-- genuine design ambiguity requiring a choice between two real behaviors -- `externalGroupId` is
+-- simply not a bindable value here at all, and `ueGroupId` is the only value consistent with the
+-- resource's own PUT operation and its actual URL. Implemented using `ueGroupId` throughout.
+-- Completes all three of group-data's own ee-subscriptions/{subsId}/... nested sub-collections
+-- (siblings amf-/smf-subscriptions closed in ADR-0157/ADR-0158). Composite key
+-- (ue_group_id, subs_id).
+CREATE TABLE IF NOT EXISTS udr_group_hss_subscription_info (
+    ue_group_id TEXT NOT NULL,
+    subs_id     TEXT NOT NULL,
+    data        JSONB NOT NULL,
+    PRIMARY KEY (ue_group_id, subs_id)
+);

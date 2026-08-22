@@ -3008,3 +3008,30 @@ Second of `group-data`'s own `ee-subscriptions/{subsId}/...` nested sub-collecti
 `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `group-data`'s own
 `hss-subscriptions` nested sub-collection (the third and final sibling) and the other genuinely
 deferred subsystems remain real, disclosed gaps.
+
+## ADR-0159 -- gap-closure task #106 continuation: UDR real HSS Event Group Subscription Info (Document), completing group-data's own nested-subscription tree
+
+| Requirement | Test |
+|---|---|
+| `GET` before any `PUT` | Live curl, real `404` |
+| `PUT` with a single `HssSubscriptionInfo` object wrapping `hssSubscriptionList` | Live curl, real `201`, body echoed back, `Location` header confirmed to contain both the real `ueGroupId` and real `subsId` |
+| `GET` after `PUT` returns `HssSubscriptionInfo`-shaped data (no spec typo on this resource, unlike ADR-0154/ADR-0155's siblings) | Live curl, real `200` with matching body |
+| `PUT` again with different values | Live curl, real `204`; `GET` after confirms a genuine wholesale overwrite |
+| `PATCH` (real RFC 6902) | Live curl, real `204`; `GET` after reflects the patched value |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_group_hss_subscription_info` independently confirms the row matches curl's response |
+| Sibling `udr_group_amf_subscription_info`/`udr_group_smf_subscription_info`/`udr_ee_hss_subscription_info` unaffected | Direct `psql` query, real `0` rows in all three, confirms separate storage |
+| Real spec inconsistency (`externalGroupId` parameter name on DELETE/PATCH/GET has no matching path placeholder; `ueGroupId` used throughout as the only bindable, consistent value) | Disclosed on direct read; not a genuine ambiguity requiring a user decision, so implemented directly without asking |
+| `DELETE` | Live curl, real `204`; `GET` after real `404`; `psql` confirms zero rows remained |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real GET+PUT+PATCH+DELETE resource (`CreateHssGroupSubscriptions`/`GetHssGroupSubscriptions`/
+`ModifyHssGroupSubscriptions`/`RemoveHssGroupSubscriptions`), the group-data-scoped sibling of
+`ee-subscriptions/{subsId}/hss-subscriptions` (ADR-0154), keyed by `ueGroupId` instead of `ueId`.
+Third and final of `group-data`'s own `ee-subscriptions/{subsId}/...` nested sub-collections
+closed -- completes the whole group-data nested-subscription tree
+(`amf-`/`smf-`/`hss-subscriptions`, ADR-0157/ADR-0158/ADR-0159), mirroring the `ueId`-scoped
+`ee-subscriptions` family's own closure (ADR-0152/ADR-0153/ADR-0154). This closes UDR resource
+#69 of free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md).
+See ADR-0159 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `group-data`'s
+remaining genuinely-blocked resources and the other genuinely deferred subsystems remain real,
+disclosed gaps.
