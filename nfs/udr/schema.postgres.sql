@@ -879,3 +879,21 @@ CREATE TABLE IF NOT EXISTS udr_ee_amf_subscription_info (
     data    JSONB NOT NULL,
     PRIMARY KEY (ue_id, subs_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0153). Real SMF Event Subscription
+-- Info (Document), nested under an individual ee-subscription
+-- (/subscription-data/{ueId}/context-data/ee-subscriptions/{subsId}/smf-subscriptions, real spec
+-- operations "Create SMF Subscriptions" [PUT]/GetSmfSubscriptionInfo [GET]/
+-- ModifySmfSubscriptionInfo [PATCH]/RemoveSmfSubscriptionsInfo [DELETE]). Real, disclosed,
+-- genuinely different shape from its sibling amf-subscriptions (ADR-0152): the document body is a
+-- SINGLE SmfSubscriptionInfo object (required smfSubscriptionList, an array of
+-- SmfSubscriptionItem), not a bare array. Same real, distinct 201-vs-204 PUT (is-new-tracking).
+-- Same disclosed no-referential-integrity-against-parent precedent as amf-subscriptions. Second of
+-- ee-subscriptions' own nested sub-collections closed (hss-subscriptions and
+-- sdm-subscriptions' own hss-sdm-subscriptions remain deferred). Composite key (ue_id, subs_id).
+CREATE TABLE IF NOT EXISTS udr_ee_smf_subscription_info (
+    ue_id   TEXT NOT NULL,
+    subs_id TEXT NOT NULL,
+    data    JSONB NOT NULL,
+    PRIMARY KEY (ue_id, subs_id)
+);

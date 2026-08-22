@@ -2839,3 +2839,30 @@ disclosure -- task #106 remains open; `ee-subscriptions`' own `smf-subscriptions
 `hss-subscriptions` sibling sub-collections, `sdm-subscriptions`' own `hss-sdm-subscriptions`,
 `group-data`'s own parallel tree, and the other genuinely deferred subsystems remain real,
 disclosed gaps.
+
+## ADR-0153 -- gap-closure task #106 continuation: UDR real SMF Event Subscription Info (Document) nested under an individual ee-subscription
+
+| Requirement | Test |
+|---|---|
+| `GET` before any `PUT` | Live curl, real `404` |
+| `PUT` with a single `SmfSubscriptionInfo` object wrapping `smfSubscriptionList` | Live curl, real `201`, body echoed back |
+| `GET` after `PUT` | Live curl, real `200` with matching body |
+| `PUT` again with a different `subscriptionId` | Live curl, real `204` (is-new tracking correctly reports "update"); `GET` after confirms a genuine wholesale overwrite |
+| `PATCH` (real RFC 6902, nested array-index path `/smfSubscriptionList/0/subscriptionId`) | Live curl, real `204`; `GET` after reflects the patched value |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_ee_smf_subscription_info` independently confirms the row matches curl's response |
+| Sibling `amf-subscriptions` resource for the same `(ueId, subsId)` unaffected | Live curl, real `404` (never created there, confirms separate storage) |
+| `DELETE` | Live curl, real `204`; `GET` after real `404` |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real GET+PUT+PATCH+DELETE resource ("Create SMF Subscriptions"/`GetSmfSubscriptionInfo`/
+`ModifySmfSubscriptionInfo`/`RemoveSmfSubscriptionsInfo`), nested under an individual
+`ee-subscriptions/{subsId}` -- the second of `ee-subscriptions`' own nested sub-collections,
+sibling of `amf-subscriptions` (ADR-0152). Genuinely different real shape confirmed on direct
+read: the document body is a SINGLE `SmfSubscriptionInfo` object, not a bare array like its
+sibling. A real test-side field-name mistake (`pduSessionId` instead of the real
+`subscriptionId`) was found and corrected mid-verification, disclosed in ADR-0153 rather than
+silently fixed. This closes UDR resource #63 of free5GC's ~42+ real `Nudr_DataRepository`
+resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0153 in `docs/DECISIONS.md` for full
+disclosure -- task #106 remains open; `ee-subscriptions`' own remaining `hss-subscriptions`
+sibling, `sdm-subscriptions`' own `hss-sdm-subscriptions`, `group-data`'s own parallel tree, and
+the other genuinely deferred subsystems remain real, disclosed gaps.

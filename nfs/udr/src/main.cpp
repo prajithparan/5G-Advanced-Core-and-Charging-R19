@@ -420,11 +420,22 @@
 // the parent `ee-subscriptions` resource (this project's own established precedent of not
 // enforcing cross-resource existence checks elsewhere).
 //
+// UPDATE (ADR-0153, gap-closure task #106): the real SMF Event Subscription Info (Document)
+// resource, nested under an individual ee-subscription (`context-data/ee-subscriptions/{subsId}/
+// smf-subscriptions`, real spec operations "Create SMF Subscriptions"
+// [PUT]/GetSmfSubscriptionInfo [GET]/ModifySmfSubscriptionInfo
+// [PATCH]/RemoveSmfSubscriptionsInfo [DELETE]) is now implemented -- the second of
+// `ee-subscriptions`' own nested sub-collections. Real, disclosed: unlike its sibling
+// `amf-subscriptions`, the document body is a SINGLE `SmfSubscriptionInfo` object (required
+// `smfSubscriptionList`, an array of `SmfSubscriptionItem`), not a bare array -- a genuine
+// difference confirmed on direct read, not assumed from the sibling's shape. Same real, distinct
+// 201-vs-204 PUT.
+//
 // Deliberately still deferred, not dropped:
 // context-data's other sub-resources (
-// ee-subscriptions' own smf-subscriptions/hss-subscriptions nested sub-collections (siblings of
-// the now-closed amf-subscriptions), sdm-subscriptions' own hss-sdm-subscriptions nested
-// sub-collection -- all real, separate resources; group-data's own parallel
+// ee-subscriptions' own hss-subscriptions nested sub-collection (sibling of the now-closed
+// amf-/smf-subscriptions), sdm-subscriptions' own hss-sdm-subscriptions nested
+// sub-collection -- both real, separate resources; group-data's own parallel
 // ee-subscriptions/{subsId}/... tree not yet surveyed);
 // the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
 // `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
@@ -741,6 +752,8 @@ int main() {
     udr::SdmSubscriptionsStore sdm_subscriptions(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0152).
     udr::EeAmfSubscriptionInfoStore ee_amf_subscription_info(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0153).
+    udr::EeSmfSubscriptionInfoStore ee_smf_subscription_info(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1268,6 +1281,13 @@ int main() {
         "udr_ee_amf_subscription_info_get_total", "Total GetAmfSubscriptionInfo calls");
     auto ee_amf_subscription_info_delete_counter = meter->CreateUInt64Counter(
         "udr_ee_amf_subscription_info_delete_total", "Total RemoveAmfSubscriptionsInfo calls");
+    auto ee_smf_subscription_info_write_counter = meter->CreateUInt64Counter(
+        "udr_ee_smf_subscription_info_write_total",
+        "Total Create SMF Subscriptions/ModifySmfSubscriptionInfo calls");
+    auto ee_smf_subscription_info_get_counter = meter->CreateUInt64Counter(
+        "udr_ee_smf_subscription_info_get_total", "Total GetSmfSubscriptionInfo calls");
+    auto ee_smf_subscription_info_delete_counter = meter->CreateUInt64Counter(
+        "udr_ee_smf_subscription_info_delete_total", "Total RemoveSmfSubscriptionsInfo calls");
     auto five_g_vn_groups_write_counter = meter->CreateUInt64Counter(
         "udr_5g_vn_groups_write_total", "Total Create5GVnGroup/Modify5GVnGroup calls");
     auto five_g_vn_groups_get_counter = meter->CreateUInt64Counter(
@@ -4396,6 +4416,121 @@ int main() {
                     404, "Not Found", "No AMF Subscription Info for subsId " + subs_id);
             }
             ee_amf_subscription_info_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: SMF Event Subscription Info (Document), nested under an
+    // individual ee-subscription (ADR-0153, gap-closure task #106) -- real GET+PUT+PATCH+DELETE
+    // per TS29505_Subscription_Data.yaml. Real, disclosed: unlike its sibling amf-subscriptions,
+    // the document body is a SINGLE SmfSubscriptionInfo object, not an array. Real, distinct
+    // 201-vs-204 PUT. Second of ee-subscriptions' own nested sub-collections closed. ---
+
+    const std::string ee_smf_subscription_info_path_pattern =
+        std::string(kApiRoot) +
+        "/subscription-data/{ueId}/context-data/ee-subscriptions/{subsId}/smf-subscriptions";
+
+    server.add_route(
+        "GET",
+        ee_smf_subscription_info_path_pattern,
+        [&verifier, &ee_smf_subscription_info, &ee_smf_subscription_info_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            auto data = ee_smf_subscription_info.get(ue_id, subs_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMF Subscription Info for subsId " + subs_id);
+            }
+            ee_smf_subscription_info_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        ee_smf_subscription_info_path_pattern,
+        [&verifier,
+         &ee_smf_subscription_info,
+         &ee_smf_subscription_info_write_counter,
+         ee_smf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SmfSubscriptionInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            json j = *body;
+            const bool is_new = ee_smf_subscription_info.put(ue_id, subs_id, j);
+            ee_smf_subscription_info_write_counter->Add(1);
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", ee_smf_subscription_info_path_pattern);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        ee_smf_subscription_info_path_pattern,
+        [&verifier, &ee_smf_subscription_info, &ee_smf_subscription_info_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            std::optional<json> patched;
+            try {
+                patched = ee_smf_subscription_info.apply_patch(ue_id, subs_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMF Subscription Info for subsId " + subs_id);
+            }
+            ee_smf_subscription_info_write_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        ee_smf_subscription_info_path_pattern,
+        [&verifier, &ee_smf_subscription_info, &ee_smf_subscription_info_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subs_id = req.path_params.at("subsId");
+            if (!ee_smf_subscription_info.remove(ue_id, subs_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMF Subscription Info for subsId " + subs_id);
+            }
+            ee_smf_subscription_info_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
