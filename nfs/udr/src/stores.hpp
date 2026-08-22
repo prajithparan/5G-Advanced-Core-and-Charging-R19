@@ -1289,4 +1289,22 @@ private:
     pqxx::connection conn_;
 };
 
+// Group-data-scoped sibling of EeSmfSubscriptionInfoStore (ADR-0153), keyed by ue_group_id
+// instead of ue_id -- otherwise identical shape (ADR-0158).
+class GroupSmfSubscriptionInfoStore {
+public:
+    explicit GroupSmfSubscriptionInfoStore(const std::string& conninfo);
+
+    bool put(const std::string& ue_group_id, const std::string& subs_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_group_id, const std::string& subs_id);
+    std::optional<nlohmann::json> apply_patch(const std::string& ue_group_id,
+                                              const std::string& subs_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& ue_group_id, const std::string& subs_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

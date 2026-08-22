@@ -986,3 +986,19 @@ CREATE TABLE IF NOT EXISTS udr_group_amf_subscription_info (
     data        JSONB NOT NULL,
     PRIMARY KEY (ue_group_id, subs_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0158). Real SMF Event Group
+-- Subscription Info (Document), nested under an individual group-data-scoped ee-subscription
+-- (/subscription-data/group-data/{ueGroupId}/ee-subscriptions/{subsId}/smf-subscriptions, real
+-- spec operations CreateSmfGroupSubscriptions [PUT]/GetSmfGroupSubscriptions [GET]/
+-- ModifySmfGroupSubscriptions [PATCH]/RemoveSmfGroupSubscriptions [DELETE]) -- the group-data-
+-- scoped sibling of ee-subscriptions/{subsId}/smf-subscriptions (ADR-0153), structurally
+-- identical but keyed by ueGroupId instead of ueId: same single-object SmfSubscriptionInfo
+-- document body (unlike its array-valued amf-subscriptions sibling), real distinct 201-vs-204
+-- PUT. Composite key (ue_group_id, subs_id).
+CREATE TABLE IF NOT EXISTS udr_group_smf_subscription_info (
+    ue_group_id TEXT NOT NULL,
+    subs_id     TEXT NOT NULL,
+    data        JSONB NOT NULL,
+    PRIMARY KEY (ue_group_id, subs_id)
+);

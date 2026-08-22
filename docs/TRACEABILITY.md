@@ -2984,3 +2984,27 @@ rather than deferring. This closes UDR resource #67 of free5GC's ~42+ real
 `docs/DECISIONS.md` for full disclosure -- task #106 remains open; the group-data-scoped
 `smf-subscriptions`/`hss-subscriptions` nested sub-collections and the other genuinely deferred
 subsystems remain real, disclosed gaps.
+
+## ADR-0158 -- gap-closure task #106 continuation: UDR real SMF Event Group Subscription Info (Document)
+
+| Requirement | Test |
+|---|---|
+| `GET` before any `PUT` | Live curl, real `404` |
+| `PUT` with a single `SmfSubscriptionInfo` object wrapping `smfSubscriptionList` | Live curl, real `201`, body echoed back, `Location` header confirmed to contain both the real `ueGroupId` and real `subsId` |
+| `GET` after `PUT` | Live curl, real `200` with matching body |
+| `PUT` again with different values | Live curl, real `204`; `GET` after confirms a genuine wholesale overwrite |
+| `PATCH` (real RFC 6902) | Live curl, real `204`; `GET` after reflects the patched value |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_group_smf_subscription_info` independently confirms the row matches curl's response |
+| Sibling `udr_group_amf_subscription_info`/`udr_ee_smf_subscription_info` unaffected | Direct `psql` query, real `0` rows in both, confirms separate storage |
+| `DELETE` | Live curl, real `204`; `GET` after real `404`; `psql` confirms zero rows remained |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 325/325 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real GET+PUT+PATCH+DELETE resource (`CreateSmfGroupSubscriptions`/`GetSmfGroupSubscriptions`/
+`ModifySmfGroupSubscriptions`/`RemoveSmfGroupSubscriptions`), the group-data-scoped sibling of
+`ee-subscriptions/{subsId}/smf-subscriptions` (ADR-0153), keyed by `ueGroupId` instead of `ueId`.
+Second of `group-data`'s own `ee-subscriptions/{subsId}/...` nested sub-collections closed
+(sibling of `amf-subscriptions`, ADR-0157). This closes UDR resource #68 of free5GC's ~42+ real
+`Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0158 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open; `group-data`'s own
+`hss-subscriptions` nested sub-collection (the third and final sibling) and the other genuinely
+deferred subsystems remain real, disclosed gaps.
