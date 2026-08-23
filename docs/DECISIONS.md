@@ -14864,3 +14864,17 @@ closed. `GetSSAuData` remains deliberately deferred per ADR-0160. `niddAuthData`
 this aggregate is permanent, not a to-do -- recoverable only via a real spec change exposing
 `mtc-provider-information` on this resource, which this project cannot make. `Nudr_GroupIDmap`'s
 own subscription-management family remains deferred per ADR-0164.
+
+### ADR-0163 confirmation (real CI signal, not a new decision)
+
+CI run `32618458478` (commit `da36a23`) is the first `sanitize (asan-ubsan)` run to reach a real
+conclusion since ADR-0163's `-j2` parallelism-cap mitigation was pushed -- the two runs before it
+(`b7247e9`, `3da9c666...`) were both superseded by this project's own rapid successive pushes
+before their `sanitize (asan-ubsan)` job could finish, via the working concurrency-group guard
+(ADR-0132), so neither gave a real pass/fail signal. This run's own `sanitize (asan-ubsan)` job
+completed with a real, clean `success` -- its `Build` step (04:44:30-05:00:57, ~16.5 min), the
+exact step that failed with "the runner has received a shutdown signal" on all 5 prior recorded
+failures (always around ~93% of 1309 targets), completed cleanly this time. One clean run doesn't
+prove the memory-pressure hypothesis beyond doubt (same epistemic caveat ADR-0163's own original
+disclosure carried), but it is real, positive evidence the `-j2` cap resolves the observed failure
+pattern. Continues to be watched across future runs; no further action taken here.
