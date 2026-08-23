@@ -3220,3 +3220,39 @@ both collections; the `/internal`/`/pp-profile-data` variants under both paths (
 `policy-data`'s `mbs-session-pol-data` (deferred, key-encoding ambiguity); `GetSSAuData`
 (deliberately deferred, ADR-0160); `Nudr_GroupIDmap`'s own subscription-management family
 (ADR-0164); real webhook delivery for `subs-to-notify`/`nf-group-ids/subscriptions`.
+
+## ADR-0168 -- gap-closure task #106 continuation: UDR real `group-data` `5g-vn-groups/internal` + `mbs-group-membership/internal`, and a real router-ordering hazard found and fixed before it could ship a bug
+
+| Requirement | Test |
+|---|---|
+| `PUT 5g-vn-groups/group-C` with a real, pattern-valid `internalGroupIdentifier` | Live curl, real `201` |
+| `GET /5g-vn-groups/internal?internal-group-ids=<matching id>` | Live curl, real `200` with exactly `group-C` (groups lacking the field correctly excluded) |
+| `GET /5g-vn-groups/internal` with the required param missing | Live curl, real `400` |
+| `GET /5g-vn-groups/internal` with a non-matching id | Live curl, real `404` |
+| **Critical**: none of the above show the individual-resource route's own error text | Live curl, confirms the literal `/internal` route is reached, not shadowed by the `{externalGroupId}` wildcard route |
+| Identical sequence for `mbs-group-membership/internal` | Live curl, same real `200`/`400`/`404` results |
+| `GET mbs-group-membership/mbs-group-Y` (individual resource) immediately after | Live curl, still real `200`, confirming no shadowing of anything else |
+| Genuine PostgreSQL persistence | Direct `psql` query against both tables independently confirms every row matches its curl response exactly |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real `GET`-only resources (`Query5GVnGroupInternal`/`Query5GMbsGroupInternal`,
+`TS29505_Subscription_Data.yaml`), filtering the same `list_all()` (ADR-0167) by each stored
+group's own optional `internalGroupIdentifier` scalar field -- unlike the bare collection's own
+`gpsis` member-list filter (deferred), this one is real and tractable, no new store method needed.
+Real `404`-on-no-match (a genuine query-by-identifier, matching `GetNfGroupIDs`'s own precedent),
+distinct from the bare collection's own always-`200` design. **Real router-ordering hazard found
+and fixed before implementing**: direct read of `libs/sbi-core/src/http2_server.cpp`'s own
+`try_match` confirmed the router has no literal-vs-wildcard priority -- routes match in
+registration order, first match wins, and the literal 4-segment `/internal` path would have been
+permanently shadowed by the already-registered, same-segment-count `{externalGroupId}` wildcard
+route had it been registered afterward (the natural instinct every prior ADR in this series
+followed). Fixed by registering both new `/internal` routes *before* their own individual-resource
+GET routes, with an explicit `CRITICAL ROUTE-ORDERING REQUIREMENT` comment at each site; verified
+live (not just reasoned about) that the correct route is actually reached. This closes UDR
+resources #75 and #76 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0168 in `docs/DECISIONS.md` for full disclosure --
+remaining real, disclosed gaps: `5g-vn-groups`/`mbs-group-membership`'s own `/pp-profile-data`
+variants (need a genuinely new store/schema, not surveyed); `gpsis` filtering on the bare
+collections; `policy-data`'s `mbs-session-pol-data`; `GetSSAuData` (deliberately deferred,
+ADR-0160); `Nudr_GroupIDmap`'s own subscription-management family; real webhook delivery for
+`subs-to-notify`/`nf-group-ids/subscriptions`.

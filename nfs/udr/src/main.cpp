@@ -1599,6 +1599,8 @@ int main() {
         meter->CreateUInt64Counter("udr_5g_vn_groups_delete_total", "Total Delete5GVnGroup calls");
     auto five_g_vn_groups_list_counter =
         meter->CreateUInt64Counter("udr_5g_vn_groups_list_total", "Total Query5GVnGroup calls");
+    auto five_g_vn_groups_internal_get_counter = meter->CreateUInt64Counter(
+        "udr_5g_vn_groups_internal_get_total", "Total Query5GVnGroupInternal calls");
     auto mbs_group_membership_write_counter = meter->CreateUInt64Counter(
         "udr_mbs_group_membership_write_total", "Total Create5GmbsGroup/Modify5GmbsGroup calls");
     auto mbs_group_membership_get_counter = meter->CreateUInt64Counter(
@@ -1607,6 +1609,8 @@ int main() {
         "udr_mbs_group_membership_delete_total", "Total Delete5GmbsGroup calls");
     auto mbs_group_membership_list_counter = meter->CreateUInt64Counter(
         "udr_mbs_group_membership_list_total", "Total Query5GmbsGroup calls");
+    auto mbs_group_membership_internal_get_counter = meter->CreateUInt64Counter(
+        "udr_mbs_group_membership_internal_get_total", "Total Query5GMbsGroupInternal calls");
     auto group_ee_profile_data_get_counter = meter->CreateUInt64Counter(
         "udr_group_ee_profile_data_get_total", "Total QueryGroupEEData calls");
 
@@ -6405,6 +6409,61 @@ int main() {
             return sbi_core::http2::Response::json(200, result.dump());
         });
 
+    // --- Nudr_DataRepository: group-data 5G VN Groups Internal resource (ADR-0168, gap-closure
+    // task #106) -- real GET-only per TS29505_Subscription_Data.yaml, `Query5GVnGroupInternal`.
+    // Real REQUIRED `internal-group-ids` array query param (`style: form, explode: false`),
+    // filtering by each stored group's own optional `internalGroupIdentifier` field (confirmed by
+    // direct read of `5GVnGroupConfiguration`'s own schema) -- unlike the bare collection's own
+    // `gpsis` filter (which needs member-list inspection, deferred), this filter targets a single
+    // scalar field per group, real and tractable to implement here. Response is the same real map
+    // `{ExtGroupId: 5GVnGroupConfiguration}` shape, composed from the same `FiveGVnGroupStore`
+    // (`list_all()`, ADR-0167) -- no new table. Real `404` when no requested internal-group-id
+    // matches any stored group (a genuine query-by-identifier, matching `GetNfGroupIDs`'s own
+    // real-404 precedent, NOT the bare collection's own always-`200` literal-listing precedent).
+    // CRITICAL ROUTE-ORDERING REQUIREMENT, confirmed by direct read of
+    // `libs/sbi-core/src/http2_server.cpp`'s own `try_match`: this router has no literal-vs-
+    // wildcard priority -- it matches routes in registration order, first match wins. This literal
+    // `.../5g-vn-groups/internal` path has the SAME segment count as the individual
+    // `.../5g-vn-groups/{externalGroupId}` GET route below, whose wildcard segment would otherwise
+    // match the literal string "internal" as a (nonexistent) externalGroupId. This route MUST
+    // stay registered before that one, or it would be permanently shadowed -- verified by live
+    // curl below, not merely reasoned about. ---
+
+    const std::string five_g_vn_groups_internal_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/group-data/5g-vn-groups/internal";
+
+    server.add_route(
+        "GET",
+        five_g_vn_groups_internal_path_pattern,
+        [&verifier, &five_g_vn_groups, &five_g_vn_groups_internal_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ids_it = req.query_params.find("internal-group-ids");
+            if (ids_it == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "internal-group-ids is a required query parameter");
+            }
+            const auto requested_ids = sbi_core::http2::split_form_array(ids_it->second);
+            json result = json::object();
+            for (const auto& [ext_group_id, data] : five_g_vn_groups.list_all()) {
+                if (data.contains("internalGroupIdentifier") &&
+                    std::find(requested_ids.begin(),
+                              requested_ids.end(),
+                              data.at("internalGroupIdentifier").get<std::string>()) !=
+                        requested_ids.end()) {
+                    result[ext_group_id] = data;
+                }
+            }
+            five_g_vn_groups_internal_get_counter->Add(1);
+            if (result.empty()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No 5G VN Group matches the requested internal-group-ids");
+            }
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
     // --- Nudr_DataRepository: group-data individual 5G VN Group Configuration resource
     // (ADR-0144, gap-closure task #106) -- real GET+PUT+PATCH+DELETE per
     // TS29505_Subscription_Data.yaml. Real, disclosed: the real PUT documents ONLY `201` (no
@@ -6537,6 +6596,52 @@ int main() {
                 result[ext_group_id] = data;
             }
             mbs_group_membership_list_counter->Add(1);
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    // --- Nudr_DataRepository: group-data 5G MBS Group Membership Internal resource (ADR-0168,
+    // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml,
+    // `Query5GMbsGroupInternal`, structurally an exact twin of the `5g-vn-groups/internal`
+    // resource above (`MulticastMbsGroupMemb`'s own schema has the same optional
+    // `internalGroupIdentifier` field to filter by). Same CRITICAL ROUTE-ORDERING REQUIREMENT as
+    // that resource's own comment -- this route MUST stay registered before the individual
+    // `{externalGroupId}` GET route below, or the router's own first-match, no-literal-priority
+    // semantics would permanently shadow it. ---
+
+    const std::string mbs_group_membership_internal_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/group-data/mbs-group-membership/internal";
+
+    server.add_route(
+        "GET",
+        mbs_group_membership_internal_path_pattern,
+        [&verifier, &mbs_group_membership, &mbs_group_membership_internal_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ids_it = req.query_params.find("internal-group-ids");
+            if (ids_it == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "internal-group-ids is a required query parameter");
+            }
+            const auto requested_ids = sbi_core::http2::split_form_array(ids_it->second);
+            json result = json::object();
+            for (const auto& [ext_group_id, data] : mbs_group_membership.list_all()) {
+                if (data.contains("internalGroupIdentifier") &&
+                    std::find(requested_ids.begin(),
+                              requested_ids.end(),
+                              data.at("internalGroupIdentifier").get<std::string>()) !=
+                        requested_ids.end()) {
+                    result[ext_group_id] = data;
+                }
+            }
+            mbs_group_membership_internal_get_counter->Add(1);
+            if (result.empty()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No 5G MBS Group Membership matches the requested internal-group-ids");
+            }
             return sbi_core::http2::Response::json(200, result.dump());
         });
 
