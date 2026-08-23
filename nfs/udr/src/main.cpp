@@ -1391,6 +1391,8 @@ int main() {
         meter->CreateUInt64Counter("udr_upu_data_get_total", "Total QueryAuthUPU calls");
     auto ue_upd_conf_data_get_counter =
         meter->CreateUInt64Counter("udr_ue_upd_conf_data_get_total", "Total QueryUeUpdConf calls");
+    auto context_data_get_counter =
+        meter->CreateUInt64Counter("udr_context_data_get_total", "Total QueryContextData calls");
     auto ee_subscriptions_create_counter = meter->CreateUInt64Counter(
         "udr_ee_subscriptions_create_total", "Total CreateEeSubscriptions calls");
     auto ee_subscriptions_list_counter = meter->CreateUInt64Counter(
@@ -4185,6 +4187,104 @@ int main() {
                 result["cagAckData"] = *v;
             }
             ue_upd_conf_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    // --- Nudr_DataRepository: Context Data (Document), aggregate resource (ADR-0161, gap-closure
+    // task #106) -- real GET-only per TS29505_Subscription_Data.yaml, real REQUIRED
+    // `context-dataset-names` array query param (`style: form, explode: false`), the first
+    // resource in this project unblocked by the new `sbi_core::http2::split_form_array()` helper
+    // (docs/DECISIONS.md ADR-0161). Same real, disclosed live-composition design as
+    // `ue-update-confirmation-data` (ADR-0147): this "document" is a live VIEW over 11 already
+    // independently-stored sub-resources, composed at request time from their own existing
+    // stores -- not a twelfth, duplicate table. Real, disclosed: `context-dataset-names`' own
+    // schema (`ContextDataSetName`) documents a real forward-compatible "any other string" case
+    // alongside its 11 known enum values -- an unrecognized name is silently skipped (nothing to
+    // populate for it), not rejected, matching the spec's own forward-compatibility intent.
+    // Missing the required query param is a real `400`. ---
+
+    const std::string context_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/context-data";
+
+    server.add_route(
+        "GET",
+        context_data_path_pattern,
+        [&verifier,
+         &amf_contexts,
+         &amf_non3gpp_contexts,
+         &sdm_subscriptions,
+         &ee_subscriptions,
+         &smsf_3gpp_context,
+         &smsf_non3gpp_context,
+         &subs_to_notify,
+         &smf_registrations,
+         &ip_sm_gw_context,
+         &roaming_information,
+         &pei_info,
+         &context_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto names_it = req.query_params.find("context-dataset-names");
+            if (names_it == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "Required query parameter context-dataset-names is missing");
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto names = sbi_core::http2::split_form_array(names_it->second);
+            json result = json::object();
+            for (const auto& name : names) {
+                if (name == "AMF_3GPP") {
+                    if (auto v = amf_contexts.get(ue_id); v.has_value()) {
+                        result["amf3Gpp"] = *v;
+                    }
+                } else if (name == "AMF_NON_3GPP") {
+                    if (auto v = amf_non3gpp_contexts.get(ue_id); v.has_value()) {
+                        result["amfNon3Gpp"] = *v;
+                    }
+                } else if (name == "SDM_SUBSCRIPTIONS") {
+                    if (auto list = sdm_subscriptions.list(ue_id); !list.empty()) {
+                        result["sdmSubscriptions"] = json(list);
+                    }
+                } else if (name == "EE_SUBSCRIPTIONS") {
+                    if (auto list = ee_subscriptions.list(ue_id); !list.empty()) {
+                        result["eeSubscriptions"] = json(list);
+                    }
+                } else if (name == "SMSF_3GPP") {
+                    if (auto v = smsf_3gpp_context.get(ue_id); v.has_value()) {
+                        result["smsf3GppAccess"] = *v;
+                    }
+                } else if (name == "SMSF_NON_3GPP") {
+                    if (auto v = smsf_non3gpp_context.get(ue_id); v.has_value()) {
+                        result["smsfNon3GppAccess"] = *v;
+                    }
+                } else if (name == "SUBS_TO_NOTIFY") {
+                    if (auto list = subs_to_notify.list_by_ue_id(ue_id); !list.empty()) {
+                        result["subscriptionDataSubscriptions"] = json(list);
+                    }
+                } else if (name == "SMF_REG") {
+                    if (auto list = smf_registrations.list_for_ue(ue_id); !list.empty()) {
+                        result["smfRegistrations"] = json(list);
+                    }
+                } else if (name == "IP_SM_GW") {
+                    if (auto v = ip_sm_gw_context.get(ue_id); v.has_value()) {
+                        result["ipSmGw"] = *v;
+                    }
+                } else if (name == "ROAMING_INFO") {
+                    if (auto v = roaming_information.get(ue_id); v.has_value()) {
+                        result["roamingInfo"] = *v;
+                    }
+                } else if (name == "PEI_INFO") {
+                    if (auto v = pei_info.get(ue_id); v.has_value()) {
+                        result["peiInfo"] = *v;
+                    }
+                }
+                // Real, disclosed: an unrecognized name (the spec's own documented
+                // forward-compatible "any other string" case) is silently skipped.
+            }
+            context_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, result.dump());
         });
 

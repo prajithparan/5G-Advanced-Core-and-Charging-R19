@@ -143,6 +143,19 @@ Response Response::json(int status, std::string body_json) {
     return r;
 }
 
+std::vector<std::string> split_form_array(const std::string& value) {
+    std::vector<std::string> out;
+    if (value.empty()) {
+        return out;
+    }
+    std::stringstream ss(value);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        out.push_back(item);
+    }
+    return out;
+}
+
 namespace {
 
 struct StreamContext {

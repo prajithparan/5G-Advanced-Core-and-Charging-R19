@@ -53,6 +53,19 @@ struct Response {
     static Response json(int status, std::string body_json);
 };
 
+// Splits a single already-decoded query_params value on OpenAPI's `style: form, explode: false`
+// array convention (comma-separated, e.g. `?dataset-names=AMF_3GPP,SDM_SUBSCRIPTIONS`) into its
+// real component values. Real, disclosed limitation: `Request::query_params` values are already
+// fully percent-decoded by the time a handler sees them, so a literal comma escaped as `%2C` by a
+// spec-compliant client is indistinguishable from a delimiter comma after decoding -- this
+// function cannot tell them apart and will over-split such a value. Every real 5G identifier this
+// project has needed to split so far (enum values, external group IDs, PLMN/SNSSAI component
+// strings) is comma-free by construction, so this is a real but narrow, disclosed simplification,
+// not swept under the rug (see docs/DECISIONS.md ADR-0161). Returns an empty vector for an empty
+// input string (matching "the query param was present but had no value", not "one empty-string
+// element").
+std::vector<std::string> split_form_array(const std::string& value);
+
 using Handler = std::function<Response(const Request&)>;
 
 class Server {

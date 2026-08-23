@@ -3035,3 +3035,32 @@ closed -- completes the whole group-data nested-subscription tree
 See ADR-0159 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `group-data`'s
 remaining genuinely-blocked resources and the other genuinely deferred subsystems remain real,
 disclosed gaps.
+
+## ADR-0161 -- real `style: form, explode: false` array-query-param parsing infra in sbi-core, plus its first real consumer: UDR's `QueryContextData`
+
+| Requirement | Test |
+|---|---|
+| `split_form_array` splits an empty string into an empty vector | `SplitFormArray.EmptyStringReturnsEmptyVector`, real unit test |
+| Splits a single value with no comma | `SplitFormArray.SingleValueNoComma` |
+| Splits multiple comma-separated values | `SplitFormArray.MultipleValuesCommaSeparated` |
+| Preserves real non-comma special characters (`@`/`-`/`.`) | `SplitFormArray.PreservesAlreadyDecodedNonCommaCharacters` |
+| Real, observed `std::getline` behavior on an internal empty element (`"a,,b"`) | `SplitFormArray.EmptyElementsBetweenCommasAreKeptAsEmptyStrings` |
+| Real, observed `std::getline` behavior on a trailing delimiter (`"a,b,"`) | `SplitFormArray.TrailingCommaProducesTrailingEmptyElementIsDropped` |
+| `QueryContextData` missing the required `context-dataset-names` query param | Live curl, real `400` |
+| Real comma-separated array param correctly parsed; requested-and-present datasets populated, requested-but-absent datasets omitted, an unrecognized (forward-compatible) name silently skipped | Live curl against a UE seeded with real `AMF_3GPP`/`PEI_INFO` data, real `200` with exactly the expected fields |
+| All requested datasets absent for a fresh UE | Live curl, real `200 {}` (matches `ue-update-confirmation-data`'s own live-view precedent) |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass (325 prior + 6 new), zero regressions; `sbi_core`/`udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Adds `sbi_core::http2::split_form_array()`, a real, tested, shared helper unblocking every UDR
+resource whose real spec query params use OpenAPI's `style: form, explode: false` array
+convention (`pdtq-data`, `nidd-authorization-data`, `Nudr_GroupIDmap`'s `/nf-group-ids`, bare
+`/subscription-data/{ueId}`/`{ueId}/context-data`) -- confirmed by direct read to be the shared
+blocker across all of them (docs/DECISIONS.md ADR-0160). Real, disclosed limitation: operates on
+already-percent-decoded values, so a literal escaped comma can't be distinguished from a
+delimiter -- narrow and disclosed, not silently assumed away. First real consumer:
+`QueryContextData` (bare `/subscription-data/{ueId}/context-data`), a live-composed aggregate
+over 11 already-existing UDR sub-resource stores, the same design as `ue-update-confirmation-data`
+(ADR-0147). This closes UDR resource #70 of free5GC's ~42+ real `Nudr_DataRepository` resources
+(docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0161 in `docs/DECISIONS.md` for full disclosure --
+task #106 remains open; the newly-unblocked resources above and the other genuinely deferred
+subsystems remain real, disclosed gaps, now unblocked rather than blocked.
