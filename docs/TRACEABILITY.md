@@ -3064,3 +3064,31 @@ over 11 already-existing UDR sub-resource stores, the same design as `ue-update-
 (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0161 in `docs/DECISIONS.md` for full disclosure --
 task #106 remains open; the newly-unblocked resources above and the other genuinely deferred
 subsystems remain real, disclosed gaps, now unblocked rather than blocked.
+
+## ADR-0162 -- gap-closure task #106 continuation: UDR real PDTQ Data collection + individual document, the first resource genuinely unblocked by ADR-0161's array-parsing infra
+
+| Requirement | Test |
+|---|---|
+| `GET` collection on a fresh install | Live curl, real `200 []` |
+| `GET` individual before any `PUT` | Live curl, real `404` |
+| `PUT` with a real `PdtqData` body (required `aspId`+`pdtqPolicy`, real `PdtqPolicy` shape confirmed from the generated struct after an initial 400) | Live curl, real `201`, body echoed back, `Location` header contains the real `pdtqReferenceId` |
+| `GET` individual/collection after `PUT` | Live curl, real `200` reflecting the stored resource |
+| `PATCH` (real RFC 7396 merge-patch) | Live curl, real `200` with the merged body; `GET` after confirms persistence |
+| `PATCH` against a nonexistent `pdtqReferenceId` | Live curl, real `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_pdtq_data` independently confirms the row matches curl's response |
+| `DELETE` | Live curl, real `204`; `GET` after real `404`; `psql` confirms zero rows remained |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real GET (collection) + GET/PUT/PATCH/DELETE (individual document) resource (`ReadPdtqData`/
+`ReadIndividualPdtqData`/`CreateIndividualPdtqData`/`UpdateIndividualPdtqData`/
+`DeleteIndividualPdtqData`), `TS29519_Policy_Data.yaml`. The first real UDR resource confirmed
+genuinely unblocked (not merely a candidate) by ADR-0161's `split_form_array()` infra. Real,
+disclosed: `pdtqReferenceId` is client-supplied, not server-generated; `CreateIndividualPdtqData`
+documents only `201` (no `204`), matching the pre-existing `bdt-data` precedent; the collection
+GET's own optional `pdtq-ref-ids` array filter is deliberately not honored, matching the
+established "optional filter not honored" precedent for consistency. This closes UDR resource
+#71 of free5GC's ~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See
+ADR-0162 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open;
+`nidd-authorization-data`, `Nudr_GroupIDmap`'s `/nf-group-ids`, bare `/subscription-data/{ueId}`,
+`group-data`'s own bare collection GETs, and `GetSSAuData` (deliberately deferred, ADR-0160)
+remain real, disclosed gaps.

@@ -1035,3 +1035,30 @@ CREATE TABLE IF NOT EXISTS udr_group_hss_subscription_info (
     data        JSONB NOT NULL,
     PRIMARY KEY (ue_group_id, subs_id)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0162). Real PDTQ Data (Planned
+-- Data Transfer with QoS requirements) collection (/policy-data/pdtq-data, real spec operation
+-- ReadPdtqData) and individual document (/policy-data/pdtq-data/{pdtqReferenceId}, real spec
+-- operations ReadIndividualPdtqData/CreateIndividualPdtqData/UpdateIndividualPdtqData/
+-- DeleteIndividualPdtqData), TS29519_Policy_Data.yaml. The first real UDR resource closed using
+-- the new sbi_core::http2::split_form_array() infra (ADR-0161) -- confirmed genuinely unblocked
+-- by it, not merely candidate. Real, disclosed: `pdtqReferenceId` is client-supplied (a real path
+-- parameter on the individual document, not server-generated) -- no UUID generation needed. Real,
+-- disclosed: CreateIndividualPdtqData documents ONLY 201 as a success response (no update-via-PUT
+-- status) -- matches the existing bdt-data (ADR-0117-era) precedent exactly, this route always
+-- responds 201 with the stored resource, matching the real spec literally rather than inventing
+-- an undocumented 204. Real RFC 7396 JSON Merge Patch (application/merge-patch+json,
+-- PdtqDataPatch), same idiom as bdt-data/UDM's own AMF-registration merge-patch: validated
+-- against the real generated PdtqDataPatch shape first, then applied via nlohmann::json's
+-- .merge_patch() on the raw parsed body (not round-tripped through the DTO) to preserve RFC 7396's
+-- own absent-vs-null field semantics. Real, disclosed scope choice: the collection GET's own
+-- optional `pdtq-ref-ids` array query-param filter (`style: form, explode: false`, confirmed
+-- real, genuinely optional, not required) is NOT honored -- same "optional filter not honored"
+-- precedent as `ee-subscriptions`' own `event-types`/`nf-identifiers`, kept for consistency with
+-- that established precedent rather than starting to honor it here just because the new parsing
+-- infra now makes that technically possible; retrofitting is a separate, disclosed decision left
+-- for its own turn. Single-key on pdtq_ref_id (the resource's own real identity).
+CREATE TABLE IF NOT EXISTS udr_pdtq_data (
+    pdtq_ref_id TEXT PRIMARY KEY,
+    data        JSONB NOT NULL
+);

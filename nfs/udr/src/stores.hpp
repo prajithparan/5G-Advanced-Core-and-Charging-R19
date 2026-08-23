@@ -1325,4 +1325,24 @@ private:
     pqxx::connection conn_;
 };
 
+// Real PDTQ Data (ADR-0162). Single-key on pdtq_ref_id (client-supplied, not server-generated).
+// Real spec CreateIndividualPdtqData documents only 201, never 204 -- put() is void, matching
+// BdtDataStore's own idiom.
+class PdtqDataStore {
+public:
+    explicit PdtqDataStore(const std::string& conninfo);
+
+    void put(const std::string& pdtq_ref_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& pdtq_ref_id);
+    std::vector<nlohmann::json> list();
+    // Real RFC 7396 JSON Merge Patch.
+    std::optional<nlohmann::json> merge_patch(const std::string& pdtq_ref_id,
+                                              const nlohmann::json& patch);
+    bool remove(const std::string& pdtq_ref_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

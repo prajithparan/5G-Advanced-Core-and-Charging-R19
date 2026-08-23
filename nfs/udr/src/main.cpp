@@ -527,13 +527,38 @@
 // so `ueGroupId` is used throughout. This completes all three of `group-data`'s own
 // `ee-subscriptions/{subsId}/...` nested sub-collections.
 //
+// UPDATE (ADR-0160, gap-closure task #106, no code change): bare `/subscription-data/{ueId}`/
+// `{ueId}/context-data` confirmed genuinely blocked on real array query params (same class as
+// `pdtq-data`/`nf-group-ids`, at the time); `GetSSAuData` investigated in depth (real
+// schema-citation mismatch resolved, then a deeper structural mismatch found against the
+// already-implemented CRUD sibling's own storage shape) and deliberately left deferred per
+// explicit user decision -- see the resource's own full disclosure in `docs/DECISIONS.md`.
+//
+// UPDATE (ADR-0161, gap-closure task #106): real `style: form, explode: false` array-query-param
+// parsing infra added to `sbi_core` (`split_form_array()`, see its own header comment), the
+// shared blocker confirmed in ADR-0160 across `pdtq-data`/`nidd-authorization-data`/
+// `Nudr_GroupIDmap`'s `/nf-group-ids`/bare `/subscription-data/{ueId}`. First real consumer:
+// `QueryContextData` (`{ueId}/context-data`, see its own comment above), a live-composed
+// aggregate over 11 already-existing sub-resource stores.
+//
+// UPDATE (ADR-0162, gap-closure task #106): the real PDTQ Data collection (`policy-data/
+// pdtq-data`, real spec `ReadPdtqData`) and individual document (`policy-data/
+// pdtq-data/{pdtqReferenceId}`, real spec `ReadIndividualPdtqData`/`CreateIndividualPdtqData`/
+// `UpdateIndividualPdtqData`/`DeleteIndividualPdtqData`) are now implemented -- the first real
+// UDR resource genuinely unblocked (not merely a candidate) by ADR-0161's new parsing infra, per
+// direct read. `pdtqReferenceId` is client-supplied (a real path parameter, not
+// server-generated). Real, disclosed: `CreateIndividualPdtqData` documents ONLY `201` (no
+// update-via-PUT status), same precedent as `bdt-data`. Real RFC 7396 JSON Merge Patch. The
+// collection GET's own optional `pdtq-ref-ids` array filter is deliberately NOT honored, matching
+// the established "optional filter not honored" precedent for consistency.
+//
 // Deliberately still deferred, not dropped:
 // the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
 // `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
 // collection GET, real spec `Query5GmbsGroup` -- both confirmed genuinely blocked: their `gpsis`
-// query parameter is a real `style: form, explode: false` array, the same unsupported-parsing
-// class already disclosed for `pdtq-data`/`nf-group-ids`; and `5g-vn-groups`'s/
-// `mbs-group-membership`'s own `/internal`/`/pp-profile-data` variants (same real blocked
+// query parameter is a real `style: form, explode: false` array, the same class ADR-0161's new
+// `split_form_array()` infra could now parse but hasn't yet been wired into these two routes; and
+// `5g-vn-groups`'s/`mbs-group-membership`'s own `/internal`/`/pp-profile-data` variants (same real
 // class) -- `group-identifiers`, the individual `5g-vn-groups/{externalGroupId}`/
 // `mbs-group-membership/{externalGroupId}` resources, and `{ueGroupId}/ee-profile-data` themselves
 // closed, see ADR-0140/ADR-0144/ADR-0145/ADR-0146
@@ -542,14 +567,14 @@
 // own other resources (mbs-session-pol-data -- real, disclosed: its MbsSessPolDataId key is a
 // deeply nested oneOf/anyOf object (mbsSessionId -> tmgi/ssm/nid, or afAppId) with no documented
 // bare-path-segment string encoding at all, genuinely more ambiguous than snssai's own flat
-// two-field shape, so left deferred rather than inventing a serialization; pdtq-data, and
-// others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
-// not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn); bare
-// `/subscription-data/{ueId}` (`QueryUeSubscribedData`) and `{ueId}/context-data`
-// (`QueryContextData`) -- both confirmed genuinely blocked on direct read: real
-// `style: form, explode: false` array query params (`dataset-names`/`adjacent-plmns`/
-// `ext-group-ids` on the former, a real REQUIRED `context-dataset-names` on the latter), the
-// same unsupported-parsing class as `pdtq-data`/`nf-group-ids`.
+// two-field shape, so left deferred rather than inventing a serialization; others); all of
+// TS29504_Nudr_GroupIDmap.yaml (real array-query-param blocker now parseable via ADR-0161's
+// `split_form_array()`, not yet wired in); nidd-authorization-data (query-parameter-keyed, not
+// ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn); bare
+// `/subscription-data/{ueId}` (`QueryUeSubscribedData`) -- real `style: form, explode: false`
+// array query params (`dataset-names`/`adjacent-plmns`/`ext-group-ids`), same class ADR-0161's
+// infra could now parse but not yet wired into this route (`{ueId}/context-data` was closed via
+// exactly that infra, see `QueryContextData`'s own comment above and ADR-0161/ADR-0162).
 //
 // `GetSSAuData` (`/subscription-data/{ueId}/service-specific-authorization-data/{serviceType}`,
 // distinct from the already-implemented `context-data/service-specific-authorizations/
@@ -903,6 +928,8 @@ int main() {
     udr::GroupSmfSubscriptionInfoStore group_smf_subscription_info(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0159).
     udr::GroupHssSubscriptionInfoStore group_hss_subscription_info(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0162).
+    udr::PdtqDataStore pdtq_data(conninfo);
 
     // Real seed data (ADR-0069, gap-closure Tier 1b) -- the real provisioned-data group is
     // GET-only per spec (no create/update operation exists at all, see schema.postgres.sql's own
@@ -1485,6 +1512,15 @@ int main() {
         "udr_group_hss_subscription_info_get_total", "Total GetHssGroupSubscriptions calls");
     auto group_hss_subscription_info_delete_counter = meter->CreateUInt64Counter(
         "udr_group_hss_subscription_info_delete_total", "Total RemoveHssGroupSubscriptions calls");
+    auto pdtq_data_list_counter =
+        meter->CreateUInt64Counter("udr_pdtq_data_list_total", "Total ReadPdtqData calls");
+    auto pdtq_data_get_counter =
+        meter->CreateUInt64Counter("udr_pdtq_data_get_total", "Total ReadIndividualPdtqData calls");
+    auto pdtq_data_write_counter =
+        meter->CreateUInt64Counter("udr_pdtq_data_write_total",
+                                   "Total CreateIndividualPdtqData/UpdateIndividualPdtqData calls");
+    auto pdtq_data_delete_counter = meter->CreateUInt64Counter(
+        "udr_pdtq_data_delete_total", "Total DeleteIndividualPdtqData calls");
     auto five_g_vn_groups_write_counter = meter->CreateUInt64Counter(
         "udr_5g_vn_groups_write_total", "Total Create5GVnGroup/Modify5GVnGroup calls");
     auto five_g_vn_groups_get_counter = meter->CreateUInt64Counter(
@@ -5616,6 +5652,136 @@ int main() {
                     404, "Not Found", "No HSS Group Subscription Info for subsId " + subs_id);
             }
             group_hss_subscription_info_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: PDTQ Data collection + individual document (ADR-0162, gap-closure
+    // task #106) -- real GET on the collection, GET+PUT+PATCH+DELETE on the individual document,
+    // per TS29519_Policy_Data.yaml. The first real UDR resource closed using the array-query-param
+    // parsing infra (ADR-0161) -- confirmed genuinely unblocked by it, not merely a candidate.
+    // Real, disclosed: `pdtqReferenceId` is client-supplied (a real path parameter on the
+    // individual document, not server-generated). Real, disclosed: `CreateIndividualPdtqData`
+    // documents ONLY 201 (no update-via-PUT status) -- matches the existing `bdt-data` precedent
+    // exactly, this route always responds 201. Real RFC 7396 JSON Merge Patch
+    // (application/merge-patch+json, `PdtqDataPatch`), same idiom as `bdt-data`/UDM's own
+    // merge-patch routes: validated against the real generated shape first, then applied via
+    // nlohmann::json's `.merge_patch()` on the raw parsed body (not round-tripped through the
+    // DTO) to preserve RFC 7396's own absent-vs-null field semantics. Real, disclosed scope
+    // choice: the collection GET's own optional `pdtq-ref-ids` array query-param filter is NOT
+    // honored, matching the established "optional filter not honored" precedent
+    // (`ee-subscriptions`' `event-types`/`nf-identifiers`) for consistency, not because the new
+    // parsing infra couldn't honor it. ---
+
+    const std::string pdtq_data_collection_path_pattern =
+        std::string(kApiRoot) + "/policy-data/pdtq-data";
+    const std::string pdtq_data_individual_path_pattern =
+        std::string(kApiRoot) + "/policy-data/pdtq-data/{pdtqReferenceId}";
+
+    server.add_route(
+        "GET",
+        pdtq_data_collection_path_pattern,
+        [&verifier, &pdtq_data, &pdtq_data_list_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            auto items = pdtq_data.list();
+            json arr = json::array();
+            for (auto& item : items) {
+                arr.push_back(std::move(item));
+            }
+            pdtq_data_list_counter->Add(1);
+            return sbi_core::http2::Response::json(200, arr.dump());
+        });
+
+    server.add_route(
+        "GET",
+        pdtq_data_individual_path_pattern,
+        [&verifier, &pdtq_data, &pdtq_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto pdtq_ref_id = req.path_params.at("pdtqReferenceId");
+            auto data = pdtq_data.get(pdtq_ref_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No PDTQ data for pdtqReferenceId " + pdtq_ref_id);
+            }
+            pdtq_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        pdtq_data_individual_path_pattern,
+        [&verifier, &pdtq_data, &pdtq_data_write_counter, pdtq_data_individual_path_pattern](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::PdtqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto pdtq_ref_id = req.path_params.at("pdtqReferenceId");
+            json j = *body;
+            pdtq_data.put(pdtq_ref_id, j);
+            pdtq_data_write_counter->Add(1);
+            // Real spec: CreateIndividualPdtqData documents ONLY 201 as a success response (no
+            // update-via-PUT status) -- confirmed by direct read, this route always responds 201,
+            // matching the real spec literally rather than inventing an undocumented 204.
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace(
+                "location", resolved_location(pdtq_data_individual_path_pattern, req.path_params));
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        pdtq_data_individual_path_pattern,
+        [&verifier, &pdtq_data, &pdtq_data_write_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto patch_dto = sbi_core::http2::parse_json_body<sbi_gen::PdtqDataPatch>(req, err);
+            if (!patch_dto.has_value()) {
+                return err;
+            }
+            json patch;
+            try {
+                patch = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto pdtq_ref_id = req.path_params.at("pdtqReferenceId");
+            const auto patched = pdtq_data.merge_patch(pdtq_ref_id, patch);
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No PDTQ data for pdtqReferenceId " + pdtq_ref_id);
+            }
+            pdtq_data_write_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        pdtq_data_individual_path_pattern,
+        [&verifier, &pdtq_data, &pdtq_data_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto pdtq_ref_id = req.path_params.at("pdtqReferenceId");
+            if (!pdtq_data.remove(pdtq_ref_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No PDTQ data for pdtqReferenceId " + pdtq_ref_id);
+            }
+            pdtq_data_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

@@ -2466,4 +2466,64 @@ bool GroupHssSubscriptionInfoStore::remove(const std::string& ue_group_id,
     return result.affected_rows() > 0;
 }
 
+PdtqDataStore::PdtqDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void PdtqDataStore::put(const std::string& pdtq_ref_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_pdtq_data (pdtq_ref_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (pdtq_ref_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{pdtq_ref_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> PdtqDataStore::get(const std::string& pdtq_ref_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_pdtq_data WHERE pdtq_ref_id = $1",
+                                 pqxx::params{pdtq_ref_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::vector<nlohmann::json> PdtqDataStore::list() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_pdtq_data");
+    std::vector<nlohmann::json> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
+std::optional<nlohmann::json> PdtqDataStore::merge_patch(const std::string& pdtq_ref_id,
+                                                         const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_pdtq_data WHERE pdtq_ref_id = $1",
+                                 pqxx::params{pdtq_ref_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto doc = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    doc.merge_patch(patch);
+    txn.exec("UPDATE udr_pdtq_data SET data = $2::jsonb WHERE pdtq_ref_id = $1",
+             pqxx::params{pdtq_ref_id, doc.dump()});
+    txn.commit();
+    return std::make_optional(doc);
+}
+
+bool PdtqDataStore::remove(const std::string& pdtq_ref_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM udr_pdtq_data WHERE pdtq_ref_id = $1", pqxx::params{pdtq_ref_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr
