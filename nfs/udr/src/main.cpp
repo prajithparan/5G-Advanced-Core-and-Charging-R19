@@ -6558,8 +6558,12 @@ int main() {
     server.add_route(
         "PUT",
         group_ee_subscriptions_individual_path_pattern,
-        [&verifier, &group_ee_subscriptions, &group_ee_subscriptions_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &group_ee_subscriptions,
+         &group_ee_subscriptions_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         group_ee_subscriptions_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6578,6 +6582,11 @@ int main() {
                     404, "Not Found", "No EE Group Subscription for subsId " + subs_id);
             }
             group_ee_subscriptions_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_ee_subscriptions_individual_path_pattern, req.path_params),
+                change_replace(j));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6586,8 +6595,12 @@ int main() {
     server.add_route(
         "PATCH",
         group_ee_subscriptions_individual_path_pattern,
-        [&verifier, &group_ee_subscriptions, &group_ee_subscriptions_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &group_ee_subscriptions,
+         &group_ee_subscriptions_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         group_ee_subscriptions_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6610,6 +6623,11 @@ int main() {
                     404, "Not Found", "No EE Group Subscription for subsId " + subs_id);
             }
             group_ee_subscriptions_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_ee_subscriptions_individual_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6618,8 +6636,12 @@ int main() {
     server.add_route(
         "DELETE",
         group_ee_subscriptions_individual_path_pattern,
-        [&verifier, &group_ee_subscriptions, &group_ee_subscriptions_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &group_ee_subscriptions,
+         &group_ee_subscriptions_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         group_ee_subscriptions_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6630,6 +6652,11 @@ int main() {
                     404, "Not Found", "No EE Group Subscription for subsId " + subs_id);
             }
             group_ee_subscriptions_delete_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_ee_subscriptions_individual_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6671,6 +6698,8 @@ int main() {
         [&verifier,
          &group_amf_subscription_info,
          &group_amf_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
          group_amf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -6686,6 +6715,11 @@ int main() {
             json j = *body;
             const bool is_new = group_amf_subscription_info.put(ue_group_id, subs_id, j);
             group_amf_subscription_info_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_amf_subscription_info_path_pattern, req.path_params),
+                change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -6705,8 +6739,12 @@ int main() {
     server.add_route(
         "PATCH",
         group_amf_subscription_info_path_pattern,
-        [&verifier, &group_amf_subscription_info, &group_amf_subscription_info_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &group_amf_subscription_info,
+         &group_amf_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         group_amf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6729,6 +6767,11 @@ int main() {
                     404, "Not Found", "No AMF Group Subscription Info for subsId " + subs_id);
             }
             group_amf_subscription_info_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_amf_subscription_info_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6737,8 +6780,12 @@ int main() {
     server.add_route(
         "DELETE",
         group_amf_subscription_info_path_pattern,
-        [&verifier, &group_amf_subscription_info, &group_amf_subscription_info_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &group_amf_subscription_info,
+         &group_amf_subscription_info_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         group_amf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6749,6 +6796,11 @@ int main() {
                     404, "Not Found", "No AMF Group Subscription Info for subsId " + subs_id);
             }
             group_amf_subscription_info_delete_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_amf_subscription_info_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6790,6 +6842,8 @@ int main() {
         [&verifier,
          &group_smf_subscription_info,
          &group_smf_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
          group_smf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -6804,6 +6858,11 @@ int main() {
             json j = *body;
             const bool is_new = group_smf_subscription_info.put(ue_group_id, subs_id, j);
             group_smf_subscription_info_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_smf_subscription_info_path_pattern, req.path_params),
+                change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -6823,8 +6882,12 @@ int main() {
     server.add_route(
         "PATCH",
         group_smf_subscription_info_path_pattern,
-        [&verifier, &group_smf_subscription_info, &group_smf_subscription_info_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &group_smf_subscription_info,
+         &group_smf_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         group_smf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6847,6 +6910,11 @@ int main() {
                     404, "Not Found", "No SMF Group Subscription Info for subsId " + subs_id);
             }
             group_smf_subscription_info_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_smf_subscription_info_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6855,8 +6923,12 @@ int main() {
     server.add_route(
         "DELETE",
         group_smf_subscription_info_path_pattern,
-        [&verifier, &group_smf_subscription_info, &group_smf_subscription_info_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &group_smf_subscription_info,
+         &group_smf_subscription_info_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         group_smf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6867,6 +6939,11 @@ int main() {
                     404, "Not Found", "No SMF Group Subscription Info for subsId " + subs_id);
             }
             group_smf_subscription_info_delete_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_smf_subscription_info_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6916,6 +6993,8 @@ int main() {
         [&verifier,
          &group_hss_subscription_info,
          &group_hss_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
          group_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -6930,6 +7009,11 @@ int main() {
             json j = *body;
             const bool is_new = group_hss_subscription_info.put(ue_group_id, subs_id, j);
             group_hss_subscription_info_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_hss_subscription_info_path_pattern, req.path_params),
+                change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -6949,8 +7033,12 @@ int main() {
     server.add_route(
         "PATCH",
         group_hss_subscription_info_path_pattern,
-        [&verifier, &group_hss_subscription_info, &group_hss_subscription_info_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &group_hss_subscription_info,
+         &group_hss_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         group_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6973,6 +7061,11 @@ int main() {
                     404, "Not Found", "No HSS Group Subscription Info for subsId " + subs_id);
             }
             group_hss_subscription_info_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_hss_subscription_info_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6981,8 +7074,12 @@ int main() {
     server.add_route(
         "DELETE",
         group_hss_subscription_info_path_pattern,
-        [&verifier, &group_hss_subscription_info, &group_hss_subscription_info_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &group_hss_subscription_info,
+         &group_hss_subscription_info_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         group_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6993,6 +7090,11 @@ int main() {
                     404, "Not Found", "No HSS Group Subscription Info for subsId " + subs_id);
             }
             group_hss_subscription_info_delete_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_hss_subscription_info_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

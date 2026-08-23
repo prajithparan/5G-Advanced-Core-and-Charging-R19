@@ -3482,3 +3482,24 @@ wired (31 per-UE + 6 non-per-UE). See ADR-0177 in `docs/DECISIONS.md` for full d
 `group-data/{ueGroupId}/ee-subscriptions` family (+ its 3 nested resources) remains the last real
 candidate batch unblocked by ADR-0176's schema fix, not yet wired; `Nudr_GroupIDmap`'s own
 callback remains a separate, still-unimplemented API.
+
+## ADR-0178 -- group-data `ee-subscriptions` family wired: closes the ADR-0176 non-per-UE candidate list
+
+| Requirement | Test |
+|---|---|
+| `POST group-data/{ueGroupId}/ee-subscriptions` create | Live curl, real `201` with server-generated `subsId` |
+| `POST subs-to-notify` subscription (no `ueId`) watching the full resolved individual-document path | Live curl, real `201` |
+| `PATCH group-data/.../ee-subscriptions/{subsId}` (real RFC 6902 `replace`) | Live curl, real `204`; receiver logs a correct `DataChangeNotify` with no `"ueId"` key present |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Continues ADR-0176/ADR-0177's own disclosed follow-up using `notify_subscribers_ue_less()`, no
+new infrastructure: `group-data/{ueGroupId}/ee-subscriptions` individual document
+(`PUT`+RFC 6902 `PATCH`+`DELETE`) and its 3 nested per-`subsId` sub-resources
+(`amf-subscriptions`, `smf-subscriptions`, `hss-subscriptions`) -- the group-data-scoped
+structural twins of the already-wired per-UE `ee-subscriptions` family (ADR-0175), keyed by
+`ueGroupId`. This closes ADR-0176's own disclosed non-per-UE candidate list in full. Combined
+total: **61 real per-UE call sites + 26 real non-per-UE call sites = 87 real write-route call
+sites**, 41 distinct resource types now wired (31 per-UE + 10 non-per-UE). See ADR-0178 in
+`docs/DECISIONS.md` for full disclosure -- the only remaining real gap is `Nudr_GroupIDmap`'s own
+separate `onGroupIdMapChange` callback, a different API, currently unfireable regardless since
+`nf-group-ids` itself has no write path.
