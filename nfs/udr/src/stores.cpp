@@ -2526,4 +2526,31 @@ bool PdtqDataStore::remove(const std::string& pdtq_ref_id) {
     return result.affected_rows() > 0;
 }
 
+NfGroupIdStore::NfGroupIdStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void NfGroupIdStore::seed(const std::string& subscriber_id,
+                          const std::string& nf_type,
+                          std::string group_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_nf_group_ids (subscriber_id, nf_type, group_id) "
+             "VALUES ($1, $2, $3) "
+             "ON CONFLICT (subscriber_id, nf_type) DO UPDATE SET group_id = EXCLUDED.group_id",
+             pqxx::params{subscriber_id, nf_type, group_id});
+    txn.commit();
+}
+
+std::optional<std::string> NfGroupIdStore::get(const std::string& subscriber_id,
+                                               const std::string& nf_type) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT group_id FROM udr_nf_group_ids WHERE subscriber_id = $1 AND nf_type = $2",
+                 pqxx::params{subscriber_id, nf_type});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(result.front()["group_id"].as<std::string>());
+}
+
 } // namespace udr

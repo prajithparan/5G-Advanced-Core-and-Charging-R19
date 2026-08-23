@@ -552,6 +552,18 @@
 // collection GET's own optional `pdtq-ref-ids` array filter is deliberately NOT honored, matching
 // the established "optional filter not honored" precedent for consistency.
 //
+// UPDATE (ADR-0164, gap-closure task #106): the real `GetNfGroupIDs` resource (`/nf-group-ids`,
+// `TS29504_Nudr_GroupIDmap.yaml`, the same `Nudr_GroupIDmap` service as `GetRoutingIDs` above, NOT
+// `Nudr_DataRepository`) is now implemented -- the second real resource genuinely unblocked by
+// ADR-0161's `split_form_array()` infra, closing the real `nf-type` array query param. GET-only,
+// no create/update/delete exists anywhere in the service for the mapping data itself (confirmed by
+// direct read), seeded at startup, same precedent as `routing_ids`/`group_identifiers`. Real
+// `404` honored when the composed result is empty (unlike the aggregate live-view resources'
+// deliberate always-`200`), since this resource's own response schema requires `minProperties: 1`
+// and a real `404` is documented. The sibling `/nf-group-ids/subscriptions` change-notification
+// family (real webhook callback `onGroupIdMapChange`) was surveyed but is a separate, genuinely
+// more complex resource family, deliberately deferred to its own future turn.
+//
 // Deliberately still deferred, not dropped:
 // the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
 // `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
@@ -567,10 +579,12 @@
 // own other resources (mbs-session-pol-data -- real, disclosed: its MbsSessPolDataId key is a
 // deeply nested oneOf/anyOf object (mbsSessionId -> tmgi/ssm/nid, or afAppId) with no documented
 // bare-path-segment string encoding at all, genuinely more ambiguous than snssai's own flat
-// two-field shape, so left deferred rather than inventing a serialization; others); all of
-// TS29504_Nudr_GroupIDmap.yaml (real array-query-param blocker now parseable via ADR-0161's
-// `split_form_array()`, not yet wired in); nidd-authorization-data (query-parameter-keyed, not
-// ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn); bare
+// two-field shape, so left deferred rather than inventing a serialization; others); the
+// `Nudr_GroupIDmap` `/nf-group-ids/subscriptions` and
+// `/nf-group-ids/subscriptions/{subscriptionId}` change-notification family (real
+// `onGroupIdMapChange` webhook callback -- `GetNfGroupIDs` itself closed, see ADR-0164 above);
+// nidd-authorization-data (query-parameter-keyed, not ueId-alone -- a genuinely different resource
+// shape, deferred to its own scoped turn); bare
 // `/subscription-data/{ueId}` (`QueryUeSubscribedData`) -- real `style: form, explode: false`
 // array query params (`dataset-names`/`adjacent-plmns`/`ext-group-ids`), same class ADR-0161's
 // infra could now parse but not yet wired into this route (`{ueId}/context-data` was closed via
@@ -865,6 +879,8 @@ int main() {
     udr::GroupPolicyDataStore group_control_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0120).
     udr::RoutingIdStore routing_ids(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0164).
+    udr::NfGroupIdStore nf_group_ids(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0121).
     udr::NiddAuthorizationInfoStore nidd_authorization_info(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0122).
@@ -1110,6 +1126,20 @@ int main() {
         json routing_id;
         routing_id["routingIndicators"] = json::array({"0001"});
         routing_ids.seed("UDM", "udm-group-1", routing_id);
+    }
+
+    // Real seed data (ADR-0164, gap-closure task #106) -- the real GetNfGroupIDs resource
+    // (Nudr_GroupIDmap) is genuinely GET-only, same "no live provisioning path yet" reasoning as
+    // above (its only other write operation, /nf-group-ids/subscriptions, creates a change
+    // notification subscription, not a way to set this mapping). Composite-keyed by
+    // (subscriber_id, nf_type); this project's own two real, already-seeded test SUPIs
+    // (imsi-999700000000001/002) each mapped to a real "AMF"/"SMF" NFType (TS29510's own real
+    // NFType enum), real, arbitrary representative group IDs (NfGroupId is a plain string per its
+    // own schema, no documented format to match).
+    {
+        nf_group_ids.seed("imsi-999700000000001", "AMF", "amf-group-01");
+        nf_group_ids.seed("imsi-999700000000001", "SMF", "smf-group-01");
+        nf_group_ids.seed("imsi-999700000000002", "AMF", "amf-group-02");
     }
 
     // Real seed data (ADR-0123, gap-closure task #106) -- the real ODB Data resource is genuinely
@@ -1362,6 +1392,8 @@ int main() {
         "udr_group_control_data_patch_total", "Total ModifyGroupPolCtrlData calls");
     auto routing_ids_get_counter =
         meter->CreateUInt64Counter("udr_routing_ids_get_total", "Total GetRoutingIDs calls");
+    auto nf_group_ids_get_counter =
+        meter->CreateUInt64Counter("udr_nf_group_ids_get_total", "Total GetNfGroupIDs calls");
     auto nidd_authorization_write_counter = meter->CreateUInt64Counter(
         "udr_nidd_authorization_write_total",
         "Total CreateNIDDAuthorizationInfo/ModifyNiddAuthorizationInfo calls");
@@ -3363,6 +3395,59 @@ int main() {
                                                              nf_group_id_it->second);
             }
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_GroupIDmap: GetNfGroupIDs (ADR-0164, gap-closure task #106) -- real GET-only per
+    // TS29504_Nudr_GroupIDmap.yaml lines 28-84, same service as GetRoutingIDs above, NOT
+    // Nudr_DataRepository. Real REQUIRED array query param nf-type (style: form, explode: false,
+    // minItems: 1 -- the second real consumer of sbi_core::http2::split_form_array(), after
+    // QueryContextData/ADR-0161) and real REQUIRED subscriberId (plain string). Response is a
+    // real map {NFType: NfGroupId}; unlike the aggregate live-view resources
+    // (ue-update-confirmation-data/context-data, ADR-0147/ADR-0161) which always return 200 since
+    // those have no independent existence, this resource's own response schema literally requires
+    // minProperties: 1 and a real 404 is documented, so an empty result honors the spec's real
+    // 404 rather than deviating to always-200. No create/update/delete operation exists anywhere
+    // in this service for the mapping data itself -- confirmed by direct read, seeded at startup,
+    // same "provisioned out-of-band" precedent as routing_ids/group_identifiers above. The
+    // sibling /nf-group-ids/subscriptions change-notification family (POST/GET/PATCH/DELETE +
+    // onGroupIdMapChange webhook callback) was surveyed but is a separate, genuinely more complex
+    // resource family, deliberately deferred to its own future turn (same "no real webhook
+    // delivery" gap class as subs-to-notify). ---
+
+    const std::string nf_group_ids_path_pattern = std::string(kGroupIdMapApiRoot) + "/nf-group-ids";
+
+    server.add_route(
+        "GET",
+        nf_group_ids_path_pattern,
+        [&verifier, &nf_group_ids, &nf_group_ids_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto nf_type_it = req.query_params.find("nf-type");
+            const auto subscriber_id_it = req.query_params.find("subscriberId");
+            if (nf_type_it == req.query_params.end() ||
+                subscriber_id_it == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "nf-type and subscriberId are both required query parameters");
+            }
+            const auto nf_types = sbi_core::http2::split_form_array(nf_type_it->second);
+            json result = json::object();
+            for (const auto& nf_type : nf_types) {
+                if (auto group_id = nf_group_ids.get(subscriber_id_it->second, nf_type);
+                    group_id.has_value()) {
+                    result[nf_type] = *group_id;
+                }
+            }
+            nf_group_ids_get_counter->Add(1);
+            if (result.empty()) {
+                return sbi_core::http2::problem_response(404,
+                                                         "Not Found",
+                                                         "No NF Group IDs for subscriberId " +
+                                                             subscriber_id_it->second);
+            }
+            return sbi_core::http2::Response::json(200, result.dump());
         });
 
     // --- Nudr_DataRepository: NIDD Authorization Info context-data resource (ADR-0121,

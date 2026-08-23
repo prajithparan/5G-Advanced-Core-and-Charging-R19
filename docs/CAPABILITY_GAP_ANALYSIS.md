@@ -393,10 +393,10 @@ AMF 3GPP/non-3GPP access registration, SMF registration(s), SMSF 3GPP/non-3GPP r
 authentication data/status/SoR, trace data, query-identity-by-supi-or-gpsi, query-ODB-data,
 operator-specific-data-container, shared-data retrieval), and PP (Parameter Provisioning) data.
 
-This project's UDR (`nfs/udr/src/main.cpp`) implements 72 real resource endpoints (71 real
-`Nudr_DataRepository` resources plus, as of ADR-0120, one real `Nudr_GroupIDmap` resource,
-`GetRoutingIDs` -- a genuinely distinct Nudr API, not counted in the `Nudr_DataRepository`-vs-free5GC
-comparison below): AMF 3GPP-access
+This project's UDR (`nfs/udr/src/main.cpp`) implements 73 real resource endpoints (71 real
+`Nudr_DataRepository` resources plus, as of ADR-0120/ADR-0164, two real `Nudr_GroupIDmap`
+resources, `GetRoutingIDs` and `GetNfGroupIDs` -- a genuinely distinct Nudr API, not counted in the
+`Nudr_DataRepository`-vs-free5GC comparison below): AMF 3GPP-access
 context-data, AMF non-3GPP-access context-data (docs/DECISIONS.md ADR-0093), SMSF 3GPP-access and
 non-3GPP-access context-data (ADR-0097 -- see below), IP-SM-GW Registration context-data
 (ADR-0098 -- see below), Message Waiting Data (Document) context-data (ADR-0099 -- see below),
@@ -632,8 +632,12 @@ inventing a serialization. With both remaining real `Nudr_DataRepository` list-s
 `TS29504_Nudr_GroupIDmap.yaml`'s `Nudr_GroupIDmap` service (`/nudr-group-id-map/v1`), not
 `Nudr_DataRepository` (`/nudr-dr/v2`) -- hosted by the same UDR binary per TS 29.504, but does
 **NOT** count toward this section's own "N of free5GC's ~42+ `Nudr_DataRepository` resources"
-metric, still 34. `Nudr_GroupIDmap`'s own remaining resources (`/nf-group-ids`, blocked on the
-same array-query-param gap; the subscription-lifecycle endpoints, not surveyed) remain open.
+metric, still 34. **Closed, docs/DECISIONS.md ADR-0164**: `GetNfGroupIDs` (`/nf-group-ids`), the
+second real `Nudr_GroupIDmap` resource, genuinely unblocked once ADR-0161's array-parsing infra
+landed -- also does **NOT** count toward the `Nudr_DataRepository` metric. `Nudr_GroupIDmap`'s own
+remaining resources (the `/nf-group-ids/subscriptions` change-notification family, surveyed in
+ADR-0164 but deliberately deferred, same "no real webhook delivery" gap class as
+`subs-to-notify`) remain open.
 **Closed, docs/DECISIONS.md ADR-0121** (self-correction): NIDD Authorization Info context-data
 (`CreateNIDDAuthorizationInfo`/`GetNiddAuthorizationInfo`/`ModifyNiddAuthorizationInfo`/
 `RemoveNiddAuthorizationInfo`, real PUT+GET+PATCH+DELETE, same shape as `amf-3gpp-access`'s own
@@ -892,6 +896,15 @@ pre-existing `bdt-data` precedent; real RFC 7396 merge-patch; the collection GET
 `pdtq-ref-ids` array filter deliberately not honored, matching the established "optional filter
 not honored" precedent -- taking UDR from 70 to 71 of free5GC's ~42+ real
 `Nudr_DataRepository` resource types.
+**Closed, docs/DECISIONS.md ADR-0164**: `GetNfGroupIDs` (`/nf-group-ids`,
+`TS29504_Nudr_GroupIDmap.yaml`), the second real `Nudr_GroupIDmap` resource, genuinely unblocked
+by ADR-0161's infra (real REQUIRED `nf-type` array query param) -- does **NOT** count toward the
+`Nudr_DataRepository` metric, still 71, same non-increment precedent as `GetRoutingIDs`
+(ADR-0120). GET-only, seeded at startup (no write path exists in the spec for the mapping data);
+real `404` honored on an empty composed result (unlike the aggregate live-view resources' own
+always-`200`), since this resource's own schema requires `minProperties: 1` and documents a real
+`404`. The sibling `/nf-group-ids/subscriptions` change-notification family was surveyed but
+deliberately deferred to its own future turn.
 This is well past free5GC's own ~42+ figure; the real, still-open work from here is surveying the
 remainder of `TS29505_Subscription_Data.yaml` itself (the rest of `group-data`, bare
 `/subscription-data/{ueId}`, and others), not chasing a shrinking comparison count.
@@ -1012,7 +1025,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | SMF | ~10-16x | `UpdateSMContext`: `PATH_SWITCH_REQ`/`_ACK` slice CLOSED (task #101, ADR-0092, real downlink FAR/GTP-U control-plane); the other 20 real N2SmInfoType values remain a stub. AMF's own N2 handover NGAP side is now closed (ADR-0095/ADR-0096), but AMF still doesn't call SMF during handover -- the real AMF->SMF relay wiring for handover-triggered PDU session resource re-setup remains a real, disclosed open gap |
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
-| UDR | ~2.5-10x | Resource-type breadth (71 of 42+ real TS 29.504 resources closed, past parity -- both ee-subscriptions nested-subscription trees and bare `{ueId}/context-data`/`pdtq-data` now fully closed via the new array-query-param parsing infra (ADR-0161/ADR-0162); `nidd-authorization-data`/`nf-group-ids`/bare `/subscription-data/{ueId}`/`group-data`'s bare collection GETs remain real, now-unblocked candidates for future turns; real webhook delivery and `GetSSAuData` (deliberately deferred, ADR-0160) also remain, see UDR section above) |
+| UDR | ~2.5-10x | Resource-type breadth (71 of 42+ real TS 29.504 resources closed, past parity -- both ee-subscriptions nested-subscription trees, bare `{ueId}/context-data`/`pdtq-data`, and `Nudr_GroupIDmap`'s `GetNfGroupIDs` now fully closed via the new array-query-param parsing infra (ADR-0161/ADR-0162/ADR-0164); `nidd-authorization-data`/bare `/subscription-data/{ueId}`/`group-data`'s bare collection GETs remain real, now-unblocked candidates for future turns; real webhook delivery (`nf-group-ids/subscriptions` and `subs-to-notify`) and `GetSSAuData` (deliberately deferred, ADR-0160) also remain, see UDR section above) |
 | UPF | ~1x (task #107 fully closed: Association Update/Release, ADR-0084; PFD Management, ADR-0086; Node Report, ADR-0087; Session Set Deletion correctly found not applicable to this project's own N4/Sxc interface) | datapath (XDP) already ahead of both references on paper, unbenchmarked |
 | CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding: CLOSED (task #108, ADR-0089, narrower disclosed scope than free5GC's); already ahead on 5G-native service breadth + AI-native charging |
 

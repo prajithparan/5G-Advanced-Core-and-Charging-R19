@@ -3092,3 +3092,36 @@ ADR-0162 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open;
 `nidd-authorization-data`, `Nudr_GroupIDmap`'s `/nf-group-ids`, bare `/subscription-data/{ueId}`,
 `group-data`'s own bare collection GETs, and `GetSSAuData` (deliberately deferred, ADR-0160)
 remain real, disclosed gaps.
+
+## ADR-0164 -- gap-closure task #106 continuation: UDR real GetNfGroupIDs (Nudr_GroupIDmap, a distinct Nudr API), the second resource genuinely unblocked by ADR-0161's array-parsing infra
+
+| Requirement | Test |
+|---|---|
+| `GET /nf-group-ids` with both `nf-type` and `subscriberId` query parameters missing | Live curl, real `400` |
+| `GET` with only `nf-type` present (`subscriberId` missing) | Live curl, real `400` |
+| `GET` with the seeded pair (`nf-type=AMF&subscriberId=imsi-999700000000001`) | Live curl, real `200` with `{"AMF":"amf-group-01"}` |
+| `GET` with two comma-separated `nf-type` values on the same seeded subscriber (`nf-type=AMF,SMF&subscriberId=imsi-999700000000001`) | Live curl, real `200` with `{"AMF":"amf-group-01","SMF":"smf-group-01"}`, confirming `split_form_array()`'s real comma-split behavior end-to-end |
+| `GET` with an unseeded combination (`nf-type=PCF&subscriberId=imsi-999700000000001`) | Live curl, real `404` |
+| `GET` with a mixed request (one present `nf-type`, one absent) against the second seeded subscriber | Live curl, real `200` with only the present entry -- confirms partial match still returns `200`, not `404` |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_nf_group_ids` independently confirms exactly the three seeded rows, matching every curl response |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real `GET`-only resource from the same genuinely **different** real Nudr API as `GetRoutingIDs`
+(ADR-0120), `TS29504_Nudr_GroupIDmap.yaml`'s `Nudr_GroupIDmap` service (`/nudr-group-id-map/v1`)
+-- not `Nudr_DataRepository` (`/nudr-dr/v2`). Does **NOT** count toward the "N of free5GC's ~42+
+`Nudr_DataRepository` resources" metric -- still 71, unchanged from ADR-0162, same non-increment
+precedent as `GetRoutingIDs`/ADR-0120. The second real UDR resource confirmed genuinely unblocked
+(not merely a candidate) by ADR-0161's `split_form_array()` infra, closing the real REQUIRED
+`nf-type` array query param. No create/update/delete operation exists anywhere in this service for
+the mapping data itself (confirmed by direct read); seeded at startup, same precedent as
+`routing_ids`/`group_identifiers`. Real, disclosed design choice: unlike the aggregate live-view
+resources (`ue-update-confirmation-data`/`QueryContextData`, always `200`), this resource's own
+response schema requires `minProperties: 1` and documents a real `404`, so an empty composed
+result returns a real `404` -- honoring the spec literally, not a deviation. The sibling
+`/nf-group-ids/subscriptions` change-notification family (real `onGroupIdMapChange` webhook
+callback) was surveyed but deliberately deferred to its own future turn, same disclosed gap class
+as `subs-to-notify`'s own lack of real webhook delivery. See ADR-0164 in `docs/DECISIONS.md` for
+full disclosure -- task #106 remains open; `nidd-authorization-data`, bare
+`/subscription-data/{ueId}`, `group-data`'s own bare collection GETs, `GetSSAuData` (deliberately
+deferred, ADR-0160), and `Nudr_GroupIDmap`'s own subscription-management family remain real,
+disclosed gaps.

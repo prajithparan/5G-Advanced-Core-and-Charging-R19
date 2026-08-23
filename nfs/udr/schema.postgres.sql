@@ -1062,3 +1062,29 @@ CREATE TABLE IF NOT EXISTS udr_pdtq_data (
     pdtq_ref_id TEXT PRIMARY KEY,
     data        JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0164). Real GetNfGroupIDs resource
+-- (/nf-group-ids, TS29504_Nudr_GroupIDmap.yaml -- the same Nudr_GroupIDmap service as
+-- udr_routing_ids above, NOT Nudr_DataRepository; server base path /nudr-group-id-map/v1). Real,
+-- confirmed by direct YAML read: GET-only, real REQUIRED `nf-type` array query param
+-- (style: form, explode: false, the second real UDR resource closed using the
+-- sbi_core::http2::split_form_array() infra from ADR-0161/ADR-0162) and real REQUIRED
+-- `subscriberId` (plain string). Response is a real map {NFType: NfGroupId}, `minProperties: 1`
+-- -- unlike the aggregate resources (ue-update-confirmation-data/context-data, ADR-0147/ADR-0161)
+-- which deliberately always return 200 since those are live views with no independent existence,
+-- this resource's own response schema genuinely cannot be empty, and a real 404 is documented, so
+-- an empty result (no requested (subscriberId, nfType) pair found) returns 404 here -- honoring
+-- the real spec literally, not a deviation. No create/update/delete operation exists anywhere in
+-- this service for the underlying mapping data itself (the file's only other write path,
+-- /nf-group-ids/subscriptions, creates a subscription to be NOTIFIED of future changes, not a way
+-- to SET the mapping -- confirmed by direct read, deliberately not implemented in this ADR, real
+-- webhook delivery has no project precedent, same disclosed gap class as subs-to-notify) -- same
+-- "provisioned out-of-band, seeded at startup" precedent as udr_routing_ids/udr_group_identifiers
+-- above. Composite-keyed by (subscriber_id, nf_type) per the resource's own two real required
+-- query parameters.
+CREATE TABLE IF NOT EXISTS udr_nf_group_ids (
+    subscriber_id TEXT NOT NULL,
+    nf_type       TEXT NOT NULL,
+    group_id      TEXT NOT NULL,
+    PRIMARY KEY (subscriber_id, nf_type)
+);

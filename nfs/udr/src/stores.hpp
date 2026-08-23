@@ -1345,4 +1345,19 @@ private:
     pqxx::connection conn_;
 };
 
+// Real GetNfGroupIDs (Nudr_GroupIDmap, ADR-0164). No create/update operation exists anywhere in
+// this service for the mapping data -- seed() + get() only, same shape as RoutingIdStore. Stores
+// a plain string (real NfGroupId schema is `type: string`), not a JSON document.
+class NfGroupIdStore {
+public:
+    explicit NfGroupIdStore(const std::string& conninfo);
+
+    void seed(const std::string& subscriber_id, const std::string& nf_type, std::string group_id);
+    std::optional<std::string> get(const std::string& subscriber_id, const std::string& nf_type);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr
