@@ -2661,4 +2661,57 @@ std::optional<nlohmann::json> MbsGroupPpProfileDataStore::get() {
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
+NfGroupIdSubscriptionStore::NfGroupIdSubscriptionStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+void NfGroupIdSubscriptionStore::create(const std::string& subscription_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_nf_group_id_subscriptions (subscription_id, data) "
+             "VALUES ($1, $2::jsonb)",
+             pqxx::params{subscription_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> NfGroupIdSubscriptionStore::get(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_nf_group_id_subscriptions WHERE subscription_id = $1",
+                 pqxx::params{subscription_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::optional<nlohmann::json>
+NfGroupIdSubscriptionStore::apply_patch(const std::string& subscription_id,
+                                        const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_nf_group_id_subscriptions WHERE subscription_id = $1",
+                 pqxx::params{subscription_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto data = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    data = data.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("UPDATE udr_nf_group_id_subscriptions SET data = $2::jsonb WHERE subscription_id = $1",
+             pqxx::params{subscription_id, data.dump()});
+    txn.commit();
+    return std::make_optional(data);
+}
+
+bool NfGroupIdSubscriptionStore::remove(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM udr_nf_group_id_subscriptions WHERE subscription_id = $1",
+                 pqxx::params{subscription_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr

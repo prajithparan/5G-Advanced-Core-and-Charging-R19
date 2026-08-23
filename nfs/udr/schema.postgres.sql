@@ -1141,3 +1141,16 @@ CREATE TABLE IF NOT EXISTS udr_mbs_group_pp_profile_data (
     id    INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     data  JSONB NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0170). Real Nudr_GroupIDmap
+-- subscription-management family (CreateGroupIdSubscription/QueryGroupIdSubscription/
+-- ModifyGroupIdSubscription/RemoveGroupIdSubscription, TS29504_Nudr_GroupIDmap.yaml
+-- /nf-group-ids/subscriptions[/{subscriptionId}]). Real POST+GET+PATCH+DELETE, real required
+-- `SubscriptionData` fields (notificationUri/nfType/nfGroupId), server-generated
+-- `subscriptionId`. Real, disclosed: the spec's own `onGroupIdMapChange` webhook callback is NOT
+-- implemented (no real outbound HTTP delivery to `notificationUri`) -- same disclosed gap class
+-- as `subs-to-notify`'s own lack of real webhook delivery (ADR-0149).
+CREATE TABLE IF NOT EXISTS udr_nf_group_id_subscriptions (
+    subscription_id  TEXT   PRIMARY KEY,
+    data             JSONB  NOT NULL
+);

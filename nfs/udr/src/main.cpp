@@ -941,6 +941,8 @@ int main() {
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0169).
     udr::FiveGVnGroupPpProfileDataStore five_g_vn_group_pp_profile_data(conninfo);
     udr::MbsGroupPpProfileDataStore mbs_group_pp_profile_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0170).
+    udr::NfGroupIdSubscriptionStore nf_group_id_subscriptions(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0146).
     udr::GroupEeProfileDataStore group_ee_profile_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0148).
@@ -1630,6 +1632,14 @@ int main() {
         "udr_mbs_group_membership_internal_get_total", "Total Query5GMbsGroupInternal calls");
     auto mbs_group_pp_profile_data_get_counter = meter->CreateUInt64Counter(
         "udr_mbs_group_pp_profile_data_get_total", "Total Query5GMbsGroupPPData calls");
+    auto nf_group_id_subscriptions_create_counter = meter->CreateUInt64Counter(
+        "udr_nf_group_id_subscriptions_create_total", "Total CreateGroupIdSubscription calls");
+    auto nf_group_id_subscriptions_get_counter = meter->CreateUInt64Counter(
+        "udr_nf_group_id_subscriptions_get_total", "Total QueryGroupIdSubscription calls");
+    auto nf_group_id_subscriptions_write_counter = meter->CreateUInt64Counter(
+        "udr_nf_group_id_subscriptions_write_total", "Total ModifyGroupIdSubscription calls");
+    auto nf_group_id_subscriptions_delete_counter = meter->CreateUInt64Counter(
+        "udr_nf_group_id_subscriptions_delete_total", "Total RemoveGroupIdSubscription calls");
     auto group_ee_profile_data_get_counter = meter->CreateUInt64Counter(
         "udr_group_ee_profile_data_get_total", "Total QueryGroupEEData calls");
 
@@ -3513,6 +3523,134 @@ int main() {
                                                              subscriber_id_it->second);
             }
             return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    // --- Nudr_GroupIDmap: NF Group ID subscription-management family (ADR-0170, gap-closure
+    // task #106) -- real POST+GET+PATCH+DELETE per TS29504_Nudr_GroupIDmap.yaml,
+    // CreateGroupIdSubscription/QueryGroupIdSubscription/ModifyGroupIdSubscription/
+    // RemoveGroupIdSubscription. Real REQUIRED `SubscriptionData` fields
+    // (notificationUri/nfType/nfGroupId), no generated DTO for this API (same raw-JSON precedent
+    // as `routing_ids`/`nf_group_ids` above) -- validated here by direct required-field check.
+    // Real, server-generated `subscriptionId` (UUID v4, same `sbi_core::generate_uuid_v4()`
+    // helper this project already uses for every other subscription resource). Real, disclosed:
+    // this resource's own real PATCH documents both `200` (with body) and `204` (empty) for a
+    // successful modify with no further distinguishing rule -- resolved the same way this
+    // project already resolved the identical real ambiguity on `group_control_data`'s own
+    // real RFC 7396 PATCH (ADR-0118/ADR-0119): always respond `200` with the patched body, the
+    // richer of the two documented options. Real, disclosed gap: the spec's own
+    // `onGroupIdMapChange` webhook callback is NOT implemented (no real outbound HTTP delivery to
+    // the caller's `notificationUri`) -- same disclosed gap class as `subs-to-notify`'s own lack
+    // of real webhook delivery (ADR-0149). ---
+
+    const std::string nf_group_id_subscriptions_collection_path_pattern =
+        std::string(kGroupIdMapApiRoot) + "/nf-group-ids/subscriptions";
+    const std::string nf_group_id_subscriptions_individual_path_pattern =
+        std::string(kGroupIdMapApiRoot) + "/nf-group-ids/subscriptions/{subscriptionId}";
+
+    server.add_route(
+        "POST",
+        nf_group_id_subscriptions_collection_path_pattern,
+        [&verifier,
+         &nf_group_id_subscriptions,
+         &nf_group_id_subscriptions_create_counter,
+         nf_group_id_subscriptions_collection_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            if (!body.contains("notificationUri") || !body.contains("nfType") ||
+                !body.contains("nfGroupId")) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "notificationUri, nfType and nfGroupId are all required fields");
+            }
+            const auto subscription_id = sbi_core::generate_uuid_v4();
+            body["subscriptionId"] = subscription_id;
+            nf_group_id_subscriptions.create(subscription_id, body);
+            nf_group_id_subscriptions_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace(
+                "location",
+                resolved_location(nf_group_id_subscriptions_collection_path_pattern,
+                                  req.path_params) +
+                    "/" + subscription_id);
+            resp.body = body.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        nf_group_id_subscriptions_individual_path_pattern,
+        [&verifier, &nf_group_id_subscriptions, &nf_group_id_subscriptions_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            auto data = nf_group_id_subscriptions.get(subscription_id);
+            nf_group_id_subscriptions_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No subscription for subscriptionId " + subscription_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        nf_group_id_subscriptions_individual_path_pattern,
+        [&verifier, &nf_group_id_subscriptions, &nf_group_id_subscriptions_write_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            std::optional<json> patched;
+            try {
+                patched = nf_group_id_subscriptions.apply_patch(subscription_id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No subscription for subscriptionId " + subscription_id);
+            }
+            nf_group_id_subscriptions_write_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        nf_group_id_subscriptions_individual_path_pattern,
+        [&verifier, &nf_group_id_subscriptions, &nf_group_id_subscriptions_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            if (!nf_group_id_subscriptions.remove(subscription_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No subscription for subscriptionId " + subscription_id);
+            }
+            nf_group_id_subscriptions_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     // --- Nudr_DataRepository: GetNiddAuData (ADR-0165, gap-closure task #106) -- real GET-only

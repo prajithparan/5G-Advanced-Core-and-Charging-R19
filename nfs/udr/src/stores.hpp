@@ -1427,4 +1427,27 @@ private:
     pqxx::connection conn_;
 };
 
+// Real Nudr_GroupIDmap subscription-management family (ADR-0170) --
+// CreateGroupIdSubscription/QueryGroupIdSubscription/ModifyGroupIdSubscription/
+// RemoveGroupIdSubscription. Real POST+GET+PATCH+DELETE, server-generated subscriptionId. Real,
+// disclosed: the spec's own `onGroupIdMapChange` webhook callback is not implemented here (no
+// real outbound HTTP delivery) -- same disclosed gap class as SubsToNotifyStore's own lack of
+// real webhook delivery.
+class NfGroupIdSubscriptionStore {
+public:
+    explicit NfGroupIdSubscriptionStore(const std::string& conninfo);
+
+    void create(const std::string& subscription_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& subscription_id);
+    // Throws nlohmann::json::exception on a malformed patch -- caller turns that into a 400
+    // ProblemDetails, same as every other apply_patch in this file.
+    std::optional<nlohmann::json> apply_patch(const std::string& subscription_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& subscription_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

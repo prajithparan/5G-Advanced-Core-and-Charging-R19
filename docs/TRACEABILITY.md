@@ -3286,3 +3286,33 @@ in `docs/DECISIONS.md` for full disclosure -- remaining real, disclosed gaps: fi
 two singletons; `policy-data`'s `mbs-session-pol-data`; `GetSSAuData` (deliberately deferred,
 ADR-0160); `Nudr_GroupIDmap`'s own subscription-management family; real webhook delivery for
 `subs-to-notify`/`nf-group-ids/subscriptions`.
+
+## ADR-0170 -- gap-closure task #106 continuation: UDR real Nudr_GroupIDmap subscription-management family (nf-group-ids/subscriptions)
+
+| Requirement | Test |
+|---|---|
+| `POST` with a required field missing | Live curl, real `400` |
+| `POST` with a real, complete `SubscriptionData` body | Live curl, real `201`, server-generated `subscriptionId`, `Location` header with the real path |
+| `GET` the individual resource / a nonexistent one | Live curl, real `200` matching exactly / real `404` |
+| `PATCH` with a real RFC 6902 `replace` op | Live curl, real `200` with the updated body (resolves the real documented `200`-vs-`204` ambiguity the same way as `group_control_data`'s own PATCH) |
+| `GET` after `PATCH` | Live curl, real `200` confirming persistence |
+| `PATCH` a nonexistent `subscriptionId` | Live curl, real `404` |
+| `DELETE` then `GET` | Live curl, real `204` then real `404` |
+| `GET /nf-group-ids` (sibling resource, same API root) immediately after | Live curl, still real `200` with its own correct data, confirming no interference |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_nf_group_id_subscriptions` confirms zero rows remain after the delete |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real `Nudr_GroupIDmap` subscription-management family (`CreateGroupIdSubscription`/
+`QueryGroupIdSubscription`/`ModifyGroupIdSubscription`/`RemoveGroupIdSubscription`,
+`TS29504_Nudr_GroupIDmap.yaml`). Real, disclosed: structurally the same shape as `ee-subscriptions`/
+`subs-to-notify` -- a real CRUD collection+individual pair, server-generated `subscriptionId`, a
+real spec-documented `onGroupIdMapChange` webhook callback that is **not implemented** (no real
+outbound HTTP delivery to the caller's `notificationUri`), same disclosed gap class as
+`subs-to-notify`'s own lack of real webhook delivery. Real, disclosed: `ModifyGroupIdSubscription`'s
+own real dual `200`/`204` PATCH response ambiguity resolved identically to `group_control_data`'s
+own prior resolution (ADR-0118/ADR-0119) -- always `200` with the patched body. Does **NOT**
+increment the `Nudr_DataRepository` count -- still 78, same non-counting precedent as
+`GetRoutingIDs`/`GetNfGroupIDs`. See ADR-0170 in `docs/DECISIONS.md` for full disclosure -- task
+#106's real, disclosed remaining gaps: `policy-data`'s `mbs-session-pol-data`; `GetSSAuData`
+(deliberately deferred, ADR-0160); real webhook delivery infrastructure (spans this resource and
+`subs-to-notify`); `ext-group-ids`/`gpsis`/`supported-features` filtering retrofits.
