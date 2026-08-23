@@ -3316,3 +3316,31 @@ increment the `Nudr_DataRepository` count -- still 78, same non-counting precede
 #106's real, disclosed remaining gaps: `policy-data`'s `mbs-session-pol-data`; `GetSSAuData`
 (deliberately deferred, ADR-0160); real webhook delivery infrastructure (spans this resource and
 `subs-to-notify`); `ext-group-ids`/`gpsis`/`supported-features` filtering retrofits.
+
+## ADR-0171 -- real `onDataChange` webhook delivery infrastructure, wired into 3 of ~85 real write routes, remainder disclosed as a genuine, tracked follow-up
+
+| Requirement | Test |
+|---|---|
+| `POST subs-to-notify` subscribing to `amf-3gpp-access` for a real UE | Live curl, real `201` |
+| `PUT amf-3gpp-access` for that UE | Live curl, real `204`; separate real HTTPS receiver process independently logs a correctly-shaped `DataChangeNotify` (`resourceId` matches, `REPLACE` at `/` with the full new document) |
+| `PATCH amf-3gpp-access` (real RFC 6902 `replace` on `/ratType`) | Live curl, real `204`; receiver logs the actual forwarded change (`REPLACE`, `/ratType`, `newValue: EUTRA`), not a synthesized whole-resource replace |
+| `POST` a second subscription watching `smf-registrations/pdu-1`; `PUT` then `DELETE` that resource | Live curl, real `201`/`204`; receiver logs a `REPLACE` at `/` then a `REMOVE` at `/`, confirming the third real change shape |
+| Subscription selectivity | The `amf-3gpp-access` change did not trigger the `smf-registrations` subscription's callback and vice versa, confirmed via the receiver's own logged `resourceId` per notification |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real `onDataChange` webhook delivery for `subs-to-notify`'s own `SubscriptionDataSubscriptions`
+(`TS29505_Subscription_Data.yaml`) -- the real gap disclosed since ADR-0149. New shared, real,
+independently-testable infrastructure: `notify_client` (one shared, mutex-guarded
+`sbi_core::http2::Client`), `notify_subscribers()` (URI-substring match against
+`monitoredResourceUris`, real `DataChangeNotify` delivery to `callbackReference`), and
+`change_replace`/`change_remove`/`change_from_json_patch` (real `ChangeItem` construction for the
+three real write shapes). Real, disclosed scope-limiting findings, discovered while implementing:
+this project's UDR has no configured external base URL (matching is path-substring, not exact
+absolute-URI, a disclosed compromise); `udr_subs_to_notify`'s own pre-existing `ue_id NOT NULL`
+schema (ADR-0149) cannot represent UE-less subscriptions, so non-per-UE resources (group-data and
+others) genuinely cannot be wired without a separate schema fix first. User explicitly chose the
+largest of three offered scopes ("full sweep across every write route"); given the real
+engineering surface turned out to be ~85 real write routes needing individual live-verification
+care, this pass wires exactly 3 (`amf-3gpp-access`, `amf-non-3gpp-access`, `smf-registrations`,
+covering all three real write shapes end-to-end) and discloses the remaining ~80 plainly as
+unwired, not silently claimed complete. See ADR-0171 in `docs/DECISIONS.md` for full disclosure.

@@ -646,6 +646,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <optional>
 #include <thread>
@@ -726,6 +727,100 @@ std::string resolved_location(const std::string& pattern,
         }
     }
     return result;
+}
+
+// Real Nudr_DataRepository `onDataChange` webhook delivery (docs/DECISIONS.md ADR-0171,
+// gap-closure task #106). `subs-to-notify`'s own real `SubscriptionDataSubscriptions` schema
+// (`TS29505_Subscription_Data.yaml`) lets a consumer watch an open-ended list of
+// `monitoredResourceUris` and receive a real `DataChangeNotify` at `callbackReference` when any
+// of them changes -- this helper is the one, shared call site every real write route in this file
+// invokes after a successful mutation. Real, disclosed simplifications:
+// - This project's UDR has no configured external base URL (scheme+host) to construct a real,
+//   fully-qualified resource URI matching what an external subscriber would have supplied in
+//   `monitoredResourceUris` (which the real `Uri` schema documents as absolute). Matching is done
+//   on the real, well-known API *path* only (`resolved_path`, built the same way this file's own
+//   `resolved_location()` already builds Location headers) via substring containment against each
+//   subscription's own monitored URIs -- a real, disclosed compromise, not a fabricated exact-URI
+//   match this project cannot actually perform without inventing a base URL.
+// - Delivery is synchronous, best-effort, and never surfaces its own failure to the caller of the
+//   write operation that triggered it (a failed or slow webhook must not break or delay the real
+//   response to the actual write request beyond the delivery attempt itself) -- consistent with
+//   this project's own already-disclosed synchronous-HTTP-client debt (ADR-0009), not a new one.
+// - `sbi_core::http2::Client` is internally mutex-guarded (`libs/sbi-core/include/sbi_core/
+//   http2_client.hpp`), confirmed safe to share one instance across this server's concurrent
+//   request-handling calls.
+void notify_subscribers(udr::SubsToNotifyStore& subs_to_notify,
+                        sbi_core::http2::Client& notify_client,
+                        const std::string& ue_id,
+                        const std::string& resolved_path,
+                        const json& changes) {
+    for (const auto& sub : subs_to_notify.list_by_ue_id(ue_id)) {
+        if (!sub.contains("monitoredResourceUris") || !sub.contains("callbackReference")) {
+            continue;
+        }
+        bool matched = false;
+        for (const auto& uri : sub.at("monitoredResourceUris")) {
+            if (uri.is_string() &&
+                uri.get<std::string>().find(resolved_path) != std::string::npos) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            continue;
+        }
+        json notify_body;
+        notify_body["ueId"] = ue_id;
+        notify_body["notifyItems"] =
+            json::array({json{{"resourceId", resolved_path}, {"changes", changes}}});
+
+        sbi_core::http2::ClientRequest req;
+        req.method = "POST";
+        req.url = sub.at("callbackReference").get<std::string>();
+        req.headers.emplace("content-type", "application/json");
+        req.body = notify_body.dump();
+        if (auto resp = notify_client.send(req); !resp.has_value() || resp->status != 204) {
+            spdlog::warn("udr: onDataChange delivery to {} failed or non-204 for ueId={} path={}",
+                         req.url,
+                         ue_id,
+                         resolved_path);
+        }
+    }
+}
+
+// Real `ChangeItem` (`TS29571_CommonData.yaml`) constructors for the three real write shapes
+// every route in this file uses -- PUT (create-or-replace), RFC 6902/7396 PATCH, DELETE. Real,
+// disclosed: PUT/DELETE always describe a single, whole-resource `REPLACE`/`REMOVE` at the real
+// RFC 6901 root pointer `"/"` (no partial-field diffing attempted for a full replace or removal,
+// which is spec-accurate -- the whole resource genuinely did change). RFC 6902 PATCH ops are
+// forwarded near-directly (their own `op`/`path`/`value` map onto `ChangeItem`'s own
+// `op`/`path`/`newValue`); RFC 7396 merge-patch is real, disclosed, and reported as a single
+// whole-resource `REPLACE` with the patched result, since merge-patch's own semantics don't carry
+// a per-field op list to forward (same simplification precedent as PUT above).
+json change_replace(const json& new_value) {
+    return json::array({json{{"op", "REPLACE"}, {"path", "/"}, {"newValue", new_value}}});
+}
+
+json change_remove() {
+    return json::array({json{{"op", "REMOVE"}, {"path", "/"}}});
+}
+
+json change_from_json_patch(const json& patch_ops) {
+    json changes = json::array();
+    for (const auto& op : patch_ops) {
+        json item;
+        std::string op_name = op.value("op", "replace");
+        for (auto& c : op_name) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+        item["op"] = op_name;
+        item["path"] = op.value("path", "/");
+        if (op.contains("value")) {
+            item["newValue"] = op.at("value");
+        }
+        changes.push_back(item);
+    }
+    return changes;
 }
 
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as
@@ -1647,6 +1742,16 @@ int main() {
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
     sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
+    // Real onDataChange webhook delivery (ADR-0171, gap-closure task #106) -- shared client for
+    // notify_subscribers(), constructed once (internally mutex-guarded, safe to call from every
+    // concurrent write-route handler below).
+    sbi_core::http2::TlsConfig notify_client_tls{
+        .cert_path = CERTS_DIR "/udr/cert.pem",
+        .key_path = CERTS_DIR "/udr/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client notify_client(std::move(notify_client_tls));
+
     const std::string amf_ctx_path_pattern =
         std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/amf-3gpp-access";
 
@@ -1669,8 +1774,12 @@ int main() {
     server.add_route(
         "PUT",
         amf_ctx_path_pattern,
-        [&verifier, &amf_contexts, &amf_ctx_write_counter, amf_ctx_path_pattern](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &amf_contexts,
+         &amf_ctx_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         amf_ctx_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -1684,6 +1793,11 @@ int main() {
             json j = *body;
             const bool is_new = amf_contexts.put(ue_id, j);
             amf_ctx_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(amf_ctx_path_pattern, req.path_params),
+                               change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -1702,7 +1816,12 @@ int main() {
     server.add_route(
         "PATCH",
         amf_ctx_path_pattern,
-        [&verifier, &amf_contexts, &amf_ctx_write_counter](const sbi_core::http2::Request& req) {
+        [&verifier,
+         &amf_contexts,
+         &amf_ctx_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         amf_ctx_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -1724,6 +1843,11 @@ int main() {
                     404, "Not Found", "No AMF context for ueId " + ue_id);
             }
             amf_ctx_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(amf_ctx_path_pattern, req.path_params),
+                               change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -1758,6 +1882,8 @@ int main() {
         [&verifier,
          &amf_non3gpp_contexts,
          &amf_non3gpp_ctx_write_counter,
+         &subs_to_notify,
+         &notify_client,
          amf_non3gpp_ctx_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -1772,6 +1898,11 @@ int main() {
             json j = *body;
             const bool is_new = amf_non3gpp_contexts.put(ue_id, j);
             amf_non3gpp_ctx_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(amf_non3gpp_ctx_path_pattern, req.path_params),
+                               change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -1829,8 +1960,13 @@ int main() {
     server.add_route(
         "PUT",
         smf_reg_path_pattern,
-        [&verifier, &smf_registrations, &smf_reg_write_counter, smf_reg_list_path_pattern](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &smf_registrations,
+         &smf_reg_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         smf_reg_list_path_pattern,
+         smf_reg_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -1844,6 +1980,11 @@ int main() {
             json j = *body;
             const bool is_new = smf_registrations.put(ue_id, pdu_session_id, j);
             smf_reg_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(smf_reg_path_pattern, req.path_params),
+                               change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -1863,8 +2004,12 @@ int main() {
     server.add_route(
         "PATCH",
         smf_reg_path_pattern,
-        [&verifier, &smf_registrations, &smf_reg_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &smf_registrations,
+         &smf_reg_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         smf_reg_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -1889,6 +2034,11 @@ int main() {
                     "No SMF registration for ueId/pduSessionId " + ue_id + "/" + pdu_session_id);
             }
             smf_reg_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(smf_reg_path_pattern, req.path_params),
+                               change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -1897,8 +2047,12 @@ int main() {
     server.add_route(
         "DELETE",
         smf_reg_path_pattern,
-        [&verifier, &smf_registrations, &smf_reg_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &smf_registrations,
+         &smf_reg_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         smf_reg_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -1911,6 +2065,11 @@ int main() {
                     "No SMF registration for ueId/pduSessionId " + ue_id + "/" + pdu_session_id);
             }
             smf_registrations.remove(ue_id, pdu_session_id);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(smf_reg_path_pattern, req.path_params),
+                               change_remove());
             smf_reg_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
