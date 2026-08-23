@@ -1667,6 +1667,19 @@ bool FiveGVnGroupStore::remove(const std::string& ext_group_id) {
     return result.affected_rows() > 0;
 }
 
+std::vector<std::pair<std::string, nlohmann::json>> FiveGVnGroupStore::list_all() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT ext_group_id, data FROM udr_5g_vn_groups");
+    std::vector<std::pair<std::string, nlohmann::json>> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.emplace_back(row["ext_group_id"].as<std::string>(),
+                         nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
 MbsGroupMembershipStore::MbsGroupMembershipStore(const std::string& conninfo) : conn_(conninfo) {}
 
 void MbsGroupMembershipStore::put(const std::string& ext_group_id, nlohmann::json data) {
@@ -1716,6 +1729,19 @@ bool MbsGroupMembershipStore::remove(const std::string& ext_group_id) {
                                  pqxx::params{ext_group_id});
     txn.commit();
     return result.affected_rows() > 0;
+}
+
+std::vector<std::pair<std::string, nlohmann::json>> MbsGroupMembershipStore::list_all() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT ext_group_id, data FROM udr_mbs_group_membership");
+    std::vector<std::pair<std::string, nlohmann::json>> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.emplace_back(row["ext_group_id"].as<std::string>(),
+                         nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
 }
 
 GroupEeProfileDataStore::GroupEeProfileDataStore(const std::string& conninfo) : conn_(conninfo) {}

@@ -1597,12 +1597,16 @@ int main() {
         "udr_5g_vn_groups_get_total", "Total Get5GVnGroupConfiguration calls");
     auto five_g_vn_groups_delete_counter =
         meter->CreateUInt64Counter("udr_5g_vn_groups_delete_total", "Total Delete5GVnGroup calls");
+    auto five_g_vn_groups_list_counter =
+        meter->CreateUInt64Counter("udr_5g_vn_groups_list_total", "Total Query5GVnGroup calls");
     auto mbs_group_membership_write_counter = meter->CreateUInt64Counter(
         "udr_mbs_group_membership_write_total", "Total Create5GmbsGroup/Modify5GmbsGroup calls");
     auto mbs_group_membership_get_counter = meter->CreateUInt64Counter(
         "udr_mbs_group_membership_get_total", "Total GetMulticastMbsGroupMemb calls");
     auto mbs_group_membership_delete_counter = meter->CreateUInt64Counter(
         "udr_mbs_group_membership_delete_total", "Total Delete5GmbsGroup calls");
+    auto mbs_group_membership_list_counter = meter->CreateUInt64Counter(
+        "udr_mbs_group_membership_list_total", "Total Query5GmbsGroup calls");
     auto group_ee_profile_data_get_counter = meter->CreateUInt64Counter(
         "udr_group_ee_profile_data_get_total", "Total QueryGroupEEData calls");
 
@@ -6369,6 +6373,38 @@ int main() {
             return resp;
         });
 
+    // --- Nudr_DataRepository: group-data bare 5G VN Groups collection resource (ADR-0167,
+    // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml,
+    // `Query5GVnGroup`. Real REQUIRED-schema response is a map `{ExtGroupId:
+    // 5GVnGroupConfiguration}` over every persisted `FiveGVnGroupStore` row (the same store
+    // `5g-vn-groups/{externalGroupId}`, ADR-0144, already writes to) -- no new table. Real,
+    // disclosed: the optional `gpsis` array query-param filter (`style: form, explode: false`) is
+    // NOT honored (always returns every group), matching the established "optional filter not
+    // honored" precedent -- honoring it would require inspecting each group's own member list, a
+    // real, separate, deliberately deferred piece of work, not attempted here. Real `200`-always
+    // (even an empty map), matching this project's own bare-collection-GET precedent (`pdtq-data`,
+    // ADR-0162), not the aggregate live-view `404` question -- this is a literal listing of
+    // persisted rows, not a composed view. ---
+
+    const std::string five_g_vn_groups_collection_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/group-data/5g-vn-groups";
+
+    server.add_route(
+        "GET",
+        five_g_vn_groups_collection_path_pattern,
+        [&verifier, &five_g_vn_groups, &five_g_vn_groups_list_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json result = json::object();
+            for (const auto& [ext_group_id, data] : five_g_vn_groups.list_all()) {
+                result[ext_group_id] = data;
+            }
+            five_g_vn_groups_list_counter->Add(1);
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
     // --- Nudr_DataRepository: group-data individual 5G VN Group Configuration resource
     // (ADR-0144, gap-closure task #106) -- real GET+PUT+PATCH+DELETE per
     // TS29505_Subscription_Data.yaml. Real, disclosed: the real PUT documents ONLY `201` (no
@@ -6477,6 +6513,31 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Nudr_DataRepository: group-data bare 5G MBS Group Membership collection resource
+    // (ADR-0167, gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml,
+    // `Query5GmbsGroup`, structurally an exact twin of the `5g-vn-groups` collection resource
+    // above (map response over every persisted `MbsGroupMembershipStore` row, optional `gpsis`
+    // filter not honored, real `200`-always). ---
+
+    const std::string mbs_group_membership_collection_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/group-data/mbs-group-membership";
+
+    server.add_route(
+        "GET",
+        mbs_group_membership_collection_path_pattern,
+        [&verifier, &mbs_group_membership, &mbs_group_membership_list_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json result = json::object();
+            for (const auto& [ext_group_id, data] : mbs_group_membership.list_all()) {
+                result[ext_group_id] = data;
+            }
+            mbs_group_membership_list_counter->Add(1);
+            return sbi_core::http2::Response::json(200, result.dump());
         });
 
     // --- Nudr_DataRepository: group-data individual 5G MBS Group Membership resource (ADR-0145,

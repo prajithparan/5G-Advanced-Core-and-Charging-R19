@@ -7,6 +7,7 @@
 #include <optional>
 #include <pqxx/pqxx>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Private to nfs/udr -- not shared with any other NF, per CLAUDE.md's "no NF includes another NF's
@@ -1023,6 +1024,9 @@ public:
     std::optional<nlohmann::json> apply_patch(const std::string& ext_group_id,
                                               const nlohmann::json& patch_ops);
     bool remove(const std::string& ext_group_id);
+    // Real Query5GVnGroup (ADR-0167) -- every persisted row, keyed by ext_group_id, for the bare
+    // collection GET to compose into its own real map response.
+    std::vector<std::pair<std::string, nlohmann::json>> list_all();
 
 private:
     std::mutex mutex_;
@@ -1046,6 +1050,9 @@ public:
     std::optional<nlohmann::json> apply_patch(const std::string& ext_group_id,
                                               const nlohmann::json& patch_ops);
     bool remove(const std::string& ext_group_id);
+    // Real Query5GmbsGroup (ADR-0167) -- every persisted row, keyed by ext_group_id, for the bare
+    // collection GET to compose into its own real map response.
+    std::vector<std::pair<std::string, nlohmann::json>> list_all();
 
 private:
     std::mutex mutex_;

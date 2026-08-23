@@ -3190,3 +3190,33 @@ unchanged from ADR-0165, since every composed field is already individually coun
 in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `group-data`'s own bare
 collection GETs remain a real, unblocked candidate; `GetSSAuData` (deliberately deferred,
 ADR-0160) and `Nudr_GroupIDmap`'s own subscription-management family remain real, disclosed gaps.
+
+## ADR-0167 -- gap-closure task #106 continuation: UDR real `group-data` bare `5g-vn-groups`/`mbs-group-membership` collection GETs, closing the last real array-parsing-infra-unblocked candidate
+
+| Requirement | Test |
+|---|---|
+| `GET` both `5g-vn-groups` and `mbs-group-membership` collections on a fresh install | Live curl, real `200 {}` |
+| `PUT 5g-vn-groups/group-A` with real `members` data, `PUT 5g-vn-groups/group-B` with an empty (every-field-optional) body | Live curl, both real `201` |
+| `GET` the `5g-vn-groups` collection | Live curl, real `200` with both groups, matching each PUT exactly |
+| `GET` the same collection with an unused `gpsis` filter appended | Live curl, identical real `200` result, confirming the filter is accepted but not honored |
+| `PUT mbs-group-membership/mbs-group-X` with the real required `multicastGroupMemb` field, then `GET` the collection | Live curl, real `201` then real `200` with exactly that one entry |
+| `GET 5g-vn-groups/group-A` (individual resource) immediately after | Live curl, still real `200` with the correct single document, confirming no route-shadowing |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_5g_vn_groups`/`udr_mbs_group_membership` independently confirms every row matches its curl response exactly |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings, one real `-Wsign-conversion` caught and fixed) before and after `clang-format-18` |
+
+Real `GET`-only bare collection resources (`Query5GVnGroup`/`Query5GmbsGroup`,
+`TS29505_Subscription_Data.yaml`), structural twins of their own already-closed individual-resource
+siblings (`5g-vn-groups/{externalGroupId}`/`mbs-group-membership/{externalGroupId}`,
+ADR-0144/ADR-0145) -- composed entirely from the same existing tables, no new schema. Real optional
+`gpsis` array filter accepted but not honored (honoring it would require inspecting each group's
+own member list, a real, separate, deliberately deferred piece of work), matching the established
+"optional filter not honored" precedent. Real `200`-always on an empty map, matching `pdtq-data`'s
+own bare-collection-GET precedent (ADR-0162) -- a literal listing of persisted rows, not a
+composed live view. This closes UDR resources #73 and #74 of free5GC's ~42+ real
+`Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md), and fully closes out this
+series' own array-parsing-infra-unblocked candidate list from ADR-0161. See ADR-0167 in
+`docs/DECISIONS.md` for full disclosure -- remaining real, disclosed gaps: `gpsis` filtering on
+both collections; the `/internal`/`/pp-profile-data` variants under both paths (not surveyed);
+`policy-data`'s `mbs-session-pol-data` (deferred, key-encoding ambiguity); `GetSSAuData`
+(deliberately deferred, ADR-0160); `Nudr_GroupIDmap`'s own subscription-management family
+(ADR-0164); real webhook delivery for `subs-to-notify`/`nf-group-ids/subscriptions`.
