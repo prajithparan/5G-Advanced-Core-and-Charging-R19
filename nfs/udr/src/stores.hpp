@@ -1360,4 +1360,34 @@ private:
     pqxx::connection conn_;
 };
 
+// Real GetNiddAuData (`/subscription-data/{ueId}/nidd-authorization-data`, ADR-0165). GET-only,
+// no create/update/delete operation exists anywhere in this project's scope for this document
+// (UDM's own Nudm_NIDDAU service, out of scope here, is the real provisioning path) -- seed() +
+// get() only, same "no live provisioning path yet" precedent as RoutingIdStore/NfGroupIdStore.
+// Keyed by (ueId, sst, sd, dnn, mtcProviderInformation) -- the resource's own real REQUIRED
+// `single-nssai` (decomposed to sst/sd)/`dnn`/`mtc-provider-information` query-param filters,
+// confirmed by direct YAML read. Real, disclosed: `Snssai`'s own schema only requires `sst`; `sd`
+// is optional, represented here as an empty string when absent (documented, not a fabricated
+// default) since PostgreSQL primary-key columns cannot be NULL.
+class NiddAuthorizationDataStore {
+public:
+    explicit NiddAuthorizationDataStore(const std::string& conninfo);
+
+    void seed(const std::string& ue_id,
+              int sst,
+              const std::string& sd,
+              const std::string& dnn,
+              const std::string& mtc_provider_information,
+              nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id,
+                                      int sst,
+                                      const std::string& sd,
+                                      const std::string& dnn,
+                                      const std::string& mtc_provider_information);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

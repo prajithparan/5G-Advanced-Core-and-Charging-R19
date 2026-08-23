@@ -1088,3 +1088,30 @@ CREATE TABLE IF NOT EXISTS udr_nf_group_ids (
     group_id      TEXT NOT NULL,
     PRIMARY KEY (subscriber_id, nf_type)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0165). Real GetNiddAuData resource
+-- (/subscription-data/{ueId}/nidd-authorization-data, TS29505_Subscription_Data.yaml). Real,
+-- confirmed by direct YAML read: GET-only, real REQUIRED `single-nssai` query param -- genuinely a
+-- different parsing shape than ADR-0161's array-style params: it uses `content: application/json`
+-- (a JSON-encoded query value, decomposed here to its own `sst`/`sd` fields), plus real REQUIRED
+-- `dnn`/`mtc-provider-information` (plain strings) and an optional `af-id` (deliberately not
+-- honored, matching this project's own established "optional filter not honored" precedent).
+-- Response schema `AuthorizationData` -- real, disclosed: this same schema is also cited (per
+-- ADR-0160's own earlier finding) by the deliberately-deferred `GetSSAuData`; reading this
+-- resource's own real spec text confirms `AuthorizationData`'s real, unambiguous home is here
+-- (`GetNiddAuData`, "NIDD Authorization Information") rather than there. No create/update/delete
+-- operation exists anywhere in this project's real, in-scope APIs for this document (the real
+-- provisioning path is UDM's own Nudm_NIDDAU service, out of scope here) -- seeded at startup,
+-- same "no live provisioning path yet" precedent as udr_routing_ids/udr_nf_group_ids above.
+-- Composite-keyed by (ue_id, sst, sd, dnn, mtc_provider_information); `sd` stored as an empty
+-- string when absent (real, disclosed: `Snssai`'s own schema only requires `sst`, and PostgreSQL
+-- primary-key columns cannot be NULL).
+CREATE TABLE IF NOT EXISTS udr_nidd_authorization_data (
+    ue_id                     TEXT    NOT NULL,
+    sst                       INTEGER NOT NULL,
+    sd                        TEXT    NOT NULL DEFAULT '',
+    dnn                       TEXT    NOT NULL,
+    mtc_provider_information  TEXT    NOT NULL,
+    data                      JSONB   NOT NULL,
+    PRIMARY KEY (ue_id, sst, sd, dnn, mtc_provider_information)
+);

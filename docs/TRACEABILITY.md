@@ -3125,3 +3125,36 @@ full disclosure -- task #106 remains open; `nidd-authorization-data`, bare
 `/subscription-data/{ueId}`, `group-data`'s own bare collection GETs, `GetSSAuData` (deliberately
 deferred, ADR-0160), and `Nudr_GroupIDmap`'s own subscription-management family remain real,
 disclosed gaps.
+
+## ADR-0165 -- gap-closure task #106 continuation: UDR real GetNiddAuData, whose real blocker turned out to be a different query-param shape than ADR-0161's array-parsing infra
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}/nidd-authorization-data` with all query parameters missing | Live curl, real `400` |
+| `GET` with only `single-nssai` present | Live curl, real `400` |
+| `GET` with a malformed (non-JSON) `single-nssai` value | Live curl, real `400` with a specific parse-error message |
+| `GET` with a well-formed JSON `single-nssai` missing its required `sst` field | Live curl, real `400` |
+| `GET` with the real seeded combination (`single-nssai={"sst":1,"sd":"000001"}&dnn=internet&mtc-provider-information=mtc-provider-1`) | Live curl, real `200` with `{"authorizationData":[{"supi":"imsi-999700000000001"}]}` |
+| `GET` with an unseeded `dnn` | Live curl, real `404` |
+| `GET` with `single-nssai={"sst":1}` (no `sd`) against the seeded `sd="000001"` row | Live curl, real `404`, confirming composite-key precision |
+| Genuine PostgreSQL persistence | Direct `psql` query against `udr_nidd_authorization_data` independently confirms the one seeded row, matching the successful curl response exactly |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real `GET`-only resource (`GetNiddAuData`, `TS29505_Subscription_Data.yaml`), genuinely distinct
+from the already-implemented `context-data/nidd-authorizations` CRUD resource (ADR-0121). Real
+finding: this resource's actual blocker was **not** ADR-0161's array-query-param gap -- its real
+REQUIRED `single-nssai` query param uses `content: application/json` (a JSON-encoded value,
+decomposed to `sst`/`sd`), a genuinely different OpenAPI shape, handled with a direct
+`json::parse()` of the already-percent-decoded query value rather than new shared infra (narrow
+enough not to warrant it). Real REQUIRED `dnn`/`mtc-provider-information`; optional `af-id`
+deliberately not honored. No create/update/delete exists anywhere in this project's in-scope APIs
+for this document (real provisioning lives in UDM's own `Nudm_NIDDAU` service, out of scope here)
+-- seeded at startup, same precedent as `routing_ids`/`nf_group_ids`. Real, disclosed: confirmed
+`AuthorizationData` (this resource's own real response schema) is the same schema ADR-0160 found
+cross-referenced by the deliberately-deferred `GetSSAuData` -- this resource's own spec text
+confirms `AuthorizationData`'s real, unambiguous home is here, not there (does not change
+`GetSSAuData`'s own already-settled deferred status). This closes UDR resource #72 of free5GC's
+~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md). See ADR-0165 in
+`docs/DECISIONS.md` for full disclosure -- task #106 remains open; bare `/subscription-data/{ueId}`,
+`group-data`'s own bare collection GETs, `GetSSAuData` (deliberately deferred, ADR-0160), and
+`Nudr_GroupIDmap`'s own subscription-management family remain real, disclosed gaps.

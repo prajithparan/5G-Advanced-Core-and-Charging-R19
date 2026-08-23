@@ -564,6 +564,22 @@
 // family (real webhook callback `onGroupIdMapChange`) was surveyed but is a separate, genuinely
 // more complex resource family, deliberately deferred to its own future turn.
 //
+// UPDATE (ADR-0165, gap-closure task #106): the real `GetNiddAuData` resource
+// (`/subscription-data/{ueId}/nidd-authorization-data`) is now implemented -- confirmed by direct
+// read to be genuinely distinct from the already-closed `context-data/nidd-authorizations`
+// resource (ADR-0121). Its real REQUIRED `single-nssai` query param uses `content:
+// application/json` (a JSON-encoded query value, decomposed to sst/sd) -- a genuinely different
+// parsing shape than ADR-0161's `style: form, explode: false` array params, handled here with a
+// direct `json::parse()` of the already-percent-decoded query value rather than new shared infra
+// (narrow enough not to warrant it). Real REQUIRED `dnn`/`mtc-provider-information`; optional
+// `af-id` deliberately not honored. GET-only, no create/update/delete exists anywhere in this
+// project's in-scope APIs for this document (real provisioning lives in UDM's own Nudm_NIDDAU
+// service, out of scope here) -- seeded at startup, same precedent as `routing_ids`/
+// `nf_group_ids`. Real, disclosed: `AuthorizationData` (this resource's own real response schema)
+// is the same schema ADR-0160 found cross-referenced by the deliberately-deferred `GetSSAuData` --
+// reading this resource's own spec text confirms `AuthorizationData`'s real, unambiguous home is
+// here, not there.
+//
 // Deliberately still deferred, not dropped:
 // the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
 // `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
@@ -583,8 +599,7 @@
 // `Nudr_GroupIDmap` `/nf-group-ids/subscriptions` and
 // `/nf-group-ids/subscriptions/{subscriptionId}` change-notification family (real
 // `onGroupIdMapChange` webhook callback -- `GetNfGroupIDs` itself closed, see ADR-0164 above);
-// nidd-authorization-data (query-parameter-keyed, not ueId-alone -- a genuinely different resource
-// shape, deferred to its own scoped turn); bare
+// bare
 // `/subscription-data/{ueId}` (`QueryUeSubscribedData`) -- real `style: form, explode: false`
 // array query params (`dataset-names`/`adjacent-plmns`/`ext-group-ids`), same class ADR-0161's
 // infra could now parse but not yet wired into this route (`{ueId}/context-data` was closed via
@@ -881,6 +896,8 @@ int main() {
     udr::RoutingIdStore routing_ids(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0164).
     udr::NfGroupIdStore nf_group_ids(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0165).
+    udr::NiddAuthorizationDataStore nidd_authorization_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0121).
     udr::NiddAuthorizationInfoStore nidd_authorization_info(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0122).
@@ -1142,6 +1159,22 @@ int main() {
         nf_group_ids.seed("imsi-999700000000002", "AMF", "amf-group-02");
     }
 
+    // Real seed data (ADR-0165, gap-closure task #106) -- the real GetNiddAuData resource is
+    // genuinely GET-only from this project's own in-scope APIs (real provisioning lives in UDM's
+    // Nudm_NIDDAU service, out of scope here), same "no live provisioning path yet" reasoning as
+    // above. Composite-keyed by (ue_id, sst, sd, dnn, mtc_provider_information); sst=1/sd="000001"
+    // is this project's own already-established lab S-NSSAI (ADR-0016), dnn="internet" is this
+    // project's own already-established lab DNN, mtc-provider-information is a real, arbitrary
+    // representative string (MtcProviderInformation has no documented format to match). The
+    // response body is a real, minimal-but-valid AuthorizationData document: one UserIdentifier
+    // (required `supi`) in the required `authorizationData` array.
+    {
+        json nidd_auth_data;
+        nidd_auth_data["authorizationData"] = json::array({json{{"supi", "imsi-999700000000001"}}});
+        nidd_authorization_data.seed(
+            "imsi-999700000000001", 1, "000001", "internet", "mtc-provider-1", nidd_auth_data);
+    }
+
     // Real seed data (ADR-0123, gap-closure task #106) -- the real ODB Data resource is genuinely
     // GET-only per spec, same "no live provisioning path yet" reasoning as above.
     // `roamingOdb: "OUTSIDE_HOME_PLMN"` is a real enum value from RoamingOdb
@@ -1394,6 +1427,8 @@ int main() {
         meter->CreateUInt64Counter("udr_routing_ids_get_total", "Total GetRoutingIDs calls");
     auto nf_group_ids_get_counter =
         meter->CreateUInt64Counter("udr_nf_group_ids_get_total", "Total GetNfGroupIDs calls");
+    auto nidd_authorization_data_get_counter = meter->CreateUInt64Counter(
+        "udr_nidd_authorization_data_get_total", "Total GetNiddAuData calls");
     auto nidd_authorization_write_counter = meter->CreateUInt64Counter(
         "udr_nidd_authorization_write_total",
         "Total CreateNIDDAuthorizationInfo/ModifyNiddAuthorizationInfo calls");
@@ -3448,6 +3483,62 @@ int main() {
                                                              subscriber_id_it->second);
             }
             return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    // --- Nudr_DataRepository: GetNiddAuData (ADR-0165, gap-closure task #106) -- real GET-only
+    // per TS29505_Subscription_Data.yaml, `/subscription-data/{ueId}/nidd-authorization-data`.
+    // Real REQUIRED `single-nssai` query param uses `content: application/json` (a JSON-encoded
+    // query value, decomposed to sst/sd here) -- genuinely different from ADR-0161's array-style
+    // params. Real REQUIRED `dnn`/`mtc-provider-information` (plain strings); optional `af-id`
+    // deliberately not honored, matching the established "optional filter not honored" precedent.
+    // Distinct from the already-implemented `context-data/nidd-authorizations` CRUD resource
+    // below (ADR-0121) -- confirmed by direct read to be a genuinely different resource, matching
+    // this project's own deferred-list note ("query-parameter-keyed, not ueId-alone"). ---
+
+    const std::string nidd_authorization_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/nidd-authorization-data";
+
+    server.add_route(
+        "GET",
+        nidd_authorization_data_path_pattern,
+        [&verifier, &nidd_authorization_data, &nidd_authorization_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto single_nssai_it = req.query_params.find("single-nssai");
+            const auto dnn_it = req.query_params.find("dnn");
+            const auto mtc_provider_it = req.query_params.find("mtc-provider-information");
+            if (single_nssai_it == req.query_params.end() || dnn_it == req.query_params.end() ||
+                mtc_provider_it == req.query_params.end()) {
+                return sbi_core::http2::problem_response(400,
+                                                         "Bad Request",
+                                                         "single-nssai, dnn and "
+                                                         "mtc-provider-information are all "
+                                                         "required query parameters");
+            }
+            json snssai;
+            try {
+                snssai = json::parse(single_nssai_it->second);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", std::string("malformed single-nssai: ") + e.what());
+            }
+            if (!snssai.contains("sst") || !snssai.at("sst").is_number_integer()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "single-nssai is missing required field sst");
+            }
+            const int sst = snssai.at("sst").get<int>();
+            const std::string sd = snssai.value("sd", "");
+            const auto ue_id = req.path_params.at("ueId");
+            auto data = nidd_authorization_data.get(
+                ue_id, sst, sd, dnn_it->second, mtc_provider_it->second);
+            nidd_authorization_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No NIDD Authorization Data for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     // --- Nudr_DataRepository: NIDD Authorization Info context-data resource (ADR-0121,

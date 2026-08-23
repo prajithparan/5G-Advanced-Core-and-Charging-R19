@@ -2553,4 +2553,42 @@ std::optional<std::string> NfGroupIdStore::get(const std::string& subscriber_id,
     return std::make_optional(result.front()["group_id"].as<std::string>());
 }
 
+NiddAuthorizationDataStore::NiddAuthorizationDataStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+void NiddAuthorizationDataStore::seed(const std::string& ue_id,
+                                      int sst,
+                                      const std::string& sd,
+                                      const std::string& dnn,
+                                      const std::string& mtc_provider_information,
+                                      nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_nidd_authorization_data "
+             "(ue_id, sst, sd, dnn, mtc_provider_information, data) "
+             "VALUES ($1, $2, $3, $4, $5, $6::jsonb) "
+             "ON CONFLICT (ue_id, sst, sd, dnn, mtc_provider_information) "
+             "DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, sst, sd, dnn, mtc_provider_information, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json>
+NiddAuthorizationDataStore::get(const std::string& ue_id,
+                                int sst,
+                                const std::string& sd,
+                                const std::string& dnn,
+                                const std::string& mtc_provider_information) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_nidd_authorization_data WHERE ue_id = $1 AND sst = $2 "
+                 "AND sd = $3 AND dnn = $4 AND mtc_provider_information = $5",
+                 pqxx::params{ue_id, sst, sd, dnn, mtc_provider_information});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr
