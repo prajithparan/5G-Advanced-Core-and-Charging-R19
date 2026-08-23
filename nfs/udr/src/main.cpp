@@ -544,7 +544,29 @@
 // bare-path-segment string encoding at all, genuinely more ambiguous than snssai's own flat
 // two-field shape, so left deferred rather than inventing a serialization; pdtq-data, and
 // others); all of TS29504_Nudr_GroupIDmap.yaml; nidd-authorization-data (query-parameter-keyed,
-// not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn).
+// not ueId-alone -- a genuinely different resource shape, deferred to its own scoped turn); bare
+// `/subscription-data/{ueId}` (`QueryUeSubscribedData`) and `{ueId}/context-data`
+// (`QueryContextData`) -- both confirmed genuinely blocked on direct read: real
+// `style: form, explode: false` array query params (`dataset-names`/`adjacent-plmns`/
+// `ext-group-ids` on the former, a real REQUIRED `context-dataset-names` on the latter), the
+// same unsupported-parsing class as `pdtq-data`/`nf-group-ids`.
+//
+// `GetSSAuData` (`/subscription-data/{ueId}/service-specific-authorization-data/{serviceType}`,
+// distinct from the already-implemented `context-data/service-specific-authorizations/
+// {serviceType}` CRUD sibling) was investigated in depth (ADR-0160, `docs/DECISIONS.md`) and
+// deliberately left deferred: its real spec response schema `AuthorizationData` is explicitly
+// described as "NIDD Authorization Information" and cross-references
+// `TS29503_Nudm_NIDDAU.yaml`, a real mismatch against this resource's own `serviceType` enum
+// (`AF_GUIDANCE_FOR_URSP`/`AF_REQUESTED_QOS`/`AF_PROVISION_N3GPP_DEV_ID_INFO`, from
+// `TS29503_Nudm_SSAU.yaml`, which has its own better-matching `ServiceSpecificAuthorizationData`
+// schema). User confirmed treating the citation as a real typo and returning
+// `ServiceSpecificAuthorizationData` -- but that schema doesn't structurally match what the
+// already-implemented PUT/PATCH/DELETE sibling actually stores (`ServiceSpecificAuthorizationInfo`,
+// itself a NIDD-cross-referencing map of `authId` -> `AuthorizationInfo`), and `GetSSAuData` has
+// no PUT counterpart of its own. Implementing it would require either fabricating an undocumented
+// field mapping (violates this project's own never-invent-a-field rule) or building a second,
+// permanently-empty store with no write path. User confirmed: leave deferred rather than do
+// either.
 //
 // RFC 6902 JSON Patch, not RFC 7396 Merge Patch: AmfContext3gpp and UpdateSmfContext both use
 // application/json-patch+json (confirmed by reading the YAML directly), unlike UDM's

@@ -861,6 +861,13 @@ sibling of `ee-subscriptions/{subsId}/hss-subscriptions` (ADR-0154) -- taking UD
 of free5GC's ~42+ real `Nudr_DataRepository` resource types. Third and final of `group-data`'s
 own nested sub-collections closed -- **completes the whole group-data nested-subscription tree**
 (mirroring the `ueId`-scoped `ee-subscriptions` family's own closure, ADR-0152/ADR-0153/ADR-0154).
+**Surveyed, docs/DECISIONS.md ADR-0160** (no resource count change): bare
+`/subscription-data/{ueId}`/`{ueId}/context-data` confirmed genuinely blocked on real array
+query params (same class as `pdtq-data`/`nf-group-ids`); `GetSSAuData` investigated in depth
+(real schema-citation mismatch resolved, then a deeper structural mismatch found against the
+already-implemented CRUD sibling's own storage shape) and deliberately left deferred per explicit
+user decision, rather than fabricate an undocumented field mapping or ship a permanently-empty
+store.
 This is well past free5GC's own ~42+ figure; the real, still-open work from here is surveying the
 remainder of `TS29505_Subscription_Data.yaml` itself (the rest of `group-data`, bare
 `/subscription-data/{ueId}`, and others), not chasing a shrinking comparison count.
