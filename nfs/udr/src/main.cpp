@@ -3129,7 +3129,12 @@ int main() {
     server.add_route(
         "PATCH",
         pp_data_path_pattern,
-        [&verifier, &pp_data, &pp_data_patch_counter](const sbi_core::http2::Request& req) {
+        [&verifier,
+         &pp_data,
+         &pp_data_patch_counter,
+         &subs_to_notify,
+         &notify_client,
+         pp_data_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3147,6 +3152,11 @@ int main() {
                 return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
             }
             pp_data_patch_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(pp_data_path_pattern, req.path_params),
+                               change_from_json_patch(patch_ops));
             return sbi_core::http2::Response::json(200, patched.dump());
         });
 
@@ -3223,8 +3233,13 @@ int main() {
     server.add_route(
         "PUT",
         pp_data_store_path_pattern,
-        [&verifier, &pp_data_entry, &pp_data_entry_write_counter, pp_data_store_list_path_pattern](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &pp_data_entry,
+         &pp_data_entry_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         pp_data_store_list_path_pattern,
+         pp_data_store_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3238,6 +3253,11 @@ int main() {
             json j = *body;
             const bool is_new = pp_data_entry.put(ue_id, af_instance_id, j);
             pp_data_entry_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(pp_data_store_path_pattern, req.path_params),
+                               change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -3258,8 +3278,12 @@ int main() {
     server.add_route(
         "DELETE",
         pp_data_store_path_pattern,
-        [&verifier, &pp_data_entry, &pp_data_entry_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &pp_data_entry,
+         &pp_data_entry_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         pp_data_store_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3272,6 +3296,11 @@ int main() {
                                                              ue_id + "/" + af_instance_id);
             }
             pp_data_entry_delete_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(pp_data_store_path_pattern, req.path_params),
+                               change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -3329,8 +3358,12 @@ int main() {
     server.add_route(
         "PATCH",
         operator_specific_data_path_pattern,
-        [&verifier, &operator_specific_data, &operator_specific_data_patch_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &operator_specific_data,
+         &operator_specific_data_patch_counter,
+         &subs_to_notify,
+         &notify_client,
+         operator_specific_data_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3348,6 +3381,12 @@ int main() {
                 return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
             }
             operator_specific_data_patch_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(operator_specific_data_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             return sbi_core::http2::Response::json(200, patched.dump());
         });
 
@@ -3402,8 +3441,12 @@ int main() {
     server.add_route(
         "PUT",
         ue_policy_set_path_pattern,
-        [&verifier, &ue_policy_set, &ue_policy_set_write_counter, ue_policy_set_path_pattern](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ue_policy_set,
+         &ue_policy_set_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         ue_policy_set_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3416,6 +3459,11 @@ int main() {
             const auto ue_id = req.path_params.at("ueId");
             const bool is_new = ue_policy_set.put(ue_id, body);
             ue_policy_set_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(ue_policy_set_path_pattern, req.path_params),
+                               change_replace(body));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -3434,8 +3482,12 @@ int main() {
     server.add_route(
         "PATCH",
         ue_policy_set_path_pattern,
-        [&verifier, &ue_policy_set, &ue_policy_set_patch_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ue_policy_set,
+         &ue_policy_set_patch_counter,
+         &subs_to_notify,
+         &notify_client,
+         ue_policy_set_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3446,8 +3498,13 @@ int main() {
                 return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
             }
             const auto ue_id = req.path_params.at("ueId");
-            ue_policy_set.merge_patch(ue_id, patch);
+            const auto patched = ue_policy_set.merge_patch(ue_id, patch);
             ue_policy_set_patch_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(ue_policy_set_path_pattern, req.path_params),
+                               change_replace(patched));
             // Real spec: only 204 (no-body) is documented for this resource's real PATCH, unlike
             // am-data's own 200-with-body option -- confirmed by direct YAML read.
             sbi_core::http2::Response resp;
@@ -3483,8 +3540,12 @@ int main() {
     server.add_route(
         "PATCH",
         policy_operator_specific_data_path_pattern,
-        [&verifier, &policy_operator_specific_data, &policy_operator_specific_data_patch_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &policy_operator_specific_data,
+         &policy_operator_specific_data_patch_counter,
+         &subs_to_notify,
+         &notify_client,
+         policy_operator_specific_data_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3502,6 +3563,12 @@ int main() {
                 return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
             }
             policy_operator_specific_data_patch_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(policy_operator_specific_data_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             return sbi_core::http2::Response::json(200, patched.dump());
         });
 

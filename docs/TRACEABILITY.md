@@ -3369,3 +3369,28 @@ each. Combined total: 13 of ~40 real per-UE `Nudr_DataRepository` resources now 
 all non-per-UE resources, and `Nudr_GroupIDmap`'s own separate `onGroupIdMapChange` callback
 remain unwired, same disclosed follow-up as ADR-0171. See ADR-0172 in `docs/DECISIONS.md` for full
 disclosure.
+
+## ADR-0173 -- continuing real `onDataChange` webhook delivery: 5 more resources wired (18 of ~40 real per-UE resources total)
+
+| Requirement | Test |
+|---|---|
+| `POST subs-to-notify` subscription watching `policy-data/ues/{ueId}/ue-policy-set` | Live curl, real `201` |
+| `PUT ue-policy-set` | Live curl, real `201`; receiver logs a correct `DataChangeNotify` (`REPLACE` at `/`, `newValue` matching the submitted body) |
+| `PATCH ue-policy-set` (real RFC 7396 merge-patch) | Live curl, real `204`; receiver logs a second `DataChangeNotify` with the real **patched** (merged) document as `newValue`, confirming a real fix (see below) threads through correctly |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Continues ADR-0171/ADR-0172's own disclosed follow-up, identical infrastructure: `pp-data` (RFC
+6902 `PATCH` only), `pp-data-store` (`PUT`+`DELETE`, composite `(ueId, afInstanceId)` key),
+`subscription-data`'s own `operator-specific-data` (RFC 6902 `PATCH` only), `ue-policy-set`
+(`PUT`+RFC 7396 `PATCH`), `policy-data`'s own `operator-specific-data` (a real, distinct resource
+from the `subscription-data` one despite the shared name -- RFC 6902 `PATCH` only). Real,
+disclosed: `ee-profile-data` and `coverage-restriction-data`/`lcs-privacy-data`/
+`lcs-subscription-data`/`lcs-mo-data` confirmed GET-only by direct read, correctly skipped. Real
+fix applied while wiring `ue-policy-set`'s PATCH: `UePolicySetStore::merge_patch()` already
+returned the real patched document, but the existing route discarded it (only ever needed `204`)
+-- now captured (`const auto patched = ...`) since `notify_subscribers()` needs the real patched
+body for `change_replace()`. Combined total: **18 of ~40 real per-UE `Nudr_DataRepository`
+resources now have real `onDataChange` delivery, 31 real write-route call sites**. See ADR-0173 in
+`docs/DECISIONS.md` for full disclosure -- the remaining ~60-65 real per-UE routes, all non-per-UE
+resources, and `Nudr_GroupIDmap`'s own separate `onGroupIdMapChange` callback remain unwired, same
+disclosed follow-up.
