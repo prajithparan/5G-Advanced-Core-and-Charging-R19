@@ -2257,8 +2257,12 @@ int main() {
     server.add_route(
         "PATCH",
         sm_policy_data_path_pattern,
-        [&verifier, &sm_policy_data, &sm_policy_data_patch_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &sm_policy_data,
+         &sm_policy_data_patch_counter,
+         &subs_to_notify,
+         &notify_client,
+         sm_policy_data_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2271,6 +2275,11 @@ int main() {
             const auto ue_id = req.path_params.at("ueId");
             const auto patched = sm_policy_data.merge_patch(ue_id, patch);
             sm_policy_data_patch_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(sm_policy_data_path_pattern, req.path_params),
+                               change_replace(patched));
             // Real spec: 204 (no body) or 200 (with the updated SmPolicyData) are both valid --
             // this project returns 200 with the real updated document, same real information a
             // future GUI editing this resource would want back without a second GET round-trip.
@@ -2304,8 +2313,12 @@ int main() {
     server.add_route(
         "PATCH",
         auth_subscription_path_pattern,
-        [&verifier, &auth_subscription_data, &auth_subscription_patch_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &auth_subscription_data,
+         &auth_subscription_patch_counter,
+         &subs_to_notify,
+         &notify_client,
+         auth_subscription_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2325,6 +2338,11 @@ int main() {
                 return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
             }
             auth_subscription_patch_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(auth_subscription_path_pattern, req.path_params),
+                               change_from_json_patch(patch_ops));
             return sbi_core::http2::Response::json(200, patched.dump());
         });
 
@@ -2335,7 +2353,12 @@ int main() {
     server.add_route(
         "PUT",
         auth_status_path_pattern,
-        [&verifier, &auth_status, &auth_status_put_counter](const sbi_core::http2::Request& req) {
+        [&verifier,
+         &auth_status,
+         &auth_status_put_counter,
+         &subs_to_notify,
+         &notify_client,
+         auth_status_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2345,8 +2368,14 @@ int main() {
                 return err;
             }
             const auto ue_id = req.path_params.at("ueId");
-            auth_status.put(ue_id, json(*body));
+            json j = *body;
+            auth_status.put(ue_id, j);
             auth_status_put_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(auth_status_path_pattern, req.path_params),
+                               change_replace(j));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2372,8 +2401,12 @@ int main() {
     server.add_route(
         "DELETE",
         auth_status_path_pattern,
-        [&verifier, &auth_status, &auth_status_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &auth_status,
+         &auth_status_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         auth_status_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2383,6 +2416,11 @@ int main() {
                     404, "Not Found", "No authentication status for ueId " + ue_id);
             }
             auth_status_delete_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(auth_status_path_pattern, req.path_params),
+                               change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2417,8 +2455,12 @@ int main() {
     server.add_route(
         "PATCH",
         am_policy_data_path_pattern,
-        [&verifier, &am_policy_data, &am_policy_data_patch_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &am_policy_data,
+         &am_policy_data_patch_counter,
+         &subs_to_notify,
+         &notify_client,
+         am_policy_data_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2431,6 +2473,11 @@ int main() {
             const auto ue_id = req.path_params.at("ueId");
             const auto patched = am_policy_data.merge_patch(ue_id, patch);
             am_policy_data_patch_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(am_policy_data_path_pattern, req.path_params),
+                               change_replace(patched));
             return sbi_core::http2::Response::json(200, patched.dump());
         });
 
@@ -2446,8 +2493,12 @@ int main() {
     server.add_route(
         "PUT",
         smsf_3gpp_path_pattern,
-        [&verifier, &smsf_3gpp_context, &smsf_3gpp_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &smsf_3gpp_context,
+         &smsf_3gpp_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         smsf_3gpp_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2457,8 +2508,14 @@ int main() {
                 return err;
             }
             const auto ue_id = req.path_params.at("ueId");
-            smsf_3gpp_context.put(ue_id, json(*body));
+            json j = *body;
+            smsf_3gpp_context.put(ue_id, j);
             smsf_3gpp_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(smsf_3gpp_path_pattern, req.path_params),
+                               change_replace(j));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2483,8 +2540,12 @@ int main() {
     server.add_route(
         "DELETE",
         smsf_3gpp_path_pattern,
-        [&verifier, &smsf_3gpp_context, &smsf_3gpp_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &smsf_3gpp_context,
+         &smsf_3gpp_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         smsf_3gpp_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2494,6 +2555,11 @@ int main() {
                     404, "Not Found", "No SMSF 3GPP-access context for ueId " + ue_id);
             }
             smsf_3gpp_delete_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(smsf_3gpp_path_pattern, req.path_params),
+                               change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2505,8 +2571,12 @@ int main() {
     server.add_route(
         "PUT",
         smsf_non3gpp_path_pattern,
-        [&verifier, &smsf_non3gpp_context, &smsf_non3gpp_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &smsf_non3gpp_context,
+         &smsf_non3gpp_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         smsf_non3gpp_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2516,8 +2586,14 @@ int main() {
                 return err;
             }
             const auto ue_id = req.path_params.at("ueId");
-            smsf_non3gpp_context.put(ue_id, json(*body));
+            json j = *body;
+            smsf_non3gpp_context.put(ue_id, j);
             smsf_non3gpp_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(smsf_non3gpp_path_pattern, req.path_params),
+                               change_replace(j));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2542,8 +2618,12 @@ int main() {
     server.add_route(
         "DELETE",
         smsf_non3gpp_path_pattern,
-        [&verifier, &smsf_non3gpp_context, &smsf_non3gpp_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &smsf_non3gpp_context,
+         &smsf_non3gpp_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         smsf_non3gpp_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2553,6 +2633,11 @@ int main() {
                     404, "Not Found", "No SMSF non-3GPP-access context for ueId " + ue_id);
             }
             smsf_non3gpp_delete_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(smsf_non3gpp_path_pattern, req.path_params),
+                               change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2568,8 +2653,12 @@ int main() {
     server.add_route(
         "PUT",
         ip_sm_gw_path_pattern,
-        [&verifier, &ip_sm_gw_context, &ip_sm_gw_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ip_sm_gw_context,
+         &ip_sm_gw_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         ip_sm_gw_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2579,8 +2668,14 @@ int main() {
                 return err;
             }
             const auto ue_id = req.path_params.at("ueId");
-            ip_sm_gw_context.put(ue_id, json(*body));
+            json j = *body;
+            ip_sm_gw_context.put(ue_id, j);
             ip_sm_gw_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(ip_sm_gw_path_pattern, req.path_params),
+                               change_replace(j));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2605,8 +2700,12 @@ int main() {
     server.add_route(
         "PATCH",
         ip_sm_gw_path_pattern,
-        [&verifier, &ip_sm_gw_context, &ip_sm_gw_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ip_sm_gw_context,
+         &ip_sm_gw_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         ip_sm_gw_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2628,6 +2727,11 @@ int main() {
                     404, "Not Found", "No IP-SM-GW context for ueId " + ue_id);
             }
             ip_sm_gw_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(ip_sm_gw_path_pattern, req.path_params),
+                               change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2636,8 +2740,12 @@ int main() {
     server.add_route(
         "DELETE",
         ip_sm_gw_path_pattern,
-        [&verifier, &ip_sm_gw_context, &ip_sm_gw_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ip_sm_gw_context,
+         &ip_sm_gw_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         ip_sm_gw_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2647,6 +2755,11 @@ int main() {
                     404, "Not Found", "No IP-SM-GW context for ueId " + ue_id);
             }
             ip_sm_gw_delete_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(ip_sm_gw_path_pattern, req.path_params),
+                               change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2661,7 +2774,7 @@ int main() {
     server.add_route(
         "PUT",
         mwd_path_pattern,
-        [&verifier, &mwd, &mwd_write_counter, mwd_path_pattern](
+        [&verifier, &mwd, &mwd_write_counter, &subs_to_notify, &notify_client, mwd_path_pattern](
             const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -2675,6 +2788,11 @@ int main() {
             json j = *body;
             const bool is_new = mwd.put(ue_id, j);
             mwd_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(mwd_path_pattern, req.path_params),
+                               change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -2706,7 +2824,8 @@ int main() {
     server.add_route(
         "PATCH",
         mwd_path_pattern,
-        [&verifier, &mwd, &mwd_write_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &mwd, &mwd_write_counter, &subs_to_notify, &notify_client, mwd_path_pattern](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2728,6 +2847,11 @@ int main() {
                     404, "Not Found", "No Message Waiting Data for ueId " + ue_id);
             }
             mwd_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(mwd_path_pattern, req.path_params),
+                               change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2736,7 +2860,8 @@ int main() {
     server.add_route(
         "DELETE",
         mwd_path_pattern,
-        [&verifier, &mwd, &mwd_delete_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &mwd, &mwd_delete_counter, &subs_to_notify, &notify_client, mwd_path_pattern](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2746,6 +2871,11 @@ int main() {
                     404, "Not Found", "No Message Waiting Data for ueId " + ue_id);
             }
             mwd_delete_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(mwd_path_pattern, req.path_params),
+                               change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -2763,6 +2893,8 @@ int main() {
         [&verifier,
          &roaming_information,
          &roaming_information_write_counter,
+         &subs_to_notify,
+         &notify_client,
          roaming_information_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -2776,6 +2908,11 @@ int main() {
             json j = *body;
             const bool is_new = roaming_information.put(ue_id, j);
             roaming_information_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(roaming_information_path_pattern, req.path_params),
+                               change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -2816,8 +2953,12 @@ int main() {
     server.add_route(
         "PUT",
         pei_info_path_pattern,
-        [&verifier, &pei_info, &pei_info_write_counter, pei_info_path_pattern](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &pei_info,
+         &pei_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         pei_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -2831,6 +2972,11 @@ int main() {
             json j = *body;
             const bool is_new = pei_info.put(ue_id, j);
             pei_info_write_counter->Add(1);
+            notify_subscribers(subs_to_notify,
+                               notify_client,
+                               ue_id,
+                               resolved_location(pei_info_path_pattern, req.path_params),
+                               change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;

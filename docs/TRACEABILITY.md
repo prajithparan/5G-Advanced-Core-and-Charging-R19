@@ -3344,3 +3344,28 @@ engineering surface turned out to be ~85 real write routes needing individual li
 care, this pass wires exactly 3 (`amf-3gpp-access`, `amf-non-3gpp-access`, `smf-registrations`,
 covering all three real write shapes end-to-end) and discloses the remaining ~80 plainly as
 unwired, not silently claimed complete. See ADR-0171 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0172 -- continuing real `onDataChange` webhook delivery: 10 more resources wired (13 of ~40 real per-UE resources total)
+
+| Requirement | Test |
+|---|---|
+| `POST subs-to-notify` subscription watching `roaming-information` for a real UE | Live curl, real `201` |
+| `PUT roaming-information` (real field shape confirmed against the generated DTO after an initial 400 on a guessed shape) | Live curl, real `201`; real HTTPS receiver process independently logs a correctly-shaped `DataChangeNotify` |
+| Clean build across all 10 newly-wired resources | `udr` built clean (zero warnings) before and after `clang-format-18` |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions |
+
+Continues ADR-0171's own explicitly disclosed follow-up using the identical infrastructure and
+mechanical edit pattern (no new design): `sm-data`/`am-data` (RFC 7396 `PATCH` only, reported as
+`change_replace`), `authentication-subscription` (RFC 6902 `PATCH` only), `authentication-status`
+(`PUT`+`DELETE`), `smsf-3gpp-access`/`smsf-non-3gpp-access` (`PUT`+`DELETE`), `ip-sm-gw`
+(`PUT`+`PATCH`(RFC 6902)+`DELETE`), `mwd` (`PUT`+`PATCH`(RFC 6902)+`DELETE`),
+`roaming-information`/`pei-info` (`PUT` only). Real, disclosed: given the underlying
+`notify_subscribers()` call is identical, already-proven code at every site, this pass
+live-verifies one new representative resource end-to-end rather than re-proving all 10
+individually -- correctness at the remaining 9 sites rests on a clean, warning-free build plus
+code review of each capture list and `resolved_location()` argument, not independent live proof of
+each. Combined total: 13 of ~40 real per-UE `Nudr_DataRepository` resources now have real
+`onDataChange` delivery, 24 real write-route call sites. The remaining ~65-70 real per-UE routes,
+all non-per-UE resources, and `Nudr_GroupIDmap`'s own separate `onGroupIdMapChange` callback
+remain unwired, same disclosed follow-up as ADR-0171. See ADR-0172 in `docs/DECISIONS.md` for full
+disclosure.
