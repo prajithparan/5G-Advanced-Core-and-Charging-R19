@@ -3798,8 +3798,12 @@ int main() {
     server.add_route(
         "PATCH",
         slice_control_data_path_pattern,
-        [&verifier, &slice_control_data, &slice_control_data_patch_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &slice_control_data,
+         &slice_control_data_patch_counter,
+         &subs_to_notify,
+         &notify_client,
+         slice_control_data_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3812,6 +3816,11 @@ int main() {
             const auto snssai = req.path_params.at("snssai");
             const auto patched = slice_control_data.merge_patch(snssai, patch);
             slice_control_data_patch_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(slice_control_data_path_pattern, req.path_params),
+                change_replace(patched));
             return sbi_core::http2::Response::json(200, patched.dump());
         });
 
@@ -3846,8 +3855,12 @@ int main() {
     server.add_route(
         "PATCH",
         group_control_data_path_pattern,
-        [&verifier, &group_control_data, &group_control_data_patch_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &group_control_data,
+         &group_control_data_patch_counter,
+         &subs_to_notify,
+         &notify_client,
+         group_control_data_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3860,6 +3873,11 @@ int main() {
             const auto int_group_id = req.path_params.at("intGroupId");
             const auto patched = group_control_data.merge_patch(int_group_id, patch);
             group_control_data_patch_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(group_control_data_path_pattern, req.path_params),
+                change_replace(patched));
             return sbi_core::http2::Response::json(200, patched.dump());
         });
 
@@ -7425,6 +7443,8 @@ int main() {
         [&verifier,
          &five_g_vn_groups,
          &five_g_vn_groups_write_counter,
+         &subs_to_notify,
+         &notify_client,
          five_g_vn_groups_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -7439,6 +7459,11 @@ int main() {
             json j = *body;
             five_g_vn_groups.put(ext_group_id, j);
             five_g_vn_groups_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(five_g_vn_groups_path_pattern, req.path_params),
+                change_replace(j));
             // Real spec: Create5GVnGroup documents ONLY 201 as a success response (no
             // update-via-PUT status) -- confirmed by direct read, same precedent as bdt-data.
             sbi_core::http2::Response resp;
@@ -7453,8 +7478,12 @@ int main() {
     server.add_route(
         "PATCH",
         five_g_vn_groups_path_pattern,
-        [&verifier, &five_g_vn_groups, &five_g_vn_groups_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &five_g_vn_groups,
+         &five_g_vn_groups_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         five_g_vn_groups_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -7476,6 +7505,11 @@ int main() {
                     404, "Not Found", "No 5G VN Group for externalGroupId " + ext_group_id);
             }
             five_g_vn_groups_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(five_g_vn_groups_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -7484,8 +7518,12 @@ int main() {
     server.add_route(
         "DELETE",
         five_g_vn_groups_path_pattern,
-        [&verifier, &five_g_vn_groups, &five_g_vn_groups_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &five_g_vn_groups,
+         &five_g_vn_groups_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         five_g_vn_groups_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -7495,6 +7533,11 @@ int main() {
                     404, "Not Found", "No 5G VN Group for externalGroupId " + ext_group_id);
             }
             five_g_vn_groups_delete_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(five_g_vn_groups_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -7635,6 +7678,8 @@ int main() {
         [&verifier,
          &mbs_group_membership,
          &mbs_group_membership_write_counter,
+         &subs_to_notify,
+         &notify_client,
          mbs_group_membership_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -7648,6 +7693,11 @@ int main() {
             json j = *body;
             mbs_group_membership.put(ext_group_id, j);
             mbs_group_membership_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(mbs_group_membership_path_pattern, req.path_params),
+                change_replace(j));
             // Real spec: Create5GmbsGroup documents ONLY 201 as a success response (no
             // update-via-PUT status) -- confirmed by direct read, same precedent as 5g-vn-groups.
             sbi_core::http2::Response resp;
@@ -7662,8 +7712,12 @@ int main() {
     server.add_route(
         "PATCH",
         mbs_group_membership_path_pattern,
-        [&verifier, &mbs_group_membership, &mbs_group_membership_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &mbs_group_membership,
+         &mbs_group_membership_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         mbs_group_membership_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -7687,6 +7741,11 @@ int main() {
                     "No 5G MBS Group Membership for externalGroupId " + ext_group_id);
             }
             mbs_group_membership_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(mbs_group_membership_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -7695,8 +7754,12 @@ int main() {
     server.add_route(
         "DELETE",
         mbs_group_membership_path_pattern,
-        [&verifier, &mbs_group_membership, &mbs_group_membership_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &mbs_group_membership,
+         &mbs_group_membership_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         mbs_group_membership_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -7708,6 +7771,11 @@ int main() {
                     "No 5G MBS Group Membership for externalGroupId " + ext_group_id);
             }
             mbs_group_membership_delete_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(mbs_group_membership_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

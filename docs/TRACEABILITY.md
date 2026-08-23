@@ -3462,3 +3462,23 @@ types now wired. See ADR-0176 in `docs/DECISIONS.md` for full disclosure -- `sli
 `group-control-data`, `5g-vn-groups`, `mbs-group-membership`, and the group-data
 `ee-subscriptions` family are now unblocked but not yet wired; `Nudr_GroupIDmap`'s own callback
 remains a separate, still-unimplemented API.
+
+## ADR-0177 -- continuing non-per-UE `onDataChange` webhook delivery: 4 more resources wired
+
+| Requirement | Test |
+|---|---|
+| `POST subs-to-notify` subscription (no `ueId`) watching the full resolved `5g-vn-groups/vn-grp-001` path | Live curl, real `201` |
+| `PUT 5g-vn-groups/vn-grp-001` | Live curl, real `201`; receiver logs a correct `DataChangeNotify` (`REPLACE` at `/`, no `"ueId"` key) |
+| `DELETE 5g-vn-groups/vn-grp-001` | Live curl, real `204`; receiver logs a correct `DataChangeNotify` (`REMOVE` at `/`, no `"ueId"` key) |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Continues ADR-0176's own disclosed follow-up using `notify_subscribers_ue_less()`, no new
+infrastructure: `slice-control-data` (RFC 7396 `PATCH`-only, upsert-capable), `group-control-data`
+(same shape), `5g-vn-groups` (`PUT`+RFC 6902 `PATCH`+`DELETE`, real 201-only `PUT`),
+`mbs-group-membership` (identical shape, real spec twin). All four confirmed keyed by
+`snssai`/`intGroupId`/`externalGroupId`, not `ueId`. Combined total: **61 real per-UE call sites +
+14 real non-per-UE call sites = 75 real write-route call sites**, 37 distinct resource types now
+wired (31 per-UE + 6 non-per-UE). See ADR-0177 in `docs/DECISIONS.md` for full disclosure -- the
+`group-data/{ueGroupId}/ee-subscriptions` family (+ its 3 nested resources) remains the last real
+candidate batch unblocked by ADR-0176's schema fix, not yet wired; `Nudr_GroupIDmap`'s own
+callback remains a separate, still-unimplemented API.
