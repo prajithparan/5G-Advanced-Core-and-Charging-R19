@@ -7,6 +7,7 @@ add_executable(integration_tests
     test_udm_uecm_sdm.cpp
     test_udm_ueau.cpp
     test_udr_context_data.cpp
+    test_udr_ondatachange_webhook.cpp
     test_ausf_ue_authentication.cpp
     test_pcf_policy_control.cpp
     test_n28_spending_limit.cpp

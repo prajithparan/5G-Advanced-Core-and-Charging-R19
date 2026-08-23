@@ -3503,3 +3503,30 @@ sites**, 41 distinct resource types now wired (31 per-UE + 10 non-per-UE). See A
 `docs/DECISIONS.md` for full disclosure -- the only remaining real gap is `Nudr_GroupIDmap`'s own
 separate `onGroupIdMapChange` callback, a different API, currently unfireable regardless since
 `nf-group-ids` itself has no write path.
+
+## ADR-0179 -- real automated integration test for `onDataChange` webhook delivery
+
+| Requirement | Test |
+|---|---|
+| Real subscriber callback endpoint | New in-process `sbi_core::http2::Server` (TLS 1.3 + mTLS), not a stub/mock/external script |
+| `POST subs-to-notify` + `PUT`/`PATCH`/`DELETE` `smf-registrations` | `UdrIntegration.OnDataChangeWebhookDeliveredOnPutPatchDelete`, asserts a correctly-shaped `DataChangeNotify` after each of the 3 writes |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 332/332 pass |
+
+Closes the real, previously-disclosed testing gap named in every ADR from 0171 through 0178:
+`onDataChange` delivery had only ever been verified manually (curl + a standalone Python HTTPS
+receiver script). New test file `tests/integration/test_udr_ondatachange_webhook.cpp` drives the
+same flow inside `ctest`, using a real in-process `sbi_core::http2::Server` as the receiver -- the
+exact same server implementation every NF in this project runs. `smf-registrations` was chosen
+(not `amf-3gpp-access`) because it has real `PUT`+`PATCH`+`DELETE` all on one document, covering
+all three real `ChangeItem` shapes (`change_replace`/`change_from_json_patch`/`change_remove`) in
+one test. Three real bugs found and fixed while writing it: (1) a test-design bug -- `DELETE
+amf-3gpp-access` was wrongly assumed to return `204`; direct read confirmed that resource
+genuinely has no `DELETE` operation at all; (2) a real crash -- an `ASSERT_*` failure skipped
+manual cleanup, leaving a joinable `std::thread` to call `std::terminate()`; fixed with two RAII
+wrappers (`SpawnedProcess`, `IoContextThread`); (3) a real test-isolation bug -- a fixed `ue_id`
+collided with a leftover row from an interrupted prior run (real, persistent PostgreSQL, by
+design); fixed using this project's own existing `getpid()`-suffix precedent from
+`test_n28_spending_limit.cpp`. See ADR-0179 in `docs/DECISIONS.md` for full disclosure --
+this is one representative end-to-end proof of the shared delivery core, not a dedicated test per
+each of the 41 wired resource types, and covers only the per-UE `notify_subscribers()` path, not
+`notify_subscribers_ue_less()`.
