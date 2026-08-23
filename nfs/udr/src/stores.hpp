@@ -1453,6 +1453,12 @@ public:
     std::optional<nlohmann::json> apply_patch(const std::string& subscription_id,
                                               const nlohmann::json& patch_ops);
     bool remove(const std::string& subscription_id);
+    // Real onGroupIdMapChange delivery (ADR-0180, gap-closure task #106). No `nfType`/`nfGroupId`
+    // columns exist in the real table (the composite subscription key those two real
+    // SubscriptionData fields form is stored only inside `data`) -- same "filter in the caller,
+    // not in SQL" precedent already used for FiveGVnGroupStore::list_all()'s own `/internal`
+    // filter route.
+    std::vector<nlohmann::json> list_all();
 
 private:
     std::mutex mutex_;

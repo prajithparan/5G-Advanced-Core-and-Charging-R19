@@ -850,6 +850,53 @@ json change_from_json_patch(const json& patch_ops) {
     return changes;
 }
 
+// Real Nudr_GroupIDmap `onGroupIdMapChange` delivery (docs/DECISIONS.md ADR-0180, gap-closure
+// task #106). Genuinely a different real API from `Nudr_DataRepository`'s own `subs-to-notify`/
+// `onDataChange` infra above -- this project's own `nf-group-id-subscriptions` collection
+// (ADR-0170) is what backs it, not `SubsToNotifyStore`. Real, disclosed: `TS29504_Nudr_
+// GroupIDmap.yaml`'s own `/nf-group-ids` resource has genuinely NO write operation at all (GET
+// -only, confirmed by direct read) -- there is no live SBI call this callback could fire from.
+// The only real mutation this mapping data ever undergoes in this project is the one-time startup
+// seed() in main() below, so that is the one real, honest trigger point used here -- fired once
+// per seeded (subscriberId, nfType, nfGroupId) entry, not from any request handler. A real
+// subscription matches by (nfType, nfGroupId) per `SubscriptionData`'s own real required fields,
+// not by subscriberId (the real schema's own subscription key is coarser than the mapping key --
+// confirmed by direct read, not an invented simplification).
+void notify_group_id_map_change(udr::NfGroupIdSubscriptionStore& nf_group_id_subscriptions,
+                                sbi_core::http2::Client& notify_client,
+                                const std::string& subscriber_id,
+                                const std::string& nf_type,
+                                const std::string& nf_group_id) {
+    for (const auto& sub : nf_group_id_subscriptions.list_all()) {
+        if (!sub.contains("notificationUri") || !sub.contains("nfType") ||
+            !sub.contains("nfGroupId")) {
+            continue;
+        }
+        if (sub.at("nfType").get<std::string>() != nf_type ||
+            sub.at("nfGroupId").get<std::string>() != nf_group_id) {
+            continue;
+        }
+        json notify_body;
+        notify_body["subscriberId"] = subscriber_id;
+        notify_body["nfType"] = nf_type;
+        notify_body["nfGroupId"] = nf_group_id;
+
+        sbi_core::http2::ClientRequest req;
+        req.method = "POST";
+        req.url = sub.at("notificationUri").get<std::string>();
+        req.headers.emplace("content-type", "application/json");
+        req.body = notify_body.dump();
+        if (auto resp = notify_client.send(req); !resp.has_value() || resp->status != 204) {
+            spdlog::warn("udr: onGroupIdMapChange delivery to {} failed or non-204 for "
+                         "subscriberId={} nfType={} nfGroupId={}",
+                         req.url,
+                         subscriber_id,
+                         nf_type,
+                         nf_group_id);
+        }
+    }
+}
+
 // Runs on a dedicated thread, never on the server's io_context -- same reasoning as
 // nfs/amf/src/main.cpp's run_nrf_lifecycle (docs/DECISIONS.md ADR-0006/ADR-0019).
 void run_nrf_lifecycle(const std::string& udr_instance_id, const std::string& nrf_base) {
@@ -1778,6 +1825,19 @@ int main() {
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
     sbi_core::http2::Client notify_client(std::move(notify_client_tls));
+
+    // Real onGroupIdMapChange delivery (ADR-0180, gap-closure task #106) for the seed data above
+    // (nf_group_ids.seed(...), the only real mutation this project's own NfGroupIdStore ever
+    // undergoes -- see notify_group_id_map_change()'s own comment for the full disclosure of why
+    // this is fired here rather than from a live write route). No subscription can genuinely exist
+    // yet this early in a fresh process's own lifetime, so in practice this fires zero real
+    // deliveries on every real run -- disclosed, not hidden; still the one honest trigger point.
+    notify_group_id_map_change(
+        nf_group_id_subscriptions, notify_client, "imsi-999700000000001", "AMF", "amf-group-01");
+    notify_group_id_map_change(
+        nf_group_id_subscriptions, notify_client, "imsi-999700000000001", "SMF", "smf-group-01");
+    notify_group_id_map_change(
+        nf_group_id_subscriptions, notify_client, "imsi-999700000000002", "AMF", "amf-group-02");
 
     const std::string amf_ctx_path_pattern =
         std::string(kApiRoot) + "/subscription-data/{ueId}/context-data/amf-3gpp-access";

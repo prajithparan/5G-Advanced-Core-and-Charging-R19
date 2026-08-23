@@ -2726,4 +2726,16 @@ bool NfGroupIdSubscriptionStore::remove(const std::string& subscription_id) {
     return result.affected_rows() > 0;
 }
 
+std::vector<nlohmann::json> NfGroupIdSubscriptionStore::list_all() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_nf_group_id_subscriptions");
+    std::vector<nlohmann::json> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
 } // namespace udr

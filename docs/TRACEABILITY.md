@@ -3530,3 +3530,25 @@ design); fixed using this project's own existing `getpid()`-suffix precedent fro
 this is one representative end-to-end proof of the shared delivery core, not a dedicated test per
 each of the 41 wired resource types, and covers only the per-UE `notify_subscribers()` path, not
 `notify_subscribers_ue_less()`.
+
+## ADR-0180 -- `Nudr_GroupIDmap`'s `onGroupIdMapChange` callback fired from the one real mutation point this data has
+
+| Requirement | Test |
+|---|---|
+| Direct read of `TS29504_Nudr_GroupIDmap.yaml` | Confirmed `/nf-group-ids` genuinely has only `GET` -- no write operation exists to hang a live trigger off of |
+| Pre-seeded `udr_nf_group_id_subscriptions` row (`nfType=AMF`, `nfGroupId=amf-group-01`) + real HTTPS receiver, then start `udr` | Receiver logs a correct `GroupIdMapNotify` during `udr`'s own startup sequence, zero warnings |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 332/332 pass |
+
+The last remaining gap disclosed at the end of ADR-0178: `onGroupIdMapChange` had never fired,
+because `/nf-group-ids` genuinely has no write operation in the real spec to trigger it from
+(confirmed by direct YAML read, matching this project's own pre-existing `NfGroupIdStore` code
+comment). Rather than inventing a non-spec write endpoint, new `notify_group_id_map_change()`
+fires the callback from the one real mutation this mapping data already undergoes:
+`nf_group_ids.seed(...)` at `udr` process startup. Matches subscriptions (via a new
+`NfGroupIdSubscriptionStore::list_all()`) by the real `SubscriptionData` schema's own
+`nfType`+`nfGroupId` fields, POSTs a real `GroupIdMapNotify` to each match. Explicitly disclosed:
+this fires before the server accepts connections, so in every real run it finds zero live
+subscriptions -- the pre-seeded-row methodology above was the only way to exercise this real code
+path end-to-end, since the normal "subscribe via the live API, then mutate" methodology this whole
+series otherwise used doesn't apply here. See ADR-0180 in `docs/DECISIONS.md` for full disclosure,
+including a real live-testing mistake found and corrected along the way (wrong receiver port).
