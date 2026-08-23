@@ -1118,13 +1118,22 @@ private:
 // caller-generated (same precedent as `EeSubscriptionsStore`). `list_by_ue_id` backs the real,
 // required `ue-id` query-param filter on the collection GET. `apply_patch` is real RFC 6902, NOT
 // upsert-capable.
+//
+// Schema fix (ADR-0176, gap-closure task #106): `ue_id` is now a real nullable column/parameter
+// (was a `NOT NULL` column backed by an empty-string sentinel for UE-less subscriptions) --
+// `SubscriptionDataSubscriptions.ueId` is genuinely OPTIONAL per its own real schema.
+// `list_ue_less()` (new) backs real `onDataChange` delivery for non-per-UE resources, which have
+// no `ueId` to match `list_by_ue_id` against.
 class SubsToNotifyStore {
 public:
     explicit SubsToNotifyStore(const std::string& conninfo);
 
-    void create(const std::string& subs_id, const std::string& ue_id, nlohmann::json data);
+    void create(const std::string& subs_id,
+                const std::optional<std::string>& ue_id,
+                nlohmann::json data);
     std::optional<nlohmann::json> get(const std::string& subs_id);
     std::vector<nlohmann::json> list_by_ue_id(const std::string& ue_id);
+    std::vector<nlohmann::json> list_ue_less();
     std::optional<nlohmann::json> apply_patch(const std::string& subs_id,
                                               const nlohmann::json& patch_ops);
     bool remove(const std::string& subs_id);

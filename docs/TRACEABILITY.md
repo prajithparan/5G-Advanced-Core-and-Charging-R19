@@ -3438,3 +3438,27 @@ POST and `nf-group-ids/subscriptions`' own POST. Combined total: **31 of ~40 rea
 sites**. See ADR-0175 in `docs/DECISIONS.md` for full disclosure -- the remaining ~10-15 real
 per-UE routes, all non-per-UE resources, and `Nudr_GroupIDmap`'s own separate
 `onGroupIdMapChange` callback remain unwired, same disclosed follow-up.
+
+## ADR-0176 -- `udr_subs_to_notify` schema fix (nullable `ue_id` + `list_ue_less()`) and first two non-per-UE resources wired
+
+| Requirement | Test |
+|---|---|
+| `POST subs-to-notify` subscription with no `ueId` field at all | Live curl, real `201` |
+| `PUT bdt-data` (non-per-UE, keyed by `bdtReferenceId`) | Live curl, real `201`; receiver logs a correct `DataChangeNotify` with no `"ueId"` key present at all |
+| Real PostgreSQL row check | `psql`: new subscription's `ue_id` is real SQL `NULL`, confirmed distinct from legacy empty-string test rows |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+A comprehensive sweep of every remaining write route confirmed all real per-UE
+`Nudr_DataRepository` resources were already wired (ADR-0171 through ADR-0175, 61 call sites);
+everything left is structurally non-per-UE or otherwise out of scope (see ADR-0176 in
+`docs/DECISIONS.md` for the full per-route classification). User chose to fix the real
+prerequisite: `udr_subs_to_notify.ue_id` is now nullable (was `NOT NULL` with an empty-string
+sentinel), backing a new `list_ue_less()` store method and `notify_subscribers_ue_less()` helper
+(refactored out of a shared `deliver_onDataChange()` core with the existing per-UE
+`notify_subscribers()`). First two non-per-UE resources wired with it: `bdt-data`
+(`PUT`+RFC 7396 `PATCH`+`DELETE`) and `pdtq-data` (same shape). Combined total: **61 real per-UE
+call sites + 6 real non-per-UE call sites = 67 real write-route call sites**, 33 distinct resource
+types now wired. See ADR-0176 in `docs/DECISIONS.md` for full disclosure -- `slice-control-data`,
+`group-control-data`, `5g-vn-groups`, `mbs-group-membership`, and the group-data
+`ee-subscriptions` family are now unblocked but not yet wired; `Nudr_GroupIDmap`'s own callback
+remains a separate, still-unimplemented API.

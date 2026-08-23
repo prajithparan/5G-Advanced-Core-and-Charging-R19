@@ -1849,7 +1849,7 @@ bool EeSubscriptionsStore::remove(const std::string& ue_id, const std::string& s
 SubsToNotifyStore::SubsToNotifyStore(const std::string& conninfo) : conn_(conninfo) {}
 
 void SubsToNotifyStore::create(const std::string& subs_id,
-                               const std::string& ue_id,
+                               const std::optional<std::string>& ue_id,
                                nlohmann::json data) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(conn_);
@@ -1874,6 +1874,18 @@ std::vector<nlohmann::json> SubsToNotifyStore::list_by_ue_id(const std::string& 
     pqxx::work txn(conn_);
     const auto result =
         txn.exec("SELECT data FROM udr_subs_to_notify WHERE ue_id = $1", pqxx::params{ue_id});
+    std::vector<nlohmann::json> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
+std::vector<nlohmann::json> SubsToNotifyStore::list_ue_less() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_subs_to_notify WHERE ue_id IS NULL");
     std::vector<nlohmann::json> out;
     out.reserve(static_cast<std::size_t>(result.size()));
     for (const auto& row : result) {

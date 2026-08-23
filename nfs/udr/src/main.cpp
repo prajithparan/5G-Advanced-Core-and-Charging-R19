@@ -749,12 +749,16 @@ std::string resolved_location(const std::string& pattern,
 // - `sbi_core::http2::Client` is internally mutex-guarded (`libs/sbi-core/include/sbi_core/
 //   http2_client.hpp`), confirmed safe to share one instance across this server's concurrent
 //   request-handling calls.
-void notify_subscribers(udr::SubsToNotifyStore& subs_to_notify,
-                        sbi_core::http2::Client& notify_client,
-                        const std::string& ue_id,
-                        const std::string& resolved_path,
-                        const json& changes) {
-    for (const auto& sub : subs_to_notify.list_by_ue_id(ue_id)) {
+// Shared delivery core for both `notify_subscribers` (per-UE) and `notify_subscribers_ue_less`
+// (ADR-0176, non-per-UE resources) -- `ue_id` is only present in the outgoing `DataChangeNotify`
+// body for the per-UE case, since the real schema's own `ueId` field is genuinely OPTIONAL
+// (confirmed by direct read of the generated `DataChangeNotify` struct).
+void deliver_onDataChange(sbi_core::http2::Client& notify_client,
+                          const std::vector<json>& subs,
+                          const std::optional<std::string>& ue_id,
+                          const std::string& resolved_path,
+                          const json& changes) {
+    for (const auto& sub : subs) {
         if (!sub.contains("monitoredResourceUris") || !sub.contains("callbackReference")) {
             continue;
         }
@@ -770,7 +774,9 @@ void notify_subscribers(udr::SubsToNotifyStore& subs_to_notify,
             continue;
         }
         json notify_body;
-        notify_body["ueId"] = ue_id;
+        if (ue_id.has_value()) {
+            notify_body["ueId"] = *ue_id;
+        }
         notify_body["notifyItems"] =
             json::array({json{{"resourceId", resolved_path}, {"changes", changes}}});
 
@@ -782,10 +788,31 @@ void notify_subscribers(udr::SubsToNotifyStore& subs_to_notify,
         if (auto resp = notify_client.send(req); !resp.has_value() || resp->status != 204) {
             spdlog::warn("udr: onDataChange delivery to {} failed or non-204 for ueId={} path={}",
                          req.url,
-                         ue_id,
+                         ue_id.value_or("<none>"),
                          resolved_path);
         }
     }
+}
+
+void notify_subscribers(udr::SubsToNotifyStore& subs_to_notify,
+                        sbi_core::http2::Client& notify_client,
+                        const std::string& ue_id,
+                        const std::string& resolved_path,
+                        const json& changes) {
+    deliver_onDataChange(
+        notify_client, subs_to_notify.list_by_ue_id(ue_id), ue_id, resolved_path, changes);
+}
+
+// Non-per-UE resources (bdt-data, pdtq-data, slice-control-data, group-control-data, and the
+// group-data family) have no `ueId` to match `list_by_ue_id` against -- this backs their real
+// `onDataChange` delivery via `list_ue_less()` (ADR-0176), matching subscriptions with no `ueId`
+// in their own `SubscriptionDataSubscriptions` body against `monitoredResourceUris` the same way.
+void notify_subscribers_ue_less(udr::SubsToNotifyStore& subs_to_notify,
+                                sbi_core::http2::Client& notify_client,
+                                const std::string& resolved_path,
+                                const json& changes) {
+    deliver_onDataChange(
+        notify_client, subs_to_notify.list_ue_less(), std::nullopt, resolved_path, changes);
 }
 
 // Real `ChangeItem` (`TS29571_CommonData.yaml`) constructors for the three real write shapes
@@ -3624,8 +3651,12 @@ int main() {
     server.add_route(
         "PUT",
         bdt_data_path_pattern,
-        [&verifier, &bdt_data, &bdt_data_write_counter, bdt_data_path_pattern](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &bdt_data,
+         &bdt_data_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         bdt_data_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3638,6 +3669,10 @@ int main() {
             const auto bdt_ref_id = req.path_params.at("bdtReferenceId");
             bdt_data.put(bdt_ref_id, body);
             bdt_data_write_counter->Add(1);
+            notify_subscribers_ue_less(subs_to_notify,
+                                       notify_client,
+                                       resolved_location(bdt_data_path_pattern, req.path_params),
+                                       change_replace(body));
             // Real spec: CreateIndividualBdtData documents ONLY 201 as a success response (no
             // update-via-PUT status) -- confirmed by direct read, this route always responds 201,
             // matching the real spec literally rather than inventing an undocumented 204.
@@ -3653,7 +3688,12 @@ int main() {
     server.add_route(
         "PATCH",
         bdt_data_path_pattern,
-        [&verifier, &bdt_data, &bdt_data_patch_counter](const sbi_core::http2::Request& req) {
+        [&verifier,
+         &bdt_data,
+         &bdt_data_patch_counter,
+         &subs_to_notify,
+         &notify_client,
+         bdt_data_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3670,13 +3710,22 @@ int main() {
                     404, "Not Found", "No BDT data for bdtReferenceId " + bdt_ref_id);
             }
             bdt_data_patch_counter->Add(1);
+            notify_subscribers_ue_less(subs_to_notify,
+                                       notify_client,
+                                       resolved_location(bdt_data_path_pattern, req.path_params),
+                                       change_replace(*patched));
             return sbi_core::http2::Response::json(200, patched->dump());
         });
 
     server.add_route(
         "DELETE",
         bdt_data_path_pattern,
-        [&verifier, &bdt_data, &bdt_data_delete_counter](const sbi_core::http2::Request& req) {
+        [&verifier,
+         &bdt_data,
+         &bdt_data_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         bdt_data_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -3686,6 +3735,10 @@ int main() {
                     404, "Not Found", "No BDT data for bdtReferenceId " + bdt_ref_id);
             }
             bdt_data_delete_counter->Add(1);
+            notify_subscribers_ue_less(subs_to_notify,
+                                       notify_client,
+                                       resolved_location(bdt_data_path_pattern, req.path_params),
+                                       change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6985,8 +7038,12 @@ int main() {
     server.add_route(
         "PUT",
         pdtq_data_individual_path_pattern,
-        [&verifier, &pdtq_data, &pdtq_data_write_counter, pdtq_data_individual_path_pattern](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &pdtq_data,
+         &pdtq_data_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         pdtq_data_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6999,6 +7056,11 @@ int main() {
             json j = *body;
             pdtq_data.put(pdtq_ref_id, j);
             pdtq_data_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(pdtq_data_individual_path_pattern, req.path_params),
+                change_replace(j));
             // Real spec: CreateIndividualPdtqData documents ONLY 201 as a success response (no
             // update-via-PUT status) -- confirmed by direct read, this route always responds 201,
             // matching the real spec literally rather than inventing an undocumented 204.
@@ -7014,7 +7076,12 @@ int main() {
     server.add_route(
         "PATCH",
         pdtq_data_individual_path_pattern,
-        [&verifier, &pdtq_data, &pdtq_data_write_counter](const sbi_core::http2::Request& req) {
+        [&verifier,
+         &pdtq_data,
+         &pdtq_data_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         pdtq_data_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -7036,13 +7103,23 @@ int main() {
                     404, "Not Found", "No PDTQ data for pdtqReferenceId " + pdtq_ref_id);
             }
             pdtq_data_write_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(pdtq_data_individual_path_pattern, req.path_params),
+                change_replace(*patched));
             return sbi_core::http2::Response::json(200, patched->dump());
         });
 
     server.add_route(
         "DELETE",
         pdtq_data_individual_path_pattern,
-        [&verifier, &pdtq_data, &pdtq_data_delete_counter](const sbi_core::http2::Request& req) {
+        [&verifier,
+         &pdtq_data,
+         &pdtq_data_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         pdtq_data_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -7052,6 +7129,11 @@ int main() {
                     404, "Not Found", "No PDTQ data for pdtqReferenceId " + pdtq_ref_id);
             }
             pdtq_data_delete_counter->Add(1);
+            notify_subscribers_ue_less(
+                subs_to_notify,
+                notify_client,
+                resolved_location(pdtq_data_individual_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -7108,9 +7190,8 @@ int main() {
                 return err;
             }
             const auto subs_id = sbi_core::generate_uuid_v4();
-            const std::string ue_id = body->ueId.value_or("");
             json j = *body;
-            subs_to_notify.create(subs_id, ue_id, j);
+            subs_to_notify.create(subs_id, body->ueId, j);
             subs_to_notify_create_counter->Add(1);
 
             sbi_core::http2::Response resp;

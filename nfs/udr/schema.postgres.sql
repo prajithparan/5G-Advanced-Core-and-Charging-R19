@@ -828,12 +828,21 @@ CREATE TABLE IF NOT EXISTS udr_ee_subscriptions (
 -- v4, same precedent as ee-subscriptions, ADR-0148). This collection is genuinely NOT scoped
 -- under {ueId} in its own path (unlike ee-subscriptions) -- QuerySubsToNotify's own real,
 -- required `ue-id` query parameter is a plain string (VarUeId, not an array), so this project
--- stores the POST body's own optional `ueId` field (empty string if the caller omits it) as a
--- real, queryable column to back that real filter. PATCH is real RFC 6902
--- application/json-patch+json, NOT upsert-capable.
+-- stores the POST body's own optional `ueId` field as a real, queryable column to back that real
+-- filter. PATCH is real RFC 6902 application/json-patch+json, NOT upsert-capable.
+--
+-- Schema fix (ADR-0176, gap-closure task #106): `ue_id` is now a real nullable column (was
+-- `TEXT NOT NULL`, backed by an empty-string sentinel for UE-less subscriptions). The real
+-- `SubscriptionDataSubscriptions.ueId` field is genuinely OPTIONAL per its own schema -- a
+-- caller-omitted `ueId` is now stored as real SQL NULL, not the string `""`, letting
+-- `list_ue_less()` (added alongside this change) distinguish "subscribes to everything
+-- regardless of UE" subscriptions from a (spec-invalid) subscription literally keyed to the
+-- empty string. This is the real prerequisite for wiring non-per-UE resources (bdt-data,
+-- pdtq-data, slice-control-data, group-control-data, the group-data family) into onDataChange
+-- delivery -- see ADR-0176 for the full disclosure.
 CREATE TABLE IF NOT EXISTS udr_subs_to_notify (
     subs_id TEXT PRIMARY KEY,
-    ue_id   TEXT NOT NULL,
+    ue_id   TEXT,
     data    JSONB NOT NULL
 );
 

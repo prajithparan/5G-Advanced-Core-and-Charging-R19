@@ -1010,10 +1010,25 @@ routes on the `ee-subscriptions`/`sdm-subscriptions` collections were deliberate
 server-generated `subsId` that doesn't exist yet); live-verified `ee-subscriptions`'s own
 `POST`-create -> `subs-to-notify` subscribe -> RFC 6902 `PATCH` chain end-to-end via the real
 HTTPS receiver.
+**Continued, docs/DECISIONS.md ADR-0176**: a comprehensive sweep of every remaining write route
+confirmed all real per-UE resources were already wired -- everything left was structurally
+non-per-UE (keyed by `bdtReferenceId`/`pdtqReferenceId`/`snssai`/`intGroupId`/`externalGroupId`/
+`ueGroupId`) or otherwise out of scope (subscription-management resources themselves,
+`Nudr_GroupIDmap`'s own separate callback, `POST`-create routes). User chose to fix the real
+prerequisite this blocked on: `udr_subs_to_notify.ue_id` is now a real nullable column (was
+`NOT NULL` with an empty-string sentinel) backing a new `list_ue_less()` store method, unblocking
+non-per-UE resources for `onDataChange` delivery. First two wired with it: `bdt-data` and
+`pdtq-data` (both `PUT`+RFC 7396 `PATCH`+`DELETE`) -- **61 real per-UE call sites + 6 real
+non-per-UE call sites = 67 real write-route call sites total, 33 distinct resource types wired**.
+Live-verified the schema fix end-to-end: a subscription with no `ueId` field is stored as real SQL
+`NULL` (confirmed via direct `psql` query) and its delivered `DataChangeNotify` correctly omits
+the `ueId` key entirely (schema-conformant, matching the real, genuinely optional
+`DataChangeNotify.ueId` field).
 This is well past free5GC's own ~42+ figure; the real, still-open work from here is surveying the
 remainder of `TS29505_Subscription_Data.yaml` itself (`gpsis`/`ext-group-ids` filtering,
-`mbs-session-pol-data`, wiring the remaining ~10-15 write routes to real `onDataChange` delivery,
-and others), not chasing a shrinking
+`mbs-session-pol-data`, wiring the now-unblocked `slice-control-data`/`group-control-data`/
+`5g-vn-groups`/`mbs-group-membership`/group-data `ee-subscriptions` family to real `onDataChange`
+delivery, and others), not chasing a shrinking
 comparison count.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
@@ -1132,7 +1147,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | SMF | ~10-16x | `UpdateSMContext`: `PATH_SWITCH_REQ`/`_ACK` slice CLOSED (task #101, ADR-0092, real downlink FAR/GTP-U control-plane); the other 20 real N2SmInfoType values remain a stub. AMF's own N2 handover NGAP side is now closed (ADR-0095/ADR-0096), but AMF still doesn't call SMF during handover -- the real AMF->SMF relay wiring for handover-triggered PDU session resource re-setup remains a real, disclosed open gap |
 | PCF | ~7-10x | `Npcf_PolicyAuthorization` (AF/IMS-facing QoS) -- confirmed in BOTH references, high real-world impact |
 | UDM | ~3-6x | `Nudm_EE`/`Nudm_PP` (free5GC-only, both) |
-| UDR | ~2.5-10x | Resource-type breadth (78 of 42+ real TS 29.504 resources closed, past parity -- both ee-subscriptions nested-subscription trees, bare `{ueId}/context-data`/`{ueId}` (32-field aggregate)/`pdtq-data`, `Nudr_GroupIDmap`'s `GetNfGroupIDs` + real `nf-group-ids/subscriptions` CRUD family, `GetNiddAuData`, and `group-data`'s entire `5g-vn-groups`/`mbs-group-membership` resource set (bare collection, individual, `/internal`, `/pp-profile-data` singleton) now fully closed (ADR-0161 through ADR-0170 -- fully closes this series' own array-parsing-infra-unblocked candidate list; ADR-0168 also found and fixed a real router literal-vs-wildcard ordering hazard, re-applied in ADR-0169; ADR-0169 is this project's first genuinely keyless singleton resource); real `onDataChange` webhook delivery infrastructure built and live-verified end-to-end (ADR-0171/ADR-0172/ADR-0173/ADR-0174/ADR-0175), wired into 31 of ~40 real per-UE write resources (61 real write-route call sites) -- the remaining ~10-15 write routes, all non-per-UE resources (blocked on `udr_subs_to_notify`'s own `ue_id NOT NULL` schema), plus `Nudr_GroupIDmap`'s own separate `onGroupIdMapChange` callback, plus `gpsis`/`ext-group-ids` filtering, `niddAuthData`'s permanent gap in the aggregate (needs `mtc-provider-information`, not exposed by that resource), and `GetSSAuData` (deliberately deferred, ADR-0160), all remain real, disclosed gaps, see UDR section above) |
+| UDR | ~2.5-10x | Resource-type breadth (78 of 42+ real TS 29.504 resources closed, past parity -- both ee-subscriptions nested-subscription trees, bare `{ueId}/context-data`/`{ueId}` (32-field aggregate)/`pdtq-data`, `Nudr_GroupIDmap`'s `GetNfGroupIDs` + real `nf-group-ids/subscriptions` CRUD family, `GetNiddAuData`, and `group-data`'s entire `5g-vn-groups`/`mbs-group-membership` resource set (bare collection, individual, `/internal`, `/pp-profile-data` singleton) now fully closed (ADR-0161 through ADR-0170 -- fully closes this series' own array-parsing-infra-unblocked candidate list; ADR-0168 also found and fixed a real router literal-vs-wildcard ordering hazard, re-applied in ADR-0169; ADR-0169 is this project's first genuinely keyless singleton resource); real `onDataChange` webhook delivery infrastructure built and live-verified end-to-end (ADR-0171 through ADR-0176), wired into 31 of ~40 real per-UE write resources plus 2 non-per-UE resources (67 real write-route call sites total) -- the `udr_subs_to_notify.ue_id NOT NULL` schema blocker is now fixed (ADR-0176, nullable + `list_ue_less()`), unblocking but not yet fully wiring `slice-control-data`/`group-control-data`/`5g-vn-groups`/`mbs-group-membership`/group-data `ee-subscriptions`, plus `Nudr_GroupIDmap`'s own separate `onGroupIdMapChange` callback, plus `gpsis`/`ext-group-ids` filtering, `niddAuthData`'s permanent gap in the aggregate (needs `mtc-provider-information`, not exposed by that resource), and `GetSSAuData` (deliberately deferred, ADR-0160), all remain real, disclosed gaps, see UDR section above) |
 | UPF | ~1x (task #107 fully closed: Association Update/Release, ADR-0084; PFD Management, ADR-0086; Node Report, ADR-0087; Session Set Deletion correctly found not applicable to this project's own N4/Sxc interface) | datapath (XDP) already ahead of both references on paper, unbenchmarked |
 | CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding: CLOSED (task #108, ADR-0089, narrower disclosed scope than free5GC's); already ahead on 5G-native service breadth + AI-native charging |
 
