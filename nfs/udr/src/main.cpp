@@ -5509,8 +5509,12 @@ int main() {
     server.add_route(
         "PUT",
         ee_subscriptions_individual_path_pattern,
-        [&verifier, &ee_subscriptions, &ee_subscriptions_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ee_subscriptions,
+         &ee_subscriptions_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         ee_subscriptions_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -5529,6 +5533,12 @@ int main() {
                     404, "Not Found", "No EE Subscription for subsId " + subs_id);
             }
             ee_subscriptions_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_subscriptions_individual_path_pattern, req.path_params),
+                change_replace(j));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -5537,8 +5547,12 @@ int main() {
     server.add_route(
         "PATCH",
         ee_subscriptions_individual_path_pattern,
-        [&verifier, &ee_subscriptions, &ee_subscriptions_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ee_subscriptions,
+         &ee_subscriptions_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         ee_subscriptions_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -5561,6 +5575,12 @@ int main() {
                     404, "Not Found", "No EE Subscription for subsId " + subs_id);
             }
             ee_subscriptions_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_subscriptions_individual_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -5569,8 +5589,12 @@ int main() {
     server.add_route(
         "DELETE",
         ee_subscriptions_individual_path_pattern,
-        [&verifier, &ee_subscriptions, &ee_subscriptions_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ee_subscriptions,
+         &ee_subscriptions_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         ee_subscriptions_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -5581,6 +5605,12 @@ int main() {
                     404, "Not Found", "No EE Subscription for subsId " + subs_id);
             }
             ee_subscriptions_delete_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_subscriptions_individual_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -5674,8 +5704,12 @@ int main() {
     server.add_route(
         "PUT",
         sdm_subscriptions_individual_path_pattern,
-        [&verifier, &sdm_subscriptions, &sdm_subscriptions_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &sdm_subscriptions,
+         &sdm_subscriptions_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         sdm_subscriptions_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -5694,6 +5728,12 @@ int main() {
                     404, "Not Found", "No SDM Subscription for subsId " + subs_id);
             }
             sdm_subscriptions_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(sdm_subscriptions_individual_path_pattern, req.path_params),
+                change_replace(j));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -5702,8 +5742,12 @@ int main() {
     server.add_route(
         "PATCH",
         sdm_subscriptions_individual_path_pattern,
-        [&verifier, &sdm_subscriptions, &sdm_subscriptions_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &sdm_subscriptions,
+         &sdm_subscriptions_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         sdm_subscriptions_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -5726,6 +5770,12 @@ int main() {
                     404, "Not Found", "No SDM Subscription for subsId " + subs_id);
             }
             sdm_subscriptions_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(sdm_subscriptions_individual_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -5734,8 +5784,12 @@ int main() {
     server.add_route(
         "DELETE",
         sdm_subscriptions_individual_path_pattern,
-        [&verifier, &sdm_subscriptions, &sdm_subscriptions_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &sdm_subscriptions,
+         &sdm_subscriptions_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         sdm_subscriptions_individual_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -5746,6 +5800,12 @@ int main() {
                     404, "Not Found", "No SDM Subscription for subsId " + subs_id);
             }
             sdm_subscriptions_delete_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(sdm_subscriptions_individual_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -5787,6 +5847,8 @@ int main() {
         [&verifier,
          &ee_amf_subscription_info,
          &ee_amf_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
          ee_amf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -5802,6 +5864,12 @@ int main() {
             json j = *body;
             const bool is_new = ee_amf_subscription_info.put(ue_id, subs_id, j);
             ee_amf_subscription_info_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_amf_subscription_info_path_pattern, req.path_params),
+                change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -5821,8 +5889,12 @@ int main() {
     server.add_route(
         "PATCH",
         ee_amf_subscription_info_path_pattern,
-        [&verifier, &ee_amf_subscription_info, &ee_amf_subscription_info_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ee_amf_subscription_info,
+         &ee_amf_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         ee_amf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -5845,6 +5917,12 @@ int main() {
                     404, "Not Found", "No AMF Subscription Info for subsId " + subs_id);
             }
             ee_amf_subscription_info_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_amf_subscription_info_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -5853,8 +5931,12 @@ int main() {
     server.add_route(
         "DELETE",
         ee_amf_subscription_info_path_pattern,
-        [&verifier, &ee_amf_subscription_info, &ee_amf_subscription_info_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ee_amf_subscription_info,
+         &ee_amf_subscription_info_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         ee_amf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -5865,6 +5947,12 @@ int main() {
                     404, "Not Found", "No AMF Subscription Info for subsId " + subs_id);
             }
             ee_amf_subscription_info_delete_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_amf_subscription_info_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -5905,6 +5993,8 @@ int main() {
         [&verifier,
          &ee_smf_subscription_info,
          &ee_smf_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
          ee_smf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -5919,6 +6009,12 @@ int main() {
             json j = *body;
             const bool is_new = ee_smf_subscription_info.put(ue_id, subs_id, j);
             ee_smf_subscription_info_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_smf_subscription_info_path_pattern, req.path_params),
+                change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -5938,8 +6034,12 @@ int main() {
     server.add_route(
         "PATCH",
         ee_smf_subscription_info_path_pattern,
-        [&verifier, &ee_smf_subscription_info, &ee_smf_subscription_info_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ee_smf_subscription_info,
+         &ee_smf_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         ee_smf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -5962,6 +6062,12 @@ int main() {
                     404, "Not Found", "No SMF Subscription Info for subsId " + subs_id);
             }
             ee_smf_subscription_info_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_smf_subscription_info_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -5970,8 +6076,12 @@ int main() {
     server.add_route(
         "DELETE",
         ee_smf_subscription_info_path_pattern,
-        [&verifier, &ee_smf_subscription_info, &ee_smf_subscription_info_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ee_smf_subscription_info,
+         &ee_smf_subscription_info_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         ee_smf_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -5982,6 +6092,12 @@ int main() {
                     404, "Not Found", "No SMF Subscription Info for subsId " + subs_id);
             }
             ee_smf_subscription_info_delete_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_smf_subscription_info_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6025,6 +6141,8 @@ int main() {
         [&verifier,
          &ee_hss_subscription_info,
          &ee_hss_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
          ee_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -6039,6 +6157,12 @@ int main() {
             json j = *body;
             const bool is_new = ee_hss_subscription_info.put(ue_id, subs_id, j);
             ee_hss_subscription_info_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_hss_subscription_info_path_pattern, req.path_params),
+                change_replace(j));
 
             if (!is_new) {
                 sbi_core::http2::Response resp;
@@ -6058,8 +6182,12 @@ int main() {
     server.add_route(
         "PATCH",
         ee_hss_subscription_info_path_pattern,
-        [&verifier, &ee_hss_subscription_info, &ee_hss_subscription_info_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ee_hss_subscription_info,
+         &ee_hss_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         ee_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6082,6 +6210,12 @@ int main() {
                     404, "Not Found", "No HSS Subscription Info for subsId " + subs_id);
             }
             ee_hss_subscription_info_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_hss_subscription_info_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6090,8 +6224,12 @@ int main() {
     server.add_route(
         "DELETE",
         ee_hss_subscription_info_path_pattern,
-        [&verifier, &ee_hss_subscription_info, &ee_hss_subscription_info_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &ee_hss_subscription_info,
+         &ee_hss_subscription_info_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         ee_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6102,6 +6240,12 @@ int main() {
                     404, "Not Found", "No HSS Subscription Info for subsId " + subs_id);
             }
             ee_hss_subscription_info_delete_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(ee_hss_subscription_info_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6147,8 +6291,12 @@ int main() {
     server.add_route(
         "PUT",
         sdm_hss_subscription_info_path_pattern,
-        [&verifier, &sdm_hss_subscription_info, &sdm_hss_subscription_info_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &sdm_hss_subscription_info,
+         &sdm_hss_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         sdm_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6162,6 +6310,12 @@ int main() {
             json j = *body;
             sdm_hss_subscription_info.put(ue_id, subs_id, j);
             sdm_hss_subscription_info_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(sdm_hss_subscription_info_path_pattern, req.path_params),
+                change_replace(j));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6170,8 +6324,12 @@ int main() {
     server.add_route(
         "PATCH",
         sdm_hss_subscription_info_path_pattern,
-        [&verifier, &sdm_hss_subscription_info, &sdm_hss_subscription_info_write_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &sdm_hss_subscription_info,
+         &sdm_hss_subscription_info_write_counter,
+         &subs_to_notify,
+         &notify_client,
+         sdm_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6194,6 +6352,12 @@ int main() {
                     404, "Not Found", "No HSS SDM Subscription Info for subsId " + subs_id);
             }
             sdm_hss_subscription_info_write_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(sdm_hss_subscription_info_path_pattern, req.path_params),
+                change_from_json_patch(patch_ops));
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
@@ -6202,8 +6366,12 @@ int main() {
     server.add_route(
         "DELETE",
         sdm_hss_subscription_info_path_pattern,
-        [&verifier, &sdm_hss_subscription_info, &sdm_hss_subscription_info_delete_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         &sdm_hss_subscription_info,
+         &sdm_hss_subscription_info_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         sdm_hss_subscription_info_path_pattern](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -6214,6 +6382,12 @@ int main() {
                     404, "Not Found", "No HSS SDM Subscription Info for subsId " + subs_id);
             }
             sdm_hss_subscription_info_delete_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(sdm_hss_subscription_info_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

@@ -3415,3 +3415,26 @@ capable `apply_patch`, no `PUT`/`POST` create operation exists), `service-specif
 real write-route call sites**. See ADR-0174 in `docs/DECISIONS.md` for full disclosure -- the
 remaining ~35-40 real per-UE routes, all non-per-UE resources, and `Nudr_GroupIDmap`'s own
 separate `onGroupIdMapChange` callback remain unwired, same disclosed follow-up.
+
+## ADR-0175 -- continuing real `onDataChange` webhook delivery: 6 more resources wired (31 of ~40 real per-UE resources total)
+
+| Requirement | Test |
+|---|---|
+| `POST ee-subscriptions` create | Live curl, real `201` with server-generated `subsId` in `Location` |
+| `POST subs-to-notify` subscription watching the full real resolved individual-document path | Live curl, real `201` |
+| `PATCH ee-subscriptions/{subsId}` (real RFC 6902 `replace`) | Live curl, real `204`; receiver logs a correct `DataChangeNotify` (`REPLACE` at `/callbackReference`, real submitted `newValue`) |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Continues ADR-0171 through ADR-0174's own disclosed follow-up, identical infrastructure:
+`ee-subscriptions` individual document (`PUT`+RFC 6902 `PATCH`+`DELETE`), `sdm-subscriptions`
+individual document (same shape), and their four nested per-`subsId` sub-resources:
+`amf-subscriptions` (array body, real distinct 201-vs-204 `PUT`), `smf-subscriptions`
+(single-object body), `hss-subscriptions` (single-object body), `hss-sdm-subscriptions` (204-only
+`PUT`, same precedent as `sor-data`/`upu-data`). Real, disclosed: the `POST` create routes on the
+`ee-subscriptions`/`sdm-subscriptions` collections were deliberately left unwired, same
+"subscriber can't watch a not-yet-created URI" reasoning already applied to `subs-to-notify`'s own
+POST and `nf-group-ids/subscriptions`' own POST. Combined total: **31 of ~40 real per-UE
+`Nudr_DataRepository` resources now have real `onDataChange` delivery, 61 real write-route call
+sites**. See ADR-0175 in `docs/DECISIONS.md` for full disclosure -- the remaining ~10-15 real
+per-UE routes, all non-per-UE resources, and `Nudr_GroupIDmap`'s own separate
+`onGroupIdMapChange` callback remain unwired, same disclosed follow-up.
