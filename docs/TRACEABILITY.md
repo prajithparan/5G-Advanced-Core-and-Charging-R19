@@ -3394,3 +3394,24 @@ resources now have real `onDataChange` delivery, 31 real write-route call sites*
 `docs/DECISIONS.md` for full disclosure -- the remaining ~60-65 real per-UE routes, all non-per-UE
 resources, and `Nudr_GroupIDmap`'s own separate `onGroupIdMapChange` callback remain unwired, same
 disclosed follow-up.
+
+## ADR-0174 -- continuing real `onDataChange` webhook delivery: 7 more resources wired (25 of ~40 real per-UE resources total)
+
+| Requirement | Test |
+|---|---|
+| `POST subs-to-notify` subscription with `monitoredResourceUris` set to the full real resolved resource path | Live curl, real `201` |
+| `PUT sor-data` | Live curl, real `204` (after correcting the payload shape to the real `SorData` schema's `provisioningTime`+`ueUpdateStatus`) |
+| `PATCH sor-data` (real RFC 6902 `replace`) | Live curl, real `204`; receiver logs a correct `DataChangeNotify` (`REPLACE` at `/ueUpdateStatus`, real submitted `newValue`) |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Continues ADR-0171/ADR-0172/ADR-0173's own disclosed follow-up, identical infrastructure:
+`nidd-authorizations` (RFC 6902 `PUT`+`PATCH`+`DELETE`), `identity-data` (`PATCH` only, upsert-
+capable `apply_patch`, no `PUT`/`POST` create operation exists), `service-specific-authorizations`
+(composite `(ueId, serviceType)` key, `PUT`+RFC 6902 `PATCH`+`DELETE`), `subscribed-snssais`
+(`PUT` only), `subscribed-cag` (`PUT` only), `sor-data` (`PUT`+RFC 6902 `PATCH`), `upu-data`
+(`PUT` only). Real, disclosed: `bdt-data` checked and correctly skipped -- keyed by
+`bdtReferenceId`, not `ueId`, same non-per-UE exclusion as the group-data family. Combined total:
+**25 of ~40 real per-UE `Nudr_DataRepository` resources now have real `onDataChange` delivery, 43
+real write-route call sites**. See ADR-0174 in `docs/DECISIONS.md` for full disclosure -- the
+remaining ~35-40 real per-UE routes, all non-per-UE resources, and `Nudr_GroupIDmap`'s own
+separate `onGroupIdMapChange` callback remain unwired, same disclosed follow-up.
