@@ -645,6 +645,7 @@
 #include <boost/asio/io_context.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <thread>
@@ -1487,6 +1488,8 @@ int main() {
         meter->CreateUInt64Counter("udr_ue_upd_conf_data_get_total", "Total QueryUeUpdConf calls");
     auto context_data_get_counter =
         meter->CreateUInt64Counter("udr_context_data_get_total", "Total QueryContextData calls");
+    auto ue_subscribed_data_get_counter = meter->CreateUInt64Counter(
+        "udr_ue_subscribed_data_get_total", "Total QueryUeSubscribedData calls");
     auto ee_subscriptions_create_counter = meter->CreateUInt64Counter(
         "udr_ee_subscriptions_create_total", "Total CreateEeSubscriptions calls");
     auto ee_subscriptions_list_counter = meter->CreateUInt64Counter(
@@ -4497,6 +4500,276 @@ int main() {
                 // forward-compatible "any other string" case) is silently skipped.
             }
             context_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    // --- Nudr_DataRepository: bare UE Subscribed Data (Document), aggregate resource (ADR-0166,
+    // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml,
+    // `QueryUeSubscribedData`. Real, disclosed: `UeSubscribedDataSets = ProvisionedDataSets &
+    // ContextDataSets & UeUpdConfData` (an `allOf` of three object schemas) -- a live VIEW over
+    // 32 already-independently-stored sub-resources (21 `ProvisionedDataSets` fields, the same 11
+    // `ContextDataSets` fields `QueryContextData` (ADR-0161) already composes, plus the 4
+    // `UeUpdConfData` fields `ue-update-confirmation-data` (ADR-0147) already composes), not a
+    // 33rd, duplicate table. All of this resource's own query parameters are OPTIONAL (unlike
+    // `QueryContextData`'s REQUIRED `context-dataset-names`): the real, optional `dataset-names`
+    // array filter (`style: form, explode: false`) is honored when present (values match the real
+    // `UeSubscribedDataSetName` enum -- the union of `ContextDataSetName`,
+    // `ProvisionedDataSetName`, and the literal `UE_UPD_CONF`, which expands to all four
+    // `UeUpdConfData` sub-fields at once); when absent, every composable field is attempted (no
+    // filter). Real, disclosed partial- composability gap: the real, optional `serving-plmn` query
+    // param is required by the underlying `ProvisionedDataStore`'s own `(ueId, servingPlmnId)`
+    // composite key (confirmed by direct read of the already-implemented individual
+    // `provisioned-data` routes) -- when `serving-plmn` is absent, the 7 `ProvisionedDataSets`
+    // fields it backs (`amData`/`smfSelData`/
+    // `smsSubsData`/`smData`/`traceData`/`smsMngData`/`lcsBcaData`) are skipped, not fabricated
+    // with a guessed PLMN. `niddAuthData` (`AuthorizationData`, ADR-0165) is never composed here:
+    // its own real composite key requires `mtc-provider-information`, a query param this resource
+    // does not expose at all -- a genuine, disclosed gap, not an oversight. The real, optional
+    // `adjacent-plmns`/`single-nssai`/`dnn`/`ext-group-ids`/`uc-purpose` query params are accepted
+    // but not honored (matching the established "optional filter not honored" precedent) -- no
+    // existing store supports filtering by them. Same real, disclosed `200`-always design as
+    // `QueryContextData`/`ue-update-confirmation-data`: this is a live view with no independent
+    // existence, so an empty result (all fields absent) is a real `200 {}`, not a `404`. ---
+
+    const std::string ue_subscribed_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}";
+
+    server.add_route(
+        "GET",
+        ue_subscribed_data_path_pattern,
+        [&verifier,
+         &provisioned_data,
+         &lcs_privacy_data,
+         &lcs_mo_data,
+         &lcs_subscription_data,
+         &v2x_data,
+         &prose_data,
+         &odb_data,
+         &ee_profile_data,
+         &pp_profile_data,
+         &uc_data,
+         &mbs_data,
+         &pp_data,
+         &a2x_data,
+         &rangingsl_privacy_data,
+         &amf_contexts,
+         &amf_non3gpp_contexts,
+         &sdm_subscriptions,
+         &ee_subscriptions,
+         &smsf_3gpp_context,
+         &smsf_non3gpp_context,
+         &subs_to_notify,
+         &smf_registrations,
+         &ip_sm_gw_context,
+         &roaming_information,
+         &pei_info,
+         &sor_data,
+         &upu_data,
+         &nssai_ack_data,
+         &cag_ack_data,
+         &ue_subscribed_data_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            std::vector<std::string> names;
+            if (const auto names_it = req.query_params.find("dataset-names");
+                names_it != req.query_params.end()) {
+                names = sbi_core::http2::split_form_array(names_it->second);
+            }
+            const auto wanted = [&names](const char* name) {
+                return names.empty() || std::find(names.begin(), names.end(), name) != names.end();
+            };
+            const auto serving_plmn_it = req.query_params.find("serving-plmn");
+            const bool have_serving_plmn = serving_plmn_it != req.query_params.end();
+
+            json result = json::object();
+
+            if (have_serving_plmn) {
+                const auto& serving_plmn_id = serving_plmn_it->second;
+                if (wanted("AM")) {
+                    if (auto v = provisioned_data.get_am_data(ue_id, serving_plmn_id);
+                        v.has_value()) {
+                        result["amData"] = *v;
+                    }
+                }
+                if (wanted("SMF_SEL")) {
+                    if (auto v = provisioned_data.get_smf_sel_data(ue_id, serving_plmn_id);
+                        v.has_value()) {
+                        result["smfSelData"] = *v;
+                    }
+                }
+                if (wanted("SMS_SUB")) {
+                    if (auto v = provisioned_data.get_sms_data(ue_id, serving_plmn_id);
+                        v.has_value()) {
+                        result["smsSubsData"] = *v;
+                    }
+                }
+                if (wanted("SM")) {
+                    if (auto v = provisioned_data.get_sm_data(ue_id, serving_plmn_id);
+                        v.has_value()) {
+                        result["smData"] = *v;
+                    }
+                }
+                if (wanted("TRACE")) {
+                    if (auto v = provisioned_data.get_trace_data(ue_id, serving_plmn_id);
+                        v.has_value()) {
+                        result["traceData"] = *v;
+                    }
+                }
+                if (wanted("SMS_MNG")) {
+                    if (auto v = provisioned_data.get_sms_mng_data(ue_id, serving_plmn_id);
+                        v.has_value()) {
+                        result["smsMngData"] = *v;
+                    }
+                }
+                if (wanted("LCS_BCA")) {
+                    if (auto v = provisioned_data.get_lcs_bca_data(ue_id, serving_plmn_id);
+                        v.has_value()) {
+                        result["lcsBcaData"] = *v;
+                    }
+                }
+            }
+            if (wanted("LCS_PRIVACY")) {
+                if (auto v = lcs_privacy_data.get(ue_id); v.has_value()) {
+                    result["lcsPrivacyData"] = *v;
+                }
+            }
+            if (wanted("LCS_MO")) {
+                if (auto v = lcs_mo_data.get(ue_id); v.has_value()) {
+                    result["lcsMoData"] = *v;
+                }
+            }
+            if (wanted("LCS_SUB")) {
+                if (auto v = lcs_subscription_data.get(ue_id); v.has_value()) {
+                    result["lcsSubscriptionData"] = *v;
+                }
+            }
+            if (wanted("V2X")) {
+                if (auto v = v2x_data.get(ue_id); v.has_value()) {
+                    result["v2xData"] = *v;
+                }
+            }
+            if (wanted("PROSE")) {
+                if (auto v = prose_data.get(ue_id); v.has_value()) {
+                    result["proseData"] = *v;
+                }
+            }
+            if (wanted("ODB")) {
+                if (auto v = odb_data.get(ue_id); v.has_value()) {
+                    result["odbData"] = *v;
+                }
+            }
+            if (wanted("EE_PROF")) {
+                if (auto v = ee_profile_data.get(ue_id); v.has_value()) {
+                    result["eeProfileData"] = *v;
+                }
+            }
+            if (wanted("PP_PROF")) {
+                if (auto v = pp_profile_data.get(ue_id); v.has_value()) {
+                    result["ppProfileData"] = *v;
+                }
+            }
+            // NIDD_AUTH deliberately never composed here -- see this block's own header comment.
+            if (wanted("USER_CONSENT")) {
+                if (auto v = uc_data.get(ue_id); v.has_value()) {
+                    result["ucData"] = *v;
+                }
+            }
+            if (wanted("MBS")) {
+                if (auto v = mbs_data.get(ue_id); v.has_value()) {
+                    result["mbsSubscriptionData"] = *v;
+                }
+            }
+            if (wanted("PP_DATA")) {
+                if (auto v = pp_data.get(ue_id); v.has_value()) {
+                    result["ppData"] = *v;
+                }
+            }
+            if (wanted("A2X")) {
+                if (auto v = a2x_data.get(ue_id); v.has_value()) {
+                    result["a2xData"] = *v;
+                }
+            }
+            if (wanted("RANGINGSL_PRIVACY")) {
+                if (auto v = rangingsl_privacy_data.get(ue_id); v.has_value()) {
+                    result["rangingSlPrivacyData"] = *v;
+                }
+            }
+            if (wanted("AMF_3GPP")) {
+                if (auto v = amf_contexts.get(ue_id); v.has_value()) {
+                    result["amf3Gpp"] = *v;
+                }
+            }
+            if (wanted("AMF_NON_3GPP")) {
+                if (auto v = amf_non3gpp_contexts.get(ue_id); v.has_value()) {
+                    result["amfNon3Gpp"] = *v;
+                }
+            }
+            if (wanted("SDM_SUBSCRIPTIONS")) {
+                if (auto list = sdm_subscriptions.list(ue_id); !list.empty()) {
+                    result["sdmSubscriptions"] = json(list);
+                }
+            }
+            if (wanted("EE_SUBSCRIPTIONS")) {
+                if (auto list = ee_subscriptions.list(ue_id); !list.empty()) {
+                    result["eeSubscriptions"] = json(list);
+                }
+            }
+            if (wanted("SMSF_3GPP")) {
+                if (auto v = smsf_3gpp_context.get(ue_id); v.has_value()) {
+                    result["smsf3GppAccess"] = *v;
+                }
+            }
+            if (wanted("SMSF_NON_3GPP")) {
+                if (auto v = smsf_non3gpp_context.get(ue_id); v.has_value()) {
+                    result["smsfNon3GppAccess"] = *v;
+                }
+            }
+            if (wanted("SUBS_TO_NOTIFY")) {
+                if (auto list = subs_to_notify.list_by_ue_id(ue_id); !list.empty()) {
+                    result["subscriptionDataSubscriptions"] = json(list);
+                }
+            }
+            if (wanted("SMF_REG")) {
+                if (auto list = smf_registrations.list_for_ue(ue_id); !list.empty()) {
+                    result["smfRegistrations"] = json(list);
+                }
+            }
+            if (wanted("IP_SM_GW")) {
+                if (auto v = ip_sm_gw_context.get(ue_id); v.has_value()) {
+                    result["ipSmGw"] = *v;
+                }
+            }
+            if (wanted("ROAMING_INFO")) {
+                if (auto v = roaming_information.get(ue_id); v.has_value()) {
+                    result["roamingInfo"] = *v;
+                }
+            }
+            if (wanted("PEI_INFO")) {
+                if (auto v = pei_info.get(ue_id); v.has_value()) {
+                    result["peiInfo"] = *v;
+                }
+            }
+            if (wanted("UE_UPD_CONF")) {
+                if (auto v = sor_data.get(ue_id); v.has_value()) {
+                    result["sorData"] = *v;
+                }
+                if (auto v = upu_data.get(ue_id); v.has_value()) {
+                    result["upuData"] = *v;
+                }
+                if (auto v = nssai_ack_data.get(ue_id); v.has_value()) {
+                    result["nssaiAckData"] = *v;
+                }
+                if (auto v = cag_ack_data.get(ue_id); v.has_value()) {
+                    result["cagAckData"] = *v;
+                }
+            }
+            // Real, disclosed: an unrecognized name (the spec's own documented forward-compatible
+            // "any other string" case, see `ProvisionedDataSetName`'s own schema) contributes
+            // nothing and is silently skipped, same precedent as `QueryContextData`.
+
+            ue_subscribed_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, result.dump());
         });
 

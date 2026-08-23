@@ -3158,3 +3158,35 @@ confirms `AuthorizationData`'s real, unambiguous home is here, not there (does n
 `docs/DECISIONS.md` for full disclosure -- task #106 remains open; bare `/subscription-data/{ueId}`,
 `group-data`'s own bare collection GETs, `GetSSAuData` (deliberately deferred, ADR-0160), and
 `Nudr_GroupIDmap`'s own subscription-management family remain real, disclosed gaps.
+
+## ADR-0166 -- gap-closure task #106 continuation: UDR real bare QueryUeSubscribedData, a 32-field aggregate composed entirely from already-closed sub-resources
+
+| Requirement | Test |
+|---|---|
+| `GET /subscription-data/{ueId}` with no query parameters | Live curl, real `200` with 17 real fields populated (every already-seeded `ContextDataSets`/non-gated field), `niddAuthData` and the 7 `serving-plmn`-gated fields correctly absent |
+| `GET` with `serving-plmn=99970` added | Live curl, real `200` with all 7 previously-gated `ProvisionedDataStore` fields now also present |
+| `GET` with `dataset-names=LCS_PRIVACY,V2X` | Live curl, real `200` with exactly those 2 fields |
+| `GET` with `dataset-names=UE_UPD_CONF` | Live curl, real `200` with 3 of 4 `UeUpdConfData` sub-fields (the unseeded 4th correctly absent), confirming one-name-expands-to-four-fields |
+| `GET` with `dataset-names=AM` and no `serving-plmn` | Live curl, real `200 {}`, confirming the gap is real |
+| Same request with `serving-plmn=99970` added | Live curl, real `200` with `amData` populated, confirming the gap is recoverable |
+| `GET` with an unrecognized `dataset-names` value | Live curl, real `200 {}`, no error (forward-compatible) |
+| `GET` against a nonexistent UE, no filter | Live curl, real `200 {}`, not `404` |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real bare `/subscription-data/{ueId}` resource (`QueryUeSubscribedData`,
+`TS29505_Subscription_Data.yaml`). Response schema `UeSubscribedDataSets = ProvisionedDataSets
+(21 fields) & ContextDataSets (the same 11 fields QueryContextData/ADR-0161 already composes) &
+UeUpdConfData (the same 4 fields ue-update-confirmation-data/ADR-0147 already composes)` -- needed
+**zero new stores or tables**, every output field already exists. Unlike `QueryContextData`'s own
+REQUIRED filter, every one of this resource's own query params is genuinely optional: absent
+`dataset-names` means "attempt everything." Real, disclosed: `serving-plmn` is optional here but
+required by the underlying `ProvisionedDataStore`'s own composite key -- its 7 backed fields are
+skipped (not fabricated) when absent, recoverable once supplied. `niddAuthData` is never composed
+(a real, permanent gap: its own composite key needs `mtc-provider-information`, a param this
+resource doesn't expose at all). `adjacent-plmns`/`single-nssai`/`dnn`/`ext-group-ids`/
+`uc-purpose` accepted but not honored. Same `200`-always live-view design as `QueryContextData`/
+`ue-update-confirmation-data`. Does **NOT** increment the `Nudr_DataRepository` count -- still 72,
+unchanged from ADR-0165, since every composed field is already individually counted. See ADR-0166
+in `docs/DECISIONS.md` for full disclosure -- task #106 remains open; `group-data`'s own bare
+collection GETs remain a real, unblocked candidate; `GetSSAuData` (deliberately deferred,
+ADR-0160) and `Nudr_GroupIDmap`'s own subscription-management family remain real, disclosed gaps.
