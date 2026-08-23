@@ -938,6 +938,9 @@ int main() {
     udr::FiveGVnGroupStore five_g_vn_groups(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0145).
     udr::MbsGroupMembershipStore mbs_group_membership(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0169).
+    udr::FiveGVnGroupPpProfileDataStore five_g_vn_group_pp_profile_data(conninfo);
+    udr::MbsGroupPpProfileDataStore mbs_group_pp_profile_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0146).
     udr::GroupEeProfileDataStore group_ee_profile_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0148).
@@ -1174,6 +1177,18 @@ int main() {
         nidd_auth_data["authorizationData"] = json::array({json{{"supi", "imsi-999700000000001"}}});
         nidd_authorization_data.seed(
             "imsi-999700000000001", 1, "000001", "internet", "mtc-provider-1", nidd_auth_data);
+    }
+
+    // Real seed data (ADR-0169, gap-closure task #106) -- the real Query5GVnGroupPPData/
+    // Query5GmbsGroupPPData resources are genuinely keyless singletons with no
+    // create/update/delete path anywhere in the spec, same "no live provisioning path yet"
+    // reasoning as above. Real, disclosed: seeded with an empty `allowedMtcProviders`/
+    // `allowedMbsInfos` map absent entirely -- every field on both `Pp5gVnGroupProfileData`/
+    // `Pp5gMbsGroupProfileData` is optional, so an empty top-level object is a real, valid
+    // document, not a fabricated placeholder.
+    {
+        five_g_vn_group_pp_profile_data.seed(json::object());
+        mbs_group_pp_profile_data.seed(json::object());
     }
 
     // Real seed data (ADR-0123, gap-closure task #106) -- the real ODB Data resource is genuinely
@@ -1601,6 +1616,8 @@ int main() {
         meter->CreateUInt64Counter("udr_5g_vn_groups_list_total", "Total Query5GVnGroup calls");
     auto five_g_vn_groups_internal_get_counter = meter->CreateUInt64Counter(
         "udr_5g_vn_groups_internal_get_total", "Total Query5GVnGroupInternal calls");
+    auto five_g_vn_group_pp_profile_data_get_counter = meter->CreateUInt64Counter(
+        "udr_5g_vn_group_pp_profile_data_get_total", "Total Query5GVnGroupPPData calls");
     auto mbs_group_membership_write_counter = meter->CreateUInt64Counter(
         "udr_mbs_group_membership_write_total", "Total Create5GmbsGroup/Modify5GmbsGroup calls");
     auto mbs_group_membership_get_counter = meter->CreateUInt64Counter(
@@ -1611,6 +1628,8 @@ int main() {
         "udr_mbs_group_membership_list_total", "Total Query5GmbsGroup calls");
     auto mbs_group_membership_internal_get_counter = meter->CreateUInt64Counter(
         "udr_mbs_group_membership_internal_get_total", "Total Query5GMbsGroupInternal calls");
+    auto mbs_group_pp_profile_data_get_counter = meter->CreateUInt64Counter(
+        "udr_mbs_group_pp_profile_data_get_total", "Total Query5GMbsGroupPPData calls");
     auto group_ee_profile_data_get_counter = meter->CreateUInt64Counter(
         "udr_group_ee_profile_data_get_total", "Total QueryGroupEEData calls");
 
@@ -6464,6 +6483,38 @@ int main() {
             return sbi_core::http2::Response::json(200, result.dump());
         });
 
+    // --- Nudr_DataRepository: group-data 5G VN Group PP Data resource (ADR-0169, gap-closure
+    // task #106) -- real GET-only per TS29505_Subscription_Data.yaml, `Query5GVnGroupPPData`.
+    // Real, disclosed: unlike every other `group-data` sub-resource, `Pp5gVnGroupProfileData` is
+    // a genuinely keyless singleton document (its own `allowedMtcProviders` field is itself a map
+    // keyed by ExtGroupId, but the resource is not) -- backed by `FiveGVnGroupPpProfileDataStore`
+    // (ADR-0169), a fixed single-row table. Real optional `ext-group-ids`/`supported-features`
+    // filters accepted but not honored (matching the established precedent) -- there is nothing to
+    // filter against without inspecting the singleton's own internal map, deferred same as the
+    // bare collection's own `gpsis` filter. Real `200`-always (seeded at startup, always present).
+    // SAME CRITICAL ROUTE-ORDERING REQUIREMENT as `5g-vn-groups/internal` above: this literal
+    // 4-segment path must stay registered before the `{externalGroupId}` GET route below. ---
+
+    const std::string five_g_vn_group_pp_profile_data_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/group-data/5g-vn-groups/pp-profile-data";
+
+    server.add_route(
+        "GET",
+        five_g_vn_group_pp_profile_data_path_pattern,
+        [&verifier, &five_g_vn_group_pp_profile_data, &five_g_vn_group_pp_profile_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            auto data = five_g_vn_group_pp_profile_data.get();
+            five_g_vn_group_pp_profile_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No 5G VN Group PP Profile Data");
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
     // --- Nudr_DataRepository: group-data individual 5G VN Group Configuration resource
     // (ADR-0144, gap-closure task #106) -- real GET+PUT+PATCH+DELETE per
     // TS29505_Subscription_Data.yaml. Real, disclosed: the real PUT documents ONLY `201` (no
@@ -6643,6 +6694,34 @@ int main() {
                     "No 5G MBS Group Membership matches the requested internal-group-ids");
             }
             return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    // --- Nudr_DataRepository: group-data 5G MBS Group PP Data resource (ADR-0169, gap-closure
+    // task #106) -- real GET-only per TS29505_Subscription_Data.yaml, `Query5GMbsGroupPPData`,
+    // structurally an exact twin of `5g-vn-groups/pp-profile-data` above (`Pp5gMbsGroupProfileData`
+    // has the same keyless-singleton shape, `allowedMbsInfos` instead of `allowedMtcProviders`).
+    // SAME CRITICAL ROUTE-ORDERING REQUIREMENT: this route must stay registered before the
+    // `{externalGroupId}` GET route below. ---
+
+    const std::string mbs_group_pp_profile_data_path_pattern =
+        std::string(kApiRoot) +
+        "/subscription-data/group-data/mbs-group-membership/pp-profile-data";
+
+    server.add_route(
+        "GET",
+        mbs_group_pp_profile_data_path_pattern,
+        [&verifier, &mbs_group_pp_profile_data, &mbs_group_pp_profile_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            auto data = mbs_group_pp_profile_data.get();
+            mbs_group_pp_profile_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No 5G MBS Group PP Profile Data");
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
         });
 
     // --- Nudr_DataRepository: group-data individual 5G MBS Group Membership resource (ADR-0145,

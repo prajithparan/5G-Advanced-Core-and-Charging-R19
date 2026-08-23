@@ -1397,4 +1397,34 @@ private:
     pqxx::connection conn_;
 };
 
+// Real Query5GVnGroupPPData/Query5GMbsGroupPPData (ADR-0169). Both are genuinely keyless
+// singleton documents (confirmed by direct YAML read -- neither response schema is a per-group
+// map, unlike every other `group-data` sub-resource in this series), backed by a fixed
+// single-row table (id pinned to 1). No create/update/delete operation exists anywhere in the
+// spec for either document -- seed() + get() only, same "no live provisioning path yet"
+// precedent as RoutingIdStore/NfGroupIdStore.
+class FiveGVnGroupPpProfileDataStore {
+public:
+    explicit FiveGVnGroupPpProfileDataStore(const std::string& conninfo);
+
+    void seed(nlohmann::json data);
+    std::optional<nlohmann::json> get();
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
+class MbsGroupPpProfileDataStore {
+public:
+    explicit MbsGroupPpProfileDataStore(const std::string& conninfo);
+
+    void seed(nlohmann::json data);
+    std::optional<nlohmann::json> get();
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

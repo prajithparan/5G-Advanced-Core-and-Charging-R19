@@ -1115,3 +1115,29 @@ CREATE TABLE IF NOT EXISTS udr_nidd_authorization_data (
     data                      JSONB   NOT NULL,
     PRIMARY KEY (ue_id, sst, sd, dnn, mtc_provider_information)
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0169). Real Query5GVnGroupPPData /
+-- Query5GMbsGroupPPData resources (`/subscription-data/group-data/5g-vn-groups/pp-profile-data`,
+-- `.../mbs-group-membership/pp-profile-data`, TS29505_Subscription_Data.yaml). Real, confirmed by
+-- direct YAML read: GET-only, real OPTIONAL `ext-group-ids` array filter and OPTIONAL
+-- `supported-features` (both deliberately not honored, matching this project's own established
+-- "optional filter not honored" precedent). Real, disclosed: unlike every other `group-data`
+-- sub-resource closed so far, the response schemas (`Pp5gVnGroupProfileData`/
+-- `Pp5gMbsGroupProfileData`) are genuinely NOT per-group documents -- each is a single, global
+-- document whose own internal `allowedMtcProviders`/`allowedMbsInfos` field is itself a map
+-- keyed by ExtGroupId (or the literal "ALL"). A truly keyless singleton, a real, new storage
+-- shape for this project (every prior "non-per-UE" UDR resource, e.g. `group_identifiers`/
+-- `routing_ids`, is still keyed by some real identifier) -- modeled here as a fixed single-row
+-- table (`id` pinned to `1`) rather than inventing a key the spec doesn't have. No
+-- create/update/delete operation exists anywhere in the spec for either document -- seeded at
+-- startup with a minimal, real-shaped empty document, same "GET-only, seeded at startup"
+-- precedent as `udr_routing_ids`/`udr_nf_group_ids` above.
+CREATE TABLE IF NOT EXISTS udr_5g_vn_group_pp_profile_data (
+    id    INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    data  JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS udr_mbs_group_pp_profile_data (
+    id    INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    data  JSONB NOT NULL
+);

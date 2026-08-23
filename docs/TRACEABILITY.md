@@ -3256,3 +3256,33 @@ variants (need a genuinely new store/schema, not surveyed); `gpsis` filtering on
 collections; `policy-data`'s `mbs-session-pol-data`; `GetSSAuData` (deliberately deferred,
 ADR-0160); `Nudr_GroupIDmap`'s own subscription-management family; real webhook delivery for
 `subs-to-notify`/`nf-group-ids/subscriptions`.
+
+## ADR-0169 -- gap-closure task #106 continuation: UDR real `group-data` `5g-vn-groups/pp-profile-data` + `mbs-group-membership/pp-profile-data`, this project's first genuinely keyless singleton resources
+
+| Requirement | Test |
+|---|---|
+| `GET /5g-vn-groups/pp-profile-data` | Live curl, real `200 {}` (seeded empty singleton) |
+| `GET /mbs-group-membership/pp-profile-data` | Live curl, real `200 {}` |
+| `GET /5g-vn-groups/pp-profile-data` with an unused `ext-group-ids`/`supported-features` filter | Live curl, identical real `200 {}`, confirming filters accepted but not honored |
+| **Critical**: neither response shows the individual-resource route's own error text | Live curl, confirms the literal `/pp-profile-data` route is reached, not shadowed |
+| `GET 5g-vn-groups/group-A` and `GET 5g-vn-groups/internal?...` immediately after | Live curl, both still real `200` with correct results, confirming no interference between the three sibling routes |
+| Genuine PostgreSQL persistence | Direct `psql` query against both new tables independently confirms one row each, `{}`, matching curl exactly |
+| No regression | Full `conformance_tests` (excluding the two disclosed pre-existing flaky tests): 331/331 pass, zero regressions; `udr` built clean (zero warnings) before and after `clang-format-18` |
+
+Real `GET`-only resources (`Query5GVnGroupPPData`/`Query5GMbsGroupPPData`,
+`TS29505_Subscription_Data.yaml`). Real, disclosed: their response schemas
+(`Pp5gVnGroupProfileData`/`Pp5gMbsGroupProfileData`) are genuinely NOT per-group documents, unlike
+every other `group-data` sub-resource in this series -- each is a single, global document whose
+own internal `allowedMtcProviders`/`allowedMbsInfos` field is itself the per-group map. This
+project's first genuinely keyless singleton resource (every prior "non-per-UE" resource is still
+keyed by some real identifier), modeled as a fixed single-row table rather than inventing a key
+the spec doesn't have. GET-only, no create/update/delete exists anywhere in the spec -- seeded at
+startup with an empty (but real, valid) document. Optional `ext-group-ids`/`supported-features`
+filters accepted but not honored. Same critical route-ordering requirement as ADR-0168's
+`/internal` routes (re-applied, verified live). This closes UDR resources #77 and #78 of free5GC's
+~42+ real `Nudr_DataRepository` resources (docs/CAPABILITY_GAP_ANALYSIS.md) -- closes out the
+entirety of `5g-vn-groups`/`mbs-group-membership`'s own real, in-scope resource set. See ADR-0169
+in `docs/DECISIONS.md` for full disclosure -- remaining real, disclosed gaps: filtering on these
+two singletons; `policy-data`'s `mbs-session-pol-data`; `GetSSAuData` (deliberately deferred,
+ADR-0160); `Nudr_GroupIDmap`'s own subscription-management family; real webhook delivery for
+`subs-to-notify`/`nf-group-ids/subscriptions`.
