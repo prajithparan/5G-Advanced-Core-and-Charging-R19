@@ -3897,3 +3897,23 @@ nrf+udm+ausf processes, real 5G-AKA authentication to establish a real KAUSF, th
 404/400/501 sequence) -- an initial run was caught relying on a stray leftover process rather than
 the test's own spawned trio, and was re-run cleanly after killing it. See ADR-0195 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0196 -- LMF `Nlmf_Broadcast` + `Nlmf_DataExposure` (third ADR-0193 gap-closure)
+
+| Requirement | Test |
+|---|---|
+| `CipheringKeyData` | Live curl over mTLS: real `200`, `dataAvailability=CIPHERING_KEY_DATA_NOT_AVAILABLE` (honest -- no real provisioning path exists) |
+| `CreateSubscription` | Live curl: real `201` + `Location` header + echoed body |
+| `ModifySubscription` | Live curl: real RFC 6902 patch -> real `204` |
+| `DeleteSubscription` | Live curl: real `204`; repeated: real `404` |
+| Real generated DTO round-trip | `LmfBroadcastDtos.CipherRequestDataRoundTrips` / `CipherResponseDataRoundTrips`, `LmfDataExposureDtos.LmfDataExposureSubscriptionRoundTrips`, all pass |
+| No regression | Full project rebuild clean; full `ctest` (excluding the two known-flaky tests): 369/369 pass |
+
+Real, structurally-complete `Nlmf_Broadcast` QUERY interface that honestly always reports no
+ciphering key data available, since its own YAML declares no provisioning operation and this
+project has no real O&M path to populate one. Real, full create+modify+delete subscription
+lifecycle for `Nlmf_DataExposure` (`lmf::DataExposureSubscriptionStore`, same real RFC 6902
+`.patch()` mechanism as `nfs/nrf`'s own `NfRegistry::apply_patch`) -- the real notification path
+itself shares `LocationMeasure`'s own disclosed LPP/PRU capability gap (ADR-0191), so no
+notification ever fires with real content, even though the subscription management around it is
+fully real. See ADR-0196 in `docs/DECISIONS.md` for full disclosure.

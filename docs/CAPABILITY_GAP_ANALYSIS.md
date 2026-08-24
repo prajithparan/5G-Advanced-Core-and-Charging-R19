@@ -1272,7 +1272,7 @@ check couldn't resolve (none surfaced this pass).
 | AUSF | ~~`Nausf_UPUProtection`~~ CLOSED, ADR-0195 |
 | PCF | `Npcf_EventExposure`, `Npcf_UEPolicyControl`, `Npcf_AMPolicyAuthorization`, `Npcf_MBSPolicyAuthorization`, `Npcf_MBSPolicyControl`, `Npcf_PDTQPolicyControl`, `Npcf_BDTPolicyControl` (7 files) |
 | NEF | `Nnef_SMContext`, `Nnef_SMService`, `Nnef_DNAIMapping`, `Nnef_EASDeployment`, `Nnef_ECSAddress`, `Nnef_EventExposure`, `Nnef_Inference`, `Nnef_TrafficInfluenceData`, `Nnef_Training`, `Nnef_UEId`, `Nnef_VFLInference`, `Nnef_VFLTraining`, `Nnef_Authentication` (13 files -- largest single Tier-A concentration in the project) |
-| LMF | `Nlmf_Broadcast`, `Nlmf_DataExposure` |
+| LMF | ~~`Nlmf_Broadcast`, `Nlmf_DataExposure`~~ CLOSED, ADR-0196 |
 | UPF | `Nupf_EventExposure`, `Nupf_GetUEPrivateIPaddrAndIdentifiers` -- lower severity: UPF's real primary control interface is N4/PFCP (TS 23.501), not SBI; these two are real, legitimate, but optional R17+ direct-exposure services this project's own spec archive happens to include |
 
 NSSF, BSF, SCP, CHF, EIR, SMSF, GMLC: **zero** Tier-A gaps found (single-file NFs already fully
@@ -1306,7 +1306,8 @@ within already-wired files, not a structural gap.
 Smallest/clearest first, since they're genuinely closable in full rather than a partial slice:
 `Nnrf_Bootstrapping` (1 operation, no request body) -- CLOSED, ADR-0194 -- was the natural first
 item, and literally what prompted this audit. `Nausf_UPUProtection` (1 operation) -- CLOSED,
-ADR-0195 -- was similarly small. The two `Nlmf_*` files (1 + 3 operations) are next. The two UDR
+ADR-0195 -- was similarly small. The two `Nlmf_*` files (1 + 3 operations) -- CLOSED, ADR-0196 --
+were next. The two UDR
 comment-vs-spec factual errors
 (`operator-specific-data` PUT/DELETE) should be fixed directly regardless of ordering, since
 they're not "missing coverage" but an active documentation defect. NEF's 13-file/~45-operation

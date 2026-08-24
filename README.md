@@ -91,11 +91,15 @@ here (OAM/GSMA IMEI database sync), disclosed rather than built as unreachable c
 **GMLC** (`Ngmlc_Location`, all 5 real operations, ADR-0189) — 3 of the 5 are real, complete,
 independent of any other NF; the other 2 (`RequestLocation`/`CancelLocation`) genuinely require
 this project's own LMF, so they honestly report `501`/`404` rather than fabricate UE positioning
-data. And **LMF** (`Nlmf_Location`, all 7 real operations, ADR-0191) — 4 are real, complete,
-RF-independent; `DetermineLocation`/`LocationMeasure`/`CancelLocation` genuinely need real LPP (TS
-37.355) UE positioning or PRU/NRPPa measurement data this project doesn't have, so they honestly
-report `501`/`404` too (GMLC->LMF wiring itself remains a real, disclosed, deferred step). Building
-LMF also found and fixed 2 real defects — a vendored-spec transcription typo and a real
+data. And **LMF** (`Nlmf_Location` + `Nlmf_Broadcast` + `Nlmf_DataExposure`, 11 real operations,
+ADR-0191/ADR-0196) — 8 are real, complete, RF-independent (including `Nlmf_Broadcast`'s
+`CipheringKeyData`, which honestly always reports no key data available since its own YAML has no
+provisioning path, and `Nlmf_DataExposure`'s full subscription CRUD lifecycle);
+`DetermineLocation`/`LocationMeasure`/`CancelLocation` genuinely need real LPP (TS 37.355) UE
+positioning or PRU/NRPPa measurement data this project doesn't have, so they honestly report
+`501`/`404` (GMLC->LMF wiring itself remains a real, disclosed, deferred step), and
+`Nlmf_DataExposure`'s own notification path shares that same disclosed gap. Building LMF also
+found and fixed 2 real defects — a vendored-spec transcription typo and a real
 `tools/sbi-codegen` allOf-merge field-deduplication bug (ADR-0190).
 
 The full evidence base, current per-resource breakdown, and what's still open lives in

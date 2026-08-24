@@ -1,8 +1,10 @@
-// nfs/lmf: LMF (Location Management Function), Nlmf_Location. Source:
-// specs/5G_APIs-REL-19/TS29572_Nlmf_Location.yaml (v1.4.1), commit
+// nfs/lmf: LMF (Location Management Function), Nlmf_Location + Nlmf_Broadcast +
+// Nlmf_DataExposure. Source: specs/5G_APIs-REL-19/TS29572_Nlmf_Location.yaml (v1.4.1),
+// TS29572_Nlmf_Broadcast.yaml (v1.3.0), TS29572_Nlmf_DataExposure.yaml (v1.0.0), commit
 // bca84b60a37773133bcae97e5c6c0d10a93b47b6. This project's sixteenth NF, eighth built under the
 // continuous move-to-next-NF process (docs/DECISIONS.md ADR-0184), fourth Tier 2 NF, following
-// GMLC (ADR-0189). All 7 real operations implemented:
+// GMLC (ADR-0189). Nlmf_Broadcast/Nlmf_DataExposure added later as ADR-0193 audit gap-closures
+// (ADR-0196). All 11 real operations implemented:
 //   POST   {apiRoot}/determine-location                DetermineLocation
 //   POST   {apiRoot}/up-subscriptions                   UpSubscriptions
 //   DELETE {apiRoot}/up-subscriptions/{subscriptionId}   DeleteSubscription
@@ -10,6 +12,10 @@
 //   POST   {apiRoot}/location-context-transfer           LocationContextTransfer
 //   POST   {apiRoot}/measure-location                    LocationMeasure
 //   POST   {apiRoot}/configure-up                        UpConfig
+//   POST   /nlmf-broadcast/v1/cipher-key-data             CipheringKeyData
+//   POST   /nlmf-dataexposure/v1/subscriptions            CreateSubscription
+//   PATCH  /nlmf-dataexposure/v1/subscriptions/{id}        ModifySubscription
+//   DELETE /nlmf-dataexposure/v1/subscriptions/{id}        DeleteSubscription
 //
 // Real, disclosed scope decision -- stated up front, not discovered in review, and the direct
 // continuation of GMLC's own disclosed gap (ADR-0189): `DetermineLocation`'s real behavior (TS
@@ -39,7 +45,26 @@
 // `ldrReference`), and `UpConfig` (a real secure-LCS-UP-connection setup/modify/terminate,
 // `lmf::UpConfigStore` keyed by supi/gpsi per the real YAML's own declared `anyOf` requirement --
 // enforced as a real `400`, not invented -- `TERMINATION` real-behaviorally removes the stored
-// entry rather than just accepting and discarding the request).
+// entry rather than just accepting and discarding the request). `CreateSubscription`/
+// `ModifySubscription`/`DeleteSubscription` (Nlmf_DataExposure,
+// `lmf::DataExposureSubscriptionStore`
+// -- a real, full create+modify+delete lifecycle, `ModifySubscription` using the same real RFC
+// 6902 JSON Patch application as `nfs/nrf`'s own `NfRegistry::apply_patch`).
+//
+// `CipheringKeyData` (Nlmf_Broadcast) is real but structurally limited by its own YAML: it is the
+// AMF-facing QUERY interface only -- no write/provisioning operation exists anywhere in this real
+// spec surface for populating actual `CipheringDataSet` records (real LTE/NR positioning SIB
+// ciphering key material is O&M/vendor-provisioned, outside this specific SBI service). This
+// project has no such provisioning path, so `dataAvailability` honestly always reports
+// `CIPHERING_KEY_DATA_NOT_AVAILABLE`, and the real declared `CipheringKeyData` async callback
+// notification never fires -- not a fabricated key, not a silently-dropped feature.
+//
+// `Nlmf_DataExposure`'s own real notification path (`LmfDataExposureNotification`, carrying
+// `LmfDataExposureReport.samplingDataList` -> real `locMeasureData`/`groundTruth` location
+// measurements) shares the exact same disclosed RF/LPP/PRU capability gap as `LocationMeasure`
+// above -- this project has no real measurement data to ever populate a report with, so no
+// notification is ever generated in this build, even though the subscription lifecycle managing
+// it is fully real.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -67,6 +92,11 @@
 // -- same real cross-file $ref-cycle mechanism already documented in nfs/gmlc/src/main.cpp's own
 // include comment (ADR-0189), not specific to this NF.
 #include "TS29122_CommonData_grp.hpp"
+// Gap-closure (ADR-0193 audit, ADR-0196): Nlmf_Broadcast/Nlmf_DataExposure's own types stayed in
+// their own standalone headers (no cross-file $ref cycle pulled them into the shared group
+// header above).
+#include "TS29572_Nlmf_Broadcast.hpp"
+#include "TS29572_Nlmf_DataExposure.hpp"
 #include "nf_config/nf_config.hpp"
 #include "stores.hpp"
 
@@ -83,6 +113,9 @@ using nlohmann::json;
 
 constexpr const char* kNfType = "LMF";
 constexpr const char* kApiRoot = "/nlmf-loc/v1";
+// Gap-closure (ADR-0193 audit, ADR-0196).
+constexpr const char* kBroadcastApiRoot = "/nlmf-broadcast/v1";
+constexpr const char* kDataExposureApiRoot = "/nlmf-dataexposure/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -222,6 +255,7 @@ int main() {
     lmf::UpSubscriptionStore up_subscriptions;
     lmf::LocationContextStore location_contexts;
     lmf::UpConfigStore up_configs;
+    lmf::DataExposureSubscriptionStore data_exposure_subscriptions;
 
     auto meter = sbi_core::get_meter("lmf");
     auto determine_location_counter =
@@ -238,6 +272,18 @@ int main() {
         meter->CreateUInt64Counter("lmf_location_measure_total", "Total LocationMeasure calls");
     auto up_config_counter =
         meter->CreateUInt64Counter("lmf_up_config_total", "Total UpConfig calls");
+    // Gap-closure (ADR-0193 audit, ADR-0196).
+    auto ciphering_key_data_counter = meter->CreateUInt64Counter(
+        "lmf_ciphering_key_data_total", "Total Nlmf_Broadcast CipheringKeyData calls");
+    auto data_exposure_create_counter =
+        meter->CreateUInt64Counter("lmf_data_exposure_create_subscription_total",
+                                   "Total Nlmf_DataExposure CreateSubscription calls");
+    auto data_exposure_modify_counter =
+        meter->CreateUInt64Counter("lmf_data_exposure_modify_subscription_total",
+                                   "Total Nlmf_DataExposure ModifySubscription calls");
+    auto data_exposure_delete_counter =
+        meter->CreateUInt64Counter("lmf_data_exposure_delete_subscription_total",
+                                   "Total Nlmf_DataExposure DeleteSubscription calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -426,6 +472,112 @@ int main() {
             } else {
                 up_configs.put(key, json(*body));
             }
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nlmf_Broadcast (gap-closure, ADR-0193 audit, ADR-0196) ---
+
+    server.add_route(
+        "POST",
+        std::string(kBroadcastApiRoot) + "/cipher-key-data",
+        [&verifier, &ciphering_key_data_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::CipherRequestData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            ciphering_key_data_counter->Add(1);
+            // Real, disclosed gap: this YAML's own single operation is the AMF-facing QUERY
+            // interface only -- it declares no real write/provisioning operation anywhere for
+            // populating actual CipheringDataSet records (LTE/NR positioning SIB ciphering keys
+            // are real O&M/vendor-provisioned data per TS 33.501's own broader security
+            // framework, outside this specific 3GPP SBI surface). This project has no such
+            // provisioning path, so real ciphering key data can never exist here -- honestly
+            // reporting unavailable, not fabricating key material. `body->amfCallBackURI` is
+            // real and would be used to push a real async `CipheringKeyData` notification if
+            // data ever became available (per this YAML's own declared callback), but that never
+            // fires in this build for the same reason.
+            sbi_gen::CipherResponseData resp_data{};
+            resp_data.dataAvailability = "CIPHERING_KEY_DATA_NOT_AVAILABLE";
+            return sbi_core::http2::Response::json(200, json(resp_data).dump());
+        });
+
+    // --- Nlmf_DataExposure (gap-closure, ADR-0193 audit, ADR-0196) ---
+
+    server.add_route(
+        "POST",
+        std::string(kDataExposureApiRoot) + "/subscriptions",
+        [&verifier, &data_exposure_subscriptions, &data_exposure_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::LmfDataExposureSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            data_exposure_create_counter->Add(1);
+            const auto id = data_exposure_subscriptions.create(json(*body));
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kDataExposureApiRoot) + "/subscriptions/" + id);
+            resp.body = json(*body).dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kDataExposureApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &data_exposure_subscriptions, &data_exposure_modify_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            json patch_ops;
+            try {
+                patch_ops = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            std::optional<json> patched;
+            try {
+                patched = data_exposure_subscriptions.apply_patch(id, patch_ops);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid JSON Patch", e.what());
+            }
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No subscription " + id);
+            }
+            data_exposure_modify_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kDataExposureApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &data_exposure_subscriptions, &data_exposure_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            if (!data_exposure_subscriptions.remove(id)) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No subscription " + id);
+            }
+            data_exposure_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

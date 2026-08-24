@@ -66,4 +66,22 @@ private:
     std::unordered_map<std::string, nlohmann::json> configs_;
 };
 
+// Backs Nlmf_DataExposure's `/subscriptions` collection + `/subscriptions/{subscriptionId}`
+// individual resource -- gap-closure per ADR-0193, ADR-0196. Real, full create+modify+delete
+// lifecycle (unlike UpSubscriptionStore above, this YAML declares a real ModifySubscription too),
+// same real RFC 6902 JSON Patch application as nfs/nrf's own NfRegistry::apply_patch
+// (nlohmann::json's own `.patch()`).
+class DataExposureSubscriptionStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> apply_patch(const std::string& subscription_id,
+                                              const nlohmann::json& patch_ops);
+    bool remove(const std::string& subscription_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
 } // namespace lmf

@@ -47,4 +47,28 @@ std::optional<nlohmann::json> UpConfigStore::get(const std::string& key) {
     return std::make_optional(it->second);
 }
 
+std::string DataExposureSubscriptionStore::create(nlohmann::json subscription) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "dexpsub-" + std::to_string(next_id_++);
+    subscriptions_.emplace(id, std::move(subscription));
+    return id;
+}
+
+std::optional<nlohmann::json>
+DataExposureSubscriptionStore::apply_patch(const std::string& subscription_id,
+                                           const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(subscription_id);
+    if (it == subscriptions_.end()) {
+        return std::nullopt;
+    }
+    it->second = it->second.patch(patch_ops);
+    return std::make_optional(it->second);
+}
+
+bool DataExposureSubscriptionStore::remove(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return subscriptions_.erase(subscription_id) > 0;
+}
+
 } // namespace lmf
