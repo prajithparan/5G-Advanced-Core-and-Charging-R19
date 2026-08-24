@@ -1193,7 +1193,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 
 ---
 
-## Summary and priority signal (9 of 13 built NFs covered by the original sweep; NSSF/BSF/NEF/SCP added later, ADR-0183/ADR-0184/ADR-0185/ADR-0186)
+## Summary and priority signal (9 of 14 built NFs covered by the original sweep; NSSF/BSF/NEF/SCP/5G-EIR added later, ADR-0183/ADR-0184/ADR-0185/ADR-0186/ADR-0187)
 
 | NF | Scale ratio (ref/ours) | Highest-priority real gap |
 |---|---|---|
@@ -1210,6 +1210,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | BSF | Not yet swept against free5GC/open5GS source (built after this table, ADR-0184, not part of the original comparison pass) | Real `Nbsf_Management`, all 15 real operations across 4 resource families implemented, including the spec's own real duplicate-combination 403-with-existing-info logic and real `BsfEvent` notification coverage; no known real gap identified yet since no reference-source diff has been done -- see ADR-0184 |
 | NEF | Not yet swept against free5GC/open5GS source (built after this table, ADR-0185, not part of the original comparison pass) | Only 1 of 14 real Nnef YAML files built (`Nnef_PFDmanagement`, all 6 real operations); 13 remain entirely unbuilt (`Nnef_EventExposure`, `Nnef_TrafficInfluenceData`, `Nnef_SMContext`/`SMService`, `Nnef_UEId`, `Nnef_Authentication`, `Nnef_DNAIMapping`, `Nnef_ECSAddress`, `Nnef_EASDeployment`, `Nnef_Inference`/`Training`/`VFLInference`/`VFLTraining`) -- see ADR-0185 |
 | SCP | Not yet swept against free5GC/open5GS source (built after this table, ADR-0186, not part of the original comparison pass) | Only `Nscp_EventExposure` built (all 3 real ops) -- SCP's real defining role (TS 29.500 §§6.10-6.11 inline HTTP/2 message-forwarding proxy for indirect communication) remains entirely undesigned and unbuilt, a real architectural departure from every other NF this project has, explicitly scoped out via a user-directed `AskUserQuestion` decision, not silently skipped -- see ADR-0186 |
+| 5G-EIR | Not yet swept against free5GC/open5GS source (built after this table, ADR-0187, not part of the original comparison pass; free5GC has no 5G-EIR implementation at all as of this project's own knowledge, so no reference exists to sweep against for this NF specifically) | This project's first Tier 2 NF. Real, complete: the entire real `N5g-eir_EquipmentIdentityCheck` API is 1 operation (`GetEquipmentStatus`), fully implemented and live-verified; real, disclosed gap is structural, not a shortfall -- the YAML has no write/provisioning operation anywhere (real IMEI database provisioning is OAM/GSMA scope, out of 3GPP's own SBI framework here), and AMF does not yet call this NF during Registration (TS 23.502 §4.2.2.2.2) -- see ADR-0187 |
 
 **Real, honest pattern across the sweep**: this project's "happy path" (initial attach, PDU
 session establishment, core CRUD on each NF's primary resource) is consistently real and already
@@ -1227,6 +1228,11 @@ yet. Two real, large, still-open items within this group: NEF has 13 of its own 
 entirely unbuilt, and SCP's own real message-forwarding/indirect-communication role (TS 29.500
 §§6.10-6.11) remains entirely undesigned -- both explicitly scoped out this session, not silently
 incomplete. Per ADR-0184's own process decision, this project moves to the next NF/subsystem
-continuously; Tier 2 NFs (NWDAF, DCCF, ADRF, MFAF, NSACF, TSCTSF, EASDF, UCMF, SMSF, 5G-EIR, LMF,
-GMLC, NSSAAF, AAnF, UDSF, SEPP, per CLAUDE.md's own scope list) are the next real candidates, none
-yet surveyed for real YAML availability.
+continuously; **Tier 2 NFs have now begun** (5G-EIR, ADR-0187, this project's first, chosen as the
+smallest/cleanest real candidate -- 1 real YAML file, 1 real operation, genuinely closable in full
+rather than a disclosed partial slice, unlike NEF/SCP above). The real per-file survey performed
+before picking it (file counts from direct reads of `specs/5G_APIs-REL-19/`, not estimated): NWDAF
+10 files, DCCF 3, ADRF 3, MFAF 3, NSACF 2, TSCTSF 3, EASDF 2, UCMF 2, SMSF 1 file/5 ops, **5G-EIR 1
+file/1 op (built, ADR-0187)**, LMF 3, GMLC 1 file/5 ops, NSSAAF 2, AAnF 2, UDSF 2, SEPP 2 -- the
+other 15 Tier 2 NFs (per CLAUDE.md's own scope list) remain unbuilt; GMLC and SMSF are the
+next-smallest real candidates.

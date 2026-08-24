@@ -43,6 +43,7 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29521_Nbsf_Management.yaml
     TS29551_Nnef_PFDmanagement.yaml
     TS29570_Nscp_EventExposure.yaml
+    TS29511_N5g-eir_EquipmentIdentityCheck.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -71,6 +72,7 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29521_Nbsf_Management.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29551_Nnef_PFDmanagement.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29570_Nscp_EventExposure.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29511_N5g-eir_EquipmentIdentityCheck.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES

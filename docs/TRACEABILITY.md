@@ -3707,3 +3707,29 @@ operations implemented and live-verified: `CreateSubscription`/`ModifySubscripti
 and so has no genuine `ScpSignallingInfo` activity to report. The real SCP proxy/forwarding role
 itself remains entirely undesigned and unbuilt. See ADR-0186 in `docs/DECISIONS.md` for full
 disclosure.
+
+## ADR-0187 -- 5G-EIR: first Tier 2 NF, `N5g-eir_EquipmentIdentityCheck` (complete, not a slice)
+
+| Requirement | Test |
+|---|---|
+| `GetEquipmentStatus` (WHITELISTED) | Live curl: real `200` `{"status":"WHITELISTED"}` |
+| `GetEquipmentStatus` (BLACKLISTED) | Live curl: real `200` `{"status":"BLACKLISTED"}` |
+| `GetEquipmentStatus` (GREYLISTED) | Live curl: real `200` `{"status":"GREYLISTED"}` |
+| `GetEquipmentStatus` unknown `pei` | Live curl: real `404` `"PEI Not Found"` |
+| `GetEquipmentStatus` missing `pei` | Live curl: real `400` `"Missing mandatory query parameter"` |
+| Bad bearer token | Live curl: real `401` `ProblemDetails` |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 352/352 pass |
+
+This project's thirteenth NF, fifth built under ADR-0184's continuous move-to-next-NF process, and
+the first Tier 2 NF (CLAUDE.md's own scope list). A real per-file survey of all 16 Tier 2 NFs
+(direct read of `specs/5G_APIs-REL-19/`) preceded the choice; 5G-EIR picked because its entire real
+API is 1 file/1 operation, closable in FULL this turn rather than another disclosed partial slice.
+Real bug found and fixed during live verification: `kNfType` was initially written `"5G-EIR"`
+(hyphen), which NRF's own real `NFProfile` validation (ADR-0102) correctly rejected with a live
+`400`; direct read of `TS29510_Nnrf_NFManagement.yaml` confirmed the real enum value is `5G_EIR`
+(underscore) -- fixed, and exactly the class of bug a DTO round-trip test alone would never catch.
+Real, disclosed structural gap (same shape as NEF's ADR-0185/SCP's ADR-0186 findings): no write
+path exists anywhere in the YAML for provisioning equipment status (real OAM/GSMA scope), so
+`EquipmentStatusStore` is seed()-only; AMF does not yet call this NF during Registration (TS
+23.502 §4.2.2.2.2), a real, disclosed, deferred wiring opportunity. See ADR-0187 in
+`docs/DECISIONS.md` for full disclosure.
