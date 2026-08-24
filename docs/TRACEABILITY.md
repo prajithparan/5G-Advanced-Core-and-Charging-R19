@@ -3757,3 +3757,30 @@ gap) -- `SendSMS` always reports `SMS_DELIVERY_SMSF_ACCEPTED` (real enum value, 
 "delivered" claim), and `SendMtSMS`'s response carries an honest empty binary placeholder instead
 of a real SMS-DELIVER-REPORT PDU. AMF does not yet call `SMServiceActivation` during Registration.
 See ADR-0188 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0189 -- GMLC: third Tier 2 NF, `Ngmlc_Location` (real LMF-dependency scope decision)
+
+| Requirement | Test |
+|---|---|
+| `RequestLocation` valid input | Live curl: real `501` `ProblemDetails` (no real LMF backend, disclosed) |
+| `RequestLocation` malformed input | Live curl: real `400` |
+| `CancelLocation` | Live curl: real `404` (no `ldrReference` this GMLC ever issued can be valid) |
+| `UpdateLocation` with supi | Live curl: real `204`; without supi/gpsi: real `400` |
+| `LocationUpdateSubcribe` | Live curl: real `204` |
+| `PrivacyCheckIdMapping` | Live curl: real `200`, only matched gpsi<->appLayerId pairs returned, unknowns silently omitted |
+| Bad bearer token | Live curl: real `401` `ProblemDetails` |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 358/358 pass |
+
+This project's fifteenth NF, seventh built under ADR-0184's continuous move-to-next-NF process,
+third Tier 2 NF. Real scope finding beyond the original file-count survey: 2 of GMLC's 5 real
+operations (`RequestLocation`/`CancelLocation`) require this project's own LMF (`Nlmf_Location`,
+TS 29.572), a separate, unbuilt Tier 2 NF -- resolved by never fabricating positioning data
+(CLAUDE.md's single worst failure mode): `RequestLocation` returns the real, documented `501` after
+real input validation; `CancelLocation` honestly `404`s since no real `ldrReference` was ever
+issued. The other 3 operations (`UpdateLocation`/`LocationUpdateSubcribe`/`PrivacyCheckIdMapping`)
+have no LMF dependency and are real, complete implementations. Real, disclosed structural gap:
+`loc-update-subs` has no GET/DELETE in the real spec itself, and its own `LocationUpdateNotify`
+callback never fires (same shape as NEF's/SCP's own unfireable callbacks). Real codegen mechanic:
+GMLC's own DTOs landed in the shared `TS29122_CommonData_grp.hpp` rather than a standalone header,
+due to real cross-file `$ref` cycles with `TS29572_Nlmf_Location.yaml`. See ADR-0189 in
+`docs/DECISIONS.md` for full disclosure.

@@ -87,7 +87,11 @@ provisioning/write path for equipment status is genuinely out of 3GPP's own SBI 
 here (OAM/GSMA IMEI database sync), disclosed rather than built as unreachable code. And **SMSF**
 (`Nsmsf_SMService`, all 5 real operations, including real `multipart/related` handling, ADR-0188)
 — no real downstream SMS-GMSC/IWMSC or TS 24.011 SMS-over-NAS relay exists in this project, so
-`SendSMS`/`SendMtSMS` report SMSF-level acceptance only, disclosed rather than fabricated.
+`SendSMS`/`SendMtSMS` report SMSF-level acceptance only, disclosed rather than fabricated. And
+**GMLC** (`Ngmlc_Location`, all 5 real operations, ADR-0189) — 3 of the 5 are real, complete,
+independent of any other NF; the other 2 (`RequestLocation`/`CancelLocation`) genuinely require
+this project's own LMF (not yet built), so they honestly report `501`/`404` rather than fabricate
+UE positioning data.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
@@ -104,8 +108,8 @@ libs/sbi-core/     Shared SBI infrastructure: HTTP/2 server+client, OAuth2 clien
                    ProblemDetails, 3gpp-Sbi-* headers, structured logging, OpenTelemetry tracing.
                    Every NF links this; no NF includes another NF's private headers.
 nfs/<nf>/          One independent binary + library per Network Function: nrf, amf, smf, udm, udr,
-                   ausf, pcf, upf, chf, nssf, bsf, nef, scp, eir, smsf. nfs/hello-nf is a Phase 0
-                   throwaway, not a real NF.
+                   ausf, pcf, upf, chf, nssf, bsf, nef, scp, eir, smsf, gmlc. nfs/hello-nf is a
+                   Phase 0 throwaway, not a real NF.
 bss/<service>/     Standalone TM Forum ODA-layer services (not 3GPP NFs, no NRF registration):
                    product-catalog (TMF620), balance-management (TMF654), subscriber-management
                    (TMF632), roaming-interconnect (TMF651).
