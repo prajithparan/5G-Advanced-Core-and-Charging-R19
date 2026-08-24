@@ -90,8 +90,13 @@ here (OAM/GSMA IMEI database sync), disclosed rather than built as unreachable c
 `SendSMS`/`SendMtSMS` report SMSF-level acceptance only, disclosed rather than fabricated. And
 **GMLC** (`Ngmlc_Location`, all 5 real operations, ADR-0189) — 3 of the 5 are real, complete,
 independent of any other NF; the other 2 (`RequestLocation`/`CancelLocation`) genuinely require
-this project's own LMF (not yet built), so they honestly report `501`/`404` rather than fabricate
-UE positioning data.
+this project's own LMF, so they honestly report `501`/`404` rather than fabricate UE positioning
+data. And **LMF** (`Nlmf_Location`, all 7 real operations, ADR-0191) — 4 are real, complete,
+RF-independent; `DetermineLocation`/`LocationMeasure`/`CancelLocation` genuinely need real LPP (TS
+37.355) UE positioning or PRU/NRPPa measurement data this project doesn't have, so they honestly
+report `501`/`404` too (GMLC->LMF wiring itself remains a real, disclosed, deferred step). Building
+LMF also found and fixed 2 real defects — a vendored-spec transcription typo and a real
+`tools/sbi-codegen` allOf-merge field-deduplication bug (ADR-0190).
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
@@ -108,8 +113,8 @@ libs/sbi-core/     Shared SBI infrastructure: HTTP/2 server+client, OAuth2 clien
                    ProblemDetails, 3gpp-Sbi-* headers, structured logging, OpenTelemetry tracing.
                    Every NF links this; no NF includes another NF's private headers.
 nfs/<nf>/          One independent binary + library per Network Function: nrf, amf, smf, udm, udr,
-                   ausf, pcf, upf, chf, nssf, bsf, nef, scp, eir, smsf, gmlc. nfs/hello-nf is a
-                   Phase 0 throwaway, not a real NF.
+                   ausf, pcf, upf, chf, nssf, bsf, nef, scp, eir, smsf, gmlc, lmf. nfs/hello-nf is
+                   a Phase 0 throwaway, not a real NF.
 bss/<service>/     Standalone TM Forum ODA-layer services (not 3GPP NFs, no NRF registration):
                    product-catalog (TMF620), balance-management (TMF654), subscriber-management
                    (TMF632), roaming-interconnect (TMF651).

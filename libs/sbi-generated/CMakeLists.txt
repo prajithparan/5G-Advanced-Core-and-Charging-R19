@@ -48,6 +48,8 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29577_Nipsmgw_SMService.yaml
     TS29515_Ngmlc_Location.yaml
     TS29572_Nlmf_Location.yaml
+    TS29518_Namf_Location.yaml
+    TS29518_Namf_EventExposure.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -81,6 +83,8 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29577_Nipsmgw_SMService.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29515_Ngmlc_Location.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29572_Nlmf_Location.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_Location.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_EventExposure.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES

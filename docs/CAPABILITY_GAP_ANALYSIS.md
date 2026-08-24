@@ -1193,7 +1193,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 
 ---
 
-## Summary and priority signal (9 of 16 built NFs covered by the original sweep; NSSF/BSF/NEF/SCP/5G-EIR/SMSF/GMLC added later, ADR-0183 through ADR-0189)
+## Summary and priority signal (9 of 17 built NFs covered by the original sweep; NSSF/BSF/NEF/SCP/5G-EIR/SMSF/GMLC/LMF added later, ADR-0183 through ADR-0191)
 
 | NF | Scale ratio (ref/ours) | Highest-priority real gap |
 |---|---|---|
@@ -1212,7 +1212,8 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | SCP | Not yet swept against free5GC/open5GS source (built after this table, ADR-0186, not part of the original comparison pass) | Only `Nscp_EventExposure` built (all 3 real ops) -- SCP's real defining role (TS 29.500 §§6.10-6.11 inline HTTP/2 message-forwarding proxy for indirect communication) remains entirely undesigned and unbuilt, a real architectural departure from every other NF this project has, explicitly scoped out via a user-directed `AskUserQuestion` decision, not silently skipped -- see ADR-0186 |
 | 5G-EIR | Not yet swept against free5GC/open5GS source (built after this table, ADR-0187, not part of the original comparison pass; free5GC has no 5G-EIR implementation at all as of this project's own knowledge, so no reference exists to sweep against for this NF specifically) | This project's first Tier 2 NF. Real, complete: the entire real `N5g-eir_EquipmentIdentityCheck` API is 1 operation (`GetEquipmentStatus`), fully implemented and live-verified; real, disclosed gap is structural, not a shortfall -- the YAML has no write/provisioning operation anywhere (real IMEI database provisioning is OAM/GSMA scope, out of 3GPP's own SBI framework here), and AMF does not yet call this NF during Registration (TS 23.502 §4.2.2.2.2) -- see ADR-0187 |
 | SMSF | Not yet swept against free5GC/open5GS source (built after this table, ADR-0188, not part of the original comparison pass) | This project's second Tier 2 NF. Real, complete: all 5 real `Nsmsf_SMService` operations implemented and live-verified, including real `multipart/related` handling and a real cross-file schema dependency on IP-SM-GW's own YAML; real, disclosed gap is structural -- no real downstream SMS-GMSC/IWMSC or TS 24.011 SMS-over-NAS CP-DATA relay exists in this project (genuinely out of this session's spec material), so `SendSMS`/`SendMtSMS` report SMSF-level acceptance only, never a fabricated delivery outcome -- see ADR-0188 |
-| GMLC | Not yet swept against free5GC/open5GS source (built after this table, ADR-0189, not part of the original comparison pass) | This project's third Tier 2 NF. Real scope split, not a partial slice: 2 of 5 real `Ngmlc_Location` operations (`RequestLocation`/`CancelLocation`) genuinely require this project's own LMF (unbuilt) and honestly report `501`/`404` rather than fabricating positioning data; the other 3 (`UpdateLocation`/`LocationUpdateSubcribe`/`PrivacyCheckIdMapping`) have no LMF dependency and are real, complete, live-verified implementations -- see ADR-0189 |
+| GMLC | Not yet swept against free5GC/open5GS source (built after this table, ADR-0189, not part of the original comparison pass) | This project's third Tier 2 NF. Real scope split, not a partial slice: 2 of 5 real `Ngmlc_Location` operations (`RequestLocation`/`CancelLocation`) genuinely require this project's own LMF (unbuilt at the time, now built ADR-0191 -- but not wired) and honestly report `501`/`404` rather than fabricating positioning data; the other 3 (`UpdateLocation`/`LocationUpdateSubcribe`/`PrivacyCheckIdMapping`) have no LMF dependency and are real, complete, live-verified implementations -- see ADR-0189 |
+| LMF | Not yet swept against free5GC/open5GS source (built after this table, ADR-0191, not part of the original comparison pass) | This project's fourth Tier 2 NF. Real scope split: 4 of 7 real `Nlmf_Location` operations (`UpSubscriptions`/`DeleteSubscription`/`LocationContextTransfer`/`UpConfig`) are real, complete, RF-independent implementations; the other 3 (`DetermineLocation`/`LocationMeasure`/`CancelLocation`) genuinely require real LPP (TS 37.355) UE positioning or PRU/NRPPa measurement (TS 38.305/38.455), neither implemented in this project, and honestly report `501`/`404` -- see ADR-0191. Also fixed 2 real sbi-codegen/spec bugs found building this NF -- see ADR-0190 |
 
 **Real, honest pattern across the sweep**: this project's "happy path" (initial attach, PDU
 session establishment, core CRUD on each NF's primary resource) is consistently real and already
@@ -1230,15 +1231,19 @@ yet. Two real, large, still-open items within this group: NEF has 13 of its own 
 entirely unbuilt, and SCP's own real message-forwarding/indirect-communication role (TS 29.500
 §§6.10-6.11) remains entirely undesigned -- both explicitly scoped out this session, not silently
 incomplete. Per ADR-0184's own process decision, this project moves to the next NF/subsystem
-continuously; **Tier 2 NFs have now begun** (5G-EIR, ADR-0187; SMSF, ADR-0188; GMLC, ADR-0189 -- the first two
-chosen as the smallest/cleanest real candidates, genuinely closable in full rather than a
-disclosed partial slice, unlike NEF/SCP above; GMLC's own real scope turned out to split into 3
-LMF-independent operations built complete plus 2 that honestly report `501`/`404` rather than
-fabricate positioning data LMF itself would need to provide). The real per-file survey performed
-before picking the first candidate (file counts from direct reads of `specs/5G_APIs-REL-19/`, not
-estimated): NWDAF 10 files, DCCF 3, ADRF 3, MFAF 3, NSACF 2, TSCTSF 3, EASDF 2, UCMF 2, **SMSF 1
-file/5 ops (built, ADR-0188)**, **5G-EIR 1 file/1 op (built, ADR-0187)**, LMF 3, **GMLC 1 file/5
-ops (built, ADR-0189)**, NSSAAF 2, AAnF 2, UDSF 2, SEPP 2 -- 13 Tier 2 NFs (per CLAUDE.md's own
-scope list) remain unbuilt. LMF itself is now a real, elevated-priority candidate: building it
-would let GMLC's own disclosed `RequestLocation`/`CancelLocation` gap close for real, not just
-close a new NF's own file-count tally.
+continuously; **Tier 2 NFs have now begun** (5G-EIR ADR-0187, SMSF ADR-0188, GMLC ADR-0189, LMF ADR-0191 -- the
+first two chosen as the smallest/cleanest real candidates, genuinely closable in full rather than
+a disclosed partial slice, unlike NEF/SCP above; GMLC's and LMF's own real scopes each split
+between RF/GNSS/LPP-independent operations built complete and operations that honestly report
+`501`/`404` rather than fabricate positioning/measurement data). The real per-file survey
+performed before picking the first candidate (file counts from direct reads of
+`specs/5G_APIs-REL-19/`, not estimated): NWDAF 10 files, DCCF 3, ADRF 3, MFAF 3, NSACF 2, TSCTSF 3,
+EASDF 2, UCMF 2, **SMSF 1 file/5 ops (built, ADR-0188)**, **5G-EIR 1 file/1 op (built, ADR-0187)**,
+**LMF 3 files/7 ops (built, ADR-0191)**, **GMLC 1 file/5 ops (built, ADR-0189)**, NSSAAF 2, AAnF 2,
+UDSF 2, SEPP 2 -- 12 Tier 2 NFs (per CLAUDE.md's own scope list) remain unbuilt. Real, disclosed,
+deferred wiring: GMLC's own `RequestLocation`/`CancelLocation` still don't call LMF -- LMF now
+exists and its own `DetermineLocation` is real code, but GMLC->LMF HTTP wiring wasn't done this
+turn, and LMF's own `DetermineLocation`/`LocationMeasure` remain honest `501`s regardless (the real
+LPP/PRU capability gap is unaffected by wiring). Also, this pass found and fixed 2 real defects
+while building LMF (ADR-0190): a vendored-spec transcription typo, and the third real
+sbi-codegen generator bug found this way (after ADR-0022/ADR-0024).

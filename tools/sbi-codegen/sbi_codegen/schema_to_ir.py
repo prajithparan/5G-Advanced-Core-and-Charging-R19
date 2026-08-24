@@ -79,6 +79,18 @@ def _is_pattern_only(member: dict) -> bool:
     return set(member.keys()) <= {"pattern"} and "pattern" in member
 
 
+def _type_ref_key(type_ref: TypeRef) -> tuple:
+    """A hashable, structural-equality key for a TypeRef, usable before collision
+    disambiguation has assigned final cpp_names (ref_key -- (source_file, yaml_name) -- is
+    already stable at conversion time, unlike cpp_name). Used only to detect genuinely
+    conflicting vs. compatible duplicate fields in an allOf merge -- see ADR-0190."""
+    if type_ref.kind == "array":
+        return ("array", _type_ref_key(type_ref.array_of))
+    if type_ref.kind == "ref":
+        return ("ref", type_ref.ref_key)
+    return ("primitive", type_ref.cpp_name)
+
+
 def _is_open_enum_anyof(schema: dict) -> list[str] | None:
     any_of = schema.get("anyOf")
     if not isinstance(any_of, list) or len(any_of) != 2:
@@ -278,19 +290,18 @@ class Converter:
 
         if isinstance(all_of, list) and all_of:
             merged_fields: list[FieldIR] = []
+            seen_by_json_name: dict[str, FieldIR] = {}
             for member in all_of:
                 if "$ref" in member:
                     ref_name, ref_schema, ref_file = self.registry.resolve_ref(member["$ref"], source_file)
                     self._enqueue(ref_name, ref_schema, ref_file)
                     props = ref_schema.get("properties", {})
                     req = ref_schema.get("required", [])
-                    merged_fields.extend(self._convert_object_properties(props, req, ref_file, name))
+                    new_fields = self._convert_object_properties(props, req, ref_file, name)
                 elif member.get("type") == "object":
                     props = member.get("properties", {})
                     req = member.get("required", [])
-                    merged_fields.extend(
-                        self._convert_object_properties(props, req, source_file, name)
-                    )
+                    new_fields = self._convert_object_properties(props, req, source_file, name)
                 else:
                     return OpaqueType(
                         name=name,
@@ -298,6 +309,35 @@ class Converter:
                         reason=f"allOf member not $ref/object/pattern-only: {list(member.keys())}",
                         description=description,
                     )
+                # Real, confirmed case (not hypothetical): two allOf'd parent schemas can each
+                # legitimately declare a field with the same JSON name -- e.g.
+                # ProblemDetailsProvidePosInfo's own ProblemDetails and ProvidePosInfo parents
+                # (TS29518_Namf_Location.yaml) both declare `supportedFeatures`. A naive
+                # concatenation (the previous behavior here) emits two same-named C++ struct
+                # members, an invalid redeclaration -- found building LMF, ADR-0190. When the
+                # duplicate is structurally identical (same type shape, same required/nullable),
+                # keep only the first occurrence, matching ordinary JSON-Schema allOf composition
+                # semantics for compatible duplicate properties. A genuinely conflicting duplicate
+                # (different type/required/nullable) is not silently resolved -- raise rather than
+                # emit unverified code, same precedent as the cyclic-required-field check below.
+                for f in new_fields:
+                    prior = seen_by_json_name.get(f.json_name)
+                    if prior is None:
+                        seen_by_json_name[f.json_name] = f
+                        merged_fields.append(f)
+                        continue
+                    if (
+                        _type_ref_key(prior.type_ref) != _type_ref_key(f.type_ref)
+                        or prior.required != f.required
+                        or prior.nullable != f.nullable
+                    ):
+                        raise NotImplementedError(
+                            f"{name}: allOf members disagree on field '{f.json_name}' "
+                            f"(first: {prior.type_ref}, required={prior.required}; "
+                            f"second: {f.type_ref}, required={f.required}) -- no codegen "
+                            "support for a genuinely conflicting allOf-duplicate field, see "
+                            "ADR-0190. Not silently emitting one arbitrary side."
+                        )
             return ObjectType(name=name, source_file=source_file, fields=merged_fields, description=description)
 
         if schema.get("type") == "object" or "properties" in schema:

@@ -3784,3 +3784,45 @@ callback never fires (same shape as NEF's/SCP's own unfireable callbacks). Real 
 GMLC's own DTOs landed in the shared `TS29122_CommonData_grp.hpp` rather than a standalone header,
 due to real cross-file `$ref` cycles with `TS29572_Nlmf_Location.yaml`. See ADR-0189 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0190 -- two real sbi-codegen/spec bugs found and fixed building LMF
+
+| Requirement | Test |
+|---|---|
+| Vendored YAML typo fix (`SECURITY_MODE_REJECT"`) | Codegen re-run confirms well-formed C++ string literal |
+| allOf-merge field dedup fix | Codegen re-run confirms `ProblemDetailsProvidePosInfo.supportedFeatures` declared exactly once |
+| No regression | Full project rebuild (82/82) + full `ctest`: 361/361 pass |
+
+A real transcription typo in `TS29518_Namf_EventExposure.yaml` (a stray literal quote character
+inside an enum value) and a real `tools/sbi-codegen` bug (naive `allOf` field concatenation with
+no JSON-name deduplication, producing an invalid duplicate C++ struct member when two allOf'd
+parent schemas legitimately share a field name) -- both found building LMF, neither hypothetical.
+Third real sbi-codegen generator bug found this way, after ADR-0022 (topo-sort-on-cycle) and
+ADR-0024 (pure-$ref-reexport). See ADR-0190 in `docs/DECISIONS.md` for full disclosure, including a
+disclosed process incident (clang-format accidentally run against the Python fix, caught and
+corrected before commit).
+
+## ADR-0191 -- LMF: fourth Tier 2 NF, `Nlmf_Location` (real RF/GNSS-dependency scope decision)
+
+| Requirement | Test |
+|---|---|
+| `DetermineLocation` valid input | Live curl: real `501` (no real LPP/GNSS backend, disclosed) |
+| `DetermineLocation` both ecgi+ncgi | Live curl: real `400` (real declared mutual-exclusivity constraint) |
+| `CancelLocation` | Live curl: real `404` |
+| `UpSubscriptions` / `DeleteSubscription` | Live curl: real `201`+`Location` / real `204`; repeated delete: real `404` |
+| `LocationContextTransfer` | Live curl: real `204` |
+| `LocationMeasure` | Live curl: real `501` (no real PRU/NRPPa backend, disclosed) |
+| `UpConfig` with supi | Live curl: real `204`; without supi/gpsi: real `400` (real declared `anyOf` constraint) |
+| Bad bearer token | Live curl: real `401` `ProblemDetails` |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 361/361 pass |
+
+This project's sixteenth NF, eighth built under ADR-0184's continuous move-to-next-NF process,
+fourth Tier 2 NF, the direct continuation of GMLC's own disclosed dependency (ADR-0189). Real
+7-operation split: 4 real, complete, RF-independent implementations
+(`UpSubscriptions`/`DeleteSubscription`/`LocationContextTransfer`/`UpConfig`) vs. 3 that honestly
+report `501`/`404` (`DetermineLocation`/`LocationMeasure`/`CancelLocation`) rather than fabricate
+LPP/GNSS/PRU data -- CLAUDE.md's single worst failure mode, deliberately avoided. `UpSubscriptions`
+has a real, full create+delete lifecycle (unlike GMLC's own create-only gap); its own real `201`
+response declares no id-bearing header/field, so a `Location` header is added at the HTTP layer for
+real usability, disclosed as filling a genuine spec gap, not fabricated content. See ADR-0191 in
+`docs/DECISIONS.md` for full disclosure.
