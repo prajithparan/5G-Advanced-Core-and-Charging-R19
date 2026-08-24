@@ -1596,6 +1596,11 @@ int main() {
         "udr_operator_specific_data_get_total", "Total QueryOperSpecData calls");
     auto operator_specific_data_patch_counter = meter->CreateUInt64Counter(
         "udr_operator_specific_data_patch_total", "Total ModifyOperSpecData calls");
+    // ADR-0197: correcting ADR-0111's own real documentation error.
+    auto operator_specific_data_put_counter = meter->CreateUInt64Counter(
+        "udr_operator_specific_data_put_total", "Total CreateOperSpecData calls");
+    auto operator_specific_data_delete_counter = meter->CreateUInt64Counter(
+        "udr_operator_specific_data_delete_total", "Total DeleteOperSpecData calls");
     auto ee_profile_data_get_counter =
         meter->CreateUInt64Counter("udr_ee_profile_data_get_total", "Total QueryEEData calls");
     auto ue_policy_set_write_counter = meter->CreateUInt64Counter(
@@ -1608,6 +1613,11 @@ int main() {
         "udr_policy_operator_specific_data_get_total", "Total ReadOperatorSpecificData calls");
     auto policy_operator_specific_data_patch_counter = meter->CreateUInt64Counter(
         "udr_policy_operator_specific_data_patch_total", "Total UpdateOperatorSpecificData calls");
+    // ADR-0197: correcting ADR-0114's own real documentation error.
+    auto policy_operator_specific_data_put_counter = meter->CreateUInt64Counter(
+        "udr_policy_operator_specific_data_put_total", "Total ReplaceOperatorSpecificData calls");
+    auto policy_operator_specific_data_delete_counter = meter->CreateUInt64Counter(
+        "udr_policy_operator_specific_data_delete_total", "Total DeleteOperatorSpecificData calls");
     auto sponsor_connectivity_data_get_counter = meter->CreateUInt64Counter(
         "udr_sponsor_connectivity_data_get_total", "Total ReadSponsorConnectivityData calls");
     auto bdt_data_write_counter = meter->CreateUInt64Counter("udr_bdt_data_write_total",
@@ -3438,8 +3448,9 @@ int main() {
         });
 
     // --- Nudr_DataRepository: Operator-Specific Data Container (Document) resource (ADR-0111,
-    // gap-closure task #106) -- real GET+PATCH(RFC 6902) per TS29505_Subscription_Data.yaml, no
-    // PUT/DELETE. ---
+    // gap-closure task #106) -- real GET+PATCH(RFC 6902)+PUT+DELETE per
+    // TS29505_Subscription_Data.yaml (PUT/DELETE added ADR-0197, correcting ADR-0111's own "no
+    // PUT/DELETE exists" error). ---
 
     const std::string operator_specific_data_path_pattern =
         std::string(kApiRoot) + "/subscription-data/{ueId}/operator-specific-data";
@@ -3495,6 +3506,81 @@ int main() {
                 resolved_location(operator_specific_data_path_pattern, req.path_params),
                 change_from_json_patch(patch_ops));
             return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    // ADR-0197: real PUT/DELETE, correcting ADR-0111's own documentation error (a direct re-read
+    // of TS29505_Subscription_Data.yaml found CreateOperSpecData/DeleteOperSpecData both real and
+    // declared, contrary to that ADR's own "no PUT/DELETE exists" claim).
+    server.add_route(
+        "PUT",
+        operator_specific_data_path_pattern,
+        [&verifier,
+         &operator_specific_data,
+         &operator_specific_data_put_counter,
+         &subs_to_notify,
+         &notify_client,
+         operator_specific_data_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const bool is_new = operator_specific_data.put(ue_id, body);
+            operator_specific_data_put_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(operator_specific_data_path_pattern, req.path_params),
+                change_replace(body));
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace(
+                "location",
+                resolved_location(operator_specific_data_path_pattern, req.path_params));
+            resp.body = body.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        operator_specific_data_path_pattern,
+        [&verifier,
+         &operator_specific_data,
+         &operator_specific_data_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         operator_specific_data_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!operator_specific_data.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No operator-specific-data for ueId " + ue_id);
+            }
+            operator_specific_data_delete_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(operator_specific_data_path_pattern, req.path_params),
+                change_remove());
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     // --- Nudr_DataRepository: Event Exposure Data (Document) resource (ADR-0112, gap-closure
@@ -3620,8 +3706,8 @@ int main() {
         });
 
     // --- Nudr_DataRepository: policy-data group, Operator-Specific Data resource (ADR-0114,
-    // gap-closure task #106) -- real GET+PATCH(RFC 6902) per TS29519_Policy_Data.yaml, no
-    // PUT/DELETE. ---
+    // gap-closure task #106) -- real GET+PATCH(RFC 6902)+PUT+DELETE per TS29519_Policy_Data.yaml
+    // (PUT/DELETE added ADR-0197, correcting ADR-0114's own "no PUT/DELETE exists" error). ---
 
     const std::string policy_operator_specific_data_path_pattern =
         std::string(kApiRoot) + "/policy-data/ues/{ueId}/operator-specific-data";
@@ -3677,6 +3763,78 @@ int main() {
                 resolved_location(policy_operator_specific_data_path_pattern, req.path_params),
                 change_from_json_patch(patch_ops));
             return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    server.add_route(
+        "PUT",
+        policy_operator_specific_data_path_pattern,
+        [&verifier,
+         &policy_operator_specific_data,
+         &policy_operator_specific_data_put_counter,
+         &subs_to_notify,
+         &notify_client,
+         policy_operator_specific_data_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json body;
+            try {
+                body = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const bool is_new = policy_operator_specific_data.put(ue_id, body);
+            policy_operator_specific_data_put_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(policy_operator_specific_data_path_pattern, req.path_params),
+                change_replace(body));
+
+            if (!is_new) {
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace(
+                "location",
+                resolved_location(policy_operator_specific_data_path_pattern, req.path_params));
+            resp.body = body.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        policy_operator_specific_data_path_pattern,
+        [&verifier,
+         &policy_operator_specific_data,
+         &policy_operator_specific_data_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         policy_operator_specific_data_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!policy_operator_specific_data.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No policy-data operator-specific-data for ueId " + ue_id);
+            }
+            policy_operator_specific_data_delete_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(policy_operator_specific_data_path_pattern, req.path_params),
+                change_remove());
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     // --- Nudr_DataRepository: policy-data group, Sponsor Connectivity Data resource (ADR-0115,

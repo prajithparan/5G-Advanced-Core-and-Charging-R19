@@ -1286,10 +1286,10 @@ wired, or CHF's deliberately narrow 3-file scope matching CLAUDE.md exactly).
 set -- worth fixing the disclosure even before the routes themselves are built.
 
 **Related but distinct: undisclosed Tier-B gaps inside NFs already marked "real."** Two concrete
-factual errors, not just missing coverage: UDR's own ADR-0111/ADR-0114 comments assert
-`operator-specific-data` has no PUT/DELETE in the YAML -- it does (both `Subscription_Data.yaml`
-and `Policy_Data.yaml`, confirmed by direct read) -- worth a direct comment+implementation fix,
-not backlog triage. Beyond that, UDR (the most mature NF by route count) has ~7 further
+factual errors, not just missing coverage -- **CLOSED, ADR-0197**: UDR's own ADR-0111/ADR-0114
+comments asserted `operator-specific-data` has no PUT/DELETE in the YAML -- it does (both
+`Subscription_Data.yaml` and `Policy_Data.yaml`, confirmed by direct read), and both now have real,
+live-verified PUT/DELETE routes. Beyond that, UDR (the most mature NF by route count) has ~7 further
 undisclosed missing resources in `Subscription_Data` (`authentication-status/{servingNetworkName}`,
 bare `provisioned-data` GET, `subs-to-notify` bulk-DELETE) and ~12 in `Policy_Data` (bare `{ueId}`
 aggregate, `sm-data/{usageMonId}` family, bare `bdt-data` collection GET, and an entire
@@ -1308,9 +1308,9 @@ Smallest/clearest first, since they're genuinely closable in full rather than a 
 item, and literally what prompted this audit. `Nausf_UPUProtection` (1 operation) -- CLOSED,
 ADR-0195 -- was similarly small. The two `Nlmf_*` files (1 + 3 operations) -- CLOSED, ADR-0196 --
 were next. The two UDR
-comment-vs-spec factual errors
-(`operator-specific-data` PUT/DELETE) should be fixed directly regardless of ordering, since
-they're not "missing coverage" but an active documentation defect. NEF's 13-file/~45-operation
+comment-vs-spec factual errors (`operator-specific-data` PUT/DELETE) -- CLOSED, ADR-0197 -- were
+fixed directly rather than left as backlog triage, since they were an active documentation defect,
+not missing coverage. NEF's 13-file/~45-operation
 surface and PCF's 7-file surface are the largest single blocks of remaining work in the project
 and will need to be split across multiple turns even under the "one subsystem per turn" framing
 already used for NEF/SCP/BSF.

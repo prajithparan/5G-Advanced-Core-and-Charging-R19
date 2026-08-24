@@ -3917,3 +3917,22 @@ lifecycle for `Nlmf_DataExposure` (`lmf::DataExposureSubscriptionStore`, same re
 itself shares `LocationMeasure`'s own disclosed LPP/PRU capability gap (ADR-0191), so no
 notification ever fires with real content, even though the subscription management around it is
 fully real. See ADR-0196 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0197 -- UDR operator-specific-data PUT/DELETE (correcting ADR-0111/ADR-0114)
+
+| Requirement | Test |
+|---|---|
+| `CreateOperSpecData`/`ReplaceOperatorSpecificData` (PUT), create | Live curl over real PostgreSQL: real `201` + `Location` + echoed body |
+| PUT, replace | Live curl: real `204` |
+| `DeleteOperSpecData`/`DeleteOperatorSpecificData` (DELETE) | Live curl: real `204`; repeated: real `404` |
+| Store separation | Sibling resource for the same `ueId`, never created, independently confirmed real `404` |
+| No regression | Full project rebuild clean; full `ctest` (excluding the two known-flaky tests): 369/369 pass |
+
+Real documentation-accuracy fix, not new coverage discovered from scratch: ADR-0111 and ADR-0114
+both explicitly claimed "no PUT/DELETE exists for this resource," which a direct re-read of
+`TS29505_Subscription_Data.yaml`/`TS29519_Policy_Data.yaml` disproved -- both real YAMLs declare
+`put`/`delete` operations (`CreateOperSpecData`/`DeleteOperSpecData` and
+`ReplaceOperatorSpecificData`/`DeleteOperatorSpecificData`) alongside the already-implemented
+`get`/`patch`. Real PostgreSQL `INSERT ... ON CONFLICT DO UPDATE ... RETURNING (xmax = 0)` idiom
+reused from `UePolicySetStore::put`'s own established create-vs-replace pattern (ADR-0113). See
+ADR-0197 in `docs/DECISIONS.md` for full disclosure.

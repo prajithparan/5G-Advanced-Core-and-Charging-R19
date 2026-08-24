@@ -469,11 +469,13 @@ private:
     pqxx::connection conn_;
 };
 
-// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0111). Backs the real
-// Operator-Specific Data Container (Document) resource (QueryOperSpecData/ModifyOperSpecData --
-// real GET+PATCH, RFC 6902, no PUT/DELETE exists for this resource in the spec). No POST/create
-// operation exists either, so apply_patch() is upsert-capable -- same disclosed, deliberate
-// precedent already established for PpDataStore.
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0111; PUT/DELETE added ADR-0197,
+// correcting ADR-0111's own real documentation error -- it claimed "no PUT/DELETE exists for this
+// resource," which a direct re-read of TS29505_Subscription_Data.yaml disproved:
+// `CreateOperSpecData` (PUT) and `DeleteOperSpecData` (DELETE) are both real, declared operations
+// alongside QueryOperSpecData/ModifyOperSpecData). apply_patch() stays upsert-capable (same
+// disclosed, deliberate precedent already established for PpDataStore) -- PUT/DELETE are additional
+// real operations, not a replacement for that behavior.
 class OperatorSpecificDataStore {
 public:
     explicit OperatorSpecificDataStore(const std::string& conninfo);
@@ -482,6 +484,12 @@ public:
     // Throws nlohmann::json::exception on a malformed patch -- caller turns that into a 400
     // ProblemDetails, same as PpDataStore's own apply_patch.
     nlohmann::json apply_patch(const std::string& ue_id, const nlohmann::json& patch_ops);
+    // Real PUT (CreateOperSpecData): create-or-replace. Returns true if this was a genuinely new
+    // resource (the real YAML's own `201`+`Location` case), false if it replaced an existing one
+    // (the real YAML's own `204` case) -- a real INSERT-vs-UPDATE distinction, not invented.
+    bool put(const std::string& ue_id, nlohmann::json data);
+    // Real DELETE (DeleteOperSpecData). Returns false if no such resource existed (real `404`).
+    bool remove(const std::string& ue_id);
 
 private:
     std::mutex mutex_;
@@ -525,10 +533,12 @@ private:
 
 // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0114). Backs the real
 // `policy-data` group's Operator-Specific Data resource (ReadOperatorSpecificData/
-// UpdateOperatorSpecificData -- real GET+PATCH, RFC 6902, no PUT/DELETE exists for this resource
-// in the spec). Real, genuinely distinct resource from OperatorSpecificDataStore above (separate
-// real path/operationId pair, same schema reused via a real cross-file $ref). No POST/create
-// operation exists either, so apply_patch() is upsert-capable.
+// UpdateOperatorSpecificData -- real GET+PATCH, RFC 6902; PUT/DELETE added ADR-0197, correcting
+// ADR-0114's own real documentation error -- it claimed "no PUT/DELETE exists for this resource,"
+// which a direct re-read of TS29519_Policy_Data.yaml disproved: `ReplaceOperatorSpecificData`
+// (PUT) and `DeleteOperatorSpecificData` (DELETE) are both real, declared operations). Real,
+// genuinely distinct resource from OperatorSpecificDataStore above (separate real path/operationId
+// pair, same schema reused via a real cross-file $ref). apply_patch() stays upsert-capable.
 class PolicyOperatorSpecificDataStore {
 public:
     explicit PolicyOperatorSpecificDataStore(const std::string& conninfo);
@@ -537,6 +547,11 @@ public:
     // Throws nlohmann::json::exception on a malformed patch -- caller turns that into a 400
     // ProblemDetails, same as OperatorSpecificDataStore's own apply_patch.
     nlohmann::json apply_patch(const std::string& ue_id, const nlohmann::json& patch_ops);
+    // Real PUT (ReplaceOperatorSpecificData): create-or-replace, same real INSERT-vs-UPDATE
+    // distinction as OperatorSpecificDataStore::put's own comment.
+    bool put(const std::string& ue_id, nlohmann::json data);
+    // Real DELETE (DeleteOperatorSpecificData). Returns false if no such resource existed.
+    bool remove(const std::string& ue_id);
 
 private:
     std::mutex mutex_;

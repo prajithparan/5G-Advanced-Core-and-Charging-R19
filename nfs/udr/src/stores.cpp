@@ -833,6 +833,30 @@ nlohmann::json OperatorSpecificDataStore::apply_patch(const std::string& ue_id,
     return doc;
 }
 
+bool OperatorSpecificDataStore::put(const std::string& ue_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    // Real PostgreSQL idiom for detecting INSERT vs UPDATE in a single upsert: `xmax = 0` is true
+    // only for a row this transaction just inserted (a real, updated row's xmax is set to the
+    // updating transaction's id) -- not a fabricated technique, standard PostgreSQL behavior.
+    const auto result =
+        txn.exec("INSERT INTO udr_operator_specific_data (ue_id, data) VALUES ($1, $2::jsonb) "
+                 "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data "
+                 "RETURNING (xmax = 0) AS inserted",
+                 pqxx::params{ue_id, data.dump()});
+    txn.commit();
+    return result.front()["inserted"].as<bool>();
+}
+
+bool OperatorSpecificDataStore::remove(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM udr_operator_specific_data WHERE ue_id = $1", pqxx::params{ue_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 EeProfileDataStore::EeProfileDataStore(const std::string& conninfo) : conn_(conninfo) {}
 
 void EeProfileDataStore::seed(const std::string& ue_id, nlohmann::json data) {
@@ -924,6 +948,27 @@ nlohmann::json PolicyOperatorSpecificDataStore::apply_patch(const std::string& u
              pqxx::params{ue_id, doc.dump()});
     txn.commit();
     return doc;
+}
+
+bool PolicyOperatorSpecificDataStore::put(const std::string& ue_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec(
+        "INSERT INTO udr_policy_operator_specific_data (ue_id, data) VALUES ($1, $2::jsonb) "
+        "ON CONFLICT (ue_id) DO UPDATE SET data = EXCLUDED.data "
+        "RETURNING (xmax = 0) AS inserted",
+        pqxx::params{ue_id, data.dump()});
+    txn.commit();
+    return result.front()["inserted"].as<bool>();
+}
+
+bool PolicyOperatorSpecificDataStore::remove(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_policy_operator_specific_data WHERE ue_id = $1",
+                                 pqxx::params{ue_id});
+    txn.commit();
+    return result.affected_rows() > 0;
 }
 
 SponsorConnectivityDataStore::SponsorConnectivityDataStore(const std::string& conninfo)
