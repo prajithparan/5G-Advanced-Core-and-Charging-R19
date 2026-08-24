@@ -18,7 +18,7 @@ services:
     entrypoint:
       - /bin/bash
       - -c
-      - "apt-get update >/dev/null && apt-get install -y --no-install-recommends openssl >/dev/null && ./scripts/gen-lab-pki.sh nrf amf smf udm udr ausf pcf product-catalog balance-management chf subscriber-management roaming-interconnect"
+      - "apt-get update >/dev/null && apt-get install -y --no-install-recommends openssl >/dev/null && ./scripts/gen-lab-pki.sh nrf amf smf udm udr ausf pcf nssf product-catalog balance-management chf subscriber-management roaming-interconnect"
 
   nrf:
     build:
@@ -169,6 +169,21 @@ services:
     ports:
       - "7783:7783"   # Npcf_AMPolicyControl / Npcf_SMPolicyControl (TLS 1.3 + mTLS)
       - "9470:9470"   # Prometheus /metrics
+
+  nssf:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/nssf.Dockerfile
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+      nrf:
+        condition: service_started
+    volumes:
+      - certs_data:/build/certs
+    ports:
+      - "7785:7785"   # Nnssf_NSSelection / Nnssf_NSSAIAvailability (TLS 1.3 + mTLS)
+      - "9473:9473"   # Prometheus /metrics
 
   # Real PostgreSQL for bss/product-catalog's persistence (ADR-0054) -- not a 3GPP NF, so it has no
   # pki-init dependency of its own for this service, but product-catalog (below) still needs the

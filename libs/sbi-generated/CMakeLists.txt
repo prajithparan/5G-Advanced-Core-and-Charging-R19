@@ -38,6 +38,8 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29594_Nchf_SpendingLimitControl.yaml
     TS29519_Policy_Data.yaml
     TS29571_CommonData.yaml
+    TS29531_Nnssf_NSSelection.yaml
+    TS29531_Nnssf_NSSAIAvailability.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -61,6 +63,8 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29594_Nchf_SpendingLimitControl.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29519_Policy_Data.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29571_CommonData.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29531_Nnssf_NSSelection.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29531_Nnssf_NSSAIAvailability.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES

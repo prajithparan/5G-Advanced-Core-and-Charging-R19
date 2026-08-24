@@ -1193,7 +1193,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 
 ---
 
-## Summary and priority signal (all 9 built NFs covered)
+## Summary and priority signal (9 of 10 built NFs covered by the original sweep; NSSF added later, ADR-0183)
 
 | NF | Scale ratio (ref/ours) | Highest-priority real gap |
 |---|---|---|
@@ -1206,6 +1206,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | UDR | ~2.5-10x | Resource-type breadth (78 of 42+ real TS 29.504 resources closed, past parity -- both ee-subscriptions nested-subscription trees, bare `{ueId}/context-data`/`{ueId}` (32-field aggregate)/`pdtq-data`, `Nudr_GroupIDmap`'s `GetNfGroupIDs` + real `nf-group-ids/subscriptions` CRUD family, `GetNiddAuData`, and `group-data`'s entire `5g-vn-groups`/`mbs-group-membership` resource set (bare collection, individual, `/internal`, `/pp-profile-data` singleton) now fully closed (ADR-0161 through ADR-0170 -- fully closes this series' own array-parsing-infra-unblocked candidate list; ADR-0168 also found and fixed a real router literal-vs-wildcard ordering hazard, re-applied in ADR-0169; ADR-0169 is this project's first genuinely keyless singleton resource); real `onDataChange` webhook delivery infrastructure built and live-verified end-to-end (ADR-0171 through ADR-0180), wired into all 31 of ~40 real per-UE write resources this project has identified plus all 10 non-per-UE resources unblocked by the ADR-0176 schema fix (87 real write-route call sites total, 41 distinct resource types), backed by a real automated `ctest` integration test (ADR-0179), plus `Nudr_GroupIDmap`'s own separate `onGroupIdMapChange` callback now fired from the one real mutation its mapping data has -- startup seed, since the real spec genuinely has no live write path for it (ADR-0180) -- closing real `onDataChange`/`onGroupIdMapChange` coverage across both of UDR's real Nudr APIs; the real `gpsis`/`ext-group-ids` filtering backlog across `Query5GVnGroup`/`Query5GmbsGroup`/`Query5GVNGroupPPData`/`Query5GMbsGroupPPData` is now closed too (ADR-0181) -- `QueryUeSubscribedData`'s own unrelated `ext-group-ids` filter remains correctly unhonored (no store to filter its 32 flat per-UE fields against), `niddAuthData`'s permanent gap in the aggregate (needs `mtc-provider-information`, not exposed by that resource), and `GetSSAuData` (deliberately deferred, ADR-0160) remain real, disclosed gaps, see UDR section above) |
 | UPF | ~1x (task #107 fully closed: Association Update/Release, ADR-0084; PFD Management, ADR-0086; Node Report, ADR-0087; Session Set Deletion correctly found not applicable to this project's own N4/Sxc interface) | datapath (XDP) already ahead of both references on paper, unbenchmarked |
 | CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding: CLOSED (task #108, ADR-0089, narrower disclosed scope than free5GC's); already ahead on 5G-native service breadth + AI-native charging |
+| NSSF | Not yet swept against free5GC/open5GS source (built after this table, ADR-0183, not part of the original comparison pass) | Both real `Nnssf_NSSelection`/`Nnssf_NSSAIAvailability` services present, all 8 real operations implemented; real gap: the slice-selection decision itself is catalog-membership filtering against a fixed seed, not real subscriber-entitlement/NRF-discovery/NSAG-mapping logic -- see ADR-0183 |
 
 **Real, honest pattern across the sweep**: this project's "happy path" (initial attach, PDU
 session establishment, core CRUD on each NF's primary resource) is consistently real and already
@@ -1215,7 +1216,8 @@ optional-but-real 3GPP services each NF has. AMF/SMF's shared N2-handover gap is
 highest-impact, highest-effort item found. CHF is the one NF where this project is already
 ahead of at least one reference on real service breadth.
 
-**Still not done, per ADR-0075's own scope**: `nssf`/`nef`/`scp`/`bsf` don't exist in this project
-at all yet (separate, larger "whole NF missing" gap, not blended into the per-NF findings above).
-No implementation against any finding above has started -- this document is the evidence base;
-sequencing which gap gets implemented first is the next real decision, not yet made.
+**Still not done, per ADR-0075's own scope**: `nef`/`scp`/`bsf` still don't exist in this project at
+all (`nssf` closed this gap, ADR-0183 -- not yet swept against free5GC/open5GS source the way the
+other 9 NFs above were, so its own real capability-parity gaps, if any, aren't characterized here
+yet). Sequencing which of `nef`/`scp`/`bsf` (or a deeper NSSF sweep) gets implemented next is a
+real decision, not yet made.

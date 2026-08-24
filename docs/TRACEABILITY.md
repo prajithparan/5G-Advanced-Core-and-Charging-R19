@@ -3598,3 +3598,33 @@ same shape as `SponsorConnectivityDataStore`) implements exactly that branch, se
 representative key. The `mbsSessionId`/`tmgi`/`ssm` branch remains exactly as unaddressed as
 ADR-0119 left it -- not touched, not claimed resolved. See ADR-0182 in `docs/DECISIONS.md` for
 full disclosure.
+
+## ADR-0183 -- NSSF: new Tier 1 NF, `Nnssf_NSSelection` + `Nnssf_NSSAIAvailability`
+
+| Requirement | Test |
+|---|---|
+| `NSSelectionGet`, `requestedNssai` with a catalog and a non-catalog S-NSSAI | Live curl: real `200`, catalog member in `allowedNssaiList` (`accessType: 3GPP_ACCESS`), non-member in `rejectedNssaiInPlmn` |
+| `NSSelectionGet`, no slice-info param | Live curl: real `200`, falls back to the whole seeded catalog |
+| `NSSelectionGet`, missing `nf-id` | Live curl: real `400` |
+| `NSSAIAvailabilityPut`/`Patch` with a real `SupportedNssaiAvailabilityData` | Live curl: real `200` with the echoed `AuthorizedNssaiAvailabilityInfo`; `Patch` against a nonexistent `nfId`: real `404` |
+| `NSSAIAvailabilityDelete` | Live curl: real `204`; repeat: real `404` |
+| `NSSAIAvailabilityPost` (subscribe) + real `nssaiAvailabilityNotification` delivery | Live curl subscribe (real `201` + `Location`), then a `Put` that triggers a real mTLS POST to a live HTTPS receiver, captured with the correct `subscriptionId` + `authorizedNssaiAvailabilityData` |
+| `NSSAIAvailabilitySubModifyPatch` / `Unsubscribe` | Live curl: real `200` / real `204`, then real `404` on repeat |
+| `NSSAIAvailabilityOptions` | Live curl: real `200` |
+| Bad bearer token | Live curl: real `401` `ProblemDetails` |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 338/338 pass |
+
+This project's ninth NF and first entirely new Tier 1 NF built since the original Phase 2 order
+(NRF -> AMF -> SMF -> UDM -> UDR -> AUSF -> PCF) -- user-directed move off UDR's exhausted task
+#106 backlog onto a whole unbuilt subsystem, chosen from `docs/CAPABILITY_GAP_ANALYSIS.md`'s own
+"still not done" `nssf`/`nef`/`scp`/`bsf` list. All 8 real operations across both real Nnssf
+services implemented: `NSSelectionGet`, `NSSAIAvailabilityPut`/`Patch`/`Delete`/`Post`/
+`Unsubscribe`/`SubModifyPatch`/`Options`, plus the real outbound `nssaiAvailabilityNotification`
+callback. Real, disclosed simplifications: the slice-selection decision is catalog-membership
+filtering against a fixed, real-standardized-SST seed (no subscriber-entitlement/NRF-discovery/
+NSAG-mapping logic); `accessType` always defaults to `3GPP_ACCESS` (the real query params never
+convey it); availability "authorization" echoes submissions unchanged (no restriction/rejection
+logic); the notification callback fires from `Put`/`Patch` only, not `Delete` (the real
+notification schema has no field shaped for "an NF instance deregistered"). See ADR-0183 in
+`docs/DECISIONS.md` for full disclosure, including why no Helm chart was added (matches a
+pre-existing gap shared by 6 other NFs, not unique to this one).
