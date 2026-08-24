@@ -3659,3 +3659,28 @@ binding families' PATCH, and real `BsfEvent` notification coverage matching the 
 combination-uniqueness semantics. One real `-Wconversion` bug found and fixed before commit (a
 generic JSON-query-param helper instantiated with `T = nlohmann::json` itself hit an ambiguous
 optional-construction overload). See ADR-0184 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0185 -- NEF: first real service, `Nnef_PFDmanagement`
+
+| Requirement | Test |
+|---|---|
+| `AllFetch` with real comma-separated `application-ids` | Live curl: real `200`, seeded app returned, unknown app silently omitted; missing the mandatory param: real `400` |
+| `IndAppFetch` | Live curl: real `200` for a seeded appId, real `404` for an unknown one |
+| `AppFetchPartialUpdate` "changed since" logic | Live curl: older client timestamp -> real `200` (changed); same-or-later timestamp -> real `204` (not changed); no timestamp -> real `200` (unconditional) |
+| `CreateSubscr` / `ModifySubscr` / `Unsubscribe` | Live curl: real `201`+`Location` / real `200` (real `404` against a nonexistent id) / real `204` (real `404` on repeat) |
+| Bad bearer token | Live curl: real `401` `ProblemDetails` |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 347/347 pass |
+
+This project's eleventh NF, third built under ADR-0184's continuous move-to-next-NF process. NEF's
+own real spec surface is 14 separate YAML files, ~52 operations total -- too large for one turn.
+`Nnef_PFDmanagement` (v1.4.0, 6 real operations, the largest single well-defined NEF service)
+chosen as this turn's slice: the real consumer-facing counterpart to this project's own
+already-built UPF-side PFCP PFD Management (task #107/ADR-0086), though not wired to it this turn.
+Real, disclosed structural finding (not a simplification): this YAML has no operation anywhere
+that lets a caller WRITE PFD content into NEF -- the real AF-to-NEF PFD provisioning path is
+genuinely out of 3GPP's own SBI framework scope. Two consequences: `PfdCatalogStore` is
+seed()-only, and the real `PfdChangeNotification`/`NotificationPush` callback delivery
+`CreateSubscr` declares has no real trigger this project can ever fire (PFD content never changes
+after startup) -- deliberately not built as unreachable dead code, disclosed as a real structural
+gap instead. 13 of NEF's 14 real YAML files remain entirely unbuilt. See ADR-0185 in
+`docs/DECISIONS.md` for full disclosure.

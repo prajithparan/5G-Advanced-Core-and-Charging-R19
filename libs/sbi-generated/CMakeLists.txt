@@ -41,6 +41,7 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29531_Nnssf_NSSelection.yaml
     TS29531_Nnssf_NSSAIAvailability.yaml
     TS29521_Nbsf_Management.yaml
+    TS29551_Nnef_PFDmanagement.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -67,6 +68,7 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29531_Nnssf_NSSelection.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29531_Nnssf_NSSAIAvailability.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29521_Nbsf_Management.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29551_Nnef_PFDmanagement.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES
