@@ -84,7 +84,10 @@ same quality bar (live verification, zero-warning builds, full doc trail) still 
 Tier 2 has now begun with **5G-EIR** (`N5g-eir_EquipmentIdentityCheck`, its entire real API — 1
 operation, `GetEquipmentStatus` — fully implemented, not a partial slice, ADR-0187); the real
 provisioning/write path for equipment status is genuinely out of 3GPP's own SBI framework scope
-here (OAM/GSMA IMEI database sync), disclosed rather than built as unreachable code.
+here (OAM/GSMA IMEI database sync), disclosed rather than built as unreachable code. And **SMSF**
+(`Nsmsf_SMService`, all 5 real operations, including real `multipart/related` handling, ADR-0188)
+— no real downstream SMS-GMSC/IWMSC or TS 24.011 SMS-over-NAS relay exists in this project, so
+`SendSMS`/`SendMtSMS` report SMSF-level acceptance only, disclosed rather than fabricated.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
@@ -101,7 +104,7 @@ libs/sbi-core/     Shared SBI infrastructure: HTTP/2 server+client, OAuth2 clien
                    ProblemDetails, 3gpp-Sbi-* headers, structured logging, OpenTelemetry tracing.
                    Every NF links this; no NF includes another NF's private headers.
 nfs/<nf>/          One independent binary + library per Network Function: nrf, amf, smf, udm, udr,
-                   ausf, pcf, upf, chf, nssf, bsf, nef, scp, eir. nfs/hello-nf is a Phase 0
+                   ausf, pcf, upf, chf, nssf, bsf, nef, scp, eir, smsf. nfs/hello-nf is a Phase 0
                    throwaway, not a real NF.
 bss/<service>/     Standalone TM Forum ODA-layer services (not 3GPP NFs, no NRF registration):
                    product-catalog (TMF620), balance-management (TMF654), subscriber-management

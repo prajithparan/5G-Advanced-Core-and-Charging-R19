@@ -3733,3 +3733,27 @@ path exists anywhere in the YAML for provisioning equipment status (real OAM/GSM
 `EquipmentStatusStore` is seed()-only; AMF does not yet call this NF during Registration (TS
 23.502 §4.2.2.2.2), a real, disclosed, deferred wiring opportunity. See ADR-0187 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0188 -- SMSF: second Tier 2 NF, `Nsmsf_SMService` (complete, not a slice)
+
+| Requirement | Test |
+|---|---|
+| `SMServiceActivation` create | Live curl: real `201` + `Location` + `ETag` + body |
+| `SMServiceActivation` update | Live curl: real `204` + `ETag` (no body) |
+| `SMSServiceParameterUpdate` (RFC 6902) | Live curl: real `204`; against a nonexistent supi: real `404` |
+| `SendSMS` (multipart/related) | Live curl: real `200` `SmsRecordDeliveryData{SMS_DELIVERY_SMSF_ACCEPTED}`; against a nonexistent supi: real `404` |
+| `SendMtSMS` (multipart request+response) | Live curl: real `200` with a real multipart/related `SmsDeliveryData` response |
+| `SMServiceDeactivation` | Live curl: real `204`; repeated: real `404` |
+| Bad bearer token | Live curl: real `401` `ProblemDetails` |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 355/355 pass |
+
+This project's fourteenth NF, sixth built under ADR-0184's continuous move-to-next-NF process,
+second Tier 2 NF. All 5 real operations implemented, including real `multipart/related` handling
+(built on the existing `sbi_core::multipart` codec, no new infrastructure) and a real cross-file
+`$ref` into `TS29577_Nipsmgw_SMService.yaml` for `SendMtSMS`'s own schemas. Real, disclosed
+simplification: no real downstream SMS-GMSC/IWMSC or TS 24.011 SMS-over-NAS CP-DATA relay exists
+in this project (genuinely out of this session's spec material, same class as ADR-0104's ProSe-auth
+gap) -- `SendSMS` always reports `SMS_DELIVERY_SMSF_ACCEPTED` (real enum value, not a fabricated
+"delivered" claim), and `SendMtSMS`'s response carries an honest empty binary placeholder instead
+of a real SMS-DELIVER-REPORT PDU. AMF does not yet call `SMServiceActivation` during Registration.
+See ADR-0188 in `docs/DECISIONS.md` for full disclosure.
