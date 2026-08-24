@@ -5,8 +5,8 @@
 //   2. PCF's real UDR-fetch-then-CHF-subscribe wiring's fail-open behavior when CHF is
 //      unreachable -- spawns nrf+udr+pcf only, deliberately NOT chf.
 //   3. UPDATE (ADR-0073): the full real UDR->PCF->CHF->statusNotification->PCF loop, now that
-//      CHF is a real, CI-provisioned participant (Redis/Apache Doris (ADR-0192)/its own Postgres, see
-//      .github/workflows/ci.yml) -- previously only live-verified manually (ADR-0072's own
+//      CHF is a real, CI-provisioned participant (Redis/Apache Doris (ADR-0192)/its own Postgres,
+//      see .github/workflows/ci.yml) -- previously only live-verified manually (ADR-0072's own
 //      disclosure), now automated.
 
 #include "sbi_core/http2_client.hpp"

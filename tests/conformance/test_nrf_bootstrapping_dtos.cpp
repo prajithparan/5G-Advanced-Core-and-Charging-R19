@@ -1,7 +1,8 @@
 // Round-trip conformance test for NRF's Nnrf_Bootstrapping generated DTO (docs/DECISIONS.md
-// ADR-0194, gap-closure per ADR-0193). Source: specs/5G_APIs-REL-19/TS29510_Nnrf_Bootstrapping.yaml.
-// Same precedent as test_lmf_dtos.cpp/test_gmlc_dtos.cpp: construct -> to_json -> from_json ->
-// compare, using the real generated types, not synthetic ones.
+// ADR-0194, gap-closure per ADR-0193). Source:
+// specs/5G_APIs-REL-19/TS29510_Nnrf_Bootstrapping.yaml. Same precedent as
+// test_lmf_dtos.cpp/test_gmlc_dtos.cpp: construct -> to_json -> from_json -> compare, using the
+// real generated types, not synthetic ones.
 
 #include <nlohmann/json.hpp>
 

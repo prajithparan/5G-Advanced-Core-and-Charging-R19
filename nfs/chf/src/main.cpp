@@ -204,8 +204,7 @@ std::string chf_redis_conninfo() {
 // same class as this project's own CHF PostgreSQL trust-auth precedent (ADR-0060).
 chf::DorisOptions chf_doris_options() {
     chf::DorisOptions options;
-    options.host =
-        std::getenv("CHF_DORIS_HOST") ? std::getenv("CHF_DORIS_HOST") : "127.0.0.1";
+    options.host = std::getenv("CHF_DORIS_HOST") ? std::getenv("CHF_DORIS_HOST") : "127.0.0.1";
     options.port = std::getenv("CHF_DORIS_PORT")
                        ? static_cast<std::uint16_t>(std::stoi(std::getenv("CHF_DORIS_PORT")))
                        : 9030;

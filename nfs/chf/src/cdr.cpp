@@ -29,8 +29,8 @@ std::string hex_encode(const std::vector<std::uint8_t>& bytes) {
 // contract, not a guessed size.
 std::string escape(MYSQL* conn, const std::string& value) {
     std::string out(value.size() * 2 + 1, '\0');
-    const auto written =
-        mysql_real_escape_string(conn, out.data(), value.c_str(), static_cast<unsigned long>(value.size()));
+    const auto written = mysql_real_escape_string(
+        conn, out.data(), value.c_str(), static_cast<unsigned long>(value.size()));
     out.resize(written);
     return out;
 }

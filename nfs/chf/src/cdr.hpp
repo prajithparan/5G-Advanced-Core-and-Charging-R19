@@ -1,11 +1,10 @@
 #pragma once
 
-#include <mysql.h>
-
 #include <cstdint>
 #include <ctime>
 #include <memory>
 #include <mutex>
+#include <mysql.h>
 #include <optional>
 #include <string>
 #include <vector>
