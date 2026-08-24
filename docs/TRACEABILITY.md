@@ -3936,3 +3936,18 @@ both explicitly claimed "no PUT/DELETE exists for this resource," which a direct
 `get`/`patch`. Real PostgreSQL `INSERT ... ON CONFLICT DO UPDATE ... RETURNING (xmax = 0)` idiom
 reused from `UePolicySetStore::put`'s own established create-vs-replace pattern (ADR-0113). See
 ADR-0197 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0198 -- UDR `Nudr_GroupIDmap` real generated DTOs (replacing hand-written ones)
+
+| Requirement | Test |
+|---|---|
+| `CreateGroupIdSubscription` with a real, complete body | Live curl over real PostgreSQL: real `201` with real generated fields incl. server-set `subscriptionId` |
+| `CreateGroupIdSubscription` with a required field missing | Live curl: real `400`, precise `json.exception.out_of_range.403` from the real generated DTO's own required-field access |
+| No regression | Full project rebuild clean; full `ctest` (excluding the two known-flaky tests): 369/369 pass |
+
+Real fix for a standing violation of this project's own "never hand-write a DTO the YAML can
+generate" rule: `TS29504_Nudr_GroupIDmap.yaml` had never been added to the sbi-codegen pilot set,
+so `CreateGroupIdSubscription`'s own handler hand-rolled `.contains()` field checks instead.
+`TS29504_Nudr_GroupIDmap.yaml` now wired; `SubscriptionData` collided with other already-wired
+services' own same-named schemas, disambiguated by the real codegen to
+`SubscriptionData_Nudr_GroupIDmap`. See ADR-0198 in `docs/DECISIONS.md` for full disclosure.

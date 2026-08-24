@@ -53,6 +53,7 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29572_Nlmf_Location.yaml
     TS29572_Nlmf_Broadcast.yaml
     TS29572_Nlmf_DataExposure.yaml
+    TS29504_Nudr_GroupIDmap.yaml
     TS29518_Namf_Location.yaml
     TS29518_Namf_EventExposure.yaml
 )
@@ -93,6 +94,7 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29572_Nlmf_Location.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29572_Nlmf_Broadcast.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29572_Nlmf_DataExposure.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29504_Nudr_GroupIDmap.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_Location.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_EventExposure.yaml
 )

@@ -657,6 +657,10 @@
 // TS29505_Subscription_Data's own types now live in TS29122_CommonData_grp.hpp -- see
 // nfs/chf/src/stores.hpp's own comment (ADR-0072).
 #include "TS29122_CommonData_grp.hpp"
+// Gap-closure (ADR-0193 audit, ADR-0198): real generated Nudr_GroupIDmap DTOs, replacing the
+// hand-written raw-JSON validation this file used to have -- see this file's own comment at the
+// GroupIDmap subscription-family route registrations for the full disclosure.
+#include "TS29504_Nudr_GroupIDmap.hpp"
 // AuthEvent (real Authentication Status resource schema, TS29503_Nudm_UEAU.yaml, reused verbatim
 // per TS29505_Subscription_Data.yaml's own $ref -- ADR-0083, gap-closure task #106) lives in its
 // own generated group file, not TS29122_CommonData_grp.hpp.
@@ -4242,11 +4246,13 @@ int main() {
         });
 
     // --- Nudr_GroupIDmap: NF Group ID subscription-management family (ADR-0170, gap-closure
-    // task #106) -- real POST+GET+PATCH+DELETE per TS29504_Nudr_GroupIDmap.yaml,
+    // task #106; real generated DTO wired in ADR-0198, correcting this project's own standing
+    // "never hand-write a DTO the YAML can generate" rule, which this handler had been violating)
+    // -- real POST+GET+PATCH+DELETE per TS29504_Nudr_GroupIDmap.yaml,
     // CreateGroupIdSubscription/QueryGroupIdSubscription/ModifyGroupIdSubscription/
-    // RemoveGroupIdSubscription. Real REQUIRED `SubscriptionData` fields
-    // (notificationUri/nfType/nfGroupId), no generated DTO for this API (same raw-JSON precedent
-    // as `routing_ids`/`nf_group_ids` above) -- validated here by direct required-field check.
+    // RemoveGroupIdSubscription. Real REQUIRED `SubscriptionData_Nudr_GroupIDmap` fields
+    // (notificationUri/nfType/nfGroupId) now validated via the real generated DTO
+    // (`sbi_core::http2::parse_json_body`), same discipline as every other UDR write route.
     // Real, server-generated `subscriptionId` (UUID v4, same `sbi_core::generate_uuid_v4()`
     // helper this project already uses for every other subscription resource). Real, disclosed:
     // this resource's own real PATCH documents both `200` (with body) and `204` (empty) for a
@@ -4273,21 +4279,16 @@ int main() {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
-            json body;
-            try {
-                body = json::parse(req.body);
-            } catch (const json::parse_error& e) {
-                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
-            }
-            if (!body.contains("notificationUri") || !body.contains("nfType") ||
-                !body.contains("nfGroupId")) {
-                return sbi_core::http2::problem_response(
-                    400,
-                    "Bad Request",
-                    "notificationUri, nfType and nfGroupId are all required fields");
+            sbi_core::http2::Response err;
+            auto parsed =
+                sbi_core::http2::parse_json_body<sbi_gen::SubscriptionData_Nudr_GroupIDmap>(req,
+                                                                                            err);
+            if (!parsed.has_value()) {
+                return err;
             }
             const auto subscription_id = sbi_core::generate_uuid_v4();
-            body["subscriptionId"] = subscription_id;
+            parsed->subscriptionId = subscription_id;
+            json body = *parsed;
             nf_group_id_subscriptions.create(subscription_id, body);
             nf_group_id_subscriptions_create_counter->Add(1);
 

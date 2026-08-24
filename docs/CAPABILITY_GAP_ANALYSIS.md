@@ -1268,7 +1268,7 @@ check couldn't resolve (none surfaced this pass).
 | AMF | `Namf_AIoT`, `Namf_MBSBroadcast`, `Namf_MBSCommunication`, `Namf_MT` |
 | SMF | `Nsmf_EventExposure`, `Nsmf_NIDD` |
 | UDM | `Nudm_MT`, `Nudm_NIDDAU`, `Nudm_RSDS`, `Nudm_SSAU`, `Nudm_UEID` |
-| UDR | `Nudr_GroupIDmap` -- different failure mode: implemented, but with hand-written `nlohmann::json` structs bypassing sbi-codegen entirely (`main.cpp:4046` admits "no generated DTO for this API") -- a standing violation of "never hand-write a DTO the YAML can generate" |
+| UDR | ~~`Nudr_GroupIDmap`~~ CLOSED, ADR-0198 -- was a different failure mode: implemented, but with hand-written `nlohmann::json` validation bypassing sbi-codegen entirely, now replaced with the real generated DTO |
 | AUSF | ~~`Nausf_UPUProtection`~~ CLOSED, ADR-0195 |
 | PCF | `Npcf_EventExposure`, `Npcf_UEPolicyControl`, `Npcf_AMPolicyAuthorization`, `Npcf_MBSPolicyAuthorization`, `Npcf_MBSPolicyControl`, `Npcf_PDTQPolicyControl`, `Npcf_BDTPolicyControl` (7 files) |
 | NEF | `Nnef_SMContext`, `Nnef_SMService`, `Nnef_DNAIMapping`, `Nnef_EASDeployment`, `Nnef_ECSAddress`, `Nnef_EventExposure`, `Nnef_Inference`, `Nnef_TrafficInfluenceData`, `Nnef_Training`, `Nnef_UEId`, `Nnef_VFLInference`, `Nnef_VFLTraining`, `Nnef_Authentication` (13 files -- largest single Tier-A concentration in the project) |
