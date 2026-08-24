@@ -3874,3 +3874,26 @@ Every response field grounded in real project state (real `nrfInstanceId`, hones
 `oauth2Required=false` matching this NRF's actual anonymous-access-permitted routes) or explicitly
 disclosed where the real spec text (TS 29.510 clause 6.4.6.3.3's link-relation vocabulary) isn't
 vendored. See ADR-0194 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0195 -- AUSF `Nausf_UPUProtection` (second ADR-0193 gap-closure)
+
+| Requirement | Test |
+|---|---|
+| No KAUSF on record | Real integration test: real `404` |
+| Empty `upuDataList` for an authenticated SUPI | Real integration test: real `400` (real declared `minItems: 1`) |
+| Real, structurally-valid request against an authenticated SUPI | Real integration test: real, disclosed `501` (no TS 24.501 §9.11.3.53A NAS encoder) |
+| Real generated DTO round-trip | `AusfUpuDtos.UpuInfoRoundTrips` / `AusfUpuDtos.UpuSecurityInfoRoundTrips`, both pass |
+| No regression | Full project rebuild clean; full `ctest` (excluding the two known-flaky tests): 366/366 pass |
+
+Real TS 33.501 Annex A.19 (`FC=0x7B`, UPU-MAC-IAUSF) / Annex A.20 (`FC=0x7C`, UPU-MAC-IUE/XMAC-IUE)
+citations, confirmed against the vendored `specs/TS_33_501.pdf` v19.6.0 (pages 243-244) -- same
+KAUSF-keyed family as `Nausf_SoRProtection` (ADR-0081), a real, independent CounterUPU state
+machine (clause 6.15.2.2) added alongside the existing CounterSoR one in `KausfStore`. Real,
+disclosed scope limit: unlike SoR's own `sorHeader`/`steeringContainer` fields, this operation's
+YAML gives no pre-encoded-bytes alternative to the structured `upuDataList`, so there is no
+opaque-bytes shortcut -- every real path needs the TS 24.501 §9.11.3.53A NAS encoder this project
+doesn't have, hence the honest `501`. Live-verified via a new, real integration test (real
+nrf+udm+ausf processes, real 5G-AKA authentication to establish a real KAUSF, then the real
+404/400/501 sequence) -- an initial run was caught relying on a stray leftover process rather than
+the test's own spawned trio, and was re-run cleanly after killing it. See ADR-0195 in
+`docs/DECISIONS.md` for full disclosure.

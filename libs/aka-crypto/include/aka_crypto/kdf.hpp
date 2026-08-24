@@ -55,6 +55,16 @@
 //        SoR-XMAC-IUE    A.17 above. One function computes both -- which name applies depends only
 //                        on who computed it (UE sends SoR-MAC-IUE; AUSF pre-computes and caches
 //                        the same value as SoR-XMAC-IUE to compare against).
+//   A.19 UPU-MAC-IAUSF   FC=0x7B  KDF(KAUSF, UE Parameters Update Data [TS 24.501 §9.11.3.53A,
+//                        starting octet 23], CounterUPU), 128 LSBs. Real citation, confirmed
+//                        2026-08-25 against the same local TS 33.501 v19.6.0 copy A.17/A.18 above
+//                        cite (page 243) -- gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md, ADR-0193
+//                        audit, ADR-0195). Same real KAUSF-based family as A.17/A.18 (SoR), a
+//                        distinct, independent FC/parameter set, not a reuse of SoR's own.
+//   A.20 UPU-MAC-IUE/    FC=0x7C  KDF(KAUSF, 0x01, CounterUPU), 128 LSBs. Real citation, same
+//        UPU-XMAC-IUE    source, page 243-244. One function computes both, same real naming
+//                        convention as A.18's own SoR-MAC-IUE/SoR-XMAC-IUE (UE sends UPU-MAC-IUE;
+//                        AUSF pre-computes and caches the same value as UPU-XMAC-IUE to compare).
 //   A.9  KgNB/KN3IWF/... FC=0x6E  KDF(KAMF, uplink NAS COUNT, access type distinguisher). Real
 //                        citation, confirmed 2026-08-17 against the same local TS 33.501 v19.6.0
 //                        copy A.17/A.18 above cite (page 239) -- gap-closure (docs/
@@ -179,6 +189,23 @@ SorMac derive_sor_mac_iausf(const Kausf& kausf,
 // and SoR-XMAC-IUE (pre-computed and cached by the AUSF to compare against) -- which name applies
 // is a caller-side bookkeeping distinction, not a functional one.
 SorMac derive_sor_mac_iue(const Kausf& kausf, uint16_t counter_sor);
+
+using UpuMac = std::array<uint8_t, 16>;
+
+// TS 33.501 Annex A.19 (real citation, see this file's own header comment).
+// ue_parameters_update_data is the caller-supplied, already-encoded UE Parameters Update Data
+// octets (TS 24.501 §9.11.3.53A, starting from octet 23) -- this function treats them as opaque,
+// does not construct or interpret them. counter_upu is the real, persistent per-KAUSF freshness
+// counter (clause 6.15.2.2 -- caller's responsibility to maintain per its own real state-machine
+// rules, not this function's).
+UpuMac derive_upu_mac_iausf(const Kausf& kausf,
+                            const std::vector<uint8_t>& ue_parameters_update_data,
+                            uint16_t counter_upu);
+
+// TS 33.501 Annex A.20 (real citation). Same formula computes both UPU-MAC-IUE (sent by the UE)
+// and UPU-XMAC-IUE (pre-computed and cached by the AUSF to compare against) -- which name applies
+// is a caller-side bookkeeping distinction, not a functional one.
+UpuMac derive_upu_mac_iue(const Kausf& kausf, uint16_t counter_upu);
 
 using Kgnb = std::array<uint8_t, 32>;
 using NextHopKey = std::array<uint8_t, 32>;

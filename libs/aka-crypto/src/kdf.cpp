@@ -177,6 +177,23 @@ SorMac derive_sor_mac_iue(const Kausf& kausf, uint16_t counter_sor) {
     return mac;
 }
 
+UpuMac derive_upu_mac_iausf(const Kausf& kausf,
+                            const std::vector<uint8_t>& ue_parameters_update_data,
+                            uint16_t counter_upu) {
+    const auto out =
+        generic_kdf(to_bytes(kausf), 0x7B, {ue_parameters_update_data, be16(counter_upu)});
+    UpuMac mac{};
+    std::copy(out.begin() + 16, out.end(), mac.begin()); // 128 LSBs
+    return mac;
+}
+
+UpuMac derive_upu_mac_iue(const Kausf& kausf, uint16_t counter_upu) {
+    const auto out = generic_kdf(to_bytes(kausf), 0x7C, {{0x01}, be16(counter_upu)});
+    UpuMac mac{};
+    std::copy(out.begin() + 16, out.end(), mac.begin()); // 128 LSBs
+    return mac;
+}
+
 Kgnb derive_kgnb(const Kamf& kamf, uint32_t uplink_nas_count, uint8_t access_type_distinguisher) {
     return generic_kdf(to_bytes(kamf), 0x6E, {be32(uplink_nas_count), {access_type_distinguisher}});
 }

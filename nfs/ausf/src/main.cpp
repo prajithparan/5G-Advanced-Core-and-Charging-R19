@@ -86,6 +86,8 @@ constexpr const char* kNfType = "AUSF";
 constexpr const char* kApiRoot = "/nausf-auth/v1";
 // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0081).
 constexpr const char* kSorProtectionApiRoot = "/nausf-sorprotection/v1";
+// Gap-closure (ADR-0193 audit, ADR-0195).
+constexpr const char* kUpuProtectionApiRoot = "/nausf-upuprotection/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -263,6 +265,9 @@ int main() {
                                                          "Total UEAuthenticationsDeregister calls");
     auto sor_protection_counter = meter->CreateUInt64Counter(
         "ausf_sor_protection_total", "Total Nausf_SoRProtection ue-sor calls");
+    // Gap-closure (ADR-0193 audit, ADR-0195).
+    auto upu_protection_counter = meter->CreateUInt64Counter(
+        "ausf_upu_protection_total", "Total Nausf_UPUProtection ue-upu calls");
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091).
     auto prose_authenticate_counter = meter->CreateUInt64Counter(
         "ausf_prose_authenticate_total", "Total POST /prose-authentications calls");
@@ -970,6 +975,64 @@ int main() {
             sor_protection_counter->Add(1);
             json j = resp_data;
             return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // --- Nausf_UPUProtection (ADR-0195, gap-closure per ADR-0193's audit) ---
+
+    server.add_route(
+        "POST",
+        std::string(kUpuProtectionApiRoot) + "/{supi}/ue-upu",
+        [&verifier, &kausf_store, &upu_protection_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            // Real codegen disambiguation: Nudm_SDM.yaml declares its own, distinct UpuInfo
+            // schema, so this operation's own type is suffixed UpuInfo_Nausf_UPUProtection.
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::UpuInfo_Nausf_UPUProtection>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            // Real declared `minItems: 1` on upuDataList -- the codegen's structural typing alone
+            // (a plain std::vector) doesn't enforce this JSON-Schema constraint, same class of gap
+            // as LMF's own `ecgi`/`ncgi` mutual-exclusivity check (ADR-0191).
+            if (body->upuDataList.empty()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "upuDataList must have at least one entry");
+            }
+            const auto supi = req.path_params.at("supi");
+
+            auto sor_ctx = kausf_store.get(supi);
+            if (!sor_ctx.has_value()) {
+                return sbi_core::http2::problem_response(404,
+                                                         "Not Found",
+                                                         "No KAUSF on record for SUPI " + supi +
+                                                             " (never authenticated, or this "
+                                                             "AUSF instance restarted since)");
+            }
+
+            // Real, disclosed scope limit, same class as Nausf_SoRProtection's own (this file's
+            // header): computing UPU-MAC-IAUSF (TS 33.501 Annex A.19) needs the real NAS-layer
+            // encoding of "UE Parameters Update Data" per TS 24.501 §9.11.3.53A (starting from
+            // octet 23) -- unlike SoR's own sorHeader/steeringContainer fields, this operation's
+            // real YAML gives the requester no pre-encoded-bytes alternative to the structured
+            // upuDataList, so there is no opaque-bytes shortcut available here the way SoR's own
+            // SecuredPacket-form steeringContainer provided. That NAS-layer TLV encoder is not
+            // implemented in this project (genuinely out of this session's spec material -- TS
+            // 24.501 §9.11.3.53A is a different clause from the ones this project already has in
+            // hand). The real KAUSF/CounterUPU state above is checked first so a caller gets a
+            // meaningful distinction between "wrong AUSF instance" (404) and "this build cannot
+            // compute the MAC yet" (501) -- CounterUPU is deliberately NOT consumed here (no MAC
+            // is actually produced), matching the real spec intent that the counter is a freshness
+            // input to an actual computation, not a request-attempt tally. upu_protection_counter
+            // is captured for the real success path this operation doesn't have yet -- see this
+            // comment's own disclosure above; it stays at zero until that real encoder exists.
+            return sbi_core::http2::problem_response(
+                501,
+                "Not Implemented",
+                "UPU-MAC-IAUSF computation requires TS 24.501 §9.11.3.53A NAS-layer encoding of "
+                "UE Parameters Update Data, not implemented in this build");
         });
 
     std::thread(run_nrf_lifecycle, ausf_instance_id, nrf_base).detach();

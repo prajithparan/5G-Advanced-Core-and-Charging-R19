@@ -38,6 +38,15 @@ struct SorContext {
     // CounterSoR ... is about to wrap around") -- set once counter_sor has been used at its own
     // real maximum (0xFFFF) and cleared only by a fresh KAUSF (store_fresh_kausf).
     bool suspended = false;
+    // ADR-0195 (gap-closure, Nausf_UPUProtection): CounterUPU, TS 33.501 clause 6.15.2.2 -- a
+    // real, SEPARATE 16-bit counter from CounterSoR above, "associated" with the same KAUSF but
+    // maintained independently ("The AUSF and the UE shall associate a 16-bit counter,
+    // CounterUPU, with the key KAUSF" -- clause 6.15.2.2, distinct from CounterSoR's own
+    // identical-shaped clause 6.14.2.3). Same real state-machine rules (init 0x0001, increment
+    // per computation, suspend on wraparound, reset on fresh KAUSF) -- see
+    // KausfStore::use_upu_counter's own comment.
+    std::uint16_t counter_upu = 1;
+    bool suspended_upu = false;
 };
 
 class KausfStore {
@@ -62,6 +71,12 @@ public:
     // 0xFFFF is the last value ever handed out; the call that hands it out also marks the
     // context suspended for every call after it, until a fresh KAUSF resets it).
     std::optional<std::uint16_t> use_counter(const std::string& supi);
+
+    // ADR-0195: real CounterUPU state machine (clause 6.15.2.2), same shape as use_counter above
+    // but tracking the separate counter_upu/suspended_upu fields -- CounterSoR and CounterUPU are
+    // real, independent counters per the spec text cited on SorContext's own fields, not aliases
+    // of each other.
+    std::optional<std::uint16_t> use_upu_counter(const std::string& supi);
 
 private:
     std::shared_ptr<sw::redis::Redis> redis_;

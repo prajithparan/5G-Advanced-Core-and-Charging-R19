@@ -1269,7 +1269,7 @@ check couldn't resolve (none surfaced this pass).
 | SMF | `Nsmf_EventExposure`, `Nsmf_NIDD` |
 | UDM | `Nudm_MT`, `Nudm_NIDDAU`, `Nudm_RSDS`, `Nudm_SSAU`, `Nudm_UEID` |
 | UDR | `Nudr_GroupIDmap` -- different failure mode: implemented, but with hand-written `nlohmann::json` structs bypassing sbi-codegen entirely (`main.cpp:4046` admits "no generated DTO for this API") -- a standing violation of "never hand-write a DTO the YAML can generate" |
-| AUSF | `Nausf_UPUProtection` |
+| AUSF | ~~`Nausf_UPUProtection`~~ CLOSED, ADR-0195 |
 | PCF | `Npcf_EventExposure`, `Npcf_UEPolicyControl`, `Npcf_AMPolicyAuthorization`, `Npcf_MBSPolicyAuthorization`, `Npcf_MBSPolicyControl`, `Npcf_PDTQPolicyControl`, `Npcf_BDTPolicyControl` (7 files) |
 | NEF | `Nnef_SMContext`, `Nnef_SMService`, `Nnef_DNAIMapping`, `Nnef_EASDeployment`, `Nnef_ECSAddress`, `Nnef_EventExposure`, `Nnef_Inference`, `Nnef_TrafficInfluenceData`, `Nnef_Training`, `Nnef_UEId`, `Nnef_VFLInference`, `Nnef_VFLTraining`, `Nnef_Authentication` (13 files -- largest single Tier-A concentration in the project) |
 | LMF | `Nlmf_Broadcast`, `Nlmf_DataExposure` |
@@ -1305,8 +1305,9 @@ within already-wired files, not a structural gap.
 
 Smallest/clearest first, since they're genuinely closable in full rather than a partial slice:
 `Nnrf_Bootstrapping` (1 operation, no request body) -- CLOSED, ADR-0194 -- was the natural first
-item, and literally what prompted this audit. `Nausf_UPUProtection` (1 operation) and the two `Nlmf_*`
-files (1 + 3 operations) are similarly small. The two UDR comment-vs-spec factual errors
+item, and literally what prompted this audit. `Nausf_UPUProtection` (1 operation) -- CLOSED,
+ADR-0195 -- was similarly small. The two `Nlmf_*` files (1 + 3 operations) are next. The two UDR
+comment-vs-spec factual errors
 (`operator-specific-data` PUT/DELETE) should be fixed directly regardless of ordering, since
 they're not "missing coverage" but an active documentation defect. NEF's 13-file/~45-operation
 surface and PCF's 7-file surface are the largest single blocks of remaining work in the project
