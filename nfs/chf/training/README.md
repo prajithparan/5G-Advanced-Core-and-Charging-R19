@@ -9,15 +9,16 @@ inference is in-process C++, at runtime, never a Python call.
 
 Real regression target: how much a given SUPI+ratingGroup will actually consume
 (`used_total_volume`, octets) in its next charging-request window, learned from real CDR history
-already written to ClickHouse (`nfs/chf/schema.clickhouse.sql`). It does **not** predict a "correct
-multiplier" -- no such label exists in this project's real data. CHF's own deterministic rule
+already written to Apache Doris (migrated off ClickHouse, ADR-0192; `nfs/chf/schema.doris.sql`).
+It does **not** predict a "correct multiplier" -- no such label exists in this project's real
+data. CHF's own deterministic rule
 (`build_rating_grant`, `charging_engine.cpp`) turns a predicted usage figure into a bounded
 grant-size multiplier (clamped to `[0.5x, 2.0x]` of the price-configured base grant). See
 `train_quota_sizing.py`'s own module docstring for the full, real feature-vector definition.
 
 ## Cold start
 
-A fresh lab environment has no real production usage history. If ClickHouse doesn't yet have at
+A fresh lab environment has no real production usage history. If Doris doesn't yet have at
 least 20 real usage-bearing CDR rows for a SUPI+ratingGroup sequence, the script falls back to a
 clearly-labeled SYNTHETIC bootstrap dataset (a simple, documented generative rule with noise) so
 the training->ONNX->inference pipeline is provably real and functional before real usage data
@@ -30,8 +31,8 @@ stdout) -- never silently blended or hidden. Re-run this script once real CDR vo
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python train_quota_sizing.py \
-    --clickhouse-host 127.0.0.1 --clickhouse-user default \
-    --clickhouse-password <CHF_CLICKHOUSE_PASSWORD> \
+    --doris-host 127.0.0.1 --doris-user root \
+    --doris-password <CHF_DORIS_PASSWORD> \
     --output models/quota_sizing.onnx
 ```
 

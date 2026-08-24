@@ -1247,3 +1247,68 @@ turn, and LMF's own `DetermineLocation`/`LocationMeasure` remain honest `501`s r
 LPP/PRU capability gap is unaffected by wiring). Also, this pass found and fixed 2 real defects
 while building LMF (ADR-0190): a vendored-spec transcription typo, and the third real
 sbi-codegen generator bug found this way (after ADR-0022/ADR-0024).
+
+## ADR-0193 full-project YAML coverage audit (2026-08-24)
+
+Different axis from the free5GC/open5GS behavioral sweep above: this is a literal cross-reference
+of every real `N<nf>_*` YAML in `specs/5G_APIs-REL-19/` against `libs/sbi-generated/CMakeLists.txt`'s
+pilot set (wired vs. never-wired -- "Tier-A") and, for wired files, every real `operationId` against
+that NF's actual routed handlers (real vs. stub vs. missing -- "Tier-B"). Triggered by the user
+asking why `Nnrf_Bootstrapping` isn't implemented -- confirmed a real, undisclosed gap (the YAML
+exists, was simply never added to the pilot set) -- then extended project-wide per ADR-0193's own
+mandatory, ASAP, one-by-one audit-and-close directive. Performed by a single-pass background
+agent, real grep/read evidence, not guessed; "needs closer look" reserved for anything a quick
+check couldn't resolve (none surfaced this pass).
+
+**Confirmed Tier-A gaps (whole API file never wired into codegen) by NF:**
+
+| NF | Missing YAML file(s) |
+|---|---|
+| NRF | ~~`Nnrf_Bootstrapping`~~ CLOSED, ADR-0194 (the original finding that triggered this audit) |
+| AMF | `Namf_AIoT`, `Namf_MBSBroadcast`, `Namf_MBSCommunication`, `Namf_MT` |
+| SMF | `Nsmf_EventExposure`, `Nsmf_NIDD` |
+| UDM | `Nudm_MT`, `Nudm_NIDDAU`, `Nudm_RSDS`, `Nudm_SSAU`, `Nudm_UEID` |
+| UDR | `Nudr_GroupIDmap` -- different failure mode: implemented, but with hand-written `nlohmann::json` structs bypassing sbi-codegen entirely (`main.cpp:4046` admits "no generated DTO for this API") -- a standing violation of "never hand-write a DTO the YAML can generate" |
+| AUSF | `Nausf_UPUProtection` |
+| PCF | `Npcf_EventExposure`, `Npcf_UEPolicyControl`, `Npcf_AMPolicyAuthorization`, `Npcf_MBSPolicyAuthorization`, `Npcf_MBSPolicyControl`, `Npcf_PDTQPolicyControl`, `Npcf_BDTPolicyControl` (7 files) |
+| NEF | `Nnef_SMContext`, `Nnef_SMService`, `Nnef_DNAIMapping`, `Nnef_EASDeployment`, `Nnef_ECSAddress`, `Nnef_EventExposure`, `Nnef_Inference`, `Nnef_TrafficInfluenceData`, `Nnef_Training`, `Nnef_UEId`, `Nnef_VFLInference`, `Nnef_VFLTraining`, `Nnef_Authentication` (13 files -- largest single Tier-A concentration in the project) |
+| LMF | `Nlmf_Broadcast`, `Nlmf_DataExposure` |
+| UPF | `Nupf_EventExposure`, `Nupf_GetUEPrivateIPaddrAndIdentifiers` -- lower severity: UPF's real primary control interface is N4/PFCP (TS 23.501), not SBI; these two are real, legitimate, but optional R17+ direct-exposure services this project's own spec archive happens to include |
+
+NSSF, BSF, SCP, CHF, EIR, SMSF, GMLC: **zero** Tier-A gaps found (single-file NFs already fully
+wired, or CHF's deliberately narrow 3-file scope matching CLAUDE.md exactly).
+
+**Related but distinct: wired-and-silently-empty ("looks real, isn't").** AMF's
+`Namf_Location` and `Namf_EventExposure` are both in the pilot set and generate real DTOs, but
+`nfs/amf/src/main.cpp` routes zero operations for either -- its own header scopes itself to
+`Namf_Communication` only, with nothing flagging these two as a known gap. Unlike a disclosed
+`501`, this is currently invisible to anyone reading the code without cross-checking the pilot
+set -- worth fixing the disclosure even before the routes themselves are built.
+
+**Related but distinct: undisclosed Tier-B gaps inside NFs already marked "real."** Two concrete
+factual errors, not just missing coverage: UDR's own ADR-0111/ADR-0114 comments assert
+`operator-specific-data` has no PUT/DELETE in the YAML -- it does (both `Subscription_Data.yaml`
+and `Policy_Data.yaml`, confirmed by direct read) -- worth a direct comment+implementation fix,
+not backlog triage. Beyond that, UDR (the most mature NF by route count) has ~7 further
+undisclosed missing resources in `Subscription_Data` (`authentication-status/{servingNetworkName}`,
+bare `provisioned-data` GET, `subs-to-notify` bulk-DELETE) and ~12 in `Policy_Data` (bare `{ueId}`
+aggregate, `sm-data/{usageMonId}` family, bare `bdt-data` collection GET, and an entire
+`subs-to-notify` subscription family distinct from `Subscription_Data`'s own). NRF has 4
+undisclosed missing operations (`OptionsNFInstances`, `RetrieveStoredSearch`,
+`RetrieveCompleteSearch`, `RetrieveKeyRequest`) -- and its own existing disclosure comment for
+`ScpDomainRoutingInfo*` ("SCP isn't built yet") is now stale, since SCP was built in ADR-0186.
+UDM has the largest raw undisclosed-op count (~24 in `Nudm_UECM`, ~34 in `Nudm_SDM`, plus smaller
+gaps in `UEAU`/`PP`) but every one is a real, individually small CRUD/subscription operation
+within already-wired files, not a structural gap.
+
+### Prioritization for closure (per ADR-0193's continuous, one-at-a-time process)
+
+Smallest/clearest first, since they're genuinely closable in full rather than a partial slice:
+`Nnrf_Bootstrapping` (1 operation, no request body) -- CLOSED, ADR-0194 -- was the natural first
+item, and literally what prompted this audit. `Nausf_UPUProtection` (1 operation) and the two `Nlmf_*`
+files (1 + 3 operations) are similarly small. The two UDR comment-vs-spec factual errors
+(`operator-specific-data` PUT/DELETE) should be fixed directly regardless of ordering, since
+they're not "missing coverage" but an active documentation defect. NEF's 13-file/~45-operation
+surface and PCF's 7-file surface are the largest single blocks of remaining work in the project
+and will need to be split across multiple turns even under the "one subsystem per turn" framing
+already used for NEF/SCP/BSF.

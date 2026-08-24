@@ -1,5 +1,6 @@
 -- nfs/chf's real PostgreSQL schema -- P4.5/ADR-0060 (E5, Rating Function): CHF's first PostgreSQL
--- connection (previously Redis/Valkey for E3 session state and ClickHouse for E4 CDRs only).
+-- connection (previously Redis/Valkey for E3 session state and Apache Doris for E4 CDRs only,
+-- ADR-0192).
 --
 -- Real TMF678 AppliedCustomerBillingRate is E5's own real SID mapping (docs/DATA_MODEL.md), the
 -- "rated" representation of a charging decision. `rating_decision` combines this project's own
@@ -17,7 +18,7 @@ CREATE SEQUENCE IF NOT EXISTS rating_decision_id_seq;
 CREATE TABLE IF NOT EXISTS rating_decision (
     id                  TEXT PRIMARY KEY,
     usage_record_id     TEXT,           -- FK -> a future E4 UsageRecord row; nullable, no such
-                                        -- table exists yet (E4 is ClickHouse CDRs, not this table)
+                                        -- table exists yet (E4 is Apache Doris CDRs, ADR-0192, not this table)
     tariff_id           TEXT,           -- ProductOfferingPrice.id (E2), the tariff that fired
     tariff_version      TEXT,           -- ProductOfferingPrice.version, pinned per principle 1
     rating_group        BIGINT,

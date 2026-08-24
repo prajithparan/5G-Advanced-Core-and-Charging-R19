@@ -3826,3 +3826,51 @@ has a real, full create+delete lifecycle (unlike GMLC's own create-only gap); it
 response declares no id-bearing header/field, so a `Location` header is added at the HTTP layer for
 real usability, disclosed as filling a genuine spec gap, not fabricated content. See ADR-0191 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0192 -- CHF CDR storage: ClickHouse -> Apache Doris
+
+| Requirement | Test |
+|---|---|
+| Real Doris connectivity | Real `apache/doris:all-in-one-4.1.3` container, health-checked, schema applied via its own bundled `mysql` client |
+| Real CDR write path (`Nchf_ConvergedCharging` Create) | Live curl over mTLS: real `201`, `ChargingDataRef=chg-21` |
+| Real row landed, correctly hex-encoded | Direct Doris query (`mysql` client, not through CHF): row present, `asn1_cdr` populated with valid hex-encoded TS 32.298 BER bytes |
+| No regression | Full project rebuild clean; full `ctest` (excluding the two known-flaky tests): 363/363 pass |
+
+User-directed, mandatory ("migrate to Apache Doris ASAP"), preceded by a strict standing rule
+(every datastore self-hosted open-source only, never cloud/managed). Real client-library pivot
+mid-migration: `mariadb-connector-cpp` (real, working, zero Java dependency) rejected anyway for
+its JDBC-shaped API surface per explicit user instruction; replaced with `libmariadb`'s plain C
+API wrapped in a project-owned RAII class, no JDBC-style naming. Real dedup-model improvement
+(Doris's UNIQUE KEY/Merge-on-Write vs. ClickHouse's `ReplacingMergeTree`, which only dedupes on
+merge/`FINAL`), real no-BLOB/hex-encoding disclosure, real no-partition/TTL disclosure (Doris's
+own partition-key-subset-of-unique-key constraint). Three real bugs found and fixed via live
+verification, not guessed: a pre-existing missing `#include <array>` unmasked by the dependency
+swap, a `tests/conformance/CMakeLists.txt` missing the new libmariadb wiring (caught only after
+re-running a build without piping through `tail`, which had swallowed the real nonzero exit code),
+and a real SSL-handshake bug root-caused by reading libmariadb's own vendored source
+(`MYSQL_OPT_SSL_VERIFY_SERVER_CERT` forces `use_ssl=1` independent of `SSL_ENFORCE`). See ADR-0192
+in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0193 -- systematic full-project YAML coverage audit (mandatory, user-directed)
+
+Not itself a code-closure ADR -- records the decision and process for the project-wide gap audit
+that ADR-0194 (and its own successors) close items from. Real, evidence-based cross-reference of
+every 3GPP-assigned YAML per already-implemented NF against `libs/sbi-generated/CMakeLists.txt`'s
+pilot set (Tier-A: whole API never wired) and, for wired files, every real `operationId` against
+actual routed handlers (Tier-B: stub/missing). Full findings tracked in
+`docs/CAPABILITY_GAP_ANALYSIS.md`, not duplicated here. See ADR-0193 in `docs/DECISIONS.md`.
+
+## ADR-0194 -- NRF `Nnrf_Bootstrapping` (first ADR-0193 gap-closure)
+
+| Requirement | Test |
+|---|---|
+| `BootstrappingInfoRequest` (`GET /bootstrapping`) | Live curl over mTLS: real `200`, `content-type: application/3gppHal+json`, real `BootstrappingInfo` body (`nrfInstanceId`, `status=OPERATIVE`, `_links.self.href=/bootstrapping`, `oauth2Required` map) |
+| Real generated DTO round-trip | `NrfBootstrappingDtos.StatusRoundTrips` / `NrfBootstrappingDtos.BootstrappingInfoRoundTrips`, both pass |
+| No regression | Full project rebuild clean; full `ctest` (excluding the two known-flaky tests): 363/363 pass |
+
+The literal Tier-A gap that triggered ADR-0193's audit. Real path exactly as the vendored YAML
+declares it (`servers: url: '{nrfApiRoot}'`, bare `/bootstrapping`, no service-prefix invented).
+Every response field grounded in real project state (real `nrfInstanceId`, honest
+`oauth2Required=false` matching this NRF's actual anonymous-access-permitted routes) or explicitly
+disclosed where the real spec text (TS 29.510 clause 6.4.6.3.3's link-relation vocabulary) isn't
+vendored. See ADR-0194 in `docs/DECISIONS.md` for full disclosure.

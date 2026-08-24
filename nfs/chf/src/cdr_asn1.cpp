@@ -1,5 +1,6 @@
 #include "cdr_asn1.hpp"
 
+#include <array>
 #include <ctime>
 #include <optional>
 

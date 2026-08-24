@@ -7,9 +7,10 @@ script produces and calls it in-process. Nothing in this file runs inside CHF.
 
 What this model predicts, and why: the real, honest training target is "how much will this
 SUPI+ratingGroup actually consume in its next charging-request window" (a real regression
-problem over TS 32.291 fields CHF already writes to ClickHouse, nfs/chf/schema.clickhouse.sql),
-NOT an invented "correct multiplier" label -- no such label exists anywhere in this project's
-real data. CHF's own deterministic rule (build_rating_grant, ADR-0074) is what turns a predicted
+problem over TS 32.291 fields CHF already writes to Apache Doris -- migrated off ClickHouse,
+ADR-0192; see nfs/chf/schema.doris.sql), NOT an invented "correct multiplier" label -- no such
+label exists anywhere in this project's real data. CHF's own deterministic rule
+(build_rating_grant, ADR-0074) is what turns a predicted
 usage figure into a bounded grant-size multiplier; this script never decides a grant, only
 predicts a usage quantity. "This model informs the decision. The deterministic rating engine
 makes it." (CHARGING_PROMPT.md Section B, the line that must not be crossed.)
@@ -28,7 +29,7 @@ change one, change both, or the ONNX model silently reads garbage):
                                   measures its multiplier against
 
 Real, disclosed cold-start gap: this is a freshly-built lab environment with no real production
-usage history. If real ClickHouse CDR data does not clear MIN_REAL_EXAMPLES, this script falls
+usage history. If real Doris CDR data does not clear MIN_REAL_EXAMPLES, this script falls
 back to a clearly-labeled SYNTHETIC bootstrap dataset (a simple, documented generative rule with
 noise) rather than training on too few real rows to mean anything, or refusing to produce a model
 at all. The data source actually used is logged to MLflow as a tag (data_source=real_cdr |
@@ -57,29 +58,35 @@ FEATURE_NAMES = [
 MIN_REAL_EXAMPLES = 20
 
 
-def fetch_real_examples(clickhouse_host: str, clickhouse_port: int, database: str,
+def fetch_real_examples(doris_host: str, doris_port: int, database: str,
                          user: str, password: str) -> tuple[np.ndarray, np.ndarray]:
-    """Real ClickHouse query against nfs/chf/schema.clickhouse.sql's own `cdr` table.
+    """Real Doris query (migrated off ClickHouse, ADR-0192) against
+    nfs/chf/schema.doris.sql's own `cdr` table, over Doris's real MySQL wire protocol.
 
     Builds one (features, target) pair per usage-bearing row that has at least one prior
     usage-bearing row for the same (subscriber_identifier, rating_group) -- the real sliding
     window this project's own schema supports, nothing invented beyond it.
     """
-    import clickhouse_connect
+    import pymysql
 
-    client = clickhouse_connect.get_client(
-        host=clickhouse_host, port=clickhouse_port, database=database,
-        username=user, password=password,
+    conn = pymysql.connect(
+        host=doris_host, port=doris_port, database=database,
+        user=user, password=password,
     )
-    rows = client.query(
-        """
-        SELECT subscriber_identifier, rating_group, used_total_volume,
-               granted_total_volume, invocation_time_stamp
-        FROM cdr
-        WHERE used_total_volume IS NOT NULL AND rating_group IS NOT NULL
-        ORDER BY subscriber_identifier, rating_group, invocation_time_stamp
-        """
-    ).result_rows
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT subscriber_identifier, rating_group, used_total_volume,
+                       granted_total_volume, invocation_time_stamp
+                FROM cdr
+                WHERE used_total_volume IS NOT NULL AND rating_group IS NOT NULL
+                ORDER BY subscriber_identifier, rating_group, invocation_time_stamp
+                """
+            )
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
 
     sequences: dict[tuple[str, int], list[tuple]] = {}
     for supi, rating_group, used, granted, ts in rows:
@@ -138,11 +145,11 @@ def synthetic_bootstrap_examples(n: int = 200, seed: int = 42) -> tuple[np.ndarr
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--clickhouse-host", default=os.environ.get("CHF_CLICKHOUSE_HOST", "127.0.0.1"))
-    parser.add_argument("--clickhouse-port", type=int, default=8123)
-    parser.add_argument("--clickhouse-database", default=os.environ.get("CHF_CLICKHOUSE_DATABASE", "default"))
-    parser.add_argument("--clickhouse-user", default=os.environ.get("CHF_CLICKHOUSE_USER", "default"))
-    parser.add_argument("--clickhouse-password", default=os.environ.get("CHF_CLICKHOUSE_PASSWORD", ""))
+    parser.add_argument("--doris-host", default=os.environ.get("CHF_DORIS_HOST", "127.0.0.1"))
+    parser.add_argument("--doris-port", type=int, default=9030)
+    parser.add_argument("--doris-database", default=os.environ.get("CHF_DORIS_DATABASE", "chf_cdr"))
+    parser.add_argument("--doris-user", default=os.environ.get("CHF_DORIS_USER", "root"))
+    parser.add_argument("--doris-password", default=os.environ.get("CHF_DORIS_PASSWORD", ""))
     # Real finding from live testing: MLflow 3.x's filesystem tracking store ("file://./mlruns")
     # is now in maintenance mode and refuses new writes (MlflowException pointing at
     # `mlflow migrate-filestore`) -- a local SQLite backend is the real, still-fully-local
@@ -155,11 +162,11 @@ def main() -> int:
 
     data_source = "real_cdr"
     try:
-        X, y = fetch_real_examples(args.clickhouse_host, args.clickhouse_port,
-                                    args.clickhouse_database, args.clickhouse_user,
-                                    args.clickhouse_password)
-    except Exception as exc:  # real, disclosed: ClickHouse unreachable is a real possible state
-        print(f"[train_quota_sizing] real ClickHouse query failed ({exc}); "
+        X, y = fetch_real_examples(args.doris_host, args.doris_port,
+                                    args.doris_database, args.doris_user,
+                                    args.doris_password)
+    except Exception as exc:  # real, disclosed: Doris unreachable is a real possible state
+        print(f"[train_quota_sizing] real Doris query failed ({exc}); "
               f"falling back to synthetic bootstrap data", file=sys.stderr)
         X, y = np.empty((0, 4)), np.empty((0,))
 

@@ -387,18 +387,15 @@ void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
     }
     cdr.invocation_time_stamp =
         std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    try {
-        cdr_writer.write(cdr);
-    } catch (const std::exception& e) {
-        // Real, disclosed gap: a ClickHouse write failure does not block or fail the real
-        // charging response CHF already committed to (the balance reservation above already
-        // happened) -- CDR generation is best-effort in this build, matching this project's
-        // existing "no real distributed-transaction guarantee across CHF's several real
-        // dependencies" disclosure (see finalize_subscriber_balance's own comment for the
-        // balance-management analogue).
-        spdlog::warn(
-            "chf: CDR write to ClickHouse failed for ChargingDataRef={}: {}", ref, e.what());
-    }
+    // Real, disclosed gap: a Doris write failure does not block or fail the real charging
+    // response CHF already committed to (the balance reservation above already happened) -- CDR
+    // generation is best-effort in this build, matching this project's existing "no real
+    // distributed-transaction guarantee across CHF's several real dependencies" disclosure (see
+    // finalize_subscriber_balance's own comment for the balance-management analogue). ADR-0192:
+    // CdrWriter::write() itself already catches every real Doris error surface and logs a
+    // warning -- it never throws, so no try/catch is needed here (unlike the ClickHouse-backed
+    // version this replaced, whose own client could throw mid-insert).
+    cdr_writer.write(cdr);
 }
 
 void write_rating_decision(chf::RatingDecisionStore& rating_decision_store,

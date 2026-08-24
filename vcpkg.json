@@ -16,7 +16,7 @@
     "jwt-cpp",
     "libpqxx",
     "redis-plus-plus",
-    "clickhouse-cpp",
+    "libmariadb",
     "onnxruntime",
     {
       "name": "curl",

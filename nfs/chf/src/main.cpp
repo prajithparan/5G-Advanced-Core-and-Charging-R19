@@ -197,23 +197,22 @@ std::string chf_redis_conninfo() {
     return "tcp://127.0.0.1:6379";
 }
 
-// P4.4/ADR-0058: real ClickHouse connection options for CdrWriter -- same never-hardcode-
-// credentials, getenv-based-config precedent as chf_redis_conninfo above. Defaults match this
-// project's lab/dev convention (a real ClickHouse instance's default user has no password).
-clickhouse::ClientOptions chf_clickhouse_options() {
-    clickhouse::ClientOptions options;
-    options.SetHost(std::getenv("CHF_CLICKHOUSE_HOST") ? std::getenv("CHF_CLICKHOUSE_HOST")
-                                                       : "127.0.0.1");
-    options.SetPort(std::getenv("CHF_CLICKHOUSE_PORT")
-                        ? static_cast<std::uint16_t>(std::stoi(std::getenv("CHF_CLICKHOUSE_PORT")))
-                        : 9000);
-    options.SetUser(std::getenv("CHF_CLICKHOUSE_USER") ? std::getenv("CHF_CLICKHOUSE_USER")
-                                                       : "default");
-    options.SetPassword(
-        std::getenv("CHF_CLICKHOUSE_PASSWORD") ? std::getenv("CHF_CLICKHOUSE_PASSWORD") : "");
-    options.SetDefaultDatabase(std::getenv("CHF_CLICKHOUSE_DATABASE")
-                                   ? std::getenv("CHF_CLICKHOUSE_DATABASE")
-                                   : "default");
+// P4.4/ADR-0058, migrated ADR-0192: real Doris connection options for CdrWriter -- same
+// never-hardcode-credentials, getenv-based-config precedent as chf_redis_conninfo above. Defaults
+// match apache/doris's own official all-in-one Docker image (ADR-0192): FE MySQL-protocol port
+// 9030, root user with no password by default -- a real, disclosed lab-only credential shape,
+// same class as this project's own CHF PostgreSQL trust-auth precedent (ADR-0060).
+chf::DorisOptions chf_doris_options() {
+    chf::DorisOptions options;
+    options.host =
+        std::getenv("CHF_DORIS_HOST") ? std::getenv("CHF_DORIS_HOST") : "127.0.0.1";
+    options.port = std::getenv("CHF_DORIS_PORT")
+                       ? static_cast<std::uint16_t>(std::stoi(std::getenv("CHF_DORIS_PORT")))
+                       : 9030;
+    options.user = std::getenv("CHF_DORIS_USER") ? std::getenv("CHF_DORIS_USER") : "root";
+    options.password = std::getenv("CHF_DORIS_PASSWORD") ? std::getenv("CHF_DORIS_PASSWORD") : "";
+    options.database =
+        std::getenv("CHF_DORIS_DATABASE") ? std::getenv("CHF_DORIS_DATABASE") : "chf_cdr";
     return options;
 }
 
@@ -368,12 +367,13 @@ int main() {
 
     // P4.4/ADR-0058: real CDF (CDR generation, TS 32.240/32.296) -- see cdr.hpp's own header for
     // the full disclosure of what this real CDR record is (and is not: not a conformant TS 32.298
-    // CDR, that spec isn't vendored -- schema.clickhouse.sql explains why).
-    chf::CdrWriter cdr_writer(chf_clickhouse_options());
+    // CDR, that spec isn't vendored -- schema.doris.sql explains why). ADR-0192: migrated off
+    // ClickHouse to Apache Doris.
+    chf::CdrWriter cdr_writer(chf_doris_options());
     if (cdr_writer.is_connected()) {
-        spdlog::info("chf: connected to ClickHouse (CDF)");
+        spdlog::info("chf: connected to Doris (CDF)");
     } else {
-        spdlog::warn("chf: ClickHouse unavailable, CDF/CDR generation disabled for this process");
+        spdlog::warn("chf: Doris unavailable, CDF/CDR generation disabled for this process");
     }
 
     // P4.5/ADR-0060 (E5): real RatingDecision audit table -- see rating_decision_store.hpp's own

@@ -143,8 +143,8 @@ private:
 
 // P4.8 (CHARGING_PROMPT.md Angle 1a, ADR-0074): rolling per-SUPI/per-ratingGroup consumption
 // history -- the real feature source for AiQuotaSizer::predict (nfs/chf/src/ai_inference.hpp).
-// Deliberately Redis-backed, not a live ClickHouse query per charging request: querying
-// ClickHouse synchronously inside the real-time Nchf_ConvergedCharging path would add
+// Deliberately Redis-backed, not a live Doris query per charging request: querying Doris
+// synchronously inside the real-time Nchf_ConvergedCharging path would add
 // unpredictable latency to the exact path P4.8's own hard-latency-budget requirement protects --
 // this rolling window is the same cheap, already-established hot-path-state pattern every other
 // store in this file uses (ChargingDataStore, SpendingLimitSubscriptionStore).

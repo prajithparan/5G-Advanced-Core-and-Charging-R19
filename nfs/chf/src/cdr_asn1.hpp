@@ -37,10 +37,11 @@
 // own per-field comments for the exact real tag number and spec clause each populated field cites.
 //
 // This is an ADDITIONAL real, spec-conformant encoded form, not a replacement for the existing
-// `cdr` ClickHouse table's own structured columns (ADR-0058) -- those stay real and queryable for
-// this project's own gap-detection/analytics use (CdrWriter::detect_gaps); this encoder's own
-// output is stored alongside them in a new `asn1_cdr` column, matching how a real billing-mediation
-// system would actually consume CHF-CDRs (as an exported encoded blob, not a live SQL query).
+// `cdr` table's own structured columns (ADR-0058, Doris-backed since ADR-0192) -- those stay real
+// and queryable for this project's own gap-detection/analytics use (CdrWriter::detect_gaps); this
+// encoder's own output is stored alongside them in a new `asn1_cdr` column, matching how a real
+// billing-mediation system would actually consume CHF-CDRs (as an exported encoded blob, not a
+// live SQL query).
 
 namespace chf {
 

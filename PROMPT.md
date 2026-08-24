@@ -120,7 +120,8 @@ Legacy charging protocols: freeDiameter (or equivalent) for Ro/Rf/Gy/Sy, a
                 CAP/CAMEL stack and a MAP stack for 2G/3G, GTP' for CDR transport
 Storage:        Redis/Valkey (UDSF, session cache, quota/balance hot state),
                 PostgreSQL (UDR, subscriber, catalogue, tariff, invoice),
-                ClickHouse (CDR/usage analytics), MongoDB or ScyllaDB (flexible
+                Apache Doris (CDR/usage analytics -- migrated off ClickHouse, ADR-0192: real
+                ClickHouse open-core governance drift), MongoDB or ScyllaDB (flexible
                 product definitions, mediation records), HDFS or S3-compatible
                 object store (CDR archive), Kafka or Redpanda (event bus)
 Integration:    Apache Camel (ESB/EIP), ActiveMQ or RabbitMQ (broker),

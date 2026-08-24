@@ -160,7 +160,8 @@ inter-PLMN charging over N41/N42) before designing it out. Report your finding.
   RDBMS (PostgreSQL)        — subscriber, product catalogue, tariff, invoice
   In-memory (Redis/Valkey)  — live sessions, quota/reservation state, hot balance
   JSON store / NoSQL        — flexible product definitions, mediation records
-  TSDB (Prometheus)         — metrics; ClickHouse for CDR/usage analytics
+  TSDB (Prometheus)         — metrics; Apache Doris for CDR/usage analytics (migrated off
+                               ClickHouse, ADR-0192)
   Distributed FS / object   — CDR archive, long-term retention (P14 auto-archival)
 Balance updates require strong consistency. Say so, and design for it.
 ```
@@ -305,8 +306,9 @@ balance mutation — prove it under concurrent debit tests.
 ### P4.4 — CDF / CGF / Bx (E4)
 ```
 Implement CDR generation per TS 32.298, file format and transfer per TS 32.297,
-GTP' transport per TS 32.295, persistence to ClickHouse plus distributed-FS or
-object-store archive with retention-driven auto-archival (principle P14). Bx to
+GTP' transport per TS 32.295, persistence to Apache Doris (migrated off ClickHouse,
+ADR-0192) plus distributed-FS or object-store archive with retention-driven
+auto-archival (principle P14). Bx to
 the Billing Domain (BD out of scope — provide a test consumer). Include duplicate
 detection, gap detection, and support for custom CDR formats alongside 3GPP.
 ```

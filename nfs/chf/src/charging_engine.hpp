@@ -40,7 +40,7 @@ namespace chf {
 // (this project's own original lab convention) -- it can never work once product-catalog/
 // balance-management are separate containers, since 127.0.0.1 inside CHF's own container is CHF
 // itself, not another container. Same getenv-based-config precedent as every other CHF connection
-// string (chf_redis_conninfo/chf_clickhouse_options/chf_rating_postgres_conninfo, main.cpp) --
+// string (chf_redis_conninfo/chf_doris_options/chf_rating_postgres_conninfo, main.cpp) --
 // CHF_PRODUCT_CATALOG_BASE/CHF_BALANCE_MANAGEMENT_BASE, defaulting to the same real 127.0.0.1 URLs
 // for same-host lab runs so nothing existing breaks.
 std::string product_catalog_base();

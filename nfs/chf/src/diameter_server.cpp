@@ -1253,25 +1253,22 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
                 chf::finalize_subscriber_balance(
                     balance_client, *supi, reserved_total, "Diameter-Gy CCR-Termination " + ref);
             }
-            try {
-                chf::CdrRecord cdr{};
-                cdr.charging_data_ref = ref;
-                cdr.invocation_sequence_number = static_cast<std::int64_t>(ccr->cc_request_number);
-                cdr.service_type = "ConvergedCharging";
-                cdr.operation = "Release";
-                cdr.subscriber_identifier = supi.value_or("");
-                cdr.nf_consumer_node_functionality = "Diameter-Gy";
-                if (reserved_total > 0.0) {
-                    cdr.reserved_cost = reserved_total;
-                }
-                cdr.invocation_time_stamp =
-                    std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-                cdr_writer_.write(cdr);
-            } catch (const std::exception& e) {
-                spdlog::warn("chf: CDR write to ClickHouse failed for ChargingDataRef={}: {}",
-                             ref,
-                             e.what());
+            // ADR-0192: CdrWriter::write() catches every real Doris error surface internally and
+            // logs a warning -- it never throws, so no try/catch is needed here (unlike the
+            // ClickHouse-backed version this replaced).
+            chf::CdrRecord cdr{};
+            cdr.charging_data_ref = ref;
+            cdr.invocation_sequence_number = static_cast<std::int64_t>(ccr->cc_request_number);
+            cdr.service_type = "ConvergedCharging";
+            cdr.operation = "Release";
+            cdr.subscriber_identifier = supi.value_or("");
+            cdr.nf_consumer_node_functionality = "Diameter-Gy";
+            if (reserved_total > 0.0) {
+                cdr.reserved_cost = reserved_total;
             }
+            cdr.invocation_time_stamp =
+                std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            cdr_writer_.write(cdr);
             session_to_ref.erase(it);
             if (ccr_termination_counter_ != nullptr) {
                 ccr_termination_counter_->Add(1);

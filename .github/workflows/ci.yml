@@ -128,27 +128,21 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-      # ADR-0073: real ClickHouse for CHF's own CDR generation (ADR-0058). A real, non-empty
-      # CLICKHOUSE_PASSWORD is required -- confirmed by direct live testing, not assumed: the
-      # official image's own shipped users.d/default-user.xml restricts the `default` user to
-      # 127.0.0.1/::1 only even with an explicit empty password set, so a genuinely different
-      # container (this job's own steps, reaching it over the Docker bridge network) is rejected
-      # regardless of password correctness -- same real finding and same real fix
-      # deploy/docker/docker-compose.yml's own clickhouse service comment already documents.
-      clickhouse:
-        image: clickhouse/clickhouse-server:latest
-        env:
-          CLICKHOUSE_USER: default
-          CLICKHOUSE_PASSWORD: chf_clickhouse_lab
-          CLICKHOUSE_DB: default
+      # ADR-0073, migrated ADR-0192: real, self-hosted, open-source Apache Doris for CHF's own CDR
+      # generation (ADR-0058) -- real ClickHouse open-core governance drift, see ADR-0192 for the
+      # full comparison. Real, confirmed default: root user, no password (apache/doris's own
+      # official all-in-one image, ADR-0192) -- FE's own real MySQL-protocol query port is 9030.
+      doris:
+        image: apache/doris:all-in-one-4.1.3
         ports:
-          - 8123:8123
-          - 9000:9000
+          - 8030:8030
+          - 9030:9030
+          - 8040:8040
         options: >-
-          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"
+          --health-cmd "curl -sf http://localhost:8030/api/health"
           --health-interval 10s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 20
     steps:
       - uses: actions/checkout@v7
 
@@ -222,13 +216,15 @@ jobs:
       - name: Apply CHF PostgreSQL schema (ADR-0060)
         run: PGPASSWORD= psql -h localhost -p 5434 -U postgres -d chf_rating -f nfs/chf/schema.postgres.sql
 
-      - name: Apply CHF ClickHouse schema (ADR-0058)
+      - name: Apply CHF Doris schema (ADR-0058, migrated ADR-0192)
         # GitHub Actions service containers don't support the docker-compose-style
         # /docker-entrypoint-initdb.d/ auto-init volume mount (services start before checkout even
-        # happens) -- applied explicitly via ClickHouse's own real HTTP interface instead, same
-        # "explicit apply step" pattern the postgres schemas above already use for the identical
-        # real reason.
-        run: curl -sf -u default:chf_clickhouse_lab http://localhost:8123/ --data-binary @nfs/chf/schema.clickhouse.sql
+        # happens) -- applied explicitly via the real `mysql` CLI (Doris's own real MySQL-protocol
+        # FE) instead, same "explicit apply step" pattern the postgres schemas above already use
+        # for the identical real reason.
+        run: |
+          mysql -h 127.0.0.1 -P 9030 -u root -e "CREATE DATABASE IF NOT EXISTS chf_cdr"
+          mysql -h 127.0.0.1 -P 9030 -u root chf_cdr < nfs/chf/schema.doris.sql
 
       - name: Test
         # --timeout 120: defense in depth. A single spawned-NF-process crash/hang (real one hit
@@ -239,10 +235,10 @@ jobs:
         # instead of its local-dev default, so CI exercises the real DB path (ADR-0054) instead of
         # GTEST_SKIP()-ing it. TEST_SUBSCRIBER_MANAGEMENT_POSTGRES_URL/
         # TEST_ROAMING_INTERCONNECT_POSTGRES_URL do the same for P4.7's own two new store test
-        # files. CHF_RATING_DATABASE_URL/CHF_REDIS_URL/CHF_CLICKHOUSE_* (ADR-0073) do the same for
-        # CHF -- real conninfo values matching the services above, not CHF's own same-host-only
-        # local-dev defaults (nfs/chf/src/main.cpp's own chf_rating_postgres_conninfo/
-        # chf_redis_conninfo/chf_clickhouse_options comments).
+        # files. CHF_RATING_DATABASE_URL/CHF_REDIS_URL/CHF_DORIS_* (ADR-0073, migrated ADR-0192)
+        # do the same for CHF -- real conninfo values matching the services above, not CHF's own
+        # same-host-only local-dev defaults (nfs/chf/src/main.cpp's own
+        # chf_rating_postgres_conninfo/chf_redis_conninfo/chf_doris_options comments).
         env:
           TEST_POSTGRES_URL: postgresql://product_catalog:product_catalog@localhost:5432/product_catalog
           TEST_SUBSCRIBER_MANAGEMENT_POSTGRES_URL: postgresql://subscriber_management:subscriber_management@localhost:5435/subscriber_management
@@ -250,11 +246,10 @@ jobs:
           UDR_DATABASE_URL: postgresql://udr:udr@localhost:5437/udr
           CHF_RATING_DATABASE_URL: postgresql://postgres@localhost:5434/chf_rating
           CHF_REDIS_URL: tcp://127.0.0.1:6379
-          CHF_CLICKHOUSE_HOST: 127.0.0.1
-          CHF_CLICKHOUSE_PORT: "9000"
-          CHF_CLICKHOUSE_USER: default
-          CHF_CLICKHOUSE_PASSWORD: chf_clickhouse_lab
-          CHF_CLICKHOUSE_DATABASE: default
+          CHF_DORIS_HOST: 127.0.0.1
+          CHF_DORIS_PORT: "9030"
+          CHF_DORIS_USER: root
+          CHF_DORIS_DATABASE: chf_cdr
         # -E exclusion: two tests (UdrIntegration.AmfContextLifecycle,
         # UdmIntegration.SdmDataRetrievalAndSubscriptions) have real, disclosed, pre-existing
         # environmental hang/flakiness first documented in ADR-0071/ADR-0072 and reconfirmed across
@@ -357,27 +352,23 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-      # ADR-0073: real ClickHouse for CHF's own CDR generation (ADR-0058). A real, non-empty
-      # CLICKHOUSE_PASSWORD is required -- confirmed by direct live testing, not assumed: the
-      # official image's own shipped users.d/default-user.xml restricts the `default` user to
-      # 127.0.0.1/::1 only even with an explicit empty password set, so a genuinely different
-      # container (this job's own steps, reaching it over the Docker bridge network) is rejected
-      # regardless of password correctness -- same real finding and same real fix
-      # deploy/docker/docker-compose.yml's own clickhouse service comment already documents.
-      clickhouse:
-        image: clickhouse/clickhouse-server:latest
-        env:
-          CLICKHOUSE_USER: default
-          CLICKHOUSE_PASSWORD: chf_clickhouse_lab
-          CLICKHOUSE_DB: default
+      # ADR-0073, migrated ADR-0192: real, self-hosted, open-source Apache Doris for CHF's own CDR
+      # generation (ADR-0058). GitHub Actions service containers run one image each with no
+      # custom entrypoint override -- the real all-in-one image (FE+BE together) still needs its
+      # own schema applied as a separate step below (same shape deploy/docker/docker-compose.yml's
+      # own `doris-schema-init` one-shot service already uses), since there's no
+      # `/docker-entrypoint-initdb.d/`-style auto-init convention here the way postgres has.
+      doris:
+        image: apache/doris:all-in-one-4.1.3
         ports:
-          - 8123:8123
-          - 9000:9000
+          - 8030:8030
+          - 9030:9030
+          - 8040:8040
         options: >-
-          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"
+          --health-cmd "curl -sf http://localhost:8030/api/health"
           --health-interval 10s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 20
     steps:
       - uses: actions/checkout@v7
 
@@ -399,8 +390,9 @@ jobs:
         # transitively libpq) -- real gap hit locally first (this sandbox had neither and no sudo
         # password to self-install), fixed here so CI doesn't hit the same wall.
         # postgresql-client: psql, used below to apply schema.sql to the postgres service before
-        # running ctest.
-        run: sudo apt-get update -qq && sudo apt-get install -y ninja-build libsctp-dev libbpf-dev libcap-dev clang-18 bison flex postgresql-client
+        # running ctest. mariadb-client: the real `mysql` CLI, used below to apply
+        # schema.doris.sql to the real Doris service (ADR-0192) the same way.
+        run: sudo apt-get update -qq && sudo apt-get install -y ninja-build libsctp-dev libbpf-dev libcap-dev clang-18 bison flex postgresql-client mariadb-client
 
       - name: Install sbi-codegen Python deps
         run: pip install -r tools/sbi-codegen/requirements.txt

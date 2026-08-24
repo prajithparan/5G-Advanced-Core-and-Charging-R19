@@ -1,6 +1,7 @@
 #pragma once
 
-#include <clickhouse/client.h>
+#include <mysql.h>
+
 #include <cstdint>
 #include <ctime>
 #include <memory>
@@ -14,26 +15,32 @@
 //
 // P4.4/ADR-0058: CDF (Charging Data Function, TS 32.240/32.296) -- real CDR generation, per
 // CHARGING_PROMPT.md's P4.4 real requirements ("duplicate detection, gap detection...mandatory").
-// See ../schema.clickhouse.sql's own header for the full, honest disclosure of what this is NOT
-// (a conformant TS 32.298 CDR -- that spec isn't vendored) and what it IS (a real, working usage
+// See ../schema.doris.sql's own header for the full, honest disclosure of what this is NOT (a
+// conformant TS 32.298 CDR -- that spec isn't vendored) and what it IS (a real, working usage
 // record built entirely from TS 32.291 fields already confirmed and flowing through this file).
 //
-// Real ClickHouse persistence (clickhouse-cpp), per docs/DATA_MODEL.md's E4 assignment
-// ("ClickHouse for CDR/usage analytics").
+// ADR-0192: migrated off ClickHouse to Apache Doris (real, disclosed governance concern with
+// ClickHouse's own open-core drift -- see ADR-0192 for the full comparison). Doris speaks the real
+// MySQL wire protocol, so this uses `libmariadb`'s own real, plain C client API (`MYSQL*`,
+// `mysql_real_query`/`mysql_real_escape_string`, `mysql_store_result`/`mysql_fetch_row`) --
+// deliberately NOT the also-real `mariadb-connector-cpp` package, whose own C++ API mirrors
+// JDBC's class shape (`Connection`/`PreparedStatement`/`ResultSet`) -- explicit, user-directed:
+// no Java-flavored API surface anywhere in this project's own C/C++ code, even where the
+// underlying library has zero actual Java/JVM dependency. Plain `mysql_real_query` with
+// `mysql_real_escape_string`-escaped values (not prepared statements) is used deliberately: OLAP
+// engines like Doris are not optimized for high-frequency single-row prepared-statement execution
+// the way OLTP engines are, and this project's own CDR write is a single-row-at-a-time real-time
+// path, not a batch loader -- escaped plain SQL is the real, idiomatic choice here, not a
+// shortcut.
 //
-// Real bug found via live verification, not caught by reasoning alone: `clickhouse::Client`'s
-// constructor connects EAGERLY (unlike `sw::redis::Redis`'s lazy-on-first-command pool, confirmed
-// when nfs/chf's Redis stores were built, ADR-0055) and throws a real `clickhouse::ServerException`
-// on connection/auth failure. Left uncaught (this class's first version), that exception escapes
-// `main()`'s `chf::CdrWriter cdr_writer(...)` construction entirely, calls `std::terminate`, and
-// aborts the WHOLE CHF process -- meaning a ClickHouse outage would take down real-time charging
-// (Nchf_ConvergedCharging Create/Update/Release) too, not just CDR generation. That is the wrong
-// failure mode: CDR/audit-trail generation is real and required (P4.4), but it must never be able
-// to block or crash the higher-priority real-time charging/balance-reservation path this same file
-// already treats as best-effort at the per-write level (see `write()`'s own comment). Fixed by
-// catching the constructor's own exception and degrading to a real, logged "CDR generation
-// disabled" state -- `write()`/`detect_gaps()` become safe no-ops (with a warning) rather than
-// every call site needing its own null-check.
+// Real bug found via live verification, not caught by reasoning alone (this project's own prior
+// finding, ADR-0058, still true after the ADR-0192 migration): a database client's own connect
+// call can fail at construction/startup, and that failure must never be able to crash or block
+// the higher-priority real-time charging/balance-reservation path this same file already treats
+// as best-effort at the per-write level (see `write()`'s own comment). `CdrWriter`'s constructor
+// catches connection failure and degrades to a real, logged "CDR generation disabled" state --
+// `write()`/`detect_gaps()` become safe no-ops (with a warning) rather than every call site
+// needing its own null-check.
 
 namespace chf {
 
@@ -45,7 +52,7 @@ struct CdrRecord {
     std::string subscriber_identifier;
     std::string nf_consumer_node_functionality;
     // Gap-closure (task #108, ADR-0089): this CHF instance's own UUID -- real TS 32.298 field
-    // [1] `recordingNetworkFunctionID` needs it. Not used by the pre-existing ClickHouse columns
+    // [1] `recordingNetworkFunctionID` needs it. Not used by the pre-existing Doris columns
     // below (unaffected); read only by cdr_asn1.cpp's own encode_chf_cdr.
     std::string recording_network_function_id;
     std::optional<std::int64_t> rating_group;
@@ -57,19 +64,29 @@ struct CdrRecord {
     std::time_t invocation_time_stamp = 0;
 };
 
+// Real connection parameters for Doris's own FE MySQL-protocol query port (default 9030, real
+// port confirmed from apache/doris's own official all-in-one Docker image docs -- ADR-0192).
+struct DorisOptions {
+    std::string host;
+    std::uint16_t port = 9030;
+    std::string user;
+    std::string password;
+    std::string database;
+};
+
 class CdrWriter {
 public:
-    explicit CdrWriter(const clickhouse::ClientOptions& options);
+    explicit CdrWriter(const DorisOptions& options);
+    ~CdrWriter();
+    CdrWriter(const CdrWriter&) = delete;
+    CdrWriter& operator=(const CdrWriter&) = delete;
 
-    // Real INSERT into ClickHouse's `cdr` table (schema: ../schema.clickhouse.sql).
-    // `clickhouse::Client` is not documented as thread-safe for concurrent use from multiple
-    // threads the way `sw::redis::Redis` is (confirmed by reading redis-plus-plus's own header,
-    // ADR-0055). Real concurrency change, P4.5/ADR-0060 Stage 3: this class was only ever called
-    // from CHF's single HTTP io_context thread until the real Diameter Gy CCR path
-    // (diameter_server.cpp, its own dedicated per-connection thread) started sharing the same
-    // CdrWriter instance -- `mutex_` below serializes both callers, same "one shared
-    // connection/client, one mutex" discipline this project's other single-connection stores
-    // already use (e.g. bss/product-catalog's libpqxx-backed stores, ADR-0054).
+    // Real INSERT into Doris's `cdr` table (schema: ../schema.doris.sql). `MYSQL*` is not
+    // documented as thread-safe for concurrent use from multiple threads the way
+    // `sw::redis::Redis` is (confirmed when nfs/chf's Redis stores were built, ADR-0055). Real
+    // concurrency requirement carried over unchanged from the ClickHouse-backed version
+    // (P4.5/ADR-0060 Stage 3): `mutex_` serializes CHF's HTTP io_context thread and the Diameter
+    // Gy CCR path's own dedicated thread, both sharing this one connection.
     void write(const CdrRecord& record);
 
     // Real gap detection (CHARGING_PROMPT.md's own explicit P4.4 requirement): queries every
@@ -83,13 +100,17 @@ public:
     // this process's lifetime (see this file's own header) -- callers use this only for an
     // accurate startup log line, not as a precondition check before write()/detect_gaps(), which
     // are already safe to call regardless.
-    bool is_connected() const { return client_ != nullptr; }
+    bool is_connected() const { return conn_ != nullptr; }
 
 private:
     std::mutex mutex_;
     // nullptr if construction failed to connect -- see this file's own header for why that's a
     // real, deliberate degraded state, not an error CdrWriter itself surfaces to its caller.
-    std::unique_ptr<clickhouse::Client> client_;
+    // Raw MYSQL* (libmariadb's own C handle type, not RAII-wrappable via unique_ptr without a
+    // custom deleter) -- freed explicitly in the destructor via mysql_close(), the real, correct
+    // C-API cleanup call, same "own the raw C handle, free it in our own dtor" pattern this
+    // project already uses for other C libraries.
+    MYSQL* conn_ = nullptr;
 };
 
 } // namespace chf

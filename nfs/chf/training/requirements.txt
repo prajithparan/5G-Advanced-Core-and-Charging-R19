@@ -1,5 +1,5 @@
 mlflow
-clickhouse-connect
+pymysql
 scikit-learn
 skl2onnx
 onnx

@@ -17002,3 +17002,264 @@ real-honest-501/404 (`DetermineLocation`/`LocationMeasure`/`CancelLocation`, 3 o
 claiming a false "complete NF" -- this closes the GMLC->LMF dependency chain from the LMF side: the
 real reason GMLC's own `RequestLocation`/`CancelLocation` stay `501`/`404` is now visible end-to-
 end in this project's own code, not just asserted in a comment.
+
+## ADR-0193: mandatory systematic full-project YAML coverage audit, one gap at a time, ASAP priority (user-directed)
+
+### Context
+
+While rebuilding CHF for the Apache Doris migration (ADR-0192, in progress), the user asked why
+`Nnrf_Bootstrapping` isn't implemented. Checked: real, confirmed gap, not a disclosed stub --
+`specs/5G_APIs-REL-19/TS29510_Nnrf_Bootstrapping.yaml` (TS 29.510 v19.5.0, one real operation,
+`GET /bootstrapping` -> `BootstrappingInfo`) exists in the vendored spec tree but was never added
+to `libs/sbi-generated/CMakeLists.txt`'s pilot set, unlike its three siblings
+(`Nnrf_NFManagement`/`Nnrf_NFDiscovery`/`Nnrf_AccessToken`) which are wired for NRF. It was simply
+missed while scoping NRF, not deferred with disclosure.
+
+The user's response, verbatim: "Similar like this anything not implemented in YAML in any NFs,
+please implement, I want this project to be Superior from all currently available", then,
+explicitly, as a **strict instruction**: "Please check /audit everything one by one ASAP." This
+is a standing, project-wide directive, not scoped to NRF or to this session -- consistent with,
+and now formalizing as an explicit ADR, the pre-existing "full YAML coverage mandatory" and
+"capability superiority mandate" working norms this project has followed since the UDR
+resource-breadth gap-closure pattern (ADR-0093 and the ~20 UDR slices that followed it, tasks
+#106/#116-136) and repeated for every Tier 1/Tier 2 NF since.
+
+### Decision
+
+1. **Audit mechanism**: a systematic, evidence-based cross-reference -- for every NF already
+   implemented in this repo, every real 3GPP-assigned YAML API for that NF (matched by real
+   service-name prefix and the YAML's own `title:`/`description:` fields, not guessed) is checked
+   against `libs/sbi-generated/CMakeLists.txt`'s pilot set. APIs present in `specs/` but never
+   wired in at all are **Tier-A gaps** (the `Nnrf_Bootstrapping` shape: a whole API missing, not
+   even generated). For APIs that ARE wired in, every real `operationId` is checked against that
+   NF's actual routed handlers and classified real / stub (`501`/`404`/TODO) / entirely
+   unrouted -- these are **Tier-B gaps**. Nothing is asserted without checking the real YAML and
+   the real handler code; where a quick check can't tell, it's recorded as "needs closer look",
+   never guessed either way.
+2. **Closure discipline stays unchanged.** "ASAP" governs pacing and priority -- work moves
+   through the resulting backlog continuously, one item at a time, without pausing for
+   confirmation between items (already established by ADR-0184's continuous pipeline) -- it does
+   NOT relax the per-item bar. Every gap closed still gets the full, real Definition of Done: real
+   YAML as the only source of DTO shapes, live verification over real mTLS/OAuth2 (not
+   self-consistency tests), `ctest` clean, an ADR entry, `docs/TRACEABILITY.md` and
+   `docs/CAPABILITY_GAP_ANALYSIS.md` updates, and a commit under the real author identity. No
+   scope-widening exception, no shortcut on disclosure of what remains a genuine stub (e.g. RF/LPP-
+   dependent operations that stay honest `501`s, per ADR-0189/ADR-0191's own precedent) -- "make
+   the project superior" means closing real, checkable gaps, not fabricating coverage.
+3. **Scale, disclosed honestly.** This project vendors 531 REL-19 YAML files; only a subset maps
+   to NFs actually built so far. A full, first-pass audit across every currently-implemented NF is
+   itself a multi-item undertaking, and each closure is real engineering work (codegen wiring,
+   real handler logic, live verification, tests) -- "ASAP" is the priority ordering relative to
+   other work, not a claim that the entire backlog closes in one turn. This does not relax
+   CLAUDE.md's own "Reality check" section.
+4. The audit's own output (per-NF, per-operation gap table) is tracked in
+   `docs/CAPABILITY_GAP_ANALYSIS.md` as it lands, not duplicated into this ADR -- this ADR records
+   the decision and process, not the gap list itself, to avoid ADR churn as items are closed.
+
+### What this ADR does NOT include
+
+The gap list itself (lands in `docs/CAPABILITY_GAP_ANALYSIS.md` once the audit completes). Any
+claim that a specific gap is already closed -- closures get their own ADR each, same as every
+prior gap-closure task. No change to the "never fabricate a TS number/field/API path" rule --
+audit findings of "needs closer look" stay unresolved until actually checked, not resolved by
+assumption.
+
+## ADR-0192: CHF CDR storage migrated from ClickHouse to Apache Doris
+
+### Context
+
+User-directed, mandatory migration ("migrate to Apache Doris ASAP"), preceded by a strict standing
+decision: every datastore in this project must be self-hosted open-source in deployment
+descriptors, never a cloud/managed variant. The trigger was a real, cited concern -- ClickHouse's
+own "open-core drift" since ClickHouse Cloud launched (SharedMergeTree, lightweight `UPDATE`, and
+S3-backed RBAC moved cloud-only, per Altinity's own public analysis of the OSS/Cloud split) -- vs.
+Apache Doris's genuine Apache Software Foundation governance and native MySQL wire-protocol
+compatibility, a better fit for this project's C/C++-only-new-code standing rule than ClickHouse's
+own native client story.
+
+### Decision and implementation
+
+**Client library, and a real correction mid-migration.** First choice was
+`mariadb-connector-cpp` (real, working vcpkg port, zero actual Java/JVM dependency, LGPL-2.1). The
+user rejected it anyway, explicit and strict: "NO more JDBC please... NO JAVA NO JAVA" -- the
+rejection was for the library's own JDBC-mirroring class-naming convention
+(`sql::Driver`/`Connection`/`PreparedStatement`/`ResultSet`/`DriverManager::getConnection`), not
+for any real Java dependency (it has none). Pivoted to `libmariadb`, the plain C client API
+(`MYSQL*`, `mysql_real_connect`, `mysql_real_query`, `mysql_real_escape_string`,
+`mysql_store_result`/`mysql_fetch_row`), wrapped in a project-owned RAII class
+(`nfs/chf/src/cdr.hpp`/`cdr.cpp`) with no JDBC-shaped naming anywhere. Real vcpkg target:
+`unofficial::libmariadb`.
+
+**Schema** (`nfs/chf/schema.doris.sql`, replaces the deleted `schema.clickhouse.sql`): `UNIQUE
+KEY(charging_data_ref, invocation_sequence_number, service_type)`, `DISTRIBUTED BY
+HASH(charging_data_ref) BUCKETS 10`, `PROPERTIES ("replication_num" = "1")` (single-BE lab
+deployment). Real technical differences from the ClickHouse-era schema, each disclosed rather than
+silently absorbed:
+- **Dedup model improved, not just swapped.** Doris's UNIQUE KEY model dedupes immediately via
+  Merge-on-Write; the ClickHouse schema it replaces used `ReplacingMergeTree`, which only dedupes
+  on background merge or an explicit `FINAL` query -- a real correctness improvement, not a
+  lateral move.
+- **No native BLOB type.** Doris's `asn1_cdr` column is `STRING`; the real TS 32.298 ASN.1 BER-
+  encoded CDR bytes (`cdr_asn1.cpp`'s own encoder, ADR-0089) are hex-encoded before storage. No
+  existing consumer reads this column back, matching the pre-existing ClickHouse-era state.
+- **No partition/TTL.** A Unique-Key table's partition columns must be a subset of its own key
+  columns; adding a time-based partition would force `invocation_time_stamp` (or similar) into the
+  key, changing real dedup semantics. Deliberately not added -- disclosed, not silently dropped.
+
+**Deployment**: `docker-compose.yml`'s `clickhouse:` service replaced with `doris:`
+(`apache/doris:all-in-one-4.1.3`, FE HTTP 8030 / FE MySQL 9030 / BE HTTP 8040, healthcheck
+`curl -sf http://localhost:8030/api/health`), plus a new one-shot `doris-schema-init:` service
+(`mariadb:11` image, `depends_on: doris: condition: service_healthy`) that creates the `chf_cdr`
+database and applies `schema.doris.sql` via the real `mysql` CLI -- matching this project's own
+existing `pki-init` one-shot-init precedent, since Doris's own official image has no
+auto-init-on-first-boot convention. `.github/workflows/ci.yml`'s `build` job updated identically
+(both `doris:` service + schema-apply step); the `sanitize` job's own pre-existing shape (never
+applied a schema or used CHF-datastore env vars) was preserved, not "fixed" into something it
+never was.
+
+**Training sidecar** (`nfs/chf/training/`): `train_quota_sizing.py`'s `fetch_real_examples()`
+rewritten from `clickhouse_connect` to `pymysql` (Doris's real MySQL wire protocol), argparse
+flags renamed (`--doris-host` etc., default port corrected 8123->9030),
+`requirements.txt`'s `clickhouse-connect` -> `pymysql`, `README.md` updated to match.
+
+**Dead code removed, not just migrated.** `charging_engine.cpp` and `diameter_server.cpp` both had
+`try/catch` around `cdr_writer.write(cdr)` -- necessary for the old ClickHouse client (whose
+`clickhouse::ServerException` could throw mid-insert) but genuinely vestigial now:
+`CdrWriter::write()` catches every real Doris error surface internally via `mysql_real_query`'s
+own return code and never throws. Removed, with an ADR-0192 comment explaining why, not a silent
+deletion.
+
+**Escaped plain-SQL INSERT, not prepared statements** -- a deliberate choice, disclosed in
+`cdr.hpp`'s own header comment: more idiomatic for an OLAP engine like Doris than high-frequency
+single-row prepared statements (which are more OLTP-oriented). `mysql_real_escape_string` used for
+every string value to prevent SQL injection.
+
+**Governing-doc consistency** (CLAUDE.md's own "if CLAUDE.md and PROMPT.md disagree, that's a
+bug" rule): `CLAUDE.md`, `PROMPT.md`, `CHARGING_PROMPT.md` (2 references), and
+`docs/DATA_MODEL.md` (4 references, including the ReplacingMergeTree->Unique-Key correction) all
+updated to cite Apache Doris and this ADR instead of ClickHouse.
+
+### Real bugs found and fixed during this migration (all via live verification, not guessed)
+
+1. **`nfs/chf/src/cdr_asn1.cpp` missing `#include <array>`.** Pre-existing, latent -- `std::array`
+   was used (return type of `encode_timestamp`) without the header, previously masked by a
+   transitive include that disappeared when the dependency chain changed from
+   `mariadb-connector-cpp` to `libmariadb`. Fixed directly; not related to the SQL client swap
+   itself, but only surfaced by it.
+2. **`tests/conformance/CMakeLists.txt` never wired to `unofficial-libmariadb`.** `test_cdr_asn1.cpp`
+   compiles `cdr_asn1.cpp` directly, which transitively includes `cdr.hpp`'s `<mysql.h>` even
+   though the test never constructs a real `CdrWriter` -- the initial full rebuild reported
+   success only because it was piped through `tail`, which swallowed ninja's real nonzero exit
+   code. Caught by rerunning with the exit code captured directly (no pipe), not by trusting the
+   first "success."
+3. **Real SSL-handshake bug, found and root-caused via live verification against a real
+   `apache/doris:all-in-one-4.1.3` container**, not guessed: `CdrWriter`'s connection failed with
+   "SSL is required, but the server does not support it" even after explicitly disabling
+   `MYSQL_OPT_SSL_ENFORCE`. Root cause, confirmed by reading libmariadb's own vendored source
+   (`plugins/auth/my_auth.c`): `MYSQL_OPT_SSL_VERIFY_SERVER_CERT` defaults to requiring
+   verification, and that alone -- independent of `SSL_ENFORCE` -- forces `use_ssl=1` during the
+   auth handshake. Fixed by also explicitly disabling `MYSQL_OPT_SSL_VERIFY_SERVER_CERT`. Real,
+   disclosed scope: this project's actual Doris deployment has no TLS configured on its FE MySQL
+   port, matching the plaintext posture already accepted for this project's other backend
+   datastore links (PostgreSQL, Redis/Valkey) -- the real SBI mTLS discipline (TS 33.501) applies
+   to inter-NF traffic, not this backend link. Tracked as real debt alongside ADR-0009's existing
+   TLS gaps, not a new, separately-hidden one.
+
+### Live verification (real, live processes and a real Doris container, not self-consistency)
+
+Real `apache/doris:all-in-one-4.1.3` container started fresh, health-checked
+(`/api/health` -> `online_backend_num: 1`), `schema.doris.sql` applied via the container's own
+bundled `mysql` client. Real `nrf` + `chf` processes started, `chf` connecting successfully
+("chf: connected to Doris (CDF)"). Real `POST /nchf-convergedcharging/v3/chargingdata` (Create)
+over mTLS with a real `MultipleUnitUsage` (ratingGroup 1) -> real `201`,
+`ChargingDataRef=chg-21`. Queried Doris directly (not through CHF) via the container's own `mysql`
+client: the real row landed with `service_type=ConvergedCharging`, `operation=Create`, the real
+`subscriber_identifier`, and a populated, correctly hex-encoded `asn1_cdr` column (`bf81486e8002...`,
+a real TS 32.298 BER-encoded CHF-CDR, matching `cdr_asn1.cpp`'s own encoder). All processes killed
+by explicit PID afterward, not `pkill -f`.
+
+### Testing
+
+Full project rebuild clean (0 warnings beyond the pre-existing, unrelated onnxruntime static-lib
+linker note). Full `ctest` (excluding the two known-flaky integration tests,
+`UdrIntegration.AmfContextLifecycle`/`UdmIntegration.SdmDataRetrievalAndSubscriptions`): 363/363
+pass.
+
+### What this ADR does NOT include
+
+Real TLS on Doris's own FE MySQL port (disclosed above, tracked alongside ADR-0009). A dedicated
+live exercise of `CdrWriter::detect_gaps()`'s own SELECT-based logic beyond the direct-query
+confirmation already performed above. Update/Release-triggered CDR writes were not separately
+live-exercised this pass -- they share the exact same `write_converged_charging_cdr` ->
+`cdr_writer.write()` code path already proven live via Create, so this is a real, disclosed scope
+narrowing, not an unverified claim.
+
+## ADR-0194: NRF `Nnrf_Bootstrapping` -- first ADR-0193 gap-closure
+
+### Context
+
+The literal Tier-A gap that triggered ADR-0193's project-wide audit: `Nnrf_Bootstrapping`
+(TS29510_Nnrf_Bootstrapping.yaml v1.3.0, TS 29.510 clause 6.4, one real operation --
+`GET /bootstrapping` -> `BootstrappingInfo`) existed in the vendored spec tree but was never added
+to the sbi-codegen pilot set, unlike its three siblings (`Nnrf_NFManagement`/`Nnrf_NFDiscovery`/
+`Nnrf_AccessToken`, all already wired for NRF). Closed first per ADR-0193's own
+smallest-and-clearest-first prioritization.
+
+### Implementation
+
+`TS29510_Nnrf_Bootstrapping.yaml` added to `libs/sbi-generated/CMakeLists.txt`'s pilot set (its
+cross-file `$ref`s onto `TS29571_CommonData.yaml` were already wired). Generated DTO
+(`sbi_gen::BootstrappingInfo`/`sbi_gen::Status`, standalone header
+`TS29510_Nnrf_Bootstrapping.hpp`) used directly -- no hand-written struct. Real route registered
+in `nfs/nrf/src/main.cpp`, path exactly as the vendored YAML declares it: bare `/bootstrapping`,
+no service-name/version prefix (unlike `NFManagement`'s own `{apiRoot}/nnrf-nfm/v1`) -- the real
+YAML's own `servers: url: '{nrfApiRoot}'` has no such prefix, since Bootstrapping is meant to be
+reachable before an NF knows anything about this NRF's other service paths; no prefix was invented
+to match the other three.
+
+Response population, each field grounded in real project state, nothing fabricated:
+- `nrfInstanceId`: this NRF's own real, fixed `kNrfInstanceId`.
+- `status`: `OPERATIVE` (real -- the instance is serving requests when this handler runs).
+- `oauth2Required`: `{"nnrf-nfm": false, "nnrf-disc": false, "nnrf-oauth2": false}` -- honestly
+  `false` for all three, since every existing NRF route's own `check_bearer` only validates a
+  bearer token if one is present (the YAML's own `security: [{}, oAuth2ClientCredentials]`
+  explicitly permits the anonymous alternative); this NRF does not actually require OAuth2 today.
+- `_links`: real, disclosed gap -- TS 29.510 clause 6.4.6.3.3 (the real link-relation vocabulary
+  for this required map) is stage-3 prose this project's vendored material doesn't include, only
+  the OpenAPI schema itself, which places no enum on the map's own keys. `"self"` (RFC 8288) is
+  used to satisfy the schema's real `minProperties: 1` structural requirement -- a defensible,
+  universal HAL relation, not a claim to the full real TS 29.510 relation set.
+- `nrfFeatures`/`nrfSetId`: deliberately omitted (both optional per the YAML) -- no real
+  supported-features bitmask tracking or NRF Set concept exists in this project; populating either
+  would be fabricated data, not a real simplification.
+- Real `Cache-Control: max-age=60` and a real content-hash `ETag` are emitted; the YAML declares an
+  `If-None-Match` request parameter but never declares a `304` response for this operation, so no
+  conditional-request short-circuit is implemented -- disclosed, not a silent gap.
+
+New conformance test `tests/conformance/test_nrf_bootstrapping_dtos.cpp` (2 round-trip tests over
+the real generated DTOs), wired into `tests/conformance/CMakeLists.txt`. NRF's own file-header
+scope comment updated to list this operation as in-scope and to correct a stale disclosure
+(`/scp-domain-routing-info*` still said "SCP isn't built yet" -- SCP has existed since ADR-0186;
+the wiring itself remains a real, separate, still-open gap, now correctly described as stale
+rather than current).
+
+### Live verification (real, live process, not self-consistency)
+
+Real `nrf` process, real `GET /bootstrapping` over mTLS: real `200`, real
+`content-type: application/3gppHal+json`, body:
+`{"_links":{"self":{"href":"/bootstrapping"}},"nrfInstanceId":"5ba9a927-1d31-4c8e-8a10-000000000001","oauth2Required":{"nnrf-disc":false,"nnrf-nfm":false,"nnrf-oauth2":false},"status":"OPERATIVE"}`.
+Process killed by explicit PID afterward.
+
+### Testing
+
+Full project rebuild clean. Full `ctest` (same exclusions as ADR-0192): 363/363 pass, including
+both new `NrfBootstrappingDtos` tests.
+
+### What this ADR does NOT include
+
+The real TS 29.510 clause 6.4.6.3.3 link-relation vocabulary (disclosed above -- not vendored).
+`304 Not Modified` conditional-request handling (the YAML never declares this response for this
+operation). The other three NRF gaps found in the same ADR-0193 audit
+(`OptionsNFInstances`/`RetrieveStoredSearch`/`RetrieveCompleteSearch`/`RetrieveKeyRequest`, and the
+stale `/scp-domain-routing-info*` wiring) -- tracked in `docs/CAPABILITY_GAP_ANALYSIS.md`, not
+closed by this ADR.

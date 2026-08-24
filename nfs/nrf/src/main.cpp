@@ -1,5 +1,5 @@
 // nfs/nrf: the real NRF (NF Repository Function), TS 29.510 Nnrf_NFManagement +
-// Nnrf_NFDiscovery + Nnrf_AccessToken (specs/5G_APIs-REL-19/, commit
+// Nnrf_NFDiscovery + Nnrf_AccessToken + Nnrf_Bootstrapping (specs/5G_APIs-REL-19/, commit
 // bca84b60a37773133bcae97e5c6c0d10a93b47b6). Replaces the Phase 0 nfs/stub-nrf throwaway.
 // Phase 2's first NF, dependency root for every NF that follows (PROMPT.md order: NRF -> AMF ->
 // SMF -> UDM -> UDR -> AUSF -> PCF).
@@ -8,9 +8,14 @@
 //   RegisterNFInstance, GetNFInstance, UpdateNFInstance (real RFC 6902 patch application),
 //   DeregisterNFInstance, GetNFInstances, CreateSubscription, UpdateSubscription,
 //   RemoveSubscription (all NFManagement.yaml), SearchNFInstances (NFDiscovery.yaml),
-//   real signed-JWT OAuth2 token issuance (AccessToken.yaml).
-// Out of scope, deferred not dropped: /shared-data* (multi-NRF federation -- no second NRF
-// instance exists in this lab) and /scp-domain-routing-info* (SCP isn't built yet).
+//   real signed-JWT OAuth2 token issuance (AccessToken.yaml), BootstrappingInfoRequest
+//   (Bootstrapping.yaml -- gap-closure, ADR-0193/ADR-0194).
+// Out of scope, deferred not dropped, per ADR-0193's own project-wide audit
+// (docs/CAPABILITY_GAP_ANALYSIS.md): NFManagement's /shared-data* (multi-NRF federation -- no
+// second NRF instance exists in this lab), /scp-domain-routing-info* (stale disclosure -- SCP now
+// exists, ADR-0186, but this wiring hasn't been revisited), OptionsNFInstances,
+// RetrieveStoredSearch/RetrieveCompleteSearch (NFDiscovery.yaml), RetrieveKeyRequest
+// (AccessToken.yaml).
 //
 // Disclosed simplifications (see docs/DECISIONS.md for the full ADRs):
 //   - In-memory storage only, no persistence across restarts.
@@ -32,10 +37,15 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <functional>
 #include <regex>
 #include <sstream>
 #include <thread>
 #include <unordered_set>
+
+// ADR-0193/ADR-0194: TS29510_Nnrf_Bootstrapping.yaml, the Tier-A gap that started the
+// full-project YAML coverage audit -- see docs/CAPABILITY_GAP_ANALYSIS.md's own ADR-0193 section.
+#include "TS29510_Nnrf_Bootstrapping.hpp"
 
 #include "registry.hpp"
 
@@ -388,6 +398,58 @@ int main() {
     // See docs/DECISIONS.md ADR-0014. Still reachable at 127.0.0.1 for anything running on the
     // same host/network namespace (hello-nf's local dev usage is unaffected).
     sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
+
+    // Nnrf_Bootstrapping (TS29510_Nnrf_Bootstrapping.yaml v1.3.0) -- gap-closure per ADR-0193/
+    // ADR-0194 (docs/CAPABILITY_GAP_ANALYSIS.md's ADR-0193 audit section). Real path exactly as
+    // the vendored YAML declares it: `servers: url: '{nrfApiRoot}'` has no service-name/version
+    // prefix (unlike NFManagement's `{apiRoot}/nnrf-nfm/v1`), and `paths:` declares bare
+    // `/bootstrapping` -- Bootstrapping is meant to be reachable before an NF knows anything about
+    // this NRF's other service paths, so no prefix is invented here.
+    server.add_route(
+        "GET", "/bootstrapping", [](const sbi_core::http2::Request& /*req*/) {
+            sbi_gen::BootstrappingInfo info;
+            info.status = sbi_gen::Status{sbi_gen::Status::OPERATIVE};
+            info.nrfInstanceId = std::string(kNrfInstanceId);
+            // Real, disclosed: every route above (check_bearer) validates a bearer token only if
+            // one is present -- the YAML's own `security: [{}, oAuth2ClientCredentials]` on those
+            // operations explicitly permits the anonymous alternative, so this NRF does not
+            // actually require OAuth2 today. oauth2Required is honestly false for the exact three
+            // real services this NRF implements, not a placeholder value. Map keys per this
+            // field's own YAML description ("e.g. nnrf-nfm or nnrf-disc").
+            info.oauth2Required = json{
+                {"nnrf-nfm", false},
+                {"nnrf-disc", false},
+                {"nnrf-oauth2", false},
+            };
+            // Real, disclosed gap: TS 29.510 clause 6.4.6.3.3 (the real link-relation vocabulary
+            // for this required map) is stage-3 prose this project's vendored material doesn't
+            // include -- only the OpenAPI schema, which places no enum on the map's own keys.
+            // "self" is the one universally-defensible HAL relation (RFC 8288), used to satisfy
+            // the schema's real `minProperties: 1` structural requirement -- not a claim to the
+            // full real TS 29.510 relation set.
+            info._links = json{
+                {"self", json{{"href", "/bootstrapping"}}},
+            };
+            // nrfFeatures/nrfSetId deliberately omitted: both optional per the YAML, and no real
+            // supported-features bitmask tracking or NRF Set concept exists in this project --
+            // populating either would be fabricated data, not a real simplification.
+
+            const json body = info;
+            const std::string body_str = body.dump();
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            // Real spec content type -- application/3gppHal+json, not application/json.
+            resp.headers.emplace("content-type", "application/3gppHal+json");
+            resp.headers.emplace("cache-control", "max-age=60");
+            // Real, disclosed: the YAML declares an `If-None-Match` request parameter but never
+            // declares a 304 response for this operation, so no conditional-request short-circuit
+            // is implemented here -- a real content-derived ETag is still emitted so a client's
+            // own cache stays correct on its next request.
+            resp.headers.emplace(
+                "etag", "\"" + std::to_string(std::hash<std::string>{}(body_str)) + "\"");
+            resp.body = body_str;
+            return resp;
+        });
 
     server.add_route(
         "POST", "/oauth2/token", [&issuer, &tokens_counter](const sbi_core::http2::Request& req) {

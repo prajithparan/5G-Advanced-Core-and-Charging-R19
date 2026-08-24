@@ -59,7 +59,8 @@ lab-grade scope — see ADR-0009 in `docs/DECISIONS.md`).
 - **PFCP/N4 + UP**: libpfcp-style codec (implement if none suitable);
   DPDK, VPP, or eBPF/XDP for the UPF datapath — evaluate and justify.
 - **Storage**: Redis/Valkey (UDSF, session cache), PostgreSQL (UDR),
-  ClickHouse (CDR/analytics), Kafka or Redpanda (event bus).
+  Apache Doris (CDR/analytics — migrated off ClickHouse, ADR-0192: real ClickHouse open-core
+  governance drift, see ADR-0192 for the full comparison), Kafka or Redpanda (event bus).
 - **Observability**: OpenTelemetry C++, Prometheus exporter, spdlog,
   Grafana.
 - **Testing**: GoogleTest, Catch2, gMock, libFuzzer for codec fuzzing.
