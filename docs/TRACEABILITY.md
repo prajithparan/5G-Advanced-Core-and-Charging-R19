@@ -3684,3 +3684,26 @@ seed()-only, and the real `PfdChangeNotification`/`NotificationPush` callback de
 after startup) -- deliberately not built as unreachable dead code, disclosed as a real structural
 gap instead. 13 of NEF's 14 real YAML files remain entirely unbuilt. See ADR-0185 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0186 -- SCP: real architectural-scope decision + `Nscp_EventExposure`
+
+| Requirement | Test |
+|---|---|
+| `CreateSubscription` | Live curl: real `201` + `Location` + `ScpEventExposureSubsResp` |
+| `ModifySubscription` (RFC 6902 patch) | Live curl: real `200`; against a nonexistent subscription: real `404` |
+| `DeleteSubscription` | Live curl: real `204`; repeated: real `404` |
+| Bad bearer token | Live curl: real `401` `ProblemDetails` |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 350/350 pass |
+
+This project's twelfth NF, fourth built under ADR-0184's continuous move-to-next-NF process, and
+the last of the original `nssf`/`nef`/`scp`/`bsf` "still not done" list. SCP's real defining role
+(TS 29.500 §§6.10-6.11, inline HTTP/2 message-forwarding proxy for indirect communication) is
+architecturally different from every other NF built so far -- a real, explicit scope decision was
+presented to the user via `AskUserQuestion` (build `Nscp_EventExposure` only / design the real
+proxy first / skip SCP), not silently assumed. User chose `Nscp_EventExposure` only. All 3 real
+operations implemented and live-verified: `CreateSubscription`/`ModifySubscription`/
+`DeleteSubscription`. Real, disclosed gap (same shape as NEF's ADR-0185 finding): the real
+`onScpEventExposureNotification` callback never fires, since this SCP performs no real forwarding
+and so has no genuine `ScpSignallingInfo` activity to report. The real SCP proxy/forwarding role
+itself remains entirely undesigned and unbuilt. See ADR-0186 in `docs/DECISIONS.md` for full
+disclosure.

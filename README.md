@@ -72,13 +72,15 @@ UDR is the largest single target: it now implements the large majority of free5G
 
 The same effort has also added whole new NFs beyond the original Phase 2 seven: **NSSF**
 (`Nnssf_NSSelection` + `Nnssf_NSSAIAvailability`, all 8 real operations, ADR-0183), **BSF**
-(`Nbsf_Management`, all 15 real operations, ADR-0184), and **NEF** (`Nnef_PFDmanagement`, 6 real
-operations — 1 of NEF's own 14 real YAML files; the other 13 remain unbuilt, ADR-0185), chosen
-from the "still not done" `nssf`/`nef`/`scp`/`bsf` list. As of ADR-0184, this project moves to the
-next NF/subsystem continuously as each one completes rather than waiting on a fresh per-NF
-decision each time — the same quality bar (live verification, zero-warning builds, full doc trail)
-still applies to each. SCP (a real architectural departure — an inline HTTP reverse-proxy, not
-another origin-server YAML) remains unbuilt.
+(`Nbsf_Management`, all 15 real operations, ADR-0184), **NEF** (`Nnef_PFDmanagement`, 6 real
+operations — 1 of NEF's own 14 real YAML files; the other 13 remain unbuilt, ADR-0185), and **SCP**
+(`Nscp_EventExposure`, all 3 real operations, ADR-0186) — closing the original "still not done"
+`nssf`/`nef`/`scp`/`bsf` list, though SCP's own real defining role (an inline HTTP/2
+message-forwarding proxy, TS 29.500 §§6.10-6.11) is a real architectural departure from every
+other NF here and remains entirely undesigned — a real, explicit scope decision made via
+`AskUserQuestion`, not a silent gap. As of ADR-0184, this project moves to the next NF/subsystem
+continuously as each one completes rather than waiting on a fresh per-NF decision each time — the
+same quality bar (live verification, zero-warning builds, full doc trail) still applies to each.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
@@ -95,8 +97,8 @@ libs/sbi-core/     Shared SBI infrastructure: HTTP/2 server+client, OAuth2 clien
                    ProblemDetails, 3gpp-Sbi-* headers, structured logging, OpenTelemetry tracing.
                    Every NF links this; no NF includes another NF's private headers.
 nfs/<nf>/          One independent binary + library per Network Function: nrf, amf, smf, udm, udr,
-                   ausf, pcf, upf, chf, nssf, bsf, nef. nfs/hello-nf is a Phase 0 throwaway, not a
-                   real NF.
+                   ausf, pcf, upf, chf, nssf, bsf, nef, scp. nfs/hello-nf is a Phase 0 throwaway,
+                   not a real NF.
 bss/<service>/     Standalone TM Forum ODA-layer services (not 3GPP NFs, no NRF registration):
                    product-catalog (TMF620), balance-management (TMF654), subscriber-management
                    (TMF632), roaming-interconnect (TMF651).

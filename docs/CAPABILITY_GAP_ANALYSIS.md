@@ -1193,7 +1193,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 
 ---
 
-## Summary and priority signal (9 of 12 built NFs covered by the original sweep; NSSF/BSF/NEF added later, ADR-0183/ADR-0184/ADR-0185)
+## Summary and priority signal (9 of 13 built NFs covered by the original sweep; NSSF/BSF/NEF/SCP added later, ADR-0183/ADR-0184/ADR-0185/ADR-0186)
 
 | NF | Scale ratio (ref/ours) | Highest-priority real gap |
 |---|---|---|
@@ -1209,6 +1209,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | NSSF | Not yet swept against free5GC/open5GS source (built after this table, ADR-0183, not part of the original comparison pass) | Both real `Nnssf_NSSelection`/`Nnssf_NSSAIAvailability` services present, all 8 real operations implemented; real gap: the slice-selection decision itself is catalog-membership filtering against a fixed seed, not real subscriber-entitlement/NRF-discovery/NSAG-mapping logic -- see ADR-0183 |
 | BSF | Not yet swept against free5GC/open5GS source (built after this table, ADR-0184, not part of the original comparison pass) | Real `Nbsf_Management`, all 15 real operations across 4 resource families implemented, including the spec's own real duplicate-combination 403-with-existing-info logic and real `BsfEvent` notification coverage; no known real gap identified yet since no reference-source diff has been done -- see ADR-0184 |
 | NEF | Not yet swept against free5GC/open5GS source (built after this table, ADR-0185, not part of the original comparison pass) | Only 1 of 14 real Nnef YAML files built (`Nnef_PFDmanagement`, all 6 real operations); 13 remain entirely unbuilt (`Nnef_EventExposure`, `Nnef_TrafficInfluenceData`, `Nnef_SMContext`/`SMService`, `Nnef_UEId`, `Nnef_Authentication`, `Nnef_DNAIMapping`, `Nnef_ECSAddress`, `Nnef_EASDeployment`, `Nnef_Inference`/`Training`/`VFLInference`/`VFLTraining`) -- see ADR-0185 |
+| SCP | Not yet swept against free5GC/open5GS source (built after this table, ADR-0186, not part of the original comparison pass) | Only `Nscp_EventExposure` built (all 3 real ops) -- SCP's real defining role (TS 29.500 §§6.10-6.11 inline HTTP/2 message-forwarding proxy for indirect communication) remains entirely undesigned and unbuilt, a real architectural departure from every other NF this project has, explicitly scoped out via a user-directed `AskUserQuestion` decision, not silently skipped -- see ADR-0186 |
 
 **Real, honest pattern across the sweep**: this project's "happy path" (initial attach, PDU
 session establishment, core CRUD on each NF's primary resource) is consistently real and already
@@ -1218,10 +1219,14 @@ optional-but-real 3GPP services each NF has. AMF/SMF's shared N2-handover gap is
 highest-impact, highest-effort item found. CHF is the one NF where this project is already
 ahead of at least one reference on real service breadth.
 
-**Still not done, per ADR-0075's own scope**: `scp` still doesn't exist in this project at all.
-NEF exists now but only 1 of its own 14 real YAML files is built (ADR-0185); NSSF/BSF/NEF have
-none of them been swept against free5GC/open5GS source the way the other 9 NFs above were, so
-their own real capability-parity gaps, if any, aren't characterized here yet. Per ADR-0184's own
-process decision, this project now moves to the next NF/subsystem continuously rather than waiting
-on a fresh per-NF decision each time -- SCP (a real architectural departure -- an inline HTTP
-reverse-proxy, not another origin-server YAML) or a further NEF slice is next.
+**Still not done, per ADR-0075's own scope**: this closes the original `nssf`/`nef`/`scp`/`bsf`
+"still not done" list -- all four now have at least one real, live-verified slice built (ADR-0183
+through ADR-0186). None of the four have been swept against free5GC/open5GS source the way the
+other 9 NFs above were, so their own real capability-parity gaps, if any, aren't characterized here
+yet. Two real, large, still-open items within this group: NEF has 13 of its own 14 real YAML files
+entirely unbuilt, and SCP's own real message-forwarding/indirect-communication role (TS 29.500
+§§6.10-6.11) remains entirely undesigned -- both explicitly scoped out this session, not silently
+incomplete. Per ADR-0184's own process decision, this project moves to the next NF/subsystem
+continuously; Tier 2 NFs (NWDAF, DCCF, ADRF, MFAF, NSACF, TSCTSF, EASDF, UCMF, SMSF, 5G-EIR, LMF,
+GMLC, NSSAAF, AAnF, UDSF, SEPP, per CLAUDE.md's own scope list) are the next real candidates, none
+yet surveyed for real YAML availability.
