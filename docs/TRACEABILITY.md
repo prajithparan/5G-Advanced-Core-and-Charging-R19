@@ -3552,3 +3552,26 @@ subscriptions -- the pre-seeded-row methodology above was the only way to exerci
 path end-to-end, since the normal "subscribe via the live API, then mutate" methodology this whole
 series otherwise used doesn't apply here. See ADR-0180 in `docs/DECISIONS.md` for full disclosure,
 including a real live-testing mistake found and corrected along the way (wrong receiver port).
+
+## ADR-0181 -- `gpsis`/`ext-group-ids` filtering retrofit across 4 already-closed UDR `group-data` GET resources
+
+| Requirement | Test |
+|---|---|
+| `PUT` two `5g-vn-groups` with distinct real `members`, `GET` bare collection unfiltered vs. `?gpsis=<value>` | Live curl: unfiltered returns both (+ seed data); filtered returns only the matching group; a non-matching value returns a real empty map |
+| Pre-seed `allowedMtcProviders` (3 keys incl. `ALL`) directly via `psql`, `GET pp-profile-data?ext-group-ids=vn-grp-A` | Live curl, real `200`; response correctly contains exactly `{vn-grp-A, ALL}`, excluding the non-requested key |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 332/332 pass |
+
+Retrofits the real, disclosed `gpsis`/`ext-group-ids`-not-honored backlog across
+`Query5GVnGroup`/`Query5GmbsGroup` (bare collections, filter by real `members`/
+`multicastGroupMemb` array field) and `Query5GVNGroupPPData`/`Query5GMbsGroupPPData` (keyless
+singletons, filter `allowedMtcProviders`/`allowedMbsInfos` map keys, always keeping the real
+spec-documented `"ALL"` wildcard key regardless of what was requested). Direct schema read found
+this project's own original ADR-0167/ADR-0169 characterization of these filters as needing
+"member-list inspection" overstated the real difficulty -- each targets one concrete field already
+present in data these routes already return. `QueryUeSubscribedData`'s own `ext-group-ids` (and
+sibling) filters were re-checked and correctly remain unhonored -- no store exists to filter its
+32 flat per-UE fields by group membership at all, confirmed, not retrofitted. Also fixed: a stale
+top-of-file comment block in `nfs/udr/src/main.cpp` that still described these two bare-collection
+`gpsis` filters as blocked on missing array-query-param infra, a state ADR-0161's own
+`split_form_array()` had already resolved. See ADR-0181 in `docs/DECISIONS.md` for full
+disclosure.

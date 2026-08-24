@@ -580,17 +580,16 @@
 // reading this resource's own spec text confirms `AuthorizationData`'s real, unambiguous home is
 // here, not there.
 //
+// STALE PARAGRAPH, corrected by ADR-0181 (docs/DECISIONS.md) -- kept, not deleted, per this
+// project's own "supersede, don't rewrite history" comment practice: `5g-vn-groups`'s and
+// `mbs-group-membership`'s own bare collection GETs (`Query5GVnGroup`/`Query5GmbsGroup`), their
+// own `/internal`/`/pp-profile-data` variants, and the individual `{externalGroupId}` resources
+// are now ALL closed (ADR-0167/ADR-0168/ADR-0169), and the `gpsis`/`ext-group-ids` filters this
+// paragraph once called "genuinely blocked" are now honored too (ADR-0181) -- they were never
+// actually blocked on missing infra by the time this was written, just not yet wired into these
+// specific routes.
+//
 // Deliberately still deferred, not dropped:
-// the remainder of group-data (`5g-vn-groups`'s own bare collection GET at
-// `group-data/5g-vn-groups`, real spec `Query5GVnGroup`, and `mbs-group-membership`'s own bare
-// collection GET, real spec `Query5GmbsGroup` -- both confirmed genuinely blocked: their `gpsis`
-// query parameter is a real `style: form, explode: false` array, the same class ADR-0161's new
-// `split_form_array()` infra could now parse but hasn't yet been wired into these two routes; and
-// `5g-vn-groups`'s/`mbs-group-membership`'s own `/internal`/`/pp-profile-data` variants (same real
-// class) -- `group-identifiers`, the individual `5g-vn-groups/{externalGroupId}`/
-// `mbs-group-membership/{externalGroupId}` resources, and `{ueGroupId}/ee-profile-data` themselves
-// closed, see ADR-0140/ADR-0144/ADR-0145/ADR-0146
-// above);
 // policy-data's
 // own other resources (mbs-session-pol-data -- real, disclosed: its MbsSessPolDataId key is a
 // deeply nested oneOf/anyOf object (mbsSessionId -> tmgi/ssm/nid, or afAppId) with no documented
@@ -7455,14 +7454,18 @@ int main() {
     // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml,
     // `Query5GVnGroup`. Real REQUIRED-schema response is a map `{ExtGroupId:
     // 5GVnGroupConfiguration}` over every persisted `FiveGVnGroupStore` row (the same store
-    // `5g-vn-groups/{externalGroupId}`, ADR-0144, already writes to) -- no new table. Real,
-    // disclosed: the optional `gpsis` array query-param filter (`style: form, explode: false`) is
-    // NOT honored (always returns every group), matching the established "optional filter not
-    // honored" precedent -- honoring it would require inspecting each group's own member list, a
-    // real, separate, deliberately deferred piece of work, not attempted here. Real `200`-always
-    // (even an empty map), matching this project's own bare-collection-GET precedent (`pdtq-data`,
-    // ADR-0162), not the aggregate live-view `404` question -- this is a literal listing of
-    // persisted rows, not a composed view. ---
+    // `5g-vn-groups/{externalGroupId}`, ADR-0144, already writes to) -- no new table.
+    //
+    // UPDATE (ADR-0181, gap-closure task #106): the real, optional `gpsis` array query-param
+    // filter (`style: form, explode: false`) is now honored -- confirmed by direct read of
+    // `5GVnGroupConfiguration`'s own real schema (`TS29503_Nudm_PP.yaml`) that its optional
+    // `members` field is exactly the array of `Gpsi` this filter needs to match against, making
+    // this genuinely tractable (not the deeper "inspect membership data" blocker this file's own
+    // ADR-0167 comment originally assumed before checking). A group is included when `gpsis` is
+    // absent (no filter) or when at least one requested `Gpsi` appears in that group's own
+    // `members` array; a group with no `members` field at all never matches a non-empty filter.
+    // Real `200`-always (even an empty map) preserved regardless of filtering, matching this
+    // project's own bare-collection-GET precedent (`pdtq-data`, ADR-0162). ---
 
     const std::string five_g_vn_groups_collection_path_pattern =
         std::string(kApiRoot) + "/subscription-data/group-data/5g-vn-groups";
@@ -7475,8 +7478,31 @@ int main() {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
+            std::optional<std::vector<std::string>> requested_gpsis;
+            if (auto gpsis_it = req.query_params.find("gpsis");
+                gpsis_it != req.query_params.end()) {
+                requested_gpsis = sbi_core::http2::split_form_array(gpsis_it->second);
+            }
             json result = json::object();
             for (const auto& [ext_group_id, data] : five_g_vn_groups.list_all()) {
+                if (requested_gpsis.has_value()) {
+                    if (!data.contains("members")) {
+                        continue;
+                    }
+                    bool matched = false;
+                    for (const auto& member : data.at("members")) {
+                        if (member.is_string() &&
+                            std::find(requested_gpsis->begin(),
+                                      requested_gpsis->end(),
+                                      member.get<std::string>()) != requested_gpsis->end()) {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched) {
+                        continue;
+                    }
+                }
                 result[ext_group_id] = data;
             }
             five_g_vn_groups_list_counter->Add(1);
@@ -7543,12 +7569,19 @@ int main() {
     // Real, disclosed: unlike every other `group-data` sub-resource, `Pp5gVnGroupProfileData` is
     // a genuinely keyless singleton document (its own `allowedMtcProviders` field is itself a map
     // keyed by ExtGroupId, but the resource is not) -- backed by `FiveGVnGroupPpProfileDataStore`
-    // (ADR-0169), a fixed single-row table. Real optional `ext-group-ids`/`supported-features`
-    // filters accepted but not honored (matching the established precedent) -- there is nothing to
-    // filter against without inspecting the singleton's own internal map, deferred same as the
-    // bare collection's own `gpsis` filter. Real `200`-always (seeded at startup, always present).
+    // (ADR-0169), a fixed single-row table. Real `200`-always (seeded at startup, always present).
     // SAME CRITICAL ROUTE-ORDERING REQUIREMENT as `5g-vn-groups/internal` above: this literal
-    // 4-segment path must stay registered before the `{externalGroupId}` GET route below. ---
+    // 4-segment path must stay registered before the `{externalGroupId}` GET route below.
+    //
+    // UPDATE (ADR-0181, gap-closure task #106): the real, optional `ext-group-ids` array
+    // query-param filter is now honored against `allowedMtcProviders`'s own real keys -- confirmed
+    // by direct read of `TS29505_Subscription_Data.yaml`'s own `Pp5gVnGroupProfileData` schema
+    // that the special key `"ALL"` ("a map entry which contains a list of AllowedMtcProviderInfo
+    // that are allowed operating all the external group identifiers") always applies regardless of
+    // which external group IDs were requested, so it is always kept in the filtered result, not
+    // just the literally-requested keys. `supported-features` remains accepted-but-not-honored,
+    // matching this project's own established, unrelated precedent for that capability-negotiation
+    // param across every route that has it -- out of scope for this gpsis/ext-group-ids pass. ---
 
     const std::string five_g_vn_group_pp_profile_data_path_pattern =
         std::string(kApiRoot) + "/subscription-data/group-data/5g-vn-groups/pp-profile-data";
@@ -7566,6 +7599,21 @@ int main() {
             if (!data.has_value()) {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No 5G VN Group PP Profile Data");
+            }
+            if (auto ids_it = req.query_params.find("ext-group-ids");
+                ids_it != req.query_params.end() && data->contains("allowedMtcProviders")) {
+                const auto requested_ids = sbi_core::http2::split_form_array(ids_it->second);
+                json filtered = json::object();
+                for (const auto& [key, value] : data->at("allowedMtcProviders").items()) {
+                    if (key == "ALL" ||
+                        std::find(requested_ids.begin(), requested_ids.end(), key) !=
+                            requested_ids.end()) {
+                        filtered[key] = value;
+                    }
+                }
+                json filtered_doc = *data;
+                filtered_doc["allowedMtcProviders"] = filtered;
+                return sbi_core::http2::Response::json(200, filtered_doc.dump());
             }
             return sbi_core::http2::Response::json(200, data->dump());
         });
@@ -7708,8 +7756,15 @@ int main() {
     // --- Nudr_DataRepository: group-data bare 5G MBS Group Membership collection resource
     // (ADR-0167, gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml,
     // `Query5GmbsGroup`, structurally an exact twin of the `5g-vn-groups` collection resource
-    // above (map response over every persisted `MbsGroupMembershipStore` row, optional `gpsis`
-    // filter not honored, real `200`-always). ---
+    // above (map response over every persisted `MbsGroupMembershipStore` row, real `200`-always).
+    //
+    // UPDATE (ADR-0181, gap-closure task #106): the real, optional `gpsis` array query-param
+    // filter is now honored the same way as `5g-vn-groups`'s own sibling filter above, but against
+    // `MulticastMbsGroupMemb`'s own real field name -- `multicastGroupMemb`, confirmed by direct
+    // read of `TS29503_Nudm_PP.yaml` to be genuinely REQUIRED (unlike `5GVnGroupConfiguration`'s
+    // own optional `members`), so every stored row should have it; the `contains()` guard below is
+    // still kept for defensive symmetry with the sibling route, not because absence is expected.
+    // ---
 
     const std::string mbs_group_membership_collection_path_pattern =
         std::string(kApiRoot) + "/subscription-data/group-data/mbs-group-membership";
@@ -7722,8 +7777,31 @@ int main() {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
+            std::optional<std::vector<std::string>> requested_gpsis;
+            if (auto gpsis_it = req.query_params.find("gpsis");
+                gpsis_it != req.query_params.end()) {
+                requested_gpsis = sbi_core::http2::split_form_array(gpsis_it->second);
+            }
             json result = json::object();
             for (const auto& [ext_group_id, data] : mbs_group_membership.list_all()) {
+                if (requested_gpsis.has_value()) {
+                    if (!data.contains("multicastGroupMemb")) {
+                        continue;
+                    }
+                    bool matched = false;
+                    for (const auto& member : data.at("multicastGroupMemb")) {
+                        if (member.is_string() &&
+                            std::find(requested_gpsis->begin(),
+                                      requested_gpsis->end(),
+                                      member.get<std::string>()) != requested_gpsis->end()) {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched) {
+                        continue;
+                    }
+                }
                 result[ext_group_id] = data;
             }
             mbs_group_membership_list_counter->Add(1);
@@ -7781,7 +7859,13 @@ int main() {
     // structurally an exact twin of `5g-vn-groups/pp-profile-data` above (`Pp5gMbsGroupProfileData`
     // has the same keyless-singleton shape, `allowedMbsInfos` instead of `allowedMtcProviders`).
     // SAME CRITICAL ROUTE-ORDERING REQUIREMENT: this route must stay registered before the
-    // `{externalGroupId}` GET route below. ---
+    // `{externalGroupId}` GET route below.
+    //
+    // UPDATE (ADR-0181, gap-closure task #106): the real, optional `ext-group-ids` array
+    // query-param filter is now honored against `allowedMbsInfos`'s own real keys, same "ALL"
+    // always-kept precedent as the `5g-vn-groups/pp-profile-data` sibling above (confirmed by
+    // direct read of `Pp5gMbsGroupProfileData`'s own schema, which documents the identical special
+    // key convention). ---
 
     const std::string mbs_group_pp_profile_data_path_pattern =
         std::string(kApiRoot) +
@@ -7800,6 +7884,21 @@ int main() {
             if (!data.has_value()) {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No 5G MBS Group PP Profile Data");
+            }
+            if (auto ids_it = req.query_params.find("ext-group-ids");
+                ids_it != req.query_params.end() && data->contains("allowedMbsInfos")) {
+                const auto requested_ids = sbi_core::http2::split_form_array(ids_it->second);
+                json filtered = json::object();
+                for (const auto& [key, value] : data->at("allowedMbsInfos").items()) {
+                    if (key == "ALL" ||
+                        std::find(requested_ids.begin(), requested_ids.end(), key) !=
+                            requested_ids.end()) {
+                        filtered[key] = value;
+                    }
+                }
+                json filtered_doc = *data;
+                filtered_doc["allowedMbsInfos"] = filtered;
+                return sbi_core::http2::Response::json(200, filtered_doc.dump());
             }
             return sbi_core::http2::Response::json(200, data->dump());
         });
