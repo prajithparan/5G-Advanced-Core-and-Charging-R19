@@ -3628,3 +3628,34 @@ logic); the notification callback fires from `Put`/`Patch` only, not `Delete` (t
 notification schema has no field shaped for "an NF instance deregistered"). See ADR-0183 in
 `docs/DECISIONS.md` for full disclosure, including why no Helm chart was added (matches a
 pre-existing gap shared by 6 other NFs, not unique to this one).
+
+## ADR-0184 -- continuous move-to-next-NF process decision + BSF, `Nbsf_Management`
+
+| Requirement | Test |
+|---|---|
+| `CreatePCFBinding` + real duplicate-combination check | Live curl: real `201`+`Location`; a second create for the same supi+dnn+snssai gets a real `403` carrying the EXISTING binding's own `pcfSmFqdn` |
+| `GetPCFBindings` filters (supi, JSON-encoded snssai) | Live curl: real `200` matches, real `204` no-match |
+| `UpdateIndPCFBinding` (RFC 7396 merge-patch) | Live curl: real `200`, field actually changed; against a nonexistent binding: real `404` |
+| `CreateIndividualSubcription` + real `myNotification` delivery | Live curl subscribe (real `201`+`Location`) against a live HTTPS receiver; a `CreatePCFBinding` for the subscribed supi triggered a real mTLS POST, captured, containing exactly the subscribed event and correct dnn/snssai (and correctly NOT the unsubscribed SNSSAI_DNN event that fired at the same time) |
+| `ReplaceIndividualSubscription` / `DeleteIndividualSubscription` | Live curl: real `200` / real `204`, then real `404` on repeat/against a nonexistent id |
+| `DeleteIndPCFBinding` | Live curl: real `204`, then real `404` |
+| `CreatePCFforUEBinding` + duplicate-supi check, `GetPCFForUeBindings`, `UpdateIndPCFforUEBinding`, `DeleteIndPCFforUEBinding` | Live curl: real `201`/`403`/`200`(filtered+unfiltered)/`200`(merge-patch)/`204` |
+| `CreatePCFMbsBinding` + duplicate-mbsSessionId check, `GetPCFMbsBinding`, `ModifyIndPCFMbsBinding`, `DeleteIndPCFMbsBinding` | Live curl: real `201`/`403`(with existing pcfFqdn)/`200`(nested JSON query param)/`400`(missing mandatory param)/`200`(merge-patch)/`204` |
+| Bad bearer token | Live curl: real `401` `ProblemDetails` |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 343/343 pass |
+
+This project's tenth NF. Records two things: (1) a user-directed process change -- move to the
+next NF/subsystem continuously as each one completes, without a fresh per-NF prompt or per-NF
+confirmation pause, while every other CLAUDE.md quality bar (no fabrication, live verification,
+zero-warning builds, full doc trail, CI-health checks before pushing) stays exactly as strict; (2)
+BSF (`Nbsf_Management`, TS29521 v1.5.0), the second NF built under that process, chosen over NEF
+(too large for one slice, 14 files/~52 ops) and SCP (architecturally different -- a real inline
+HTTP proxy, not another origin-server YAML) as the cleanest-scoped of the three remaining. All 15
+real operations across `pcfBindings`/`subscriptions`/`pcf-ue-bindings`/`pcf-mbs-bindings`
+implemented, plus the real `myNotification` callback. Real BSF-specific business logic (not just
+CRUD): the spec's own duplicate-combination 403-with-existing-info rule for
+`CreatePCFBinding`/`CreatePCFMbsBinding`, real RFC 7396 merge-patch (not RFC 6902) for all three
+binding families' PATCH, and real `BsfEvent` notification coverage matching the spec's own
+combination-uniqueness semantics. One real `-Wconversion` bug found and fixed before commit (a
+generic JSON-query-param helper instantiated with `T = nlohmann::json` itself hit an ambiguous
+optional-construction overload). See ADR-0184 in `docs/DECISIONS.md` for full disclosure.

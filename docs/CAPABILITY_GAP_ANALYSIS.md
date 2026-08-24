@@ -1193,7 +1193,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 
 ---
 
-## Summary and priority signal (9 of 10 built NFs covered by the original sweep; NSSF added later, ADR-0183)
+## Summary and priority signal (9 of 11 built NFs covered by the original sweep; NSSF/BSF added later, ADR-0183/ADR-0184)
 
 | NF | Scale ratio (ref/ours) | Highest-priority real gap |
 |---|---|---|
@@ -1207,6 +1207,7 @@ a closer behavioral diff only if a specific discrepancy surfaces later, not assu
 | UPF | ~1x (task #107 fully closed: Association Update/Release, ADR-0084; PFD Management, ADR-0086; Node Report, ADR-0087; Session Set Deletion correctly found not applicable to this project's own N4/Sxc interface) | datapath (XDP) already ahead of both references on paper, unbenchmarked |
 | CHF | ~2.2x (free5GC), N/A (open5GS has none) | TS 32.298 real CDR encoding: CLOSED (task #108, ADR-0089, narrower disclosed scope than free5GC's); already ahead on 5G-native service breadth + AI-native charging |
 | NSSF | Not yet swept against free5GC/open5GS source (built after this table, ADR-0183, not part of the original comparison pass) | Both real `Nnssf_NSSelection`/`Nnssf_NSSAIAvailability` services present, all 8 real operations implemented; real gap: the slice-selection decision itself is catalog-membership filtering against a fixed seed, not real subscriber-entitlement/NRF-discovery/NSAG-mapping logic -- see ADR-0183 |
+| BSF | Not yet swept against free5GC/open5GS source (built after this table, ADR-0184, not part of the original comparison pass) | Real `Nbsf_Management`, all 15 real operations across 4 resource families implemented, including the spec's own real duplicate-combination 403-with-existing-info logic and real `BsfEvent` notification coverage; no known real gap identified yet since no reference-source diff has been done -- see ADR-0184 |
 
 **Real, honest pattern across the sweep**: this project's "happy path" (initial attach, PDU
 session establishment, core CRUD on each NF's primary resource) is consistently real and already
@@ -1216,8 +1217,10 @@ optional-but-real 3GPP services each NF has. AMF/SMF's shared N2-handover gap is
 highest-impact, highest-effort item found. CHF is the one NF where this project is already
 ahead of at least one reference on real service breadth.
 
-**Still not done, per ADR-0075's own scope**: `nef`/`scp`/`bsf` still don't exist in this project at
-all (`nssf` closed this gap, ADR-0183 -- not yet swept against free5GC/open5GS source the way the
-other 9 NFs above were, so its own real capability-parity gaps, if any, aren't characterized here
-yet). Sequencing which of `nef`/`scp`/`bsf` (or a deeper NSSF sweep) gets implemented next is a
-real decision, not yet made.
+**Still not done, per ADR-0075's own scope**: `nef`/`scp` still don't exist in this project at all
+(`nssf`/`bsf` closed their own gaps, ADR-0183/ADR-0184 -- neither has been swept against
+free5GC/open5GS source the way the other 9 NFs above were, so their own real capability-parity
+gaps, if any, aren't characterized here yet). Per ADR-0184's own process decision, this project now
+moves to the next NF/subsystem continuously rather than waiting on a fresh per-NF decision each
+time -- NEF (needs explicit sub-scoping, ~52 real operations across 14 files) or SCP (a real
+architectural departure -- an inline HTTP reverse-proxy, not another origin-server YAML) is next.

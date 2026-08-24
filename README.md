@@ -71,8 +71,13 @@ UDR is the largest single target: it now implements the large majority of free5G
 `Nudr_DataRepository` resource types, plus a distinct `Nudr_GroupIDmap` resource.
 
 The same effort has also added whole new NFs beyond the original Phase 2 seven: **NSSF**
-(`Nnssf_NSSelection` + `Nnssf_NSSAIAvailability`, all 8 real operations, ADR-0183) is the first,
-chosen from the "still not done" `nssf`/`nef`/`scp`/`bsf` list. NEF/SCP/BSF remain unbuilt.
+(`Nnssf_NSSelection` + `Nnssf_NSSAIAvailability`, all 8 real operations, ADR-0183) and **BSF**
+(`Nbsf_Management`, all 15 real operations, ADR-0184), chosen from the "still not done"
+`nssf`/`nef`/`scp`/`bsf` list. As of ADR-0184, this project moves to the next NF/subsystem
+continuously as each one completes rather than waiting on a fresh per-NF decision each time — the
+same quality bar (live verification, zero-warning builds, full doc trail) still applies to each.
+NEF (needs explicit sub-scoping) and SCP (a real architectural departure — an inline HTTP
+reverse-proxy, not another origin-server YAML) remain unbuilt.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
@@ -89,7 +94,7 @@ libs/sbi-core/     Shared SBI infrastructure: HTTP/2 server+client, OAuth2 clien
                    ProblemDetails, 3gpp-Sbi-* headers, structured logging, OpenTelemetry tracing.
                    Every NF links this; no NF includes another NF's private headers.
 nfs/<nf>/          One independent binary + library per Network Function: nrf, amf, smf, udm, udr,
-                   ausf, pcf, upf, chf, nssf. nfs/hello-nf is a Phase 0 throwaway, not a real NF.
+                   ausf, pcf, upf, chf, nssf, bsf. nfs/hello-nf is a Phase 0 throwaway, not a real NF.
 bss/<service>/     Standalone TM Forum ODA-layer services (not 3GPP NFs, no NRF registration):
                    product-catalog (TMF620), balance-management (TMF654), subscriber-management
                    (TMF632), roaming-interconnect (TMF651).
