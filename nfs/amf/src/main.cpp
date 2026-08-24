@@ -48,6 +48,34 @@
 //   parsing is needed. Same disclosed notification-delivery gap as this file's other 3 subscription
 //   types (see subscriptions.hpp's own header): subscriptions are stored/modified/removed for real,
 //   but nothing ever fires one.
+//
+// UPDATE (ADR-0200, gap-closure task #159): four more Namf_* APIs, none previously in the
+// sbi-codegen pilot set at all (real Tier-A gap, now closed):
+// - TS29518_Namf_AIoT.yaml (api root /namf-aiot/v1): MessageDelivery, real structural validation
+//   of AiotMessageReq (accepts both its real application/json and multipart/related encodings --
+//   dispatched on the real Content-Type header, reusing sbi_core::multipart::is_multipart_related),
+//   then a real 204 -- disclosed: this lab has no real Ambient IoT device/NG-RAN stack behind it
+//   (TS 23.369 is a Tier 3 R19 feature per CLAUDE.md), so "successfully received" is honest but
+//   nothing is actually forwarded to a device.
+// - TS29518_Namf_MBSCommunication.yaml (api root /namf-mbs-comm/v1): N2MessageTransfer, real
+//   multipart/related-only structural validation (MbsN2MessageTransferReqData), then a real 200
+//   with result=N2_INFO_TRANSFER_INITIATED -- same disclosed "no real N2 delivery pipeline"
+//   simplification as Namf_Communication's own NonUeN2MessageTransfer above.
+// - TS29518_Namf_MBSBroadcast.yaml (api root /namf-mbs-bc/v1): all 3 operations, backed by a new
+//   MbsBroadcastContextStore (subscriptions.hpp). ContextCreate: real structural validation
+//   (multipart-only ContextCreateReqData), assigns a real mbsContextRef, real 201. ContextDelete:
+//   real get/404-then-remove/204 (mirrors ReleaseUEContext's own pattern). ContextUpdate: real
+//   get/404 against the stored context, then a real 204 -- disclosed: the update body's fields are
+//   validated but not merged into stored state, since (same as Create) there is no real N2
+//   consumer downstream that would ever read the merged result.
+// - TS29518_Namf_MT.yaml (api root /namf-mt/v1): all 3 operations. ProvideDomainSelectionInfo
+//   checks the real UeContextStore -- 404 if absent, else an honestly-empty UeContextInfo{} 200
+//   (same disclosed no-VoPS/RAT-data gap as Namf_Location's ProvideLocationInfo).
+//   EnableUeReachability checks UeContextStore -- 404 if absent, else a real ack (echoes the
+//   requested `reachability` back), disclosed: no real paging/reachability state machine exists to
+//   actually change UE reachability. EnableGroupReachability does real structural validation
+//   (ueInfoList+tmgi) then a real 200 with an honestly-empty ueConnectedList -- no real per-UE
+//   reachability tracking exists to populate it from.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -70,6 +98,10 @@
 #include <thread>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "TS29518_Namf_AIoT.hpp"
+#include "TS29518_Namf_MBSBroadcast.hpp"
+#include "TS29518_Namf_MBSCommunication.hpp"
+#include "TS29518_Namf_MT.hpp"
 #include "nf_config/nf_config.hpp"
 #include "ngap_task.hpp"
 #include "subscriptions.hpp"
@@ -93,6 +125,13 @@ constexpr const char* kApiRoot = "/namf-comm/v1";
 // distinct from kApiRoot above, confirmed via each YAML's own `servers:` block.
 constexpr const char* kLocationApiRoot = "/namf-loc/v1";
 constexpr const char* kEventExposureApiRoot = "/namf-evts/v1";
+// TS29518_Namf_AIoT.yaml / TS29518_Namf_MBSBroadcast.yaml / TS29518_Namf_MBSCommunication.yaml /
+// TS29518_Namf_MT.yaml own real api roots (ADR-0200), confirmed via each YAML's own `servers:`
+// block.
+constexpr const char* kAiotApiRoot = "/namf-aiot/v1";
+constexpr const char* kMbsBroadcastApiRoot = "/namf-mbs-bc/v1";
+constexpr const char* kMbsCommApiRoot = "/namf-mbs-comm/v1";
+constexpr const char* kMtApiRoot = "/namf-mt/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018 for
 // why NRF's identity is a fixed constant rather than randomly generated per run (any NF other than
@@ -339,6 +378,8 @@ int main() {
     // ADR-0199: Namf_EventExposure's two real, separate resource families -- see subscriptions.hpp.
     amf::AmfEventSubscriptionStore amf_event_subs("evtsub-");
     amf::AmfEventSubscriptionStore amf_set_event_subs("setsub-");
+    // ADR-0200: Namf_MBSBroadcast's broadcast MBS session contexts.
+    amf::MbsBroadcastContextStore mbs_broadcast_contexts("mbsctx-");
 
     auto meter = sbi_core::get_meter("amf");
     auto release_counter =
@@ -371,6 +412,24 @@ int main() {
     auto set_event_subscribe_counter = meter->CreateUInt64Counter(
         "amf_set_event_exposure_subscribe_total",
         "Total Namf_EventExposure CreateAMFSetLevelBulkSubscription calls");
+    // ADR-0200: Namf_AIoT + Namf_MBSBroadcast + Namf_MBSCommunication + Namf_MT counters.
+    auto aiot_message_delivery_counter = meter->CreateUInt64Counter(
+        "amf_aiot_message_delivery_total", "Total Namf_AIoT MessageDelivery calls");
+    auto mbs_context_create_counter = meter->CreateUInt64Counter(
+        "amf_mbs_broadcast_context_create_total", "Total Namf_MBSBroadcast ContextCreate calls");
+    auto mbs_context_delete_counter = meter->CreateUInt64Counter(
+        "amf_mbs_broadcast_context_delete_total", "Total Namf_MBSBroadcast ContextDelete calls");
+    auto mbs_context_update_counter = meter->CreateUInt64Counter(
+        "amf_mbs_broadcast_context_update_total", "Total Namf_MBSBroadcast ContextUpdate calls");
+    auto mbs_n2_message_transfer_counter = meter->CreateUInt64Counter(
+        "amf_mbs_n2_message_transfer_total", "Total Namf_MBSCommunication N2MessageTransfer calls");
+    auto mt_domain_selection_counter =
+        meter->CreateUInt64Counter("amf_mt_provide_domain_selection_info_total",
+                                   "Total Namf_MT Provide Domain Selection Info calls");
+    auto mt_enable_reachability_counter = meter->CreateUInt64Counter(
+        "amf_mt_enable_ue_reachability_total", "Total Namf_MT EnableUeReachability calls");
+    auto mt_enable_group_reachability_counter = meter->CreateUInt64Counter(
+        "amf_mt_enable_group_reachability_total", "Total Namf_MT EnableGroupReachability calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1053,6 +1112,202 @@ int main() {
                          resp.status = 204;
                          return resp;
                      });
+
+    // ---- TS29518_Namf_AIoT.yaml (ADR-0200) ----
+
+    server.add_route(
+        "POST",
+        std::string(kAiotApiRoot) + "/transfer",
+        [&verifier, &aiot_message_delivery_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            std::optional<sbi_gen::AiotMessageReq> body;
+            const auto ct_it = req.headers.find("content-type");
+            if (ct_it != req.headers.end() &&
+                sbi_core::multipart::is_multipart_related(ct_it->second)) {
+                body = parse_multipart_json_body<sbi_gen::AiotMessageReq>(req, err);
+            } else {
+                body = parse_json_body<sbi_gen::AiotMessageReq>(req, err);
+            }
+            if (!body.has_value()) {
+                return err;
+            }
+            aiot_message_delivery_counter->Add(1);
+            // Disclosed gap: this lab has no real Ambient IoT device/NG-RAN stack (TS 23.369 is a
+            // Tier 3 R19 feature per CLAUDE.md) -- the message is structurally validated and
+            // accepted, but nothing is actually forwarded to a device.
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // ---- TS29518_Namf_MBSCommunication.yaml (ADR-0200) ----
+
+    server.add_route(
+        "POST",
+        std::string(kMbsCommApiRoot) + "/n2-messages/transfer",
+        [&verifier, &mbs_n2_message_transfer_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_multipart_json_body<sbi_gen::MbsN2MessageTransferReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            mbs_n2_message_transfer_counter->Add(1);
+            // Same "no real N2 delivery pipeline yet" disclosed simplification as
+            // NonUeN2MessageTransfer above.
+            sbi_gen::MbsN2MessageTransferRspData resp_data;
+            resp_data.result.value =
+                sbi_gen::N2InformationTransferResult::N2_INFO_TRANSFER_INITIATED;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // ---- TS29518_Namf_MBSBroadcast.yaml (ADR-0200) ----
+
+    server.add_route(
+        "POST",
+        std::string(kMbsBroadcastApiRoot) + "/mbs-contexts",
+        [&verifier, &mbs_broadcast_contexts, &mbs_context_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_multipart_json_body<sbi_gen::ContextCreateReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto id = mbs_broadcast_contexts.create(*body);
+            mbs_context_create_counter->Add(1);
+            sbi_gen::ContextCreateRspData resp_data;
+            resp_data.mbsSessionId = body->mbsSessionId;
+            json j = resp_data;
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kMbsBroadcastApiRoot) + "/mbs-contexts/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kMbsBroadcastApiRoot) + "/mbs-contexts/{mbsContextRef}",
+        [&verifier, &mbs_broadcast_contexts, &mbs_context_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ctx_ref = req.path_params.at("mbsContextRef");
+            if (!mbs_broadcast_contexts.get(ctx_ref).has_value()) {
+                return problem_response(404, "Not Found", "No such MBS broadcast context");
+            }
+            mbs_broadcast_contexts.remove(ctx_ref);
+            mbs_context_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kMbsBroadcastApiRoot) + "/mbs-contexts/{mbsContextRef}/update",
+        [&verifier, &mbs_broadcast_contexts, &mbs_context_update_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ctx_ref = req.path_params.at("mbsContextRef");
+            if (!mbs_broadcast_contexts.get(ctx_ref).has_value()) {
+                return problem_response(404, "Not Found", "No such MBS broadcast context");
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_multipart_json_body<sbi_gen::ContextUpdateReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            mbs_context_update_counter->Add(1);
+            // Disclosed simplification: the update body's fields are validated but not merged
+            // into stored state -- same as ContextCreate, there is no real N2 consumer downstream
+            // that would ever read the merged result in this lab build.
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // ---- TS29518_Namf_MT.yaml (ADR-0200) ----
+
+    server.add_route(
+        "GET",
+        std::string(kMtApiRoot) + "/ue-contexts/{ueContextId}",
+        [&verifier, &ue_contexts, &mt_domain_selection_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_context_id = req.path_params.at("ueContextId");
+            if (!ue_contexts.get(ue_context_id).has_value()) {
+                return problem_response(404, "Not Found", "No UE context with id " + ue_context_id);
+            }
+            mt_domain_selection_counter->Add(1);
+            // Disclosed simplification: honestly-empty UeContextInfo -- same "UeContextStore only
+            // ever persists {ueContextId}" gap as Namf_Location's ProvideLocationInfo above.
+            sbi_gen::UeContextInfo resp_data;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kMtApiRoot) + "/ue-contexts/{ueContextId}/ue-reachind",
+        [&verifier, &ue_contexts, &mt_enable_reachability_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_json_body<sbi_gen::EnableUeReachabilityReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_context_id = req.path_params.at("ueContextId");
+            if (!ue_contexts.get(ue_context_id).has_value()) {
+                return problem_response(404, "Not Found", "No UE context with id " + ue_context_id);
+            }
+            mt_enable_reachability_counter->Add(1);
+            // Disclosed simplification: real ack (echoes the requested reachability back), but no
+            // real paging/reachability state machine exists to actually change UE reachability.
+            sbi_gen::EnableUeReachabilityRspData resp_data;
+            resp_data.reachability = body->reachability;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kMtApiRoot) + "/ue-contexts/enable-group-reachability",
+        [&verifier, &mt_enable_group_reachability_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_json_body<sbi_gen::EnableGroupReachabilityReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            mt_enable_group_reachability_counter->Add(1);
+            // Disclosed simplification: honestly-empty ueConnectedList -- no real per-UE
+            // reachability tracking exists to populate it from.
+            sbi_gen::EnableGroupReachabilityRspData resp_data;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
 
     std::thread(run_nrf_lifecycle, amf_instance_id, nrf_base).detach();
     // NGAP/N2 (SCTP), its own dedicated thread -- see docs/DECISIONS.md ADR-0030/ADR-0031.

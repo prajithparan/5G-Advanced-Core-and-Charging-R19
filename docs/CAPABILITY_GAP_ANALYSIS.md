@@ -94,17 +94,18 @@ roughly-equivalent implementation with a few missing edges.
 | `Namf_Communication` (UEContext CRUD, N1N2MessageTransfer(+subscribe), non-UE-N2-messages(+subscribe)) | Real (`internal/sbi/processor/{ue_context,n1n2message}.go`) | Real, route-for-route match (`nfs/amf/src/main.cpp`, 16 routes) |
 | `Namf_EventExposure` (Create/Delete/Modify subscription -- mobility, reachability, comm-failure, location-report events, TS 29.518) | Real (`processor/event_exposure.go`, 3 real handlers) | **Real, all 6 real operations** (individual + AMF-Set-level bulk families, ADR-0199) -- real subscription CRUD, real RFC 6902 `PATCH`; notification delivery not implemented (disclosed, same gap class as this NF's other subscription types) |
 | `Namf_Location` (ProvideLocationInfo -- used by LMF/GMLC for positioning) | Real (`processor/location_info.go`) | **Real, all 3 real operations** (ADR-0199) -- `ProvidePositioningInfo` real `501` (no LPP/GNSS/PRU capability, disclosed), `ProvideLocationInfo` real 404/honestly-empty-200, `CancelLocation` real `404` |
-| `Namf_MT` (ProvideDomainSelectionInfo -- CS/PS domain selection for MT SMS/call) | Real (`processor/mt.go`) | **Missing entirely** |
+| `Namf_MT` (ProvideDomainSelectionInfo -- CS/PS domain selection for MT SMS/call) | Real (`processor/mt.go`) | **Real, all 3 real operations** (ADR-0200) -- `ProvideDomainSelectionInfo` real 404/honestly-empty-200, `EnableUeReachability` real 404/real-ack, `EnableGroupReachability` real 200 with honestly-empty `ueConnectedList` |
 | `Namf_OAM` (RegisteredUEContext query) | Real (`processor/oam.go`) | **Missing entirely** |
 
-Grep-confirmed: no occurrence of `namf-mt`, `namf-oam`, or their real operation names anywhere in
-this project's AMF source. `Namf_EventExposure`/`Namf_Location` closed real, ADR-0199. **2 of 4
-real Namf_* services remain entirely unimplemented**: `Namf_MT` has a real YAML in this project's
-own `specs/5G_APIs-REL-19/` (`TS29518_Namf_MT.yaml`), tracked as part of task #159. `Namf_OAM`
-does NOT exist as a file in this project's `specs/5G_APIs-REL-19/` at all (checked directly,
-`ls`+`grep`, this pass) -- either free5GC's `Namf_OAM` maps to a TS 29.518 operation this
-project's own R19 archive genuinely doesn't carry, or it's a 3GPP internal/non-published
-interface; not yet root-caused which, so not silently assumed out of scope.
+Grep-confirmed: no occurrence of `namf-oam` or its real operation names anywhere in this project's
+AMF source. `Namf_EventExposure`/`Namf_Location` closed real, ADR-0199; `Namf_MT` (plus
+`Namf_AIoT`/`Namf_MBSBroadcast`/`Namf_MBSCommunication`, real services this project's own R19
+archive carries that aren't in free5GC's comparison set at all) closed real, ADR-0200. **1 of the
+5 real Namf_* services free5GC implements remains entirely unimplemented**: `Namf_OAM` does NOT
+exist as a file in this project's `specs/5G_APIs-REL-19/` at all (checked directly, `ls`+`grep`,
+ADR-0199's pass) -- either free5GC's `Namf_OAM` maps to a TS 29.518 operation this project's own
+R19 archive genuinely doesn't carry, or it's a 3GPP internal/non-published interface; not yet
+root-caused which, so not silently assumed out of scope.
 
 ### Real NAS (GMM) procedure coverage
 
@@ -1270,7 +1271,7 @@ check couldn't resolve (none surfaced this pass).
 | NF | Missing YAML file(s) |
 |---|---|
 | NRF | ~~`Nnrf_Bootstrapping`~~ CLOSED, ADR-0194 (the original finding that triggered this audit) |
-| AMF | `Namf_AIoT`, `Namf_MBSBroadcast`, `Namf_MBSCommunication`, `Namf_MT` |
+| AMF | ~~`Namf_AIoT`, `Namf_MBSBroadcast`, `Namf_MBSCommunication`, `Namf_MT`~~ CLOSED, ADR-0200 |
 | SMF | `Nsmf_EventExposure`, `Nsmf_NIDD` |
 | UDM | `Nudm_MT`, `Nudm_NIDDAU`, `Nudm_RSDS`, `Nudm_SSAU`, `Nudm_UEID` |
 | UDR | ~~`Nudr_GroupIDmap`~~ CLOSED, ADR-0198 -- was a different failure mode: implemented, but with hand-written `nlohmann::json` validation bypassing sbi-codegen entirely, now replaced with the real generated DTO |

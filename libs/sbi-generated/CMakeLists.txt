@@ -56,6 +56,10 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29504_Nudr_GroupIDmap.yaml
     TS29518_Namf_Location.yaml
     TS29518_Namf_EventExposure.yaml
+    TS29518_Namf_AIoT.yaml
+    TS29518_Namf_MBSBroadcast.yaml
+    TS29518_Namf_MBSCommunication.yaml
+    TS29518_Namf_MT.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -97,6 +101,10 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29504_Nudr_GroupIDmap.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_Location.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_EventExposure.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_AIoT.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_MBSBroadcast.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_MBSCommunication.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_MT.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES

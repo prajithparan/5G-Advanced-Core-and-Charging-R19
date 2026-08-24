@@ -7,8 +7,10 @@
 #include <unordered_map>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "TS29518_Namf_MBSBroadcast.hpp"
 
-// Private to nfs/amf. Five id-keyed subscription stores backing:
+// Private to nfs/amf. Five id-keyed subscription stores, plus one id-keyed non-subscription
+// resource store reusing the same IdKeyedStore template, backing:
 //   - N1N2MessageSubscribe / N1N2MessageUnSubscribe   (TS29518_Namf_Communication.yaml,
 //     UeN1N2InfoSubscriptionCreateData, scoped to a ueContextId)
 //   - NonUeN2InfoSubscribe / NonUeN2InfoUnSubscribe    (NonUeN2InfoSubscriptionCreateData)
@@ -97,5 +99,9 @@ using AmfStatusSubscriptionStore = IdKeyedStore<sbi_gen::SubscriptionData_Namf_C
 // main.cpp with distinct id prefixes, since the two are genuinely separate resource collections per
 // TS29518_Namf_EventExposure.yaml even though they share the same AmfEventSubscription schema.
 using AmfEventSubscriptionStore = IdKeyedStore<sbi_gen::AmfEventSubscription>;
+// Backs Namf_MBSBroadcast's ContextCreate/ContextDelete/ContextUpdate (ADR-0200) -- not a
+// subscription, just the same real assign-id/store/remove shape reused for a different resource
+// type (a broadcast MBS session context, keyed by server-assigned mbsContextRef).
+using MbsBroadcastContextStore = IdKeyedStore<sbi_gen::ContextCreateReqData>;
 
 } // namespace amf

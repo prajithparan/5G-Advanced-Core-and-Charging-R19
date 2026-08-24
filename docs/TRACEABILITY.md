@@ -3973,3 +3973,25 @@ subscription CRUD is real, but notification delivery is not (same disclosed gap 
 file's other 3 subscription types). See ADR-0199 in `docs/DECISIONS.md` for full disclosure,
 including a real, reproduced-but-unfixed pre-existing test hang found in an unrelated UDR test
 while running a broad `ctest -R` during this pass.
+
+## ADR-0200 -- AMF `Namf_AIoT` + `Namf_MBSBroadcast` + `Namf_MBSCommunication` + `Namf_MT` (fifth ADR-0193 gap-closure)
+
+| Requirement | Test |
+|---|---|
+| AIoT `MessageDelivery`, both real encodings + required-field validation | `AmfAiotIntegration.MessageDeliveryJsonAndMultipartAnd400`: real `204` via `application/json` and `multipart/related`, real `400` on missing `correlationId` |
+| MBS `N2MessageTransfer` real response shape | `AmfMbsCommunicationIntegration.N2MessageTransferReturnsInitiated`: real `200`, verified `N2_INFO_TRANSFER_INITIATED` |
+| MBS Broadcast full context lifecycle + isolation | `AmfMbsBroadcastIntegration.ContextCreateUpdateDeleteLifecycle`: real `201`->`204` update->`404` update-on-unknown-ref->`204` delete->`404` delete-again |
+| MT domain selection, no-context vs. found | `AmfMtIntegration.ProvideDomainSelectionInfo404ThenHonestlyEmpty200`: real `404` before `CreateUEContext`, real `200` with a verified-empty `UeContextInfo` after |
+| MT reachability ack | `AmfMtIntegration.EnableUeReachability404ThenRealAck`: real `404` before a UE context exists, real `200` with a verified-echoed `reachability` after |
+| MT group reachability + validation | `AmfMtIntegration.EnableGroupReachabilityReturnsHonestlyEmptyList`: real `200` with a verified-absent `ueConnectedList`, real `400` on missing `tmgi` |
+| No regression | Full reconfigure+rebuild against the complete pilot set clean (`EXIT=0` verified from the build log); all 16 `Amf*Integration` tests pass |
+
+Real Tier-A gap-closure: none of these 4 YAMLs were in the sbi-codegen pilot set at all before
+this pass (unlike ADR-0199's `Namf_Location`/`Namf_EventExposure`, which were wired but unrouted).
+Real, separate api roots (`/namf-aiot/v1`, `/namf-mbs-bc/v1`, `/namf-mbs-comm/v1`, `/namf-mt/v1`)
+confirmed from each YAML's own `servers:` block. Real name collision found and resolved by the
+codegen itself: `N2MbsSmInfo`, declared independently by both MBSBroadcast and MBSCommunication,
+disambiguated to `N2MbsSmInfo_Namf_MBSBroadcast`/`N2MbsSmInfo_Namf_MBSCommunication`. All 4 carry
+forward disclosed capability gaps already established elsewhere in this AMF (no real N2/device
+delivery pipeline, no real UE reachability state machine, no real merge of `ContextUpdate`'s
+fields into stored state). See ADR-0200 in `docs/DECISIONS.md` for full disclosure.
