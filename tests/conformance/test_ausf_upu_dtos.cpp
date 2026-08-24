@@ -1,10 +1,11 @@
 // Round-trip conformance test for AUSF's Nausf_UPUProtection generated DTOs (docs/DECISIONS.md
-// ADR-0195, gap-closure per ADR-0193). Source: specs/5G_APIs-REL-19/TS29509_Nausf_UPUProtection.yaml.
-// Same precedent as test_nrf_bootstrapping_dtos.cpp: construct -> to_json -> from_json -> compare,
-// using the real generated types, not synthetic ones. UpuInfo_Nausf_UPUProtection/UpuSecurityInfo
-// land in the shared TS29122_CommonData_grp.hpp (real SCC grouping) -- both UpuInfo and UpuData
-// are disambiguated (suffixed _Nausf_UPUProtection) from other real, distinct schemas of the same
-// name declared in other already-wired pilot files.
+// ADR-0195, gap-closure per ADR-0193). Source:
+// specs/5G_APIs-REL-19/TS29509_Nausf_UPUProtection.yaml. Same precedent as
+// test_nrf_bootstrapping_dtos.cpp: construct -> to_json -> from_json -> compare, using the real
+// generated types, not synthetic ones. UpuInfo_Nausf_UPUProtection/UpuSecurityInfo land in the
+// shared TS29122_CommonData_grp.hpp (real SCC grouping) -- both UpuInfo and UpuData are
+// disambiguated (suffixed _Nausf_UPUProtection) from other real, distinct schemas of the same name
+// declared in other already-wired pilot files.
 
 #include <nlohmann/json.hpp>
 
