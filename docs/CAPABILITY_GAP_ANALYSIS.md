@@ -1074,9 +1074,17 @@ already present in data these routes already return. `QueryUeSubscribedData`'s o
 `ext-group-ids` filter was re-checked and correctly remains unhonored (no store to filter its 32
 flat per-UE fields against). Also fixed a stale top-of-file code comment that still described the
 bare-collection filters as blocked.
-This is well past free5GC's own ~42+ figure; the real, still-open work from here is surveying the
-remainder of `TS29505_Subscription_Data.yaml` itself (`mbs-session-pol-data` and others), not
-chasing a shrinking
+**Continued, docs/DECISIONS.md ADR-0182**: `mbs-session-pol-data` (`GetMBSSessPolCtrlData`)
+implemented for its own unambiguous `afAppId` `oneOf` branch (`polSessionId`'s own real schema is
+`{mbsSessionId}`/`{afAppId}`, and `afAppId` is just `type: string` on its own -- no encoding
+decision needed). Real, disclosed: this is a partial closure, not a full resolution -- the
+`mbsSessionId`/`tmgi`/`ssm` branch remains exactly as unaddressed as ADR-0119's own original
+deferral left it; that ADR already explicitly declined inventing a serialization for a
+multi-level nested object (calling it fabrication), and this pass re-checked and did not reverse
+that decision. Live-verified `GET` for both a seeded and an unseeded key.
+This is well past free5GC's own ~42+ figure; the real, still-open work from here is the
+`mbsSessionId`/`tmgi`/`ssm` branch (deliberately still unaddressed) and anything else surfaced by a
+future survey, not chasing a shrinking
 comparison count.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.

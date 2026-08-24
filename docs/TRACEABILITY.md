@@ -3575,3 +3575,26 @@ top-of-file comment block in `nfs/udr/src/main.cpp` that still described these t
 `gpsis` filters as blocked on missing array-query-param infra, a state ADR-0161's own
 `split_form_array()` had already resolved. See ADR-0181 in `docs/DECISIONS.md` for full
 disclosure.
+
+## ADR-0182 -- `mbs-session-pol-data` implemented for its unambiguous `afAppId` branch, `mbsSessionId` branch remains deferred
+
+| Requirement | Test |
+|---|---|
+| Apply schema change to real, running `docker-postgres-udr-1` | `CREATE TABLE IF NOT EXISTS`, confirmed via the standard `schema.postgres.sql` re-apply |
+| `GET policy-data/mbs-session-pol-data/af-app-1` | Live curl, real `200` with the exact seeded body `{"5qis":[9]}` |
+| `GET policy-data/mbs-session-pol-data/nonexistent` | Live curl, real `404` with a correctly-worded `ProblemDetails` |
+| No regression | Full `conformance_tests`+`integration_tests` (excluding the two disclosed pre-existing flaky tests): 332/332 pass |
+
+Real correction made while implementing, not a full "resolution" of the whole key space:
+`polSessionId`'s own real schema (`MbsSessPolDataId`) is a `oneOf` of `{mbsSessionId}`/
+`{afAppId}`, with `mbsSessionId` itself an `anyOf` of `{tmgi}`/`{ssm}`. ADR-0119's own original
+deferral already explicitly considered and *declined* reusing `slice-control-data`'s own `snssai`
+precedent (`sst + '-' + sd`, a deliberate, disclosed convention for a genuinely flat two-field
+object) for this multi-level nested object, calling that "fabrication, not a disclosed convention
+choice" -- that reasoning is re-checked here and still holds, not reversed. What genuinely changed:
+the `oneOf`'s own `afAppId` branch is, on its own, just `type: string` -- already unambiguous, no
+encoding decision needed. New `MbsSessionPolicyDataStore` (real GET-only, `seed()`/`get()`-only,
+same shape as `SponsorConnectivityDataStore`) implements exactly that branch, seeded with one
+representative key. The `mbsSessionId`/`tmgi`/`ssm` branch remains exactly as unaddressed as
+ADR-0119 left it -- not touched, not claimed resolved. See ADR-0182 in `docs/DECISIONS.md` for
+full disclosure.

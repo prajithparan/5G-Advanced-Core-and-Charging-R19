@@ -2738,4 +2738,28 @@ std::vector<nlohmann::json> NfGroupIdSubscriptionStore::list_all() {
     return out;
 }
 
+MbsSessionPolicyDataStore::MbsSessionPolicyDataStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+void MbsSessionPolicyDataStore::seed(const std::string& pol_session_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_mbs_session_pol_data (pol_session_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (pol_session_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{pol_session_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> MbsSessionPolicyDataStore::get(const std::string& pol_session_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_mbs_session_pol_data WHERE pol_session_id = $1",
+                 pqxx::params{pol_session_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
 } // namespace udr

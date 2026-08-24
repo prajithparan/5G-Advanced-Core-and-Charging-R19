@@ -1465,4 +1465,23 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0182). Backs the real `policy-data`
+// group's MBS Session Policy Control Data resource (`GetMBSSessPolCtrlData` -- real GET-only, no
+// create/update operation exists in the spec at all). Keyed by `polSessionId`, but only ever the
+// real `MbsSessPolDataId` schema's `afAppId` oneOf branch (a plain string, already unambiguous) --
+// the schema's own `mbsSessionId`/`tmgi`/`ssm` branch remains genuinely unaddressed, per
+// ADR-0119's own unreversed refusal to invent a serialization for it. See the full disclosure on
+// `udr_mbs_session_pol_data` in `schema.postgres.sql`.
+class MbsSessionPolicyDataStore {
+public:
+    explicit MbsSessionPolicyDataStore(const std::string& conninfo);
+
+    void seed(const std::string& pol_session_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& pol_session_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 } // namespace udr

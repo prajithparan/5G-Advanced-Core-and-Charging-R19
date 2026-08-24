@@ -1111,6 +1111,8 @@ int main() {
     udr::MbsGroupPpProfileDataStore mbs_group_pp_profile_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0170).
     udr::NfGroupIdSubscriptionStore nf_group_id_subscriptions(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0182).
+    udr::MbsSessionPolicyDataStore mbs_session_pol_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0146).
     udr::GroupEeProfileDataStore group_ee_profile_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0148).
@@ -1284,6 +1286,23 @@ int main() {
         json sponsor;
         sponsor["aspIds"] = json::array({"asp1"});
         sponsor_connectivity_data.seed("sponsor1", sponsor);
+    }
+
+    // Real seed data (ADR-0182, gap-closure task #106) -- the real MBS Session Policy Control Data
+    // resource is genuinely GET-only per spec, same "no live provisioning path yet" reasoning as
+    // above. Real, disclosed: `polSessionId`'s own real schema is a `oneOf` of
+    // `{mbsSessionId}`/`{afAppId}`, where `mbsSessionId` is itself an `anyOf` of `{tmgi}`/`{ssm}`.
+    // ADR-0119's own original deferral already explicitly declined inventing a serialization for
+    // that nested `mbsSessionId` branch (calling it "fabrication, not a disclosed convention
+    // choice," unlike `slice-control-data`'s own disclosed `sst + '-' + sd` convention for the
+    // genuinely flat `Snssai` object) -- that reasoning stands unreversed here. What this ADR
+    // actually implements: the `oneOf`'s own `afAppId` branch is, on its own, just `type: string`
+    // -- already unambiguous, no encoding decision needed. Seeded with one representative key on
+    // that branch only; the `mbsSessionId`/`tmgi`/`ssm` branch remains untouched, not addressed.
+    {
+        json mbs_pol;
+        mbs_pol["5qis"] = json::array({9});
+        mbs_session_pol_data.seed("af-app-1", mbs_pol);
     }
 
     // Real seed data (ADR-0146, gap-closure task #106) -- the real Event Exposure Data for a
@@ -1810,6 +1829,8 @@ int main() {
         "udr_nf_group_id_subscriptions_delete_total", "Total RemoveGroupIdSubscription calls");
     auto group_ee_profile_data_get_counter = meter->CreateUInt64Counter(
         "udr_group_ee_profile_data_get_total", "Total QueryGroupEEData calls");
+    auto mbs_session_pol_data_get_counter = meter->CreateUInt64Counter(
+        "udr_mbs_session_pol_data_get_total", "Total GetMBSSessPolCtrlData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -3680,6 +3701,41 @@ int main() {
                     404, "Not Found", "No sponsor connectivity data for sponsorId " + sponsor_id);
             }
             sponsor_connectivity_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: policy-data group, MBS Session Policy Control Data resource
+    // (ADR-0182, gap-closure task #106) -- real GET-only per TS29519_Policy_Data.yaml
+    // (`GetMBSSessPolCtrlData`), keyed by `polSessionId`, seeded at startup. Real, disclosed
+    // partial scope: `polSessionId`'s own real schema (`MbsSessPolDataId`) is a `oneOf` of
+    // `{mbsSessionId}`/`{afAppId}`, where `mbsSessionId` is itself an `anyOf` of `{tmgi}`/`{ssm}`.
+    // ADR-0119's own original deferral already explicitly declined inventing a serialization for
+    // that nested branch -- unreversed here. This route only ever needed to handle the `afAppId`
+    // branch, which is just `type: string` on its own -- already unambiguous, no encoding
+    // decision needed, so the literal path segment is simply the store key. The `mbsSessionId`
+    // branch remains untouched. See the full disclosure on `udr_mbs_session_pol_data` in
+    // `schema.postgres.sql`. ---
+
+    const std::string mbs_session_pol_data_path_pattern =
+        std::string(kApiRoot) + "/policy-data/mbs-session-pol-data/{polSessionId}";
+
+    server.add_route(
+        "GET",
+        mbs_session_pol_data_path_pattern,
+        [&verifier, &mbs_session_pol_data, &mbs_session_pol_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto pol_session_id = req.path_params.at("polSessionId");
+            auto data = mbs_session_pol_data.get(pol_session_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No MBS Session Policy Control Data for polSessionId " + pol_session_id);
+            }
+            mbs_session_pol_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
         });
 

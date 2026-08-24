@@ -1163,3 +1163,20 @@ CREATE TABLE IF NOT EXISTS udr_nf_group_id_subscriptions (
     subscription_id  TEXT   PRIMARY KEY,
     data             JSONB  NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0182). Real `policy-data` group's
+-- MBS Session Policy Control Data resource (`/policy-data/mbs-session-pol-data/{polSessionId}`,
+-- real spec operation `GetMBSSessPolCtrlData`, GET-only -- no create/update/delete operation
+-- exists in the spec at all, same "seed at startup" precedent as `udr_sponsor_connectivity_data`
+-- above). Real, disclosed PARTIAL scope: `polSessionId`'s own real schema (`MbsSessPolDataId`) is
+-- a `oneOf` of `{mbsSessionId}`/`{afAppId}`, where `mbsSessionId` is itself an `anyOf` of
+-- `{tmgi}`/`{ssm}` -- a real, multi-level nested object with NO 3GPP-documented bare-path-segment
+-- string serialization anywhere in the spec (confirmed by direct read, not assumed). ADR-0119's
+-- own original deferral already explicitly declined inventing one for this nested branch --
+-- unreversed here. This table only ever stores keys for the `afAppId` branch, which is just
+-- `type: string` on its own -- already unambiguous, no encoding decision needed. The
+-- `mbsSessionId`/`tmgi`/`ssm` branch remains genuinely unaddressed, not a claimed resolution.
+CREATE TABLE IF NOT EXISTS udr_mbs_session_pol_data (
+    pol_session_id  TEXT   PRIMARY KEY,
+    data            JSONB  NOT NULL
+);
