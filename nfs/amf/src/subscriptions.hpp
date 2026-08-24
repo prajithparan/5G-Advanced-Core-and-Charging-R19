@@ -8,22 +8,30 @@
 
 #include "TS29122_CommonData_grp.hpp"
 
-// Private to nfs/amf. Three id-keyed subscription stores backing:
+// Private to nfs/amf. Five id-keyed subscription stores backing:
 //   - N1N2MessageSubscribe / N1N2MessageUnSubscribe   (TS29518_Namf_Communication.yaml,
 //     UeN1N2InfoSubscriptionCreateData, scoped to a ueContextId)
 //   - NonUeN2InfoSubscribe / NonUeN2InfoUnSubscribe    (NonUeN2InfoSubscriptionCreateData)
 //   - AMFStatusChangeSubscribe / UnSubscribe / SubscribeModfy (SubscriptionData_Namf_Communication)
+//   - CreateSubscription / ModifySubscription / DeleteSubscription
+//   (TS29518_Namf_EventExposure.yaml,
+//     AmfEventSubscription, individual-subscription family at /subscriptions)
+//   - CreateAMFSetLevelBulkSubscription / Modify.../Delete... (same AmfEventSubscription schema,
+//     genuinely separate resource family/id space at /set-subscriptions per the YAML -- kept as a
+//     second store instance, not merged with the one above, same "distinct resource, not a rename"
+//     precedent as nfs/udr's OperatorSpecificDataStore vs PolicyOperatorSpecificDataStore)
 //
-// All three follow the same trivial assign-id/store/remove shape as
+// All five follow the same trivial assign-id/store/remove shape as
 // nfs/nrf/src/registry.hpp's SubscriptionRegistry -- factored into one template here since it's
-// genuinely triplicated within this NF (not a speculative abstraction; see CLAUDE.md's "three
-// similar lines is better than a premature abstraction" -- this is the fourth). In-memory only, no
-// persistence across restarts, same disclosed simplification as NRF's registry (ADR-0015).
+// genuinely repeated within this NF (not a speculative abstraction; see CLAUDE.md's "three
+// similar lines is better than a premature abstraction" -- this is well past that bar). In-memory
+// only, no persistence across restarts, same disclosed simplification as NRF's registry (ADR-0015).
 //
 // Disclosed gap shared with NRF's SubscriptionRegistry: notification DELIVERY is not implemented
 // here at all (NRF at least attempts best-effort delivery). AMF has no trigger path that would ever
 // fire one yet -- the events these subscriptions describe (N1/N2 message arrival, non-UE N2 info,
-// AMF status change) all ultimately originate from real UE/RAN activity or operational state
+// AMF status change, and now AmfEventSubscription's own eventList -- registration/connectivity/
+// reachability/etc.) all ultimately originate from real UE/RAN activity or operational state
 // changes this lab build cannot produce (no NGAP/N2, no multi-AMF deployment). Subscriptions are
 // stored and can be created/removed correctly; nothing notifies them. Not silently omitted -- there
 // is currently no honest way to test delivery without fabricating a trigger.
@@ -85,5 +93,9 @@ struct UeN1N2Subscription {
 using UeN1N2SubscriptionStore = IdKeyedStore<UeN1N2Subscription>;
 using NonUeN2SubscriptionStore = IdKeyedStore<sbi_gen::NonUeN2InfoSubscriptionCreateData>;
 using AmfStatusSubscriptionStore = IdKeyedStore<sbi_gen::SubscriptionData_Namf_Communication>;
+// Backs both /subscriptions and /set-subscriptions (Namf_EventExposure) -- instantiated twice in
+// main.cpp with distinct id prefixes, since the two are genuinely separate resource collections per
+// TS29518_Namf_EventExposure.yaml even though they share the same AmfEventSubscription schema.
+using AmfEventSubscriptionStore = IdKeyedStore<sbi_gen::AmfEventSubscription>;
 
 } // namespace amf

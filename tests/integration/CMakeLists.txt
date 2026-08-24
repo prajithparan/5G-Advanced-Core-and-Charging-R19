@@ -3,6 +3,7 @@ find_package(GTest CONFIG REQUIRED)
 add_executable(integration_tests
     test_hello_nf_registration.cpp
     test_amf_namf_communication.cpp
+    test_amf_namf_location_eventexposure.cpp
     test_smf_pdu_session.cpp
     test_udm_uecm_sdm.cpp
     test_udm_ueau.cpp

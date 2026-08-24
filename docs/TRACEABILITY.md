@@ -3951,3 +3951,25 @@ so `CreateGroupIdSubscription`'s own handler hand-rolled `.contains()` field che
 `TS29504_Nudr_GroupIDmap.yaml` now wired; `SubscriptionData` collided with other already-wired
 services' own same-named schemas, disambiguated by the real codegen to
 `SubscriptionData_Nudr_GroupIDmap`. See ADR-0198 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0199 -- AMF `Namf_Location` + `Namf_EventExposure` (fourth ADR-0193 gap-closure)
+
+| Requirement | Test |
+|---|---|
+| TS 23.502 -- `ProvidePositioningInfo` structural validation then honest capability gap | `AmfLocationIntegration.ProvidePositioningInfoIs501`: real `400` on missing `lcsLocation`, real `501` on a structurally valid body |
+| `ProvideLocationInfo` -- no UE context vs. found | `AmfLocationIntegration.ProvideLocationInfo404ThenHonestlyEmpty200`: real `404` before `CreateUEContext`, real `200` with a verified-empty `ProvideLocInfo` after |
+| `CancelLocation` -- no matching `ldrReference` | `AmfLocationIntegration.CancelLocationIs404`: real `404` |
+| `Namf_EventExposure` individual family: create/modify/delete | `AmfEventExposureIntegration.IndividualSubscriptionCreateModifyDelete`: real `201`, real RFC 6902 `PATCH` `200` with verified field change, `PATCH` on unknown id `404`, `DELETE` `204` then `404` |
+| `Namf_EventExposure` AMF-Set-level family + id-space isolation | `AmfEventExposureIntegration.AmfSetLevelBulkSubscriptionCreateModifyDelete`: same lifecycle plus a cross-family `DELETE` correctly `404`ing |
+| No regression | Full project rebuild clean (`EXIT=0` verified directly from the build log); all 10 `Amf*Integration` tests pass |
+
+Real Tier-A gap-closure: both YAMLs were already in the sbi-codegen pilot set (types compiled into
+`sbi_gen` all along) but had zero routes wired in `nfs/amf/src/main.cpp`. Real, separate api roots
+(`/namf-loc/v1`, `/namf-evts/v1`) confirmed from each YAML's own `servers:` block, not assumed to
+share `Namf_Communication`'s `kApiRoot`. `ProvidePositioningInfo` and `CancelLocation` carry
+forward the same disclosed capability gaps already established elsewhere (no real LPP/GNSS/PRU
+positioning anywhere in this build, same class as GMLC ADR-0189/LMF ADR-0191); `EventExposure`'s
+subscription CRUD is real, but notification delivery is not (same disclosed gap class as this
+file's other 3 subscription types). See ADR-0199 in `docs/DECISIONS.md` for full disclosure,
+including a real, reproduced-but-unfixed pre-existing test hang found in an unrelated UDR test
+while running a broad `ctest -R` during this pass.

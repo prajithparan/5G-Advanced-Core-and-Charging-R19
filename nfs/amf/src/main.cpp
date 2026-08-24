@@ -24,6 +24,30 @@
 //   application/problem+json) rather than each operation's bespoke *Error schema (AssignEbiError,
 //   N1N2MessageTransferError, N2InformationTransferError, UeContextCreateError) -- same
 //   simplification NRF already uses for its own error paths.
+//
+// UPDATE (ADR-0199, gap-closure task #158): two more Namf_* APIs, both already in the sbi-codegen
+// pilot set but never wired to a route, now are:
+// - TS29518_Namf_Location.yaml (api root /namf-loc/v1): all 3
+//   operations. ProvidePositioningInfo does real structural validation (RequestPosInfo's own
+//   required fields) then a real, disclosed 501 -- same class of gap as LMF's own DetermineLocation
+//   (ADR-0191): no real LPP/GNSS/PRU positioning capability exists anywhere in this build.
+//   ProvideLocationInfo checks the real UeContextStore (mirrors ReleaseUEContext's own get/404
+//   pattern below) -- 404 if the context doesn't exist, else a real but honestly-empty
+//   ProvideLocInfo{} 200, because UeContextStore only ever persists {"ueContextId": ...} (see
+//   CreateUEContext above and ue_context_store.hpp's own header) -- there is no real RAT-type/
+//   location/timezone data anywhere in this AMF to answer from. CancelLocation does real structural
+//   validation (CancelPosInfo's required supi/hgmlcCallBackURI/ldrReference) then a real 404 --
+//   ProvidePositioningInfo never issues a real ldrReference (it always 501s), so no cancellation
+//   request can ever match one; same precedent as LMF/GMLC's own cancel-path gaps.
+// - TS29518_Namf_EventExposure.yaml (api root /namf-evts/v1): all 6 operations -- real, full
+//   create+modify+delete subscription CRUD for both /subscriptions (individual) and
+//   /set-subscriptions (AMF-Set-level bulk) families, backed by two AmfEventSubscriptionStore
+//   instances (see subscriptions.hpp). Modify uses real RFC 6902 JSON Patch
+//   (nlohmann::json::patch()) against the stored AmfEventSubscription --
+//   AmfUpdateEventSubscriptionItem is real op/path/value-shaped per the YAML, so no special-case
+//   parsing is needed. Same disclosed notification-delivery gap as this file's other 3 subscription
+//   types (see subscriptions.hpp's own header): subscriptions are stored/modified/removed for real,
+//   but nothing ever fires one.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -65,6 +89,10 @@ using nlohmann::json;
 
 constexpr const char* kNfType = "AMF";
 constexpr const char* kApiRoot = "/namf-comm/v1";
+// TS29518_Namf_Location.yaml / TS29518_Namf_EventExposure.yaml own real api roots (ADR-0199) --
+// distinct from kApiRoot above, confirmed via each YAML's own `servers:` block.
+constexpr const char* kLocationApiRoot = "/namf-loc/v1";
+constexpr const char* kEventExposureApiRoot = "/namf-evts/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018 for
 // why NRF's identity is a fixed constant rather than randomly generated per run (any NF other than
@@ -308,6 +336,9 @@ int main() {
     amf::UeN1N2SubscriptionStore ue_n1n2_subs("n1n2sub-");
     amf::NonUeN2SubscriptionStore non_ue_n2_subs("nonuen2sub-");
     amf::AmfStatusSubscriptionStore amf_status_subs("amfstatussub-");
+    // ADR-0199: Namf_EventExposure's two real, separate resource families -- see subscriptions.hpp.
+    amf::AmfEventSubscriptionStore amf_event_subs("evtsub-");
+    amf::AmfEventSubscriptionStore amf_set_event_subs("setsub-");
 
     auto meter = sbi_core::get_meter("amf");
     auto release_counter =
@@ -328,6 +359,18 @@ int main() {
                                                        "Total RelocateUEContext calls");
     auto cancel_relocate_counter = meter->CreateUInt64Counter(
         "amf_cancel_relocate_ue_context_total", "Total CancelRelocateUEContext calls");
+    // ADR-0199: Namf_Location + Namf_EventExposure counters.
+    auto provide_pos_info_counter = meter->CreateUInt64Counter(
+        "amf_provide_positioning_info_total", "Total ProvidePositioningInfo calls");
+    auto provide_loc_info_counter = meter->CreateUInt64Counter("amf_provide_location_info_total",
+                                                               "Total ProvideLocationInfo calls");
+    auto cancel_location_counter =
+        meter->CreateUInt64Counter("amf_cancel_location_total", "Total CancelLocation calls");
+    auto event_subscribe_counter = meter->CreateUInt64Counter(
+        "amf_event_exposure_subscribe_total", "Total Namf_EventExposure CreateSubscription calls");
+    auto set_event_subscribe_counter = meter->CreateUInt64Counter(
+        "amf_set_event_exposure_subscribe_total",
+        "Total Namf_EventExposure CreateAMFSetLevelBulkSubscription calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -763,6 +806,253 @@ int main() {
             json j = *body;
             return sbi_core::http2::Response::json(200, j.dump());
         });
+
+    // ---- TS29518_Namf_Location.yaml (ADR-0199) ----
+
+    server.add_route("POST",
+                     std::string(kLocationApiRoot) + "/{ueContextId}/provide-pos-info",
+                     [&verifier, &provide_pos_info_counter](const sbi_core::http2::Request& req) {
+                         if (auto auth = check_bearer(req, verifier);
+                             auth.has_value() && !auth->valid) {
+                             return problem_response(401, "Unauthorized", auth->error);
+                         }
+                         sbi_core::http2::Response err;
+                         auto body = parse_json_body<sbi_gen::RequestPosInfo>(req, err);
+                         if (!body.has_value()) {
+                             return err;
+                         }
+                         provide_pos_info_counter->Add(1);
+                         // Disclosed gap (same class as LMF's DetermineLocation, ADR-0191): no real
+                         // LPP/GNSS/PRU positioning capability exists anywhere in this build to
+                         // answer this request from.
+                         return problem_response(
+                             501,
+                             "Not Implemented",
+                             "No positioning capability (LPP/GNSS/PRU) implemented in this build");
+                     });
+
+    server.add_route(
+        "POST",
+        std::string(kLocationApiRoot) + "/{ueContextId}/provide-loc-info",
+        [&verifier, &ue_contexts, &provide_loc_info_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_json_body<sbi_gen::RequestLocInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_context_id = req.path_params.at("ueContextId");
+            if (!ue_contexts.get(ue_context_id).has_value()) {
+                return problem_response(404, "Not Found", "No UE context with id " + ue_context_id);
+            }
+            provide_loc_info_counter->Add(1);
+            // Disclosed simplification: an honestly-empty ProvideLocInfo -- UeContextStore only
+            // ever persists {"ueContextId": ...} (see CreateUEContext above), so there is no real
+            // RAT-type/location/timezone data anywhere in this AMF to populate the response from.
+            sbi_gen::ProvideLocInfo resp_data;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kLocationApiRoot) + "/{ueContextId}/cancel-pos-info",
+        [&verifier, &cancel_location_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_json_body<sbi_gen::CancelPosInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            cancel_location_counter->Add(1);
+            // Disclosed: ProvidePositioningInfo above always 501s, so no real ldrReference is ever
+            // issued -- no cancellation request can ever match one. Same precedent as LMF/GMLC's
+            // own cancel-path gaps.
+            return problem_response(
+                404, "Not Found", "No positioning request with ldrReference " + body->ldrReference);
+        });
+
+    // ---- TS29518_Namf_EventExposure.yaml (ADR-0199) ----
+
+    server.add_route(
+        "POST",
+        std::string(kEventExposureApiRoot) + "/subscriptions",
+        [&verifier, &amf_event_subs, &event_subscribe_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_json_body<sbi_gen::AmfCreateEventSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto id = amf_event_subs.create(body->subscription);
+            event_subscribe_counter->Add(1);
+            sbi_gen::AmfCreatedEventSubscription resp_data;
+            resp_data.subscription = body->subscription;
+            resp_data.subscriptionId = id;
+            json j = resp_data;
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kEventExposureApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &amf_event_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subscriptionId");
+            auto existing = amf_event_subs.get(sub_id);
+            if (!existing.has_value()) {
+                return problem_response(404, "Not Found", "No such event subscription");
+            }
+            sbi_core::http2::Response err;
+            json patch_doc;
+            try {
+                patch_doc = json::parse(req.body);
+            } catch (const std::exception& e) {
+                return problem_response(
+                    400, "Bad Request", std::string("Invalid JSON: ") + e.what());
+            }
+            json current = *existing;
+            json patched;
+            try {
+                patched = current.patch(patch_doc);
+            } catch (const std::exception& e) {
+                return problem_response(
+                    400, "Bad Request", std::string("Invalid JSON Patch: ") + e.what());
+            }
+            sbi_gen::AmfEventSubscription updated;
+            try {
+                updated = patched.get<sbi_gen::AmfEventSubscription>();
+            } catch (const std::exception& e) {
+                return problem_response(
+                    400, "Bad Request", std::string("Patched document invalid: ") + e.what());
+            }
+            amf_event_subs.update(sub_id, updated);
+            sbi_gen::AmfUpdatedEventSubscription resp_data;
+            resp_data.subscription = updated;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &amf_event_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subscriptionId");
+            if (!amf_event_subs.get(sub_id).has_value()) {
+                return problem_response(404, "Not Found", "No such event subscription");
+            }
+            amf_event_subs.remove(sub_id);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kEventExposureApiRoot) + "/set-subscriptions",
+        [&verifier, &amf_set_event_subs, &set_event_subscribe_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = parse_json_body<sbi_gen::AmfCreateEventSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto id = amf_set_event_subs.create(body->subscription);
+            set_event_subscribe_counter->Add(1);
+            sbi_gen::AmfCreatedEventSubscription resp_data;
+            resp_data.subscription = body->subscription;
+            resp_data.subscriptionId = id;
+            json j = resp_data;
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kEventExposureApiRoot) + "/set-subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kEventExposureApiRoot) + "/set-subscriptions/{subscriptionId}",
+        [&verifier, &amf_set_event_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subscriptionId");
+            auto existing = amf_set_event_subs.get(sub_id);
+            if (!existing.has_value()) {
+                return problem_response(
+                    404, "Not Found", "No such AMF-Set-level event subscription");
+            }
+            sbi_core::http2::Response err;
+            json patch_doc;
+            try {
+                patch_doc = json::parse(req.body);
+            } catch (const std::exception& e) {
+                return problem_response(
+                    400, "Bad Request", std::string("Invalid JSON: ") + e.what());
+            }
+            json current = *existing;
+            json patched;
+            try {
+                patched = current.patch(patch_doc);
+            } catch (const std::exception& e) {
+                return problem_response(
+                    400, "Bad Request", std::string("Invalid JSON Patch: ") + e.what());
+            }
+            sbi_gen::AmfEventSubscription updated;
+            try {
+                updated = patched.get<sbi_gen::AmfEventSubscription>();
+            } catch (const std::exception& e) {
+                return problem_response(
+                    400, "Bad Request", std::string("Patched document invalid: ") + e.what());
+            }
+            amf_set_event_subs.update(sub_id, updated);
+            sbi_gen::AmfUpdatedEventSubscription resp_data;
+            resp_data.subscription = updated;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route("DELETE",
+                     std::string(kEventExposureApiRoot) + "/set-subscriptions/{subscriptionId}",
+                     [&verifier, &amf_set_event_subs](const sbi_core::http2::Request& req) {
+                         if (auto auth = check_bearer(req, verifier);
+                             auth.has_value() && !auth->valid) {
+                             return problem_response(401, "Unauthorized", auth->error);
+                         }
+                         const auto sub_id = req.path_params.at("subscriptionId");
+                         if (!amf_set_event_subs.get(sub_id).has_value()) {
+                             return problem_response(
+                                 404, "Not Found", "No such AMF-Set-level event subscription");
+                         }
+                         amf_set_event_subs.remove(sub_id);
+                         sbi_core::http2::Response resp;
+                         resp.status = 204;
+                         return resp;
+                     });
 
     std::thread(run_nrf_lifecycle, amf_instance_id, nrf_base).detach();
     // NGAP/N2 (SCTP), its own dedicated thread -- see docs/DECISIONS.md ADR-0030/ADR-0031.

@@ -92,14 +92,19 @@ roughly-equivalent implementation with a few missing edges.
 | Service | free5GC | This project |
 |---|---|---|
 | `Namf_Communication` (UEContext CRUD, N1N2MessageTransfer(+subscribe), non-UE-N2-messages(+subscribe)) | Real (`internal/sbi/processor/{ue_context,n1n2message}.go`) | Real, route-for-route match (`nfs/amf/src/main.cpp`, 16 routes) |
-| `Namf_EventExposure` (Create/Delete/Modify subscription -- mobility, reachability, comm-failure, location-report events, TS 29.518) | Real (`processor/event_exposure.go`, 3 real handlers) | **Missing entirely** -- no route, no handler, anywhere in `nfs/amf/src/` |
-| `Namf_Location` (ProvideLocationInfo -- used by LMF/GMLC for positioning) | Real (`processor/location_info.go`) | **Missing entirely** |
+| `Namf_EventExposure` (Create/Delete/Modify subscription -- mobility, reachability, comm-failure, location-report events, TS 29.518) | Real (`processor/event_exposure.go`, 3 real handlers) | **Real, all 6 real operations** (individual + AMF-Set-level bulk families, ADR-0199) -- real subscription CRUD, real RFC 6902 `PATCH`; notification delivery not implemented (disclosed, same gap class as this NF's other subscription types) |
+| `Namf_Location` (ProvideLocationInfo -- used by LMF/GMLC for positioning) | Real (`processor/location_info.go`) | **Real, all 3 real operations** (ADR-0199) -- `ProvidePositioningInfo` real `501` (no LPP/GNSS/PRU capability, disclosed), `ProvideLocationInfo` real 404/honestly-empty-200, `CancelLocation` real `404` |
 | `Namf_MT` (ProvideDomainSelectionInfo -- CS/PS domain selection for MT SMS/call) | Real (`processor/mt.go`) | **Missing entirely** |
 | `Namf_OAM` (RegisteredUEContext query) | Real (`processor/oam.go`) | **Missing entirely** |
 
-Grep-confirmed: no occurrence of `EventExposure`, `namf-loc`, `namf-mt`, `namf-oam`, or their real
-operation names anywhere in this project's AMF source. **3 of 4 real Namf_* services are entirely
-unimplemented**, not partially covered.
+Grep-confirmed: no occurrence of `namf-mt`, `namf-oam`, or their real operation names anywhere in
+this project's AMF source. `Namf_EventExposure`/`Namf_Location` closed real, ADR-0199. **2 of 4
+real Namf_* services remain entirely unimplemented**: `Namf_MT` has a real YAML in this project's
+own `specs/5G_APIs-REL-19/` (`TS29518_Namf_MT.yaml`), tracked as part of task #159. `Namf_OAM`
+does NOT exist as a file in this project's `specs/5G_APIs-REL-19/` at all (checked directly,
+`ls`+`grep`, this pass) -- either free5GC's `Namf_OAM` maps to a TS 29.518 operation this
+project's own R19 archive genuinely doesn't carry, or it's a 3GPP internal/non-published
+interface; not yet root-caused which, so not silently assumed out of scope.
 
 ### Real NAS (GMM) procedure coverage
 
@@ -1278,12 +1283,12 @@ check couldn't resolve (none surfaced this pass).
 NSSF, BSF, SCP, CHF, EIR, SMSF, GMLC: **zero** Tier-A gaps found (single-file NFs already fully
 wired, or CHF's deliberately narrow 3-file scope matching CLAUDE.md exactly).
 
-**Related but distinct: wired-and-silently-empty ("looks real, isn't").** AMF's
-`Namf_Location` and `Namf_EventExposure` are both in the pilot set and generate real DTOs, but
-`nfs/amf/src/main.cpp` routes zero operations for either -- its own header scopes itself to
-`Namf_Communication` only, with nothing flagging these two as a known gap. Unlike a disclosed
-`501`, this is currently invisible to anyone reading the code without cross-checking the pilot
-set -- worth fixing the disclosure even before the routes themselves are built.
+**Related but distinct: wired-and-silently-empty ("looks real, isn't").** ~~AMF's `Namf_Location`
+and `Namf_EventExposure` were both in the pilot set and generated real DTOs, but
+`nfs/amf/src/main.cpp` routed zero operations for either~~ **CLOSED, ADR-0199**: all 9 real
+operations across both now routed, with the real capability gaps that remain (no LPP/GNSS/PRU
+positioning, no event notification delivery) disclosed explicitly in code and in ADR-0199, not
+silently absent.
 
 **Related but distinct: undisclosed Tier-B gaps inside NFs already marked "real."** Two concrete
 factual errors, not just missing coverage -- **CLOSED, ADR-0197**: UDR's own ADR-0111/ADR-0114
