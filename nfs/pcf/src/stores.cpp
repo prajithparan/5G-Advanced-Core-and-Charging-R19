@@ -133,4 +133,66 @@ bool AppSessionStore::remove(const std::string& app_session_id) {
     return sessions_.erase(app_session_id) > 0;
 }
 
+std::string UePolicyStore::create(nlohmann::json policy_association) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "uepolasso-" + std::to_string(next_id_++);
+    associations_.emplace(id, std::move(policy_association));
+    return id;
+}
+
+std::optional<nlohmann::json> UePolicyStore::get(const std::string& pol_asso_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = associations_.find(pol_asso_id);
+    if (it == associations_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool UePolicyStore::put(const std::string& pol_asso_id, nlohmann::json policy_association) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = associations_.find(pol_asso_id);
+    if (it == associations_.end()) {
+        return false;
+    }
+    it->second = std::move(policy_association);
+    return true;
+}
+
+bool UePolicyStore::remove(const std::string& pol_asso_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return associations_.erase(pol_asso_id) > 0;
+}
+
+std::string PcEventExposureStore::create(nlohmann::json subscription) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "pceesub-" + std::to_string(next_id_++);
+    subscriptions_.emplace(id, std::move(subscription));
+    return id;
+}
+
+std::optional<nlohmann::json> PcEventExposureStore::get(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(subscription_id);
+    if (it == subscriptions_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool PcEventExposureStore::put(const std::string& subscription_id, nlohmann::json subscription) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(subscription_id);
+    if (it == subscriptions_.end()) {
+        return false;
+    }
+    it->second = std::move(subscription);
+    return true;
+}
+
+bool PcEventExposureStore::remove(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return subscriptions_.erase(subscription_id) > 0;
+}
+
 } // namespace pcf

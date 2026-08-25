@@ -1276,7 +1276,7 @@ check couldn't resolve (none surfaced this pass).
 | UDM | ~~`Nudm_MT`, `Nudm_NIDDAU`, `Nudm_RSDS`, `Nudm_SSAU`, `Nudm_UEID`~~ CLOSED, ADR-0202 |
 | UDR | ~~`Nudr_GroupIDmap`~~ CLOSED, ADR-0198 -- was a different failure mode: implemented, but with hand-written `nlohmann::json` validation bypassing sbi-codegen entirely, now replaced with the real generated DTO |
 | AUSF | ~~`Nausf_UPUProtection`~~ CLOSED, ADR-0195 |
-| PCF | `Npcf_EventExposure`, `Npcf_UEPolicyControl`, `Npcf_AMPolicyAuthorization`, `Npcf_MBSPolicyAuthorization`, `Npcf_MBSPolicyControl`, `Npcf_PDTQPolicyControl`, `Npcf_BDTPolicyControl` (7 files) |
+| PCF | ~~`Npcf_EventExposure`, `Npcf_UEPolicyControl`~~ CLOSED, ADR-0204 (first slice of 7) -- remaining: `Npcf_AMPolicyAuthorization`, `Npcf_MBSPolicyAuthorization`, `Npcf_MBSPolicyControl`, `Npcf_PDTQPolicyControl`, `Npcf_BDTPolicyControl` (5 files) |
 | NEF | `Nnef_SMContext`, `Nnef_SMService`, `Nnef_DNAIMapping`, `Nnef_EASDeployment`, `Nnef_ECSAddress`, `Nnef_EventExposure`, `Nnef_Inference`, `Nnef_TrafficInfluenceData`, `Nnef_Training`, `Nnef_UEId`, `Nnef_VFLInference`, `Nnef_VFLTraining`, `Nnef_Authentication` (13 files -- largest single Tier-A concentration in the project) |
 | LMF | ~~`Nlmf_Broadcast`, `Nlmf_DataExposure`~~ CLOSED, ADR-0196 |
 | UPF | ~~`Nupf_EventExposure`, `Nupf_GetUEPrivateIPaddrAndIdentifiers`~~ CLOSED, ADR-0203 -- was lower severity (UPF's real primary control interface is N4/PFCP, TS 23.501, not SBI) but a real gap: `nfs/upf/src/main.cpp`'s own file header had incorrectly claimed no `Nupf_*` API existed at all |

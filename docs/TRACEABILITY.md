@@ -4064,3 +4064,28 @@ thread and NRF-registration client thread. Both real, separate OAuth2 scopes (`n
 `nupf-gueip`) confirmed directly from each YAML's own `securitySchemes` block, not guessed. See
 ADR-0203 in `docs/DECISIONS.md` for full disclosure, including what this pass does NOT include (no
 real event notification delivery pipeline, no real NAT/private-IP tracking).
+
+## ADR-0204 -- PCF `Npcf_UEPolicyControl` + `Npcf_EventExposure` (ninth ADR-0193 gap-closure, first PCF slice)
+
+| Requirement | Test |
+|---|---|
+| `Npcf_UEPolicyControl` full lifecycle | `PcfUePolicyIntegration.CreateReadUpdateDeleteLifecycle`: real `201`/`200`/`200`/`204`, real `404` on repeat delete, verified-absent `uePolicy` in the update response |
+| `Npcf_UEPolicyControl` required-field validation | `PcfUePolicyIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `supi` |
+| `Npcf_EventExposure` full lifecycle | `PcfEventExposureIntegration.CreateReadReplaceDeleteLifecycle`: real `201`/`200`/`200`/`204`, real `404` on both an unknown-id PUT and repeat delete |
+| `Npcf_EventExposure` required-field validation | `PcfEventExposureIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `notifUri` |
+| No regression | Full reconfigure+rebuild against the complete pilot set clean (`EXIT=0` verified from the build log); all 4 new tests pass, all 4 pre-existing `test_pcf_policy_control.cpp` tests still pass after the real collision fix; full suite 396/396 |
+
+Real Tier-A gap-closure (first of two PCF slices, task #163 -- 5 more YAML files remain). Real name
+collision found and fixed wiring `Npcf_UEPolicyControl`: `PolicyAssociationRequest`/
+`PolicyAssociation`/`PolicyAssociationUpdateRequest`/`PolicyUpdate`/`RequestTrigger` all
+independently declared by the already-wired `TS29507_Npcf_AMPolicyControl.yaml` too --
+disambiguated by the codegen; every pre-existing bare-name reference to the AM-Policy-Control
+variant (`nfs/pcf/src/main.cpp`'s own AM Policy routes, `nfs/amf/src/ngap_task.cpp`'s real PCF
+client call, `test_pcf_policy_control.cpp`) updated to the disambiguated name, a real necessary fix
+with no functional change to AM Policy Control's own behavior. Two real bugs found and fixed during
+live verification: wrong assumed wire shape for `PcEvent`/`RequestTrigger_*` (both serialize as
+bare strings, confirmed from the generated `to_json`, not `{"value": ...}` objects), and a real
+orphaned-process pipe-hang from an `ASSERT_NE` firing before test cleanup once bug one caused an
+unexpected `400` -- same class of bug as ADR-0202's own finding, reproduced here despite knowing the
+pattern; fixed with the same `EXPECT_*`-plus-guarded-body pattern. See ADR-0204 in
+`docs/DECISIONS.md` for full disclosure.

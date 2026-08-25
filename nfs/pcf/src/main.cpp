@@ -60,6 +60,30 @@
 // itself leaves that mapping operator-defined (PolicyCounterInfo.currentStatus is explicitly a
 // free-form, unspecified string per the real spec text), so inventing that business logic here
 // would mean fabricating a rule no spec or user decision actually named.
+//
+// UPDATE (ADR-0204, gap-closure task #163, first PCF slice): Npcf_UEPolicyControl (TS29525,
+// CreateIndividualUEPolicyAssociation/ReadIndividualUEPolicyAssociation/
+// DeleteIndividualUEPolicyAssociation/ReportObservedEventTriggersForIndividualUEPolicyAssociation)
+// and Npcf_EventExposure (TS29523, PostPcEventExposureSubsc/GetPcEventExposureSubsc/
+// PutPcEventExposureSubsc/DeletePcEventExposureSubsc) added -- both real Tier-A gaps found by
+// ADR-0193's audit, previously named as deferred above and never wired. Disclosed: no real URSP
+// (UE Route Selection Policy) or ANDSP generation logic exists in this build, so
+// ReportObservedEventTriggersForIndividualUEPolicyAssociation's real, structurally-valid
+// PolicyUpdate response always has an absent `uePolicy` -- same "acknowledge the real report, no
+// real policy content to hand back" class of gap as Nudm_NIDDAU/Nudm_SSAU (ADR-0202). No real
+// event notification delivery pipeline exists for Npcf_EventExposure either, same disclosed
+// non-scope as every other Nnf_EventExposure service in this project (Namf/Nsmf/Nupf). Real name
+// collisions found and fixed wiring Npcf_UEPolicyControl in: `PolicyAssociationRequest`,
+// `PolicyAssociation`, `PolicyAssociationUpdateRequest`, `PolicyUpdate`, `RequestTrigger` (all
+// independently declared by the already-wired TS29507_Npcf_AMPolicyControl.yaml too) --
+// disambiguated by the codegen to `*_Npcf_AMPolicyControl`/`*_Npcf_UEPolicyControl`; every
+// pre-existing bare-name reference to the AM-Policy-Control variant (this file's own AM Policy
+// Association routes above, plus `nfs/amf/src/ngap_task.cpp`'s real PCF client call and
+// `tests/integration/test_pcf_policy_control.cpp`) updated to the disambiguated name -- a real,
+// necessary fix required by this pilot-set change, not a functional change to AM Policy Control's
+// own behavior. `TerminationNotification` also collides three ways
+// (AM/SM/UE Policy Control) but was never referenced bare anywhere in this codebase, so nothing to
+// fix there.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -101,6 +125,10 @@ constexpr const char* kAmApiRoot = "/npcf-am-policy-control/v1";
 constexpr const char* kSmApiRoot = "/npcf-smpolicycontrol/v1";
 // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #103, ADR-0080).
 constexpr const char* kPolicyAuthApiRoot = "/npcf-policyauthorization/v1";
+// Gap-closure (ADR-0204, task #163). Real api roots confirmed from each YAML's own `servers:`
+// block.
+constexpr const char* kUePolicyApiRoot = "/npcf-ue-policy-control/v1";
+constexpr const char* kEventExposureApiRoot = "/npcf-eventexposure/v1";
 
 // ADR-0072 (gap-closure: real N28 end-to-end). PCF's real UDR client (fetches SmPolicyData,
 // TS29519_Policy_Data.yaml) and CHF client (Nchf_SpendingLimitControl, TS29594) -- same
@@ -435,6 +463,8 @@ int main() {
     pcf::SmPolicyStore sm_policies;
     pcf::SpendingLimitTrackingStore spending_limit_tracking;
     pcf::AppSessionStore app_sessions;
+    pcf::UePolicyStore ue_policies;
+    pcf::PcEventExposureStore pc_event_subs;
 
     // ADR-0072 (gap-closure: real N28 end-to-end) -- PCF's own client identity + token source for
     // calling UDR and CHF, same separate-http2::Client-per-target-NF pattern this project already
@@ -486,6 +516,19 @@ int main() {
         meter->CreateUInt64Counter("pcf_policy_auth_update_total", "Total ModAppSession calls");
     auto policy_auth_delete_counter =
         meter->CreateUInt64Counter("pcf_policy_auth_delete_total", "Total DeleteAppSession calls");
+    auto ue_policy_create_counter = meter->CreateUInt64Counter(
+        "pcf_ue_policy_create_total", "Total CreateIndividualUEPolicyAssociation calls");
+    auto ue_policy_update_counter = meter->CreateUInt64Counter(
+        "pcf_ue_policy_update_total",
+        "Total ReportObservedEventTriggersForIndividualUEPolicyAssociation calls");
+    auto ue_policy_delete_counter = meter->CreateUInt64Counter(
+        "pcf_ue_policy_delete_total", "Total DeleteIndividualUEPolicyAssociation calls");
+    auto ee_create_counter = meter->CreateUInt64Counter("pcf_ee_create_subscription_total",
+                                                        "Total PostPcEventExposureSubsc calls");
+    auto ee_update_counter = meter->CreateUInt64Counter("pcf_ee_update_subscription_total",
+                                                        "Total PutPcEventExposureSubsc calls");
+    auto ee_delete_counter = meter->CreateUInt64Counter("pcf_ee_delete_subscription_total",
+                                                        "Total DeletePcEventExposureSubsc calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -501,13 +544,13 @@ int main() {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             sbi_core::http2::Response err;
-            auto body =
-                sbi_core::http2::parse_json_body<sbi_gen::PolicyAssociationRequest>(req, err);
+            auto body = sbi_core::http2::parse_json_body<
+                sbi_gen::PolicyAssociationRequest_Npcf_AMPolicyControl>(req, err);
             if (!body.has_value()) {
                 return err;
             }
 
-            sbi_gen::PolicyAssociation association{};
+            sbi_gen::PolicyAssociation_Npcf_AMPolicyControl association{};
             association.request = *body;
             association.ueAmbr = body->ueAmbr.value_or(default_session_ambr());
             association.suppFeat = body->suppFeat;
@@ -565,8 +608,8 @@ int main() {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             sbi_core::http2::Response err;
-            auto body =
-                sbi_core::http2::parse_json_body<sbi_gen::PolicyAssociationUpdateRequest>(req, err);
+            auto body = sbi_core::http2::parse_json_body<
+                sbi_gen::PolicyAssociationUpdateRequest_Npcf_AMPolicyControl>(req, err);
             if (!body.has_value()) {
                 return err;
             }
@@ -576,7 +619,7 @@ int main() {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No AM policy association " + pol_asso_id);
             }
-            auto association = stored->get<sbi_gen::PolicyAssociation>();
+            auto association = stored->get<sbi_gen::PolicyAssociation_Npcf_AMPolicyControl>();
             if (body->ueAmbr.has_value()) {
                 association.ueAmbr = body->ueAmbr;
             }
@@ -588,7 +631,7 @@ int main() {
             }
             am_policies.put(pol_asso_id, json(association));
 
-            sbi_gen::PolicyUpdate update{};
+            sbi_gen::PolicyUpdate_Npcf_AMPolicyControl update{};
             update.resourceUri = std::string(kAmApiRoot) + "/policies/" + pol_asso_id;
             update.triggers = body->triggers;
             update.servAreaRes = association.servAreaRes;
@@ -989,6 +1032,193 @@ int main() {
             // Session Contexts actually existing to search/terminate, same class of
             // simplification as every other "no real trigger source in this lab yet" gap already
             // disclosed in this file's own header.
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Npcf_UEPolicyControl (ADR-0204, gap-closure task #163) ---
+
+    server.add_route(
+        "POST",
+        std::string(kUePolicyApiRoot) + "/policies",
+        [&verifier, &ue_policies, &ue_policy_create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<
+                sbi_gen::PolicyAssociationRequest_Npcf_UEPolicyControl>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+
+            sbi_gen::PolicyAssociation_Npcf_UEPolicyControl association{};
+            association.request = *body;
+            association.suppFeat = body->suppFeat;
+            json j = association;
+            const auto id = ue_policies.create(j);
+            ue_policy_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", std::string(kUePolicyApiRoot) + "/policies/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kUePolicyApiRoot) + "/policies/{polAssoId}",
+        [&verifier, &ue_policies](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto pol_asso_id = req.path_params.at("polAssoId");
+            auto association = ue_policies.get(pol_asso_id);
+            if (!association.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No UE policy association " + pol_asso_id);
+            }
+            return sbi_core::http2::Response::json(200, association->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kUePolicyApiRoot) + "/policies/{polAssoId}",
+        [&verifier, &ue_policies, &ue_policy_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto pol_asso_id = req.path_params.at("polAssoId");
+            if (!ue_policies.remove(pol_asso_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No UE policy association " + pol_asso_id);
+            }
+            ue_policy_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kUePolicyApiRoot) + "/policies/{polAssoId}/update",
+        [&verifier, &ue_policies, &ue_policy_update_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<
+                sbi_gen::PolicyAssociationUpdateRequest_Npcf_UEPolicyControl>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto pol_asso_id = req.path_params.at("polAssoId");
+            auto stored = ue_policies.get(pol_asso_id);
+            if (!stored.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No UE policy association " + pol_asso_id);
+            }
+            auto association = stored->get<sbi_gen::PolicyAssociation_Npcf_UEPolicyControl>();
+            if (body->triggers.has_value()) {
+                association.triggers = body->triggers;
+            }
+            ue_policies.put(pol_asso_id, json(association));
+
+            // Disclosed simplification (ADR-0204): no real UE Route Selection Policy (URSP) or
+            // access-network-discovery-and-selection-policy (ANDSP) generation logic exists in
+            // this build -- the updated policies reported back are always empty (`uePolicy`
+            // absent), same "acknowledge the real report, no real policy content to hand back"
+            // class of gap already established for Nudm_NIDDAU/Nudm_SSAU (ADR-0202).
+            sbi_gen::PolicyUpdate_Npcf_UEPolicyControl update{};
+            update.resourceUri = std::string(kUePolicyApiRoot) + "/policies/" + pol_asso_id;
+            update.triggers = body->triggers;
+            ue_policy_update_counter->Add(1);
+            json j = update;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // --- Npcf_EventExposure (ADR-0204, gap-closure task #163) ---
+
+    server.add_route(
+        "POST",
+        std::string(kEventExposureApiRoot) + "/subscriptions",
+        [&verifier, &pc_event_subs, &ee_create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::PcEventExposureSubsc>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = pc_event_subs.create(j);
+            ee_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kEventExposureApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &pc_event_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subscriptionId");
+            auto subscription = pc_event_subs.get(sub_id);
+            if (!subscription.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No policy control events subscription " + sub_id);
+            }
+            return sbi_core::http2::Response::json(200, subscription->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &pc_event_subs, &ee_update_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subscriptionId");
+            if (!pc_event_subs.get(sub_id).has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No policy control events subscription " + sub_id);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::PcEventExposureSubsc>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            pc_event_subs.put(sub_id, j);
+            ee_update_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &pc_event_subs, &ee_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subscriptionId");
+            if (!pc_event_subs.remove(sub_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No policy control events subscription " + sub_id);
+            }
+            ee_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

@@ -99,7 +99,7 @@ TEST(PcfIntegration, AmPolicyAssociationFullLifecycle) {
     const std::string token = fetch_token(client, "npcf-am-policy-control");
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
 
-    sbi_gen::PolicyAssociationRequest create_data{};
+    sbi_gen::PolicyAssociationRequest_Npcf_AMPolicyControl create_data{};
     create_data.notificationUri = "https://example.com/am-policy-notify";
     create_data.supi = "imsi-999700000000001";
     create_data.suppFeat = "";
@@ -118,7 +118,8 @@ TEST(PcfIntegration, AmPolicyAssociationFullLifecycle) {
     ASSERT_NE(location_it, create_resp->headers.end());
     const std::string pol_asso_url = "https://127.0.0.1:7783" + location_it->second;
 
-    const auto created = json::parse(create_resp->body).get<sbi_gen::PolicyAssociation>();
+    const auto created =
+        json::parse(create_resp->body).get<sbi_gen::PolicyAssociation_Npcf_AMPolicyControl>();
     ASSERT_TRUE(created.request.has_value());
     EXPECT_EQ(created.request->supi, create_data.supi);
     ASSERT_TRUE(
@@ -134,10 +135,10 @@ TEST(PcfIntegration, AmPolicyAssociationFullLifecycle) {
 
     // ReportObservedEventTriggersForIndividualAMPolicyAssociation: report a trigger, get an
     // updated ueAmbr back.
-    sbi_gen::PolicyAssociationUpdateRequest update_data{};
-    sbi_gen::RequestTrigger trigger{};
+    sbi_gen::PolicyAssociationUpdateRequest_Npcf_AMPolicyControl update_data{};
+    sbi_gen::RequestTrigger_Npcf_AMPolicyControl trigger{};
     trigger.value = "RFSP_CH";
-    update_data.triggers = std::vector<sbi_gen::RequestTrigger>{trigger};
+    update_data.triggers = std::vector<sbi_gen::RequestTrigger_Npcf_AMPolicyControl>{trigger};
     sbi_gen::Ambr new_ambr{};
     new_ambr.uplink = "500 Mbps";
     new_ambr.downlink = "500 Mbps";
@@ -152,7 +153,8 @@ TEST(PcfIntegration, AmPolicyAssociationFullLifecycle) {
     auto update_resp = client.send(update_req);
     ASSERT_TRUE(update_resp.has_value());
     EXPECT_EQ(update_resp->status, 200);
-    const auto update_result = json::parse(update_resp->body).get<sbi_gen::PolicyUpdate>();
+    const auto update_result =
+        json::parse(update_resp->body).get<sbi_gen::PolicyUpdate_Npcf_AMPolicyControl>();
     ASSERT_TRUE(update_result.ueAmbr.has_value());
     EXPECT_EQ(update_result.ueAmbr->uplink, "500 Mbps");
     ASSERT_TRUE(update_result.triggers.has_value());
@@ -162,7 +164,8 @@ TEST(PcfIntegration, AmPolicyAssociationFullLifecycle) {
     // Confirm the update is really persisted, not just echoed.
     auto get_after_update = client.send(get_req);
     ASSERT_TRUE(get_after_update.has_value());
-    const auto after_update = json::parse(get_after_update->body).get<sbi_gen::PolicyAssociation>();
+    const auto after_update =
+        json::parse(get_after_update->body).get<sbi_gen::PolicyAssociation_Npcf_AMPolicyControl>();
     ASSERT_TRUE(after_update.ueAmbr.has_value());
     EXPECT_EQ(after_update.ueAmbr->uplink, "500 Mbps");
 

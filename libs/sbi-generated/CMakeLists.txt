@@ -69,6 +69,8 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29503_Nudm_UEID.yaml
     TS29564_Nupf_EventExposure.yaml
     TS29564_Nupf_GetUEPrivateIPaddrAndIdentifiers.yaml
+    TS29523_Npcf_EventExposure.yaml
+    TS29525_Npcf_UEPolicyControl.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -123,6 +125,8 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29503_Nudm_UEID.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29564_Nupf_EventExposure.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29564_Nupf_GetUEPrivateIPaddrAndIdentifiers.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29523_Npcf_EventExposure.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29525_Npcf_UEPolicyControl.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES

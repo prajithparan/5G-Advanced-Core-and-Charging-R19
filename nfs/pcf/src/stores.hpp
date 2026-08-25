@@ -101,4 +101,38 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// ADR-0204 (gap-closure task #163). Backs Npcf_UEPolicyControl's individual UE Policy Association
+// resource (TS29525). Keyed by a PCF-generated polAssoId -- a distinct id space from
+// AmPolicyStore's own polAssoId above (different resource, different YAML, same real 3GPP naming
+// convention for the path parameter). Value is a full `PolicyAssociation_Npcf_UEPolicyControl`
+// serialized as JSON, same store-shape precedent as AmPolicyStore/SmPolicyStore above.
+class UePolicyStore {
+public:
+    std::string create(nlohmann::json policy_association);
+    std::optional<nlohmann::json> get(const std::string& pol_asso_id);
+    bool put(const std::string& pol_asso_id, nlohmann::json policy_association);
+    bool remove(const std::string& pol_asso_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> associations_;
+    std::uint64_t next_id_ = 1;
+};
+
+// ADR-0204 (gap-closure task #163). Backs Npcf_EventExposure's individual Policy Control Events
+// Subscription resource (TS29523). Keyed by a PCF-generated subscriptionId. Value is a full
+// `PcEventExposureSubsc` serialized as JSON, same store-shape precedent as the stores above.
+class PcEventExposureStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> get(const std::string& subscription_id);
+    bool put(const std::string& subscription_id, nlohmann::json subscription);
+    bool remove(const std::string& subscription_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
 } // namespace pcf

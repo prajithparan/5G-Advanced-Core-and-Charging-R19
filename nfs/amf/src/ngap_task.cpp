@@ -1450,7 +1450,7 @@ void handle_uplink_nas_transport_registration_complete(sbi_core::http2::Client& 
         return;
     }
 
-    sbi_gen::PolicyAssociationRequest preq{};
+    sbi_gen::PolicyAssociationRequest_Npcf_AMPolicyControl preq{};
     preq.supi = auth_state.supi;
     // Mandatory per TS 29.507's schema even though nothing here implements a receiver yet -- see
     // kSelfBase's own comment.
