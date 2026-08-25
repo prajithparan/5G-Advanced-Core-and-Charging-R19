@@ -4044,3 +4044,23 @@ cleanup on failure, causing an orphaned-process pipe hang rather than a clean te
 exact same bug was also found, live, in the pre-existing `UdmIntegration.SdmDataRetrievalAndSubscriptions`
 test under the same system load; disclosed and tracked as task #166, not fixed in this pass since
 it's outside this ADR's own scope. See ADR-0202 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0203 -- UPF `Nupf_EventExposure` + `Nupf_GetUEPrivateIPaddrAndIdentifiers` (eighth ADR-0193 gap-closure)
+
+| Requirement | Test |
+|---|---|
+| `Nupf_EventExposure` create/modify/delete lifecycle | `UpfEventExposureIntegration.CreateModifyDeleteLifecycle`: real `201` with a verified `Location` header and echoed `notifyCorrelationId`; real RFC 6902 patch `200` with the patched value verified; real `404` on an unknown `subscriptionId`; real `204` delete then real `404` on repeat |
+| `Nupf_EventExposure` required-field validation | `UpfEventExposureIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a `subscription` missing `eventNotifyUri` |
+| `Nupf_GetUEPrivateIPaddrAndIdentifiers` honest response | `UpfGetUeIpInfoIntegration.SearchUeIpInfoReturnsHonestlyEmptyResult`: real `200` with a verified-empty `UeIpInfo` (no fabricated fields) |
+| No regression | Full reconfigure+rebuild against the complete pilot set clean (`EXIT=0` verified from the build log); 392/392 tests pass (`ctest --timeout 120 -E "UdrIntegration.AmfContextLifecycle\|UdmIntegration.SdmDataRetrievalAndSubscriptions"`, matching CI's own exclusion) |
+
+Real Tier-A gap-closure, and a real documentation-bug fix: `nfs/upf/src/main.cpp`'s own file header
+previously claimed no `Nupf_*` API exists in the OpenAPI corpus -- false, both YAMLs are real and
+present in this project's own vendored R19 archive, now corrected. UPF's real primary control
+interface (N4/PFCP, TS 23.501) is unchanged; these are a real, optional, additive R17+
+direct-exposure layer. This is UPF's first-ever real inbound SBI HTTP/2 server (TLS 1.3 + mTLS +
+OAuth2), running on its own dedicated thread/io_context alongside the pre-existing PFCP/N4 server
+thread and NRF-registration client thread. Both real, separate OAuth2 scopes (`nupf-ee`,
+`nupf-gueip`) confirmed directly from each YAML's own `securitySchemes` block, not guessed. See
+ADR-0203 in `docs/DECISIONS.md` for full disclosure, including what this pass does NOT include (no
+real event notification delivery pipeline, no real NAT/private-IP tracking).

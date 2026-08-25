@@ -1279,7 +1279,7 @@ check couldn't resolve (none surfaced this pass).
 | PCF | `Npcf_EventExposure`, `Npcf_UEPolicyControl`, `Npcf_AMPolicyAuthorization`, `Npcf_MBSPolicyAuthorization`, `Npcf_MBSPolicyControl`, `Npcf_PDTQPolicyControl`, `Npcf_BDTPolicyControl` (7 files) |
 | NEF | `Nnef_SMContext`, `Nnef_SMService`, `Nnef_DNAIMapping`, `Nnef_EASDeployment`, `Nnef_ECSAddress`, `Nnef_EventExposure`, `Nnef_Inference`, `Nnef_TrafficInfluenceData`, `Nnef_Training`, `Nnef_UEId`, `Nnef_VFLInference`, `Nnef_VFLTraining`, `Nnef_Authentication` (13 files -- largest single Tier-A concentration in the project) |
 | LMF | ~~`Nlmf_Broadcast`, `Nlmf_DataExposure`~~ CLOSED, ADR-0196 |
-| UPF | `Nupf_EventExposure`, `Nupf_GetUEPrivateIPaddrAndIdentifiers` -- lower severity: UPF's real primary control interface is N4/PFCP (TS 23.501), not SBI; these two are real, legitimate, but optional R17+ direct-exposure services this project's own spec archive happens to include |
+| UPF | ~~`Nupf_EventExposure`, `Nupf_GetUEPrivateIPaddrAndIdentifiers`~~ CLOSED, ADR-0203 -- was lower severity (UPF's real primary control interface is N4/PFCP, TS 23.501, not SBI) but a real gap: `nfs/upf/src/main.cpp`'s own file header had incorrectly claimed no `Nupf_*` API existed at all |
 
 NSSF, BSF, SCP, CHF, EIR, SMSF, GMLC: **zero** Tier-A gaps found (single-file NFs already fully
 wired, or CHF's deliberately narrow 3-file scope matching CLAUDE.md exactly).

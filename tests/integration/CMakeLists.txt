@@ -10,6 +10,7 @@ add_executable(integration_tests
     test_udm_uecm_sdm.cpp
     test_udm_ueau.cpp
     test_udm_mt_niddau_rsds_ssau_ueid.cpp
+    test_upf_event_exposure_gueip.cpp
     test_udr_context_data.cpp
     test_udr_ondatachange_webhook.cpp
     test_ausf_ue_authentication.cpp
@@ -21,12 +22,13 @@ add_executable(integration_tests
     test_roaming_interconnect_postgres.cpp
 )
 target_link_libraries(integration_tests PRIVATE sbi_core sbi_generated aka_crypto product_catalog_store subscriber_management_store roaming_interconnect_store GTest::gtest GTest::gtest_main)
-add_dependencies(integration_tests nrf amf smf udm udr ausf pcf chf hello-nf)
+add_dependencies(integration_tests nrf amf smf udm udr ausf pcf chf hello-nf upf)
 target_compile_definitions(integration_tests PRIVATE
     NRF_PATH="$<TARGET_FILE:nrf>"
     AMF_PATH="$<TARGET_FILE:amf>"
     SMF_PATH="$<TARGET_FILE:smf>"
     UDM_PATH="$<TARGET_FILE:udm>"
+    UPF_PATH="$<TARGET_FILE:upf>"
     UDR_PATH="$<TARGET_FILE:udr>"
     AUSF_PATH="$<TARGET_FILE:ausf>"
     PCF_PATH="$<TARGET_FILE:pcf>"

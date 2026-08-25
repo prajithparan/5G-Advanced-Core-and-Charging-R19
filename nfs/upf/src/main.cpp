@@ -1,10 +1,19 @@
 // nfs/upf: UPF (User Plane Function) -- Phase 3 Stages 1+3 (docs/DECISIONS.md ADR-0039/ADR-0042).
-// PFCP/N4 server (TS 29.244), UPF's only real protocol interface -- unlike every other NF in this
-// project, UPF exposes no SBI service of its own (no Nupf_* API exists in the OpenAPI corpus: real
-// 3GPP architecture has SMF talk to UPF exclusively over N4/PFCP, never SBI). UPF's only SBI role
-// is as a REGISTRATION CLIENT to NRF (real: NFType=UPF and NFProfile.upfInfo are genuine fields in
-// TS29122_CommonData_grp.hpp's generated types, confirmed before writing this, not assumed) so
-// SMF can discover it -- Stage 2 wires that discovery up for real.
+// PFCP/N4 server (TS 29.244), UPF's real primary protocol interface -- real 3GPP architecture has
+// SMF talk to UPF over N4/PFCP for session control, never SBI, for that core exchange. UPF's SBI
+// role has always included being a REGISTRATION CLIENT to NRF (real: NFType=UPF and
+// NFProfile.upfInfo are genuine fields in TS29122_CommonData_grp.hpp's generated types, confirmed
+// before writing this, not assumed) so SMF can discover it -- Stage 2 wires that discovery up for
+// real.
+//
+// CORRECTION (ADR-0203, gap-closure task #162): this file's own header previously claimed "no
+// Nupf_* API exists in the OpenAPI corpus" -- found, during ADR-0193's audit, to be false. Real
+// R17+ UPF direct-exposure services DO exist in this project's own vendored R19 archive:
+// TS29564_Nupf_EventExposure.yaml and TS29564_Nupf_GetUEPrivateIPaddrAndIdentifiers.yaml, both
+// real, optional SBI services layered on top of UPF's still-primary N4/PFCP control interface (not
+// a replacement for it -- TS 23.501's own architecture is unchanged). Both are now wired -- see the
+// UPDATE below -- making this UPF the first in this project to run a real inbound SBI HTTP/2
+// server alongside its PFCP one, each on its own thread/io_context.
 //
 // Implements: Heartbeat (§7.4.2), Association Setup (§7.4.4.1/§7.4.4.2), and Session
 // Establishment (§7.5.2/§7.5.3, ADR-0042) -- specifically one uplink PDR/FAR pair per session
@@ -29,8 +38,34 @@
 // Threshold/Quota. Still in-memory only, still lost on restart -- no real Session
 // Modification/Deletion exists yet to ever remove an entry either (a real, disclosed gap, not
 // urgent while this project has no process-restart/session-teardown testing).
+//
+// UPDATE (ADR-0203, gap-closure task #162): UPF's first-ever real inbound SBI HTTP/2 server,
+// TLS 1.3 + mTLS + OAuth2-verified like every other NF in this project, on its own dedicated
+// thread/io_context (run_sbi_server, started from main() alongside run_nrf_lifecycle and
+// run_pfcp_lifecycle -- three real, independent threads now, not two).
+// - TS29564_Nupf_EventExposure.yaml (api root /nupf-ee/v1): all 3 operations, backed by a new
+//   EventSubscriptionStore (event_subscription_store.hpp -- same real assign-id/store/remove
+//   shape as nfs/smf/src's own ADR-0201 store, deliberately re-implemented rather than shared,
+//   since NFs may not include each other's private headers). CreateSubscription real structural
+//   validation of CreateEventSubscription's required subscription (itself requiring
+//   eventList/eventNotifyUri/notifyCorrelationId/eventReportingMode/nfId), real 201+Location.
+//   ModifySubscription real get/404 then real RFC 6902 JSON Patch
+//   (nlohmann::json::patch()) against the stored subscription, real 200. DeleteSubscription real
+//   get/404-then-remove/204. Disclosed: no real event notification delivery exists -- this UPF
+//   has no real QoS-monitoring/usage-measurement/NAT-mapping data production pipeline behind any
+//   of the real EventType values (QOS_MONITORING, USER_DATA_USAGE_MEASURES, ...), so nothing
+//   would ever have real data to notify with even if delivery were wired up.
+// - TS29564_Nupf_GetUEPrivateIPaddrAndIdentifiers.yaml (api root /nupf-gueip/v1):
+//   SearchUeIpInfo, real query-parameter parsing (all optional per spec), then a real, honestly-
+//   empty UeIpInfo{} 200 -- disclosed: this UPF's own real per-session state
+//   (TeidSessionStore/SeidToTeidStore) tracks F-TEID/CP-SEID for Sx reporting, not any real
+//   private/public UE IP address or NAT mapping (no real NAT44/CGN capability exists anywhere in
+//   this build), so there is no real data to search.
 
 #include "sbi_core/http2_client.hpp"
+#include "sbi_core/http2_server.hpp"
+#include "sbi_core/json_body.hpp"
+#include "sbi_core/jwt.hpp"
 #include "sbi_core/logging.hpp"
 #include "sbi_core/metrics.hpp"
 #include "sbi_core/oauth2_client.hpp"
@@ -47,11 +82,14 @@
 #include <chrono>
 #include <ctime>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "TS29564_Nupf_GetUEPrivateIPaddrAndIdentifiers.hpp"
 #include "datapath.hpp"
+#include "event_subscription_store.hpp"
 #include "pfcp_core/common_ies.hpp"
 #include "pfcp_core/header.hpp"
 #include "pfcp_core/ie.hpp"
@@ -76,6 +114,30 @@ constexpr const char* kNfType = "UPF";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
+
+// TS29564_Nupf_EventExposure.yaml / TS29564_Nupf_GetUEPrivateIPaddrAndIdentifiers.yaml own real
+// api roots (ADR-0203), confirmed via each YAML's own `servers:` block.
+constexpr const char* kEeApiRoot = "/nupf-ee/v1";
+constexpr const char* kGueipApiRoot = "/nupf-gueip/v1";
+
+// Same real pattern every other NF's own local check_bearer uses (e.g. nfs/smf/src/main.cpp) --
+// UPF never needed one before this ADR, since it had no inbound SBI server of its own.
+std::optional<sbi_core::jwt::VerifyResult> check_bearer(const sbi_core::http2::Request& req,
+                                                        sbi_core::jwt::Verifier& verifier) {
+    auto it = req.headers.find("authorization");
+    if (it == req.headers.end()) {
+        return std::nullopt;
+    }
+    const std::string& value = it->second;
+    constexpr std::string_view kPrefix = "Bearer ";
+    if (value.size() <= kPrefix.size() || value.compare(0, kPrefix.size(), kPrefix) != 0) {
+        sbi_core::jwt::VerifyResult r;
+        r.valid = false;
+        r.error = "Authorization header present but not a Bearer token";
+        return r;
+    }
+    return verifier.verify(value.substr(kPrefix.size()));
+}
 
 // This project's only configured S-NSSAI/DNN combination throughout (simulators/ransim/config/
 // gnb.yaml's sst=1/sd=1, SMF's own dnn="internet" default) -- reused here so UPF's advertised
@@ -343,6 +405,143 @@ void run_nrf_lifecycle(const std::string& upf_instance_id, const std::string& nr
             spdlog::warn("upf: heartbeat failed");
         }
     }
+}
+
+// ADR-0203: UPF's first-ever real inbound SBI HTTP/2 server (TS29564_Nupf_EventExposure.yaml +
+// TS29564_Nupf_GetUEPrivateIPaddrAndIdentifiers.yaml). Runs on its own dedicated thread/
+// io_context, same "never on another subsystem's thread" reasoning as run_nrf_lifecycle above and
+// AMF's own NGAP thread (ADR-0030/ADR-0031) -- blocks forever via its own ioc.run(), never
+// returns.
+void run_sbi_server(unsigned short port, upf::EventSubscriptionStore& event_subs) {
+    sbi_core::http2::TlsConfig server_tls{
+        .cert_path = CERTS_DIR "/upf/cert.pem",
+        .key_path = CERTS_DIR "/upf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::jwt::Verifier verifier(CERTS_DIR "/nrf-jwt/public.pem", kNrfInstanceId);
+
+    auto meter = sbi_core::get_meter("upf");
+    auto ee_create_counter = meter->CreateUInt64Counter(
+        "upf_ee_create_subscription_total", "Total Nupf_EventExposure CreateSubscription calls");
+    auto ee_modify_counter = meter->CreateUInt64Counter(
+        "upf_ee_modify_subscription_total", "Total Nupf_EventExposure ModifySubscription calls");
+    auto ee_delete_counter = meter->CreateUInt64Counter(
+        "upf_ee_delete_subscription_total", "Total Nupf_EventExposure DeleteSubscription calls");
+    auto gueip_search_counter = meter->CreateUInt64Counter(
+        "upf_gueip_search_ue_ip_info_total",
+        "Total Nupf_GetUEPrivateIPaddrAndIdentifiers SearchUeIpInfo calls");
+
+    boost::asio::io_context ioc;
+    // 0.0.0.0: same Docker-reachability reasoning as every other NF's own bind (ADR-0014).
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
+
+    // ---- TS29564_Nupf_EventExposure.yaml ----
+
+    server.add_route(
+        "POST",
+        std::string(kEeApiRoot) + "/ee-subscriptions",
+        [&verifier, &event_subs, &ee_create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::CreateEventSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto id = event_subs.create(body->subscription);
+            ee_create_counter->Add(1);
+            sbi_gen::CreatedEventSubscription resp_data;
+            resp_data.subscription = body->subscription;
+            resp_data.subscriptionId = id;
+            json j = resp_data;
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", std::string(kEeApiRoot) + "/ee-subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kEeApiRoot) + "/ee-subscriptions/{subscriptionId}",
+        [&verifier, &event_subs, &ee_modify_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subscriptionId");
+            auto existing = event_subs.get(sub_id);
+            if (!existing.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No such subscription");
+            }
+            json patch_doc;
+            try {
+                patch_doc = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            json patched;
+            try {
+                patched = existing->patch(patch_doc);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", std::string("Invalid JSON Patch: ") + e.what());
+            }
+            sbi_gen::UpfEventSubscription updated;
+            try {
+                updated = patched.get<sbi_gen::UpfEventSubscription>();
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", std::string("Patched document invalid: ") + e.what());
+            }
+            event_subs.update(sub_id, patched);
+            ee_modify_counter->Add(1);
+            json j = updated;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kEeApiRoot) + "/ee-subscriptions/{subscriptionId}",
+        [&verifier, &event_subs, &ee_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subscriptionId");
+            if (!event_subs.get(sub_id).has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No such subscription");
+            }
+            event_subs.remove(sub_id);
+            ee_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // ---- TS29564_Nupf_GetUEPrivateIPaddrAndIdentifiers.yaml ----
+
+    server.add_route(
+        "GET",
+        std::string(kGueipApiRoot) + "/ue-ip-info",
+        [&verifier, &gueip_search_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            gueip_search_counter->Add(1);
+            // Disclosed simplification: honestly-empty UeIpInfo -- this UPF's own real per-
+            // session state (TeidSessionStore/SeidToTeidStore) tracks F-TEID/CP-SEID for Sx
+            // reporting, not any real private/public UE IP address or NAT mapping (no real
+            // NAT44/CGN capability exists anywhere in this build).
+            sbi_gen::UeIpInfo resp_data;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.start();
+    spdlog::info("upf: SBI server listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
+    ioc.run(); // blocks forever
 }
 
 // Builds a Heartbeat Response or Association Setup Response's IE region for the given sequence
@@ -1342,6 +1541,8 @@ int main() {
         nf_config::require<std::string>(config, "metrics_bind_address");
     const auto nrf_base_url =
         nf_config::require<std::string>(config, "nrf_base_url", "UPF_NRF_BASE_URL");
+    // ADR-0203: UPF's first-ever real inbound SBI server port.
+    const auto sbi_port = nf_config::require<unsigned short>(config, "port");
 
     sbi_core::init_logging("upf");
     sbi_core::init_tracing("upf");
@@ -1352,6 +1553,10 @@ int main() {
     spdlog::info("upf: Prometheus metrics at http://{}/metrics", metrics_bind_address);
 
     const std::time_t start_time = std::time(nullptr);
+
+    // ADR-0203: outlives run_sbi_server's own thread (the process's entire lifetime, same as
+    // teid_session_store below).
+    upf::EventSubscriptionStore event_subs;
 
     // ADR-0050 Stage 2: outlive `datapath` below (declared here, before it, so both are still
     // alive for as long as the datapath's ring-buffer-polling thread might invoke the usage
@@ -1441,6 +1646,7 @@ int main() {
     }
 
     std::thread(run_nrf_lifecycle, upf_instance_id, nrf_base_url).detach();
+    std::thread(run_sbi_server, sbi_port, std::ref(event_subs)).detach();
     run_pfcp_lifecycle(start_time,
                        datapath.has_value() ? &*datapath : nullptr,
                        teid_session_store,

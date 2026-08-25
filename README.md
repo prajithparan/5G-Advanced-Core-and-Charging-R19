@@ -102,6 +102,20 @@ positioning or PRU/NRPPa measurement data this project doesn't have, so they hon
 found and fixed 2 real defects — a vendored-spec transcription typo and a real
 `tools/sbi-codegen` allOf-merge field-deduplication bug (ADR-0190).
 
+A separate, project-wide audit (ADR-0193) checked every real `N<nf>_*` YAML against every NF's
+actual wiring — whole files never added to the sbi-codegen pilot set ("Tier-A" gaps) and, for
+wired files, individual operations that were stubbed or silently missing ("Tier-B" gaps). Closed so
+far: **NRF** `Nnrf_Bootstrapping` (ADR-0194), **AUSF** `Nausf_UPUProtection` (ADR-0195), **UDR**'s
+own two documentation-bug fixes plus a hand-written-DTO replacement (ADR-0197/ADR-0198), **AMF**
+`Namf_Location`+`Namf_EventExposure` (ADR-0199) and `Namf_AIoT`/`Namf_MBSBroadcast`/
+`Namf_MBSCommunication`/`Namf_MT` (ADR-0200), **SMF** `Nsmf_EventExposure`+`Nsmf_NIDD` (ADR-0201),
+**UDM** `Nudm_MT`/`Nudm_NIDDAU`/`Nudm_RSDS`/`Nudm_SSAU`/`Nudm_UEID` (ADR-0202, including a real,
+working TS 33.501 SUCI de-concealment endpoint, not a stub), and **UPF**
+`Nupf_EventExposure`+`Nupf_GetUEPrivateIPaddrAndIdentifiers` (ADR-0203 — also corrected a real
+documentation bug: UPF's own file header had incorrectly claimed no `Nupf_*` API existed at all;
+UPF's real primary control interface remains N4/PFCP per TS 23.501, unchanged). Still open: **PCF**
+(7 Tier-A files) and **NEF** (13 Tier-A files, the largest remaining single concentration).
+
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
 onward) is in [`docs/DECISIONS.md`](docs/DECISIONS.md).
