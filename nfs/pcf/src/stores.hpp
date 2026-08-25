@@ -185,4 +185,34 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// ADR-0206 (gap-closure task #163, third and final PCF slice). Backs Npcf_PDTQPolicyControl's
+// individual PDTQ policy resource (TS29543). Keyed by a PCF-generated pdtqPolicyId.
+class PdtqPolicyStore {
+public:
+    std::string create(nlohmann::json policy);
+    std::optional<nlohmann::json> get(const std::string& pdtq_policy_id);
+    bool put(const std::string& pdtq_policy_id, nlohmann::json policy);
+    bool remove(const std::string& pdtq_policy_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> policies_;
+    std::uint64_t next_id_ = 1;
+};
+
+// ADR-0206 (gap-closure task #163, third and final PCF slice). Backs Npcf_BDTPolicyControl's
+// individual BDT policy resource (TS29554). Keyed by a PCF-generated bdtPolicyId.
+class BdtPolicyStore {
+public:
+    std::string create(nlohmann::json policy);
+    std::optional<nlohmann::json> get(const std::string& bdt_policy_id);
+    bool put(const std::string& bdt_policy_id, nlohmann::json policy);
+    bool remove(const std::string& bdt_policy_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> policies_;
+    std::uint64_t next_id_ = 1;
+};
+
 } // namespace pcf

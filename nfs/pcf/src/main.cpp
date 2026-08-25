@@ -103,6 +103,20 @@
 // UpdateIndMBSPolicy's accepted mbsPcrts/mbsErrorReport are structurally validated but never
 // applied to any real mbsPolicies decision data, same class of gap as this file's own pre-existing
 // SM/AM policy fixed-default disclosure above.
+//
+// UPDATE (ADR-0206, gap-closure task #163, third and final PCF slice): Npcf_PDTQPolicyControl
+// (TS29543, 4 ops: CreatePDTQPolicy/GetIndPDTQPolicy/ModifyIndPDTQPolicy/DeleteIndPDTQPolicy) and
+// Npcf_BDTPolicyControl (TS29554, 4 ops: CreateBDTPolicy/GetBDTPolicy/UpdateBDTPolicy/
+// DeleteBDTPolicy) added -- the final 2 of PCF's own 7 real Tier-A gaps, closing task #163
+// entirely. No new name collisions found wiring either file. Disclosed: no real BDT decision
+// engine exists in this build, so CreateBDTPolicy's own created resource never has a real
+// `bdtPolData` (the set of transfer policies the PCF offers) -- `BdtPolicyData` itself requires a
+// real `bdtRefId` and at least one real `TransferPolicy`, neither of which this build can produce,
+// so it's honestly omitted (BdtPolicy's own `bdtPolData` is optional) rather than fabricated.
+// UpdateBDTPolicy's own consistent, disclosed consequence: a real `400` if the request tries to
+// select a transfer policy (`bdtPolData.selTransPolicyId`), since none were ever offered to
+// select from -- real `warnNotifReq`/`energyInd`/`notifUri` merge-patch fields on `bdtReqData`
+// still apply for real.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -155,6 +169,10 @@ constexpr const char* kEventExposureApiRoot = "/npcf-eventexposure/v1";
 constexpr const char* kAmPolicyAuthApiRoot = "/npcf-am-policyauthorization/v1";
 constexpr const char* kMbsPolicyAuthApiRoot = "/npcf-mbspolicyauth/v1";
 constexpr const char* kMbsPolicyControlApiRoot = "/npcf-mbspolicycontrol/v1";
+// ADR-0206 (gap-closure task #163, third and final PCF slice). Real api roots confirmed from
+// each YAML's own `servers:` block.
+constexpr const char* kPdtqPolicyControlApiRoot = "/npcf-pdtq-policy-control/v1";
+constexpr const char* kBdtPolicyControlApiRoot = "/npcf-bdtpolicycontrol/v1";
 
 // ADR-0072 (gap-closure: real N28 end-to-end). PCF's real UDR client (fetches SmPolicyData,
 // TS29519_Policy_Data.yaml) and CHF client (Nchf_SpendingLimitControl, TS29594) -- same
@@ -494,6 +512,8 @@ int main() {
     pcf::AppAmContextStore app_am_contexts;
     pcf::MbsAppSessionStore mbs_app_sessions;
     pcf::MbsPolicyStore mbs_policies;
+    pcf::PdtqPolicyStore pdtq_policies;
+    pcf::BdtPolicyStore bdt_policies;
 
     // ADR-0072 (gap-closure: real N28 end-to-end) -- PCF's own client identity + token source for
     // calling UDR and CHF, same separate-http2::Client-per-target-NF pattern this project already
@@ -580,6 +600,18 @@ int main() {
         meter->CreateUInt64Counter("pcf_mbs_policy_update_total", "Total UpdateIndMBSPolicy calls");
     auto mbs_policy_delete_counter =
         meter->CreateUInt64Counter("pcf_mbs_policy_delete_total", "Total DeleteIndMBSPolicy calls");
+    auto pdtq_create_counter =
+        meter->CreateUInt64Counter("pcf_pdtq_create_total", "Total CreatePDTQPolicy calls");
+    auto pdtq_update_counter =
+        meter->CreateUInt64Counter("pcf_pdtq_update_total", "Total ModifyIndPDTQPolicy calls");
+    auto pdtq_delete_counter =
+        meter->CreateUInt64Counter("pcf_pdtq_delete_total", "Total DeleteIndPDTQPolicy calls");
+    auto bdt_create_counter =
+        meter->CreateUInt64Counter("pcf_bdt_create_total", "Total CreateBDTPolicy calls");
+    auto bdt_update_counter =
+        meter->CreateUInt64Counter("pcf_bdt_update_total", "Total UpdateBDTPolicy calls");
+    auto bdt_delete_counter =
+        meter->CreateUInt64Counter("pcf_bdt_delete_total", "Total DeleteBDTPolicy calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1636,6 +1668,209 @@ int main() {
             mbs_policies.put(id, j);
             mbs_policy_update_counter->Add(1);
             return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // --- Npcf_PDTQPolicyControl (ADR-0206, gap-closure task #163, third and final PCF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kPdtqPolicyControlApiRoot) + "/pdtq-policies",
+        [&verifier, &pdtq_policies, &pdtq_create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::PdtqPolicyData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = pdtq_policies.create(j);
+            pdtq_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kPdtqPolicyControlApiRoot) + "/pdtq-policies/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kPdtqPolicyControlApiRoot) + "/pdtq-policies/{pdtqPolicyId}",
+        [&verifier, &pdtq_policies](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("pdtqPolicyId");
+            auto policy = pdtq_policies.get(id);
+            if (!policy.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No PDTQ policy " + id);
+            }
+            return sbi_core::http2::Response::json(200, policy->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kPdtqPolicyControlApiRoot) + "/pdtq-policies/{pdtqPolicyId}",
+        [&verifier, &pdtq_policies, &pdtq_update_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("pdtqPolicyId");
+            auto stored = pdtq_policies.get(id);
+            if (!stored.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No PDTQ policy " + id);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::PdtqPolicyPatchData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            auto policy = stored->get<sbi_gen::PdtqPolicyData>();
+            if (body->notifUri.has_value()) {
+                policy.notifUri = body->notifUri;
+            }
+            if (body->selPdtqPolicyId.has_value()) {
+                policy.selPdtqPolicyId = body->selPdtqPolicyId;
+            }
+            if (body->warnNotifReq.has_value()) {
+                policy.warnNotifReq = body->warnNotifReq;
+            }
+            json j = policy;
+            pdtq_policies.put(id, j);
+            pdtq_update_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kPdtqPolicyControlApiRoot) + "/pdtq-policies/{pdtqPolicyId}",
+        [&verifier, &pdtq_policies, &pdtq_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("pdtqPolicyId");
+            if (!pdtq_policies.remove(id)) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No PDTQ policy " + id);
+            }
+            pdtq_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Npcf_BDTPolicyControl (ADR-0206, gap-closure task #163, third and final PCF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kBdtPolicyControlApiRoot) + "/bdtpolicies",
+        [&verifier, &bdt_policies, &bdt_create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::BdtReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            // Disclosed simplification (ADR-0206): no real BDT decision engine exists in this
+            // build, so the created resource's own `bdtPolData` (the set of transfer policies
+            // the PCF offers) is honestly absent rather than fabricated -- `BdtPolicyData` itself
+            // requires a real `bdtRefId` and at least one real `TransferPolicy`, neither of which
+            // this build can produce.
+            sbi_gen::BdtPolicy policy{};
+            policy.bdtReqData = *body;
+            json j = policy;
+            const auto id = bdt_policies.create(j);
+            bdt_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kBdtPolicyControlApiRoot) + "/bdtpolicies/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kBdtPolicyControlApiRoot) + "/bdtpolicies/{bdtPolicyId}",
+        [&verifier, &bdt_policies](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("bdtPolicyId");
+            auto policy = bdt_policies.get(id);
+            if (!policy.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No BDT policy " + id);
+            }
+            return sbi_core::http2::Response::json(200, policy->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kBdtPolicyControlApiRoot) + "/bdtpolicies/{bdtPolicyId}",
+        [&verifier, &bdt_policies, &bdt_update_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("bdtPolicyId");
+            auto stored = bdt_policies.get(id);
+            if (!stored.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No BDT policy " + id);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::PatchBdtPolicy>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            if (body->bdtPolData.has_value()) {
+                // Real, honest constraint: selecting a transfer policy requires this PCF to have
+                // real transfer policies on offer (see CreateBDTPolicy's own disclosed gap
+                // above) -- none exist in this build, so there is nothing valid to select.
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "No transfer policies are available to select (no real BDT decision engine "
+                    "exists in this build)");
+            }
+            auto policy = stored->get<sbi_gen::BdtPolicy>();
+            if (body->bdtReqData.has_value() && policy.bdtReqData.has_value()) {
+                if (body->bdtReqData->warnNotifReq.has_value()) {
+                    policy.bdtReqData->warnNotifReq = body->bdtReqData->warnNotifReq;
+                }
+                if (body->bdtReqData->energyInd.has_value()) {
+                    policy.bdtReqData->energyInd = body->bdtReqData->energyInd;
+                }
+                if (body->bdtReqData->notifUri.has_value()) {
+                    policy.bdtReqData->notifUri = body->bdtReqData->notifUri;
+                }
+            }
+            json j = policy;
+            bdt_policies.put(id, j);
+            bdt_update_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kBdtPolicyControlApiRoot) + "/bdtpolicies/{bdtPolicyId}",
+        [&verifier, &bdt_policies, &bdt_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("bdtPolicyId");
+            if (!bdt_policies.remove(id)) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No BDT policy " + id);
+            }
+            bdt_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     std::thread(run_nrf_lifecycle, pcf_instance_id, nrf_base_url).detach();

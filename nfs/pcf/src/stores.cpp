@@ -288,4 +288,66 @@ bool MbsPolicyStore::remove(const std::string& mbs_policy_id) {
     return policies_.erase(mbs_policy_id) > 0;
 }
 
+std::string PdtqPolicyStore::create(nlohmann::json policy) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "pdtqpolicy-" + std::to_string(next_id_++);
+    policies_.emplace(id, std::move(policy));
+    return id;
+}
+
+std::optional<nlohmann::json> PdtqPolicyStore::get(const std::string& pdtq_policy_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = policies_.find(pdtq_policy_id);
+    if (it == policies_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool PdtqPolicyStore::put(const std::string& pdtq_policy_id, nlohmann::json policy) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = policies_.find(pdtq_policy_id);
+    if (it == policies_.end()) {
+        return false;
+    }
+    it->second = std::move(policy);
+    return true;
+}
+
+bool PdtqPolicyStore::remove(const std::string& pdtq_policy_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return policies_.erase(pdtq_policy_id) > 0;
+}
+
+std::string BdtPolicyStore::create(nlohmann::json policy) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "bdtpolicy-" + std::to_string(next_id_++);
+    policies_.emplace(id, std::move(policy));
+    return id;
+}
+
+std::optional<nlohmann::json> BdtPolicyStore::get(const std::string& bdt_policy_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = policies_.find(bdt_policy_id);
+    if (it == policies_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool BdtPolicyStore::put(const std::string& bdt_policy_id, nlohmann::json policy) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = policies_.find(bdt_policy_id);
+    if (it == policies_.end()) {
+        return false;
+    }
+    it->second = std::move(policy);
+    return true;
+}
+
+bool BdtPolicyStore::remove(const std::string& bdt_policy_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return policies_.erase(bdt_policy_id) > 0;
+}
+
 } // namespace pcf

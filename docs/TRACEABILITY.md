@@ -4113,3 +4113,20 @@ already-wired `TS29521_Nbsf_Management.yaml` too (an unrelated real BSF schema o
 disambiguated by the codegen; `nfs/bsf/src/main.cpp`'s own pre-existing bare-name reference
 updated, a real necessary fix with no functional change to BSF's own behavior. See ADR-0205 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0206 -- PCF `Npcf_PDTQPolicyControl` + `Npcf_BDTPolicyControl` (eleventh ADR-0193 gap-closure, third and final PCF slice)
+
+| Requirement | Test |
+|---|---|
+| `Npcf_PDTQPolicyControl` full lifecycle | `PdtqPolicyControlIntegration.CreateReadUpdateDeleteLifecycle`: real `201`/`200`/`200`/`204`, real `404` on repeat delete |
+| `Npcf_PDTQPolicyControl` required-field validation | `PdtqPolicyControlIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `numOfUes` |
+| `Npcf_BDTPolicyControl` full lifecycle + disclosed transfer-policy-selection constraint | `BdtPolicyControlIntegration.CreateReadUpdateDeleteLifecycle`: real `201` with verified-absent `bdtPolData`, real `200` merge-patch of `bdtReqData`, real `400` on an attempted transfer-policy selection, real `404` on repeat delete |
+| `Npcf_BDTPolicyControl` required-field validation | `BdtPolicyControlIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `volPerUe` |
+| No regression | Full reconfigure+rebuild against the complete pilot set clean (`EXIT=0` verified from the build log); all 4 new tests pass, all 10 pre-existing PCF tests still pass; full suite 406/406 |
+
+Real Tier-A gap-closure (third and final PCF slice, task #163 -- now fully closed, all 7 PCF
+Tier-A files wired and implemented). No new name collisions found wiring either file. Real, honest
+disclosed constraint: `Npcf_BDTPolicyControl`'s `CreateBDTPolicy` never populates a real
+`bdtPolData` (no real BDT decision engine exists in this build to produce one), so
+`UpdateBDTPolicy`'s own transfer-policy-selection path always real-`400`s -- there is nothing
+valid to select. See ADR-0206 in `docs/DECISIONS.md` for full disclosure.

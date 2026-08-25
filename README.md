@@ -113,8 +113,11 @@ own two documentation-bug fixes plus a hand-written-DTO replacement (ADR-0197/AD
 working TS 33.501 SUCI de-concealment endpoint, not a stub), and **UPF**
 `Nupf_EventExposure`+`Nupf_GetUEPrivateIPaddrAndIdentifiers` (ADR-0203 — also corrected a real
 documentation bug: UPF's own file header had incorrectly claimed no `Nupf_*` API existed at all;
-UPF's real primary control interface remains N4/PFCP per TS 23.501, unchanged). Still open: **PCF**
-(7 Tier-A files) and **NEF** (13 Tier-A files, the largest remaining single concentration).
+UPF's real primary control interface remains N4/PFCP per TS 23.501, unchanged), and **PCF** — all
+7 Tier-A files across three slices: `Npcf_EventExposure`+`Npcf_UEPolicyControl` (ADR-0204),
+`Npcf_AMPolicyAuthorization`+`Npcf_MBSPolicyAuthorization`+`Npcf_MBSPolicyControl` (ADR-0205), and
+`Npcf_PDTQPolicyControl`+`Npcf_BDTPolicyControl` (ADR-0206). Still open: **NEF** (13 Tier-A files,
+the largest remaining single concentration).
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
