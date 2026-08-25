@@ -124,9 +124,12 @@ already-shipping code, a new consequence class, disclosed in full in the ADR); `
 (ADR-0209 — also fixed a real `tools/sbi-codegen` allOf-narrowing limitation, and the fix's own
 real, project-wide common-data-group-rename consequence, both disclosed in full in the ADR); and
 `Nnef_TrafficInfluenceData`/`Nnef_Inference`/`Nnef_Training`/`Nnef_VFLInference`/`Nnef_VFLTraining`
-(ADR-0210, task #164 now complete — no NEF Tier-A gaps remain). Task #164's own gap-closure work
-is done; NEF's real Tier-B breadth (individual stubbed/missing operations within already-wired
-files) has not been separately audited.
+(ADR-0210, task #164 now complete — no NEF Tier-A gaps remain). **Every NF's real Tier-A gaps are
+now closed project-wide.** Tier-B closure has begun: **NRF** `OptionsNFInstances`+
+`RetrieveStoredSearch`/`RetrieveCompleteSearch`+`RetrieveKeyRequest` (ADR-0211, the smallest
+remaining Tier-B item). Still open: UDR (~19 undisclosed operations) and UDM (~58+ undisclosed
+operations) are the two largest remaining real Tier-B items — individual stubbed/missing
+operations within already-wired files, not structural gaps.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075

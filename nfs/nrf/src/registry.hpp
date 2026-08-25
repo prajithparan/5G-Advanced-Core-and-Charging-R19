@@ -86,4 +86,25 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md's Tier-B NRF audit, ADR-0193's own follow-up).
+// Backs RetrieveStoredSearch/RetrieveCompleteSearch (TS29510_Nnrf_NFDiscovery.yaml) -- caches the
+// real `nfInstances` array SearchNFInstances already computed for a given searchId, so a later
+// `GET /searches/{searchId}` can re-fetch it without re-running the query. Real, disclosed: this
+// project's own SearchNFInstances has no partial-vs-complete-profile distinction (no field
+// filtering is implemented), so "stored" and "complete" results are the same real data -- see
+// docs/DECISIONS.md. In-memory only, no TTL eviction, same disclosed simplification as
+// NfRegistry/SubscriptionRegistry above.
+class StoredSearchStore {
+public:
+    // Assigns and returns a new searchId for this real nfInstances result.
+    std::string put(nlohmann::json nf_instances);
+
+    std::optional<nlohmann::json> get(const std::string& search_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> results_;
+    std::uint64_t next_id_ = 1;
+};
+
 } // namespace nrf

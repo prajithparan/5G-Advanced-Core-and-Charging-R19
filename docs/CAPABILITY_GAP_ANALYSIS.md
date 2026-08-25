@@ -1300,10 +1300,12 @@ live-verified PUT/DELETE routes. Beyond that, UDR (the most mature NF by route c
 undisclosed missing resources in `Subscription_Data` (`authentication-status/{servingNetworkName}`,
 bare `provisioned-data` GET, `subs-to-notify` bulk-DELETE) and ~12 in `Policy_Data` (bare `{ueId}`
 aggregate, `sm-data/{usageMonId}` family, bare `bdt-data` collection GET, and an entire
-`subs-to-notify` subscription family distinct from `Subscription_Data`'s own). NRF has 4
+`subs-to-notify` subscription family distinct from `Subscription_Data`'s own). ~~NRF's 4
 undisclosed missing operations (`OptionsNFInstances`, `RetrieveStoredSearch`,
-`RetrieveCompleteSearch`, `RetrieveKeyRequest`) -- and its own existing disclosure comment for
-`ScpDomainRoutingInfo*` ("SCP isn't built yet") is now stale, since SCP was built in ADR-0186.
+`RetrieveCompleteSearch`, `RetrieveKeyRequest`)~~ **CLOSED, ADR-0211** (the audit's separately-flagged
+"stale `ScpDomainRoutingInfo*` disclosure comment" was checked directly and found already accurate
+in the current source -- not the "SCP isn't built yet" phrasing this audit's own original snapshot
+had flagged, no fix needed).
 UDM has the largest raw undisclosed-op count (~24 in `Nudm_UECM`, ~34 in `Nudm_SDM`, plus smaller
 gaps in `UEAU`/`PP`) but every one is a real, individually small CRUD/subscription operation
 within already-wired files, not a structural gap.

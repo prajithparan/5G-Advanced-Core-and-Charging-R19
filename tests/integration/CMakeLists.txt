@@ -2,6 +2,7 @@ find_package(GTest CONFIG REQUIRED)
 
 add_executable(integration_tests
     test_hello_nf_registration.cpp
+    test_nrf_gap_closure.cpp
     test_amf_namf_communication.cpp
     test_amf_namf_location_eventexposure.cpp
     test_amf_namf_aiot_mbs_mt.cpp

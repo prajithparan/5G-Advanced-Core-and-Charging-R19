@@ -4232,3 +4232,28 @@ class (ADR-0204) -- fixed across all 5 lifecycle tests in the new file, not just
 A separate tooling mistake (accidentally running `clang-format-18` against a Python file,
 `schema_to_ir.py`) was caught and reverted via `git checkout --` before ever being committed. See
 ADR-0210 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0211 -- NRF `OptionsNFInstances` + `RetrieveStoredSearch`/`RetrieveCompleteSearch` + `RetrieveKeyRequest` (first Tier-B gap-closure since ADR-0193's Tier-A backlog closed)
+
+| Requirement | Test |
+|---|---|
+| `OptionsNFInstances` real capability discovery | `NrfGapClosureIntegration.OptionsNFInstancesReturnsRealAcceptEncoding`: real `200` + `Accept-Encoding` header |
+| `RetrieveKeyRequest` for NRF's own real issuer | `NrfGapClosureIntegration.RetrieveKeyRequestForOwnIssuerReturnsRealPublicKey`: real `200`, `rawPubKey` independently verified byte-for-byte against `certs/nrf-jwt/public.pem` |
+| `RetrieveKeyRequest` for an unknown issuer | `NrfGapClosureIntegration.RetrieveKeyRequestForUnknownIssuerIs404`: real `404` |
+| `RetrieveStoredSearch`/`RetrieveCompleteSearch` real cached result | `NrfGapClosureIntegration.RetrieveStoredSearchAndCompleteSearchReturnCachedResult`: real `searchId` from a live `SearchNFInstances` call, both follow-up `GET`s return the same real cached `nfInstances`, real `404` on an unknown `searchId` |
+| No regression | Full reconfigure+rebuild against the complete pilot set clean; all 4 new tests pass; full suite 430/430 |
+
+Real Tier-B gap-closure -- the first item off ADR-0193's own remaining backlog now that every NF's
+Tier-A gaps are closed (ADR-0194 through ADR-0210). NRF's 4 undisclosed missing operations were the
+smallest/clearest remaining item, matching this project's own established "smallest/clearest first"
+prioritization (ADR-0194/ADR-0195/ADR-0196). New `StoredSearchStore`
+(`nfs/nrf/src/registry.hpp/.cpp`) caches each real `SearchNFInstances` result under a real
+`searchId` for later re-fetch. `RetrieveKeyRequest` serves this NRF's own real JWT public key
+(read from `certs/nrf-jwt/public.pem`, the same file every NF's `Verifier` already trusts) only for
+its own real issuer id, honest `404` otherwise. Also confirmed (no fix needed): the audit's
+separately-flagged "stale SCP disclosure" comment was already accurately worded in
+`nfs/nrf/src/main.cpp`, not the stale phrasing the audit snapshot had flagged. One real
+`-Wshadow` warning caught and fixed (a local `issuer` variable shadowed the outer-scope
+`jwt::Issuer issuer` object). Two real Tier-B items remain, both larger: UDR (~19 undisclosed
+operations) and UDM (~58+ undisclosed operations) -- see
+`docs/CAPABILITY_GAP_ANALYSIS.md`. See ADR-0211 in `docs/DECISIONS.md` for full disclosure.

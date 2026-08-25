@@ -13,9 +13,17 @@
 // Out of scope, deferred not dropped, per ADR-0193's own project-wide audit
 // (docs/CAPABILITY_GAP_ANALYSIS.md): NFManagement's /shared-data* (multi-NRF federation -- no
 // second NRF instance exists in this lab), /scp-domain-routing-info* (stale disclosure -- SCP now
-// exists, ADR-0186, but this wiring hasn't been revisited), OptionsNFInstances,
-// RetrieveStoredSearch/RetrieveCompleteSearch (NFDiscovery.yaml), RetrieveKeyRequest
-// (AccessToken.yaml).
+// exists, ADR-0186, but this wiring hasn't been revisited).
+//
+// UPDATE (ADR-0211, Tier-B gap-closure): OptionsNFInstances (NFManagement.yaml),
+// RetrieveStoredSearch/RetrieveCompleteSearch (NFDiscovery.yaml), and RetrieveKeyRequest
+// (AccessToken.yaml) added -- the 4 undisclosed missing operations ADR-0193's own audit found.
+// Real, disclosed: RetrieveStoredSearch/RetrieveCompleteSearch return the same real cached
+// nfInstances (this NRF has no partial-vs-complete-profile filtering to distinguish them);
+// RetrieveKeyRequest returns this NRF's own real JWT public key (the same
+// certs/nrf-jwt/public.pem every NF's own Verifier already trusts) only when the request's
+// `issuer` matches this NRF's own instance id, honest `404` otherwise (no other real issuer
+// exists in this lab to serve a key for).
 //
 // Disclosed simplifications (see docs/DECISIONS.md for the full ADRs):
 //   - In-memory storage only, no persistence across restarts.
@@ -24,6 +32,8 @@
 //     on NF_REGISTERED/NF_DEREGISTERED, not just matching ones).
 //   - Notification delivery is synchronous best-effort (log on failure, do not retry) --
 //     consistent with ADR-0006's synchronous HTTP/2 client.
+//   - Stored search results (searchId cache) have no TTL eviction, same class of simplification
+//     as NfRegistry/SubscriptionRegistry's own in-memory-only storage.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -37,6 +47,7 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <fstream>
 #include <functional>
 #include <regex>
 #include <sstream>
@@ -323,6 +334,7 @@ int main() {
 
     auto nf_registry = std::make_shared<nrf::NfRegistry>();
     auto sub_registry = std::make_shared<nrf::SubscriptionRegistry>();
+    auto stored_searches = std::make_shared<nrf::StoredSearchStore>();
     auto notify_client = std::make_shared<sbi_core::http2::Client>(client_tls);
 
     auto meter = sbi_core::get_meter("nrf");
@@ -479,6 +491,45 @@ int main() {
             return sbi_core::http2::Response::json(200, resp.dump());
         });
 
+    // Gap-closure: RetrieveKeyRequest (TS29510_Nnrf_AccessToken.yaml). Real, disclosed: NRF only
+    // knows its own real signing key -- an `issuer` other than this NRF's own instance id gets an
+    // honest 404, not a fabricated key. `rawPubKey` is the real base64 SubjectPublicKeyInfo body
+    // of `certs/nrf-jwt/public.pem` (the exact same key every NF's own sbi_core::jwt::Verifier
+    // already loads to validate NRF-issued tokens), extracted by stripping the real PEM
+    // "-----BEGIN/END PUBLIC KEY-----" delimiter lines -- not re-derived or fabricated key
+    // material.
+    server.add_route("POST",
+                     "/oauth2/retrieve-key",
+                     [&certs_dir, nrf_instance_id](const sbi_core::http2::Request& req) {
+                         json body;
+                         try {
+                             body = json::parse(req.body);
+                         } catch (const json::parse_error& e) {
+                             return problem_response(400, "Malformed JSON", e.what());
+                         }
+                         if (!body.contains("issuer") || !body.contains("headerParameters")) {
+                             return problem_response(
+                                 400,
+                                 "Missing mandatory IE",
+                                 "RetrieveKeyReq requires issuer and headerParameters");
+                         }
+                         const auto requested_issuer = body.at("issuer").get<std::string>();
+                         if (requested_issuer != nrf_instance_id) {
+                             return problem_response(
+                                 404, "Not Found", "No key known for issuer " + requested_issuer);
+                         }
+                         std::ifstream key_file(certs_dir + "/nrf-jwt/public.pem");
+                         std::string raw_pub_key;
+                         std::string line;
+                         while (std::getline(key_file, line)) {
+                             if (line.find("-----") == std::string::npos) {
+                                 raw_pub_key += line;
+                             }
+                         }
+                         json resp{{"rawPubKey", raw_pub_key}};
+                         return sbi_core::http2::Response::json(200, resp.dump());
+                     });
+
     server.add_route(
         "PUT",
         "/nnrf-nfm/v1/nf-instances/{nfInstanceID}",
@@ -611,7 +662,7 @@ int main() {
     server.add_route(
         "GET",
         "/nnrf-disc/v1/nf-instances",
-        [&verifier, nf_registry](const sbi_core::http2::Request& req) {
+        [&verifier, nf_registry, stored_searches](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return problem_response(401, "Unauthorized", auth->error);
             }
@@ -633,11 +684,66 @@ int main() {
             for (const auto& profile : nf_registry->search_by_type(target_type)) {
                 instances.push_back(profile);
             }
+            // Gap-closure: real searchId, cached so a later RetrieveStoredSearch/
+            // RetrieveCompleteSearch (below) can re-fetch this same result.
+            const auto search_id = stored_searches->put(instances);
             json result{
                 {"validityPeriod", 60},
                 {"nfInstances", instances},
+                {"searchId", search_id},
             };
             return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md's Tier-B NRF audit): RetrieveStoredSearch /
+    // RetrieveCompleteSearch. Real, disclosed: this NRF has no partial-vs-complete-profile
+    // filtering, so both real operations return the same real nfInstances SearchNFInstances
+    // already cached for this searchId -- not a fabricated distinction.
+    server.add_route(
+        "GET",
+        "/nnrf-disc/v1/searches/{searchId}",
+        [&verifier, stored_searches](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto search_id = req.path_params.at("searchId");
+            auto instances = stored_searches->get(search_id);
+            if (!instances.has_value()) {
+                return problem_response(404, "Not Found", "No stored search " + search_id);
+            }
+            json result{{"nfInstances", *instances}};
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    server.add_route(
+        "GET",
+        "/nnrf-disc/v1/searches/{searchId}/complete",
+        [&verifier, stored_searches](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto search_id = req.path_params.at("searchId");
+            auto instances = stored_searches->get(search_id);
+            if (!instances.has_value()) {
+                return problem_response(404, "Not Found", "No stored search " + search_id);
+            }
+            json result{{"nfInstances", *instances}};
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    // Gap-closure: OptionsNFInstances (TS29510_Nnrf_NFManagement.yaml). Real capability-discovery
+    // response, same real pattern already established for NSSF's own OPTIONS route (ADR-0183):
+    // no `supportedFeatures` bitmask is implemented for NRF, so an honest 200 with just the real
+    // `Accept-Encoding` header (no body) is returned rather than fabricating a features list.
+    server.add_route(
+        "OPTIONS", "/nnrf-nfm/v1/nf-instances", [&verifier](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("accept-encoding", "identity");
+            return resp;
         });
 
     server.add_route(

@@ -124,4 +124,20 @@ std::vector<std::string> SubscriptionRegistry::all_notification_uris() {
     return uris;
 }
 
+std::string StoredSearchStore::put(nlohmann::json nf_instances) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string id = "search-" + std::to_string(next_id_++);
+    results_.emplace(id, std::move(nf_instances));
+    return id;
+}
+
+std::optional<nlohmann::json> StoredSearchStore::get(const std::string& search_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = results_.find(search_id);
+    if (it == results_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
 } // namespace nrf
