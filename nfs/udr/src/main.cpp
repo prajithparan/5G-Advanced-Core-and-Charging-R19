@@ -4906,8 +4906,12 @@ int main() {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             sbi_core::http2::Response err;
-            auto body = sbi_core::http2::parse_json_body<sbi_gen::ServiceSpecificAuthorizationInfo>(
-                req, err);
+            // Real name collision (ADR-0202): TS29503_Nudm_SSAU.yaml declares its own, distinct
+            // ServiceSpecificAuthorizationInfo (a client-facing request schema) -- disambiguated
+            // by the codegen to ServiceSpecificAuthorizationInfo_Subscription_Data for this UDR
+            // resource's own real TS 29.505 schema.
+            auto body = sbi_core::http2::parse_json_body<
+                sbi_gen::ServiceSpecificAuthorizationInfo_Subscription_Data>(req, err);
             if (!body.has_value()) {
                 return err;
             }

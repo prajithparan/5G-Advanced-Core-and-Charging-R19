@@ -4017,3 +4017,30 @@ independently declared elsewhere) disambiguated by the codegen to `*_Nsmf_EventE
 `smContextRef` id space (disclosed, not a literal separate `/pdu-sessions` resource). Both
 services carry forward the same disclosed no-real-delivery-pipeline gap class already established
 elsewhere in this project. See ADR-0201 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0202 -- UDM `Nudm_MT` + `Nudm_NIDDAU` + `Nudm_RSDS` + `Nudm_SSAU` + `Nudm_UEID` (seventh ADR-0193 gap-closure)
+
+| Requirement | Test |
+|---|---|
+| `Nudm_MT` existence check + honest response | `UdmMtIntegration.QueryUeInfo404ThenHonestlyEmpty200`: real `404` for an unseeded SUPI, real `200` with a verified-empty `UeInfo` for a real seeded one |
+| `Nudm_MT` `ProvideLocationInfo` | `UdmMtIntegration.ProvideLocationInfoReturnsHonestlyEmptyResult`: real `200` with a verified-empty `LocationInfoResult` |
+| `Nudm_NIDDAU` disclosed gap + validation | `UdmNiddauIntegration.AuthorizeNiddDataIs501`: real `501`, real `400` on a body missing `dnn` |
+| `Nudm_RSDS` ack | `UdmRsdsIntegration.ReportSMDeliveryStatusIs204`: real `204` |
+| `Nudm_SSAU` disclosed gap + no-target removal | `UdmSsauIntegration.AuthorizeIs501AndRemovalIs404`: real `501`, real `404`, real `400` on a body missing `authId` |
+| `Nudm_UEID` real, working SUCI de-concealment | `UdmUeidIntegration.DeconcealRealSuciWorksAndTamperedMacIs400`: real `200` decrypting the exact TS 33.501 Annex C.4.3.1 ECIES Profile A implementers' test vector to the correct real SUPI, over the wire against the live process; real `400` on a tampered MAC |
+| No regression | Full reconfigure+rebuild against the complete pilot set clean (`EXIT=0` verified from the build log); all 6 new tests pass; UDR's own 3 pre-existing tests still pass after the real collision fix |
+
+Real Tier-A gap-closure: all 5 YAMLs were explicitly named and deferred in `nfs/udm/src/main.cpp`'s
+own file header since UDM's original turn, never in the sbi-codegen pilot set. `Nudm_UEID`'s
+`Deconceal` is real, not a stub -- it reuses this file's own existing, already-tested
+`deconceal_suci_if_needed()` (TS 33.501 Annex C ECIES Profile A/B). Real name collision found and
+fixed as part of wiring `Nudm_SSAU` in: `ServiceSpecificAuthorizationInfo` collided with
+`TS29505_Subscription_Data.yaml`'s own, unrelated, already-implemented UDR schema of the same name
+-- `nfs/udr/src/main.cpp`'s own pre-existing reference to the bare name updated to the new
+disambiguated `ServiceSpecificAuthorizationInfo_Subscription_Data`, a real, necessary fix with no
+functional change to UDR's own behavior (its own 3 tests still pass). A real, latent test-harness
+bug was found and fixed along the way (UDR-readiness timing race + an `ASSERT_EQ` that skipped
+cleanup on failure, causing an orphaned-process pipe hang rather than a clean test failure) -- the
+exact same bug was also found, live, in the pre-existing `UdmIntegration.SdmDataRetrievalAndSubscriptions`
+test under the same system load; disclosed and tracked as task #166, not fixed in this pass since
+it's outside this ADR's own scope. See ADR-0202 in `docs/DECISIONS.md` for full disclosure.

@@ -36,6 +36,41 @@
 // AuthenticationSubscriptionStore already used -- so this is real cross-NF wiring against real
 // persisted data, not yet a live OSS/BSS provisioning path. UECM's registration operations remain
 // real bookkeeping (an AMF or SMF really did register), unaffected by this change.
+//
+// UPDATE (ADR-0202, gap-closure task #161): 5 more Nudm_* services, previously deliberately
+// deferred above, are now real Tier-A closures:
+// - Nudm_MT (api root /nudm-mt/v1): QueryUeInfo and ProvideLocationInfo, both real-existence-
+//   checked via the same fetch_from_udr helper GetAmData etc. already use (a real UDR am-data
+//   probe as the existence signal -- no dedicated new store needed), then an honestly-empty
+//   UeInfo_Nudm_MT{}/LocationInfoResult{} 200 -- no real VoPS/5G-SRVCC/location data exists in
+//   this build to populate either from.
+// - Nudm_NIDDAU (api root /nudm-niddau/v1): AuthorizeNiddData, real structural validation of
+//   AuthorizationInfo's required snssai/dnn/mtcProviderInformation/authUpdateCallbackUri, then a
+//   real, disclosed 501 -- no real MTC-provider/NIDD authorization policy data exists anywhere in
+//   this build to authorize against.
+// - Nudm_RSDS (api root /nudm-rsds/v1): ReportSMDeliveryStatus, real structural validation of
+//   SmDeliveryStatus's required gpsi/smStatusReport, then a real 204 ack -- disclosed: no real SMS
+//   routing/retry logic exists to act on the report.
+// - Nudm_SSAU (api root /nudm-ssau/v1): ServiceSpecificAuthorization real structural validation
+//   then a real, disclosed 501 (no real service-specific authorization policy data exists for
+//   AF_GUIDANCE_FOR_URSP/AF_REQUESTED_QOS/AF_PROVISION_N3GPP_DEV_ID_INFO); real name collision
+//   found and fixed as part of wiring this in -- TS29503_Nudm_SSAU.yaml's own
+//   ServiceSpecificAuthorizationInfo collided with TS29505_Subscription_Data.yaml's
+//   already-existing, unrelated same-named UDR schema, disambiguated by the codegen to
+//   ServiceSpecificAuthorizationInfo_Nudm_SSAU / ServiceSpecificAuthorizationInfo_Subscription_Data
+//   respectively -- nfs/udr/src/main.cpp's own pre-existing reference to the bare name updated to
+//   the new disambiguated one, a real, necessary fix, not a functional change to UDR's own
+//   behavior. ServiceSpecificAuthorizationRemoval real structural validation of the required
+//   authId, then a real 404 -- since ServiceSpecificAuthorization itself never issues a real
+//   authId (it always 501s), no removal target can ever exist to match one.
+// - Nudm_UEID (api root /nudm-ueid/v1): Deconceal -- NOT a stub. Reuses this file's own existing,
+//   real deconceal_suci_if_needed() (the same TS 33.501 Annex C ECIES Profile A/B SUCI
+//   de-concealment already exercised internally by GenerateAuthData/GenerateProseAV above,
+//   ADR-0037/Tier 1c) to implement a real, working Deconceal operation -- real 200 with the
+//   genuine deconcealed SUPI on success, real 400 on a malformed/unsupported/MAC-verification-
+//   failed SUCI (same real error shape GenerateAuthData's own SUCI path already uses). Same
+//   disclosed scope narrowing as the existing helper: only the IMSI-type (supiType "0") SUCI form
+//   is supported, not the NAI/GCI/GLI form.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -59,7 +94,11 @@
 #include <variant>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "TS29503_Nudm_MT.hpp"
+#include "TS29503_Nudm_RSDS.hpp"
+#include "TS29503_Nudm_SSAU.hpp"
 #include "TS29503_Nudm_UEAU_grp.hpp"
+#include "TS29503_Nudm_UEID.hpp"
 #include "aka_crypto/hex.hpp"
 #include "aka_crypto/kdf.hpp"
 #include "aka_crypto/milenage.hpp"
@@ -89,6 +128,13 @@ constexpr const char* kUeauApiRoot = "/nudm-ueau/v1";
 constexpr const char* kEeApiRoot = "/nudm-ee/v1";
 constexpr const char* kPpApiRoot = "/nudm-pp/v1";
 constexpr const char* kUdrApiRoot = "/nudr-dr/v2";
+// TS29503_Nudm_MT/NIDDAU/RSDS/SSAU/UEID.yaml own real api roots (ADR-0202), confirmed via each
+// YAML's own `servers:` block.
+constexpr const char* kMtApiRoot = "/nudm-mt/v1";
+constexpr const char* kNiddauApiRoot = "/nudm-niddau/v1";
+constexpr const char* kRsdsApiRoot = "/nudm-rsds/v1";
+constexpr const char* kSsauApiRoot = "/nudm-ssau/v1";
+constexpr const char* kUeidApiRoot = "/nudm-ueid/v1";
 // This project's own real lab PLMN, mcc=999/mnc=70 (ADR-0016), in the real VarPlmnId string
 // format (mcc+mnc concatenated, TS29505_Subscription_Data.yaml). Used as the real UDR
 // servingPlmnId path segment when the caller's own `plmn-id` query parameter is absent (that
@@ -404,6 +450,21 @@ int main() {
         meter->CreateUInt64Counter("udm_pp_data_get_total", "Total Get PP Data calls");
     auto pp_update_counter =
         meter->CreateUInt64Counter("udm_pp_data_update_total", "Total PP Data Update calls");
+    // ADR-0202: Nudm_MT/NIDDAU/RSDS/SSAU/UEID counters.
+    auto mt_query_ue_info_counter =
+        meter->CreateUInt64Counter("udm_mt_query_ue_info_total", "Total QueryUeInfo calls");
+    auto mt_provide_loc_info_counter = meter->CreateUInt64Counter(
+        "udm_mt_provide_location_info_total", "Total Nudm_MT ProvideLocationInfo calls");
+    auto niddau_authorize_counter =
+        meter->CreateUInt64Counter("udm_niddau_authorize_total", "Total AuthorizeNiddData calls");
+    auto rsds_report_counter =
+        meter->CreateUInt64Counter("udm_rsds_report_total", "Total ReportSMDeliveryStatus calls");
+    auto ssau_authorize_counter = meter->CreateUInt64Counter(
+        "udm_ssau_authorize_total", "Total ServiceSpecificAuthorization calls");
+    auto ssau_remove_counter = meter->CreateUInt64Counter(
+        "udm_ssau_remove_total", "Total ServiceSpecificAuthorizationRemoval calls");
+    auto ueid_deconceal_counter =
+        meter->CreateUInt64Counter("udm_ueid_deconceal_total", "Total Nudm_UEID Deconceal calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1134,6 +1195,176 @@ int main() {
             auto patched = pp_data.merge_patch(ue_id, patch_doc);
             pp_update_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched->dump());
+        });
+
+    // ---- TS29503_Nudm_MT.yaml (ADR-0202) ----
+
+    server.add_route(
+        "GET",
+        std::string(kMtApiRoot) + "/{supi}",
+        [&verifier, &fetch_from_udr, &mt_query_ue_info_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto supi = req.path_params.at("supi");
+            // Real existence check: same real UDR am-data probe GetAmData etc. already use --
+            // no dedicated new store needed.
+            auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "am-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            mt_query_ue_info_counter->Add(1);
+            // Disclosed simplification: honestly-empty UeInfo -- no real VoPS/5G-SRVCC/userState
+            // data exists anywhere in this build to populate it from.
+            sbi_gen::UeInfo_Nudm_MT resp_data;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kMtApiRoot) + "/{supi}/loc-info/provide-loc-info",
+        [&verifier, &fetch_from_udr, &mt_provide_loc_info_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::LocationInfoRequest>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "am-data");
+            if (auto* fetch_err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *fetch_err;
+            }
+            mt_provide_loc_info_counter->Add(1);
+            // Disclosed simplification: honestly-empty LocationInfoResult -- no real location
+            // tracking exists anywhere in this build to populate it from.
+            sbi_gen::LocationInfoResult resp_data;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // ---- TS29503_Nudm_NIDDAU.yaml (ADR-0202) ----
+
+    server.add_route(
+        "POST",
+        std::string(kNiddauApiRoot) + "/{ueIdentity}/authorize",
+        [&verifier, &niddau_authorize_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::AuthorizationInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            niddau_authorize_counter->Add(1);
+            // Disclosed gap: no real MTC-provider/NIDD authorization policy data exists anywhere
+            // in this build to authorize against.
+            return sbi_core::http2::problem_response(
+                501, "Not Implemented", "No NIDD authorization policy data configured");
+        });
+
+    // ---- TS29503_Nudm_RSDS.yaml (ADR-0202) ----
+
+    server.add_route(
+        "POST",
+        std::string(kRsdsApiRoot) + "/{ueIdentity}/sm-delivery-status",
+        [&verifier, &rsds_report_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SmDeliveryStatus>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            rsds_report_counter->Add(1);
+            // Disclosed simplification: no real SMS routing/retry logic exists to act on the
+            // report -- it is structurally validated and accepted.
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // ---- TS29503_Nudm_SSAU.yaml (ADR-0202) ----
+
+    server.add_route(
+        "POST",
+        std::string(kSsauApiRoot) + "/{ueIdentity}/{serviceType}/authorize",
+        [&verifier, &ssau_authorize_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<
+                sbi_gen::ServiceSpecificAuthorizationInfo_Nudm_SSAU>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            ssau_authorize_counter->Add(1);
+            // Disclosed gap: no real service-specific authorization policy data exists for any of
+            // the real AF_GUIDANCE_FOR_URSP/AF_REQUESTED_QOS/AF_PROVISION_N3GPP_DEV_ID_INFO
+            // service types in this build.
+            return sbi_core::http2::problem_response(
+                501, "Not Implemented", "No service-specific authorization policy data configured");
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kSsauApiRoot) + "/{ueIdentity}/{serviceType}/remove",
+        [&verifier, &ssau_remove_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::ServiceSpecificAuthorizationRemoveData>(
+                    req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            ssau_remove_counter->Add(1);
+            // Disclosed: ServiceSpecificAuthorization above always 501s, so no real authId is
+            // ever issued -- no removal request can ever match one.
+            return sbi_core::http2::problem_response(
+                404, "Not Found", "No such service-specific authorization: " + body->authId);
+        });
+
+    // ---- TS29503_Nudm_UEID.yaml (ADR-0202) ----
+
+    server.add_route(
+        "POST",
+        std::string(kUeidApiRoot) + "/deconceal",
+        [&verifier, &ueid_deconceal_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::DeconcealReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            // Real, working de-concealment -- reuses this file's own deconceal_suci_if_needed(),
+            // the same TS 33.501 Annex C ECIES Profile A/B logic GenerateAuthData/GenerateProseAV
+            // already exercise internally (ADR-0037/Tier 1c), not a stub.
+            const auto deconcealed = deconceal_suci_if_needed(body->suci);
+            if (!deconcealed.has_value()) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "Could not de-conceal SUCI " + body->suci +
+                        " (malformed, unsupported protection scheme, or MAC verification failed)");
+            }
+            ueid_deconceal_counter->Add(1);
+            sbi_gen::DeconcealRspData resp_data;
+            resp_data.supi = *deconcealed;
+            json j = resp_data;
+            return sbi_core::http2::Response::json(200, j.dump());
         });
 
     std::thread(run_nrf_lifecycle, udm_instance_id, nrf_base_url).detach();

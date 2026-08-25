@@ -9,6 +9,7 @@ add_executable(integration_tests
     test_smf_event_exposure_nidd.cpp
     test_udm_uecm_sdm.cpp
     test_udm_ueau.cpp
+    test_udm_mt_niddau_rsds_ssau_ueid.cpp
     test_udr_context_data.cpp
     test_udr_ondatachange_webhook.cpp
     test_ausf_ue_authentication.cpp
