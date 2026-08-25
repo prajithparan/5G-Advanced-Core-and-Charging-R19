@@ -88,6 +88,17 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29591_Nnef_EventExposure.yaml
     TS29517_Naf_EventExposure.yaml
     TS26512_EventExposure.yaml
+    TS29591_Nnef_TrafficInfluenceData.yaml
+    TS29519_Application_Data.yaml
+    TS29591_Nnef_Inference.yaml
+    TS29530_Naf_Inference.yaml
+    TS29520_Nnwdaf_EventsSubscription.yaml
+    TS29591_Nnef_Training.yaml
+    TS29530_Naf_Training.yaml
+    TS29591_Nnef_VFLInference.yaml
+    TS29520_Nnwdaf_VFLInference.yaml
+    TS29591_Nnef_VFLTraining.yaml
+    TS29520_Nnwdaf_VFLTraining.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -161,6 +172,17 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_EventExposure.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29517_Naf_EventExposure.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS26512_EventExposure.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_TrafficInfluenceData.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29519_Application_Data.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_Inference.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29530_Naf_Inference.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29520_Nnwdaf_EventsSubscription.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_Training.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29530_Naf_Training.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_VFLInference.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29520_Nnwdaf_VFLInference.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_VFLTraining.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29520_Nnwdaf_VFLTraining.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES

@@ -139,4 +139,80 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// ADR-0210 (gap-closure task #164, fourth and final NEF slice). Backs Nnef_TrafficInfluenceData's
+// Individual Traffic Influence Subscription resource (TS29591). Same real create/get/put/remove
+// shape as `PfdSubscriptionStore` -- no PATCH exists on this real resource.
+class TrafficInfluDataSubStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> get(const std::string& sub_id);
+    bool put(const std::string& sub_id, nlohmann::json subscription);
+    bool remove(const std::string& sub_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
+// Shared real create/get/put/patch(RFC 7396 merge-patch)/remove shape backing
+// Nnef_Inference/Nnef_Training/Nnef_VFLInference/Nnef_VFLTraining's own Individual Subscription
+// resources -- each deliberately its own class (not templated/shared) since each real resource has
+// its own real id namespace/lifecycle, same precedent as every other NEF subscription store.
+class InferEventSubStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> get(const std::string& sub_id);
+    bool put(const std::string& sub_id, nlohmann::json subscription);
+    bool patch(const std::string& sub_id, const nlohmann::json& merge_patch);
+    bool remove(const std::string& sub_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
+class TrainEventsSubStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> get(const std::string& sub_id);
+    bool put(const std::string& sub_id, nlohmann::json subscription);
+    bool patch(const std::string& sub_id, const nlohmann::json& merge_patch);
+    bool remove(const std::string& sub_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
+class VflInferSubStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> get(const std::string& sub_id);
+    bool put(const std::string& sub_id, nlohmann::json subscription);
+    bool patch(const std::string& sub_id, const nlohmann::json& merge_patch);
+    bool remove(const std::string& sub_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
+class NefVflTrainSubStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> get(const std::string& sub_id);
+    bool put(const std::string& sub_id, nlohmann::json subscription);
+    bool patch(const std::string& sub_id, const nlohmann::json& merge_patch);
+    bool remove(const std::string& sub_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
 } // namespace nef

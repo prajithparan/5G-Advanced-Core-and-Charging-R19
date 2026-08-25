@@ -116,15 +116,17 @@ documentation bug: UPF's own file header had incorrectly claimed no `Nupf_*` API
 UPF's real primary control interface remains N4/PFCP per TS 23.501, unchanged), and **PCF** — all
 7 Tier-A files across three slices: `Npcf_EventExposure`+`Npcf_UEPolicyControl` (ADR-0204),
 `Npcf_AMPolicyAuthorization`+`Npcf_MBSPolicyAuthorization`+`Npcf_MBSPolicyControl` (ADR-0205), and
-`Npcf_PDTQPolicyControl`+`Npcf_BDTPolicyControl` (ADR-0206), and **NEF** — 8 of its own 13 Tier-A
-files across three slices so far: `Nnef_SMService`/`Nnef_UEId`/`Nnef_DNAIMapping`/`Nnef_EASDeployment`
+`Npcf_PDTQPolicyControl`+`Npcf_BDTPolicyControl` (ADR-0206), and **NEF** — all 13 of its own
+Tier-A files across four slices: `Nnef_SMService`/`Nnef_UEId`/`Nnef_DNAIMapping`/`Nnef_EASDeployment`
 (ADR-0207); `Nnef_SMContext`/`Nnef_Authentication`/`Nnef_ECSAddress` (ADR-0208 — also found and
 fixed real cross-NF codegen name collisions this slice introduced into SMF/AMF/AUSF's own
-already-shipping code, a new consequence class, disclosed in full in the ADR); and
-`Nnef_EventExposure` (ADR-0209 — also fixed a real `tools/sbi-codegen` allOf-narrowing limitation,
-and the fix's own real, project-wide common-data-group-rename consequence, both disclosed in full
-in the ADR). Still open: **NEF** (5 Tier-A files remaining: `Nnef_Inference`,
-`Nnef_TrafficInfluenceData`, `Nnef_Training`, `Nnef_VFLInference`, `Nnef_VFLTraining`).
+already-shipping code, a new consequence class, disclosed in full in the ADR); `Nnef_EventExposure`
+(ADR-0209 — also fixed a real `tools/sbi-codegen` allOf-narrowing limitation, and the fix's own
+real, project-wide common-data-group-rename consequence, both disclosed in full in the ADR); and
+`Nnef_TrafficInfluenceData`/`Nnef_Inference`/`Nnef_Training`/`Nnef_VFLInference`/`Nnef_VFLTraining`
+(ADR-0210, task #164 now complete — no NEF Tier-A gaps remain). Task #164's own gap-closure work
+is done; NEF's real Tier-B breadth (individual stubbed/missing operations within already-wired
+files) has not been separately audited.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075

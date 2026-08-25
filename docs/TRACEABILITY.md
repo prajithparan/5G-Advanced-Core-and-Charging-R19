@@ -4203,3 +4203,32 @@ generated file project-wide (`TS29122_CommonData_grp.hpp` -> `TS26510_CommonData
 deterministic per `render.py`'s own `sorted(file_stems)[0]` naming rule), breaking 21 real
 `#include` lines across `nfs/`/`tests/` until fixed as a mechanical rename (plus 15 stale
 comment-only mentions kept accurate). See ADR-0209 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0210 -- NEF `Nnef_TrafficInfluenceData` + `Nnef_Inference` + `Nnef_Training` + `Nnef_VFLInference` + `Nnef_VFLTraining` (fifteenth ADR-0193 gap-closure, fourth NEF slice) -- task #164 complete
+
+| Requirement | Test |
+|---|---|
+| `Nnef_TrafficInfluenceData` full lifecycle + anyOf constraint | `NefTrafficInfluenceIntegration.CreateReadPutDeleteLifecycle` (`201`/`200`/`200`/`204`, real `404` on repeat delete), `NefTrafficInfluenceIntegration.CreateWithoutDnnsOrSnssaisIs400` (real `400`) |
+| `Nnef_Inference` full lifecycle, no GET | `NefInferenceIntegration.CreatePutPatchDeleteLifecycleNoGet` (`201`/`200`(PUT)/`200`(PATCH)/`204`) |
+| `Nnef_Training` full lifecycle, no GET | `NefTrainingIntegration.CreatePutPatchDeleteLifecycleNoGet` (`201`/`200`(PATCH)/`204`) |
+| `Nnef_VFLInference` full lifecycle | `NefVFLInferenceIntegration.CreateReadPutPatchDeleteLifecycle` (`201`/`200`/`200`(PATCH)/`204`, real `404` on repeat delete) |
+| `Nnef_VFLTraining` full lifecycle, optional notifUri/notifCorrId | `NefVFLTrainingIntegration.CreateReadPutDeleteLifecycleOnlyVflTrainSubsRequired`, `NefVFLTrainingIntegration.CreateWithoutVflTrainSubsIs400` (real `400`) |
+| No regression | Full reconfigure+rebuild against the complete pilot set clean; `nef`/`integration_tests`/`conformance_tests` all rebuild clean; full suite 426/426 |
+
+Real Tier-A gap-closure -- **fourth and final NEF slice, closing all 13 of NEF's own real Tier-A
+YAML files (task #164 complete)**. Six additional real dependency files
+(`TS29519_Application_Data.yaml`, `TS29530_Naf_Inference.yaml`,
+`TS29520_Nnwdaf_EventsSubscription.yaml`, `TS29530_Naf_Training.yaml`,
+`TS29520_Nnwdaf_VFLInference.yaml`, `TS29520_Nnwdaf_VFLTraining.yaml`) wired for schema
+resolution, verified clean via a fast standalone codegen run before touching the real pilot set.
+Real SCC-merge side effect found and fixed: this slice's dependencies bridged a cyclic `$ref` that
+absorbed `Nnef_PFDmanagement`'s own schemas (NEF's original service, ADR-0185) into the shared
+common-data group, breaking a stale `#include` in `nfs/nef/src/main.cpp` and
+`tests/conformance/test_nef_dtos.cpp` until fixed. Two real bugs of my own caught via live
+verification: fabricated nested-object field shapes for `EventSubsc`/`VflInferAnaSub`/
+`VflTrainingSub` in my own test bodies (fixed by reading the real generated types), and the
+resulting real `400`s triggering the known `ASSERT_FALSE`-before-`reap_all()` leaked-process bug
+class (ADR-0204) -- fixed across all 5 lifecycle tests in the new file, not just the 3 that hit it.
+A separate tooling mistake (accidentally running `clang-format-18` against a Python file,
+`schema_to_ir.py`) was caught and reverted via `git checkout --` before ever being committed. See
+ADR-0210 in `docs/DECISIONS.md` for full disclosure.

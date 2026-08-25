@@ -107,6 +107,29 @@
 // project-wide (`TS29122_CommonData_grp.hpp` -> `TS26510_CommonData_grp.hpp`, deterministic per
 // `render.py`'s own naming rule), which broke 21 real `#include` lines across `nfs/`/`tests/`
 // until fixed as a mechanical rename -- see ADR-0209 for the full file list and re-verification.
+//
+// UPDATE (ADR-0210, gap-closure task #164, fourth and final NEF slice): `Nnef_TrafficInfluenceData`
+// (TS29591, 4 ops: Create/Get/Replace/Delete, real `anyOf: [{required:[dnns]},
+// {required:[snssais]}]` constraint enforced explicitly since it isn't expressible in the generated
+// struct's own required fields), `Nnef_Inference` (TS29591, 4 ops:
+// Create/Update/PartialUpdate/Delete -- real, disclosed: no GET operation exists on this resource
+// at all), `Nnef_Training` (TS29591, same real 4-op/no-GET shape), `Nnef_VFLInference` (TS29591, 5
+// ops: Create/Get/Update/PartialUpdate/Delete), and `Nnef_VFLTraining` (TS29591, same real 5-op
+// shape, real, disclosed: unlike every other NEF subscription resource this project has built, only
+// `vflTrainSubs` is required here -- notifUri/notifCorrId are genuinely optional per this YAML's
+// own schema) added -- **the last 5 of NEF's 13 real Tier-A gaps, closing task #164 completely: all
+// 14 of NEF's own real YAML files (13 Tier-A + the original `Nnef_PFDmanagement`, ADR-0185) are now
+// built.** Real finding: this slice's own dependency files (`TS29519_Application_Data.yaml`,
+// `TS29530_Naf_Inference.yaml`, `TS29520_Nnwdaf_EventsSubscription.yaml`,
+// `TS29530_Naf_Training.yaml`, `TS29520_Nnwdaf_VFLInference.yaml`,
+// `TS29520_Nnwdaf_VFLTraining.yaml`) bridged a cyclic `$ref` that absorbed `Nnef_PFDmanagement`'s
+// own schemas into the shared `TS26510_CommonData_grp.hpp` group -- its own standalone generated
+// header stopped existing, breaking this file's own
+// `#include "TS29551_Nnef_PFDmanagement.hpp"` line, fixed by removing it (the shared group header
+// was already included). See ADR-0210 for the full disclosure, including two real bugs of my own
+// caught via live verification (fabricated nested-object field shapes in the new test file's own
+// bodies, and the resulting `400`s re-triggering the known `ASSERT`-before-cleanup leaked-process
+// bug class from ADR-0204).
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -133,11 +156,15 @@
 #include "TS29256_Nnef_Authentication.hpp"
 #include "TS29522_DNAIMapping.hpp"
 #include "TS29541_Nnef_SMContext.hpp"
-#include "TS29551_Nnef_PFDmanagement.hpp"
 #include "TS29577_Nipsmgw_SMService.hpp"
 #include "TS29591_Nnef_EASDeployment.hpp"
 #include "TS29591_Nnef_ECSAddress.hpp"
+#include "TS29591_Nnef_Inference.hpp"
+#include "TS29591_Nnef_TrafficInfluenceData.hpp"
+#include "TS29591_Nnef_Training.hpp"
 #include "TS29591_Nnef_UEId.hpp"
+#include "TS29591_Nnef_VFLInference.hpp"
+#include "TS29591_Nnef_VFLTraining.hpp"
 #include "nf_config/nf_config.hpp"
 #include "stores.hpp"
 
@@ -166,6 +193,12 @@ constexpr const char* kAuthenticationApiRoot = "/nnef-authentication/v1";
 constexpr const char* kEcsAddressApiRoot = "/nnef-ecs-addr-cfg-info/v1";
 // ADR-0209 (gap-closure task #164, third NEF slice).
 constexpr const char* kEventExposureApiRoot = "/nnef-eventexposure/v1";
+// ADR-0210 (gap-closure task #164, fourth and final NEF slice).
+constexpr const char* kTrafficInfluenceDataApiRoot = "/nnef-traffic-influence-data/v1";
+constexpr const char* kInferenceApiRoot = "/nnef-inference/v1";
+constexpr const char* kTrainingApiRoot = "/nnef-training/v1";
+constexpr const char* kVflInferenceApiRoot = "/nnef-vfl-inference/v1";
+constexpr const char* kVflTrainingApiRoot = "/nnef-vfl-training/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -324,6 +357,11 @@ int main() {
     nef::SmContextStore sm_contexts;
     nef::EcsAddrCfgInfoSubStore ecs_addr_subs;
     nef::NefEventExposureSubStore event_exposure_subs;
+    nef::TrafficInfluDataSubStore traffic_influence_subs;
+    nef::InferEventSubStore inference_subs;
+    nef::TrainEventsSubStore training_subs;
+    nef::VflInferSubStore vfl_inference_subs;
+    nef::NefVflTrainSubStore vfl_training_subs;
 
     auto meter = sbi_core::get_meter("nef");
     auto all_fetch_counter = meter->CreateUInt64Counter("nef_pfd_all_fetch_total",
@@ -381,6 +419,57 @@ int main() {
     auto event_exposure_delete_counter =
         meter->CreateUInt64Counter("nef_event_exposure_sub_delete_total",
                                    "Total Nnef_EventExposure DeleteIndividualSubcription calls");
+    auto traffic_influence_create_counter = meter->CreateUInt64Counter(
+        "nef_traffic_influence_sub_create_total",
+        "Total Nnef_TrafficInfluenceData CreateIndividualSubcription calls");
+    auto traffic_influence_put_counter = meter->CreateUInt64Counter(
+        "nef_traffic_influence_sub_put_total",
+        "Total Nnef_TrafficInfluenceData ReplaceIndividualSubcription calls");
+    auto traffic_influence_delete_counter = meter->CreateUInt64Counter(
+        "nef_traffic_influence_sub_delete_total",
+        "Total Nnef_TrafficInfluenceData DeleteIndividualSubcription calls");
+    auto inference_create_counter = meter->CreateUInt64Counter(
+        "nef_inference_sub_create_total", "Total Nnef_Inference CreateInferenceSubcription calls");
+    auto inference_put_counter = meter->CreateUInt64Counter(
+        "nef_inference_sub_put_total", "Total Nnef_Inference UpdateInferenceSubcription calls");
+    auto inference_patch_counter =
+        meter->CreateUInt64Counter("nef_inference_sub_patch_total",
+                                   "Total Nnef_Inference PartialUpdateInferenceSubcription calls");
+    auto inference_delete_counter = meter->CreateUInt64Counter(
+        "nef_inference_sub_delete_total", "Total Nnef_Inference DeleteInferenceSubcription calls");
+    auto training_create_counter = meter->CreateUInt64Counter(
+        "nef_training_sub_create_total", "Total Nnef_Training CreateTrainingSubcription calls");
+    auto training_put_counter = meter->CreateUInt64Counter(
+        "nef_training_sub_put_total", "Total Nnef_Training UpdateTrainingSubcription calls");
+    auto training_patch_counter =
+        meter->CreateUInt64Counter("nef_training_sub_patch_total",
+                                   "Total Nnef_Training PartialUpdateTrainingSubcription calls");
+    auto training_delete_counter = meter->CreateUInt64Counter(
+        "nef_training_sub_delete_total", "Total Nnef_Training DeleteTrainingSubcription calls");
+    auto vfl_inference_create_counter =
+        meter->CreateUInt64Counter("nef_vfl_inference_sub_create_total",
+                                   "Total Nnef_VFLInference CreateVFLInferenceSubcription calls");
+    auto vfl_inference_put_counter =
+        meter->CreateUInt64Counter("nef_vfl_inference_sub_put_total",
+                                   "Total Nnef_VFLInference UpdateVFLInferenceSubcription calls");
+    auto vfl_inference_patch_counter = meter->CreateUInt64Counter(
+        "nef_vfl_inference_sub_patch_total",
+        "Total Nnef_VFLInference PartialUpdateVFLInferenceSubcription calls");
+    auto vfl_inference_delete_counter =
+        meter->CreateUInt64Counter("nef_vfl_inference_sub_delete_total",
+                                   "Total Nnef_VFLInference DeleteVFLInferenceSubcription calls");
+    auto vfl_training_create_counter =
+        meter->CreateUInt64Counter("nef_vfl_training_sub_create_total",
+                                   "Total Nnef_VFLTraining CreateNEFVFLTrainingSubcription calls");
+    auto vfl_training_put_counter =
+        meter->CreateUInt64Counter("nef_vfl_training_sub_put_total",
+                                   "Total Nnef_VFLTraining UpdateNEFVFLTrainingSubcription calls");
+    auto vfl_training_patch_counter =
+        meter->CreateUInt64Counter("nef_vfl_training_sub_patch_total",
+                                   "Total Nnef_VFLTraining ModifyNEFVFLTrainingSubcription calls");
+    auto vfl_training_delete_counter =
+        meter->CreateUInt64Counter("nef_vfl_training_sub_delete_total",
+                                   "Total Nnef_VFLTraining DeleteNEFVFLTrainingSubcription calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1115,6 +1204,522 @@ int main() {
                     404, "Not Found", "No event exposure subscription " + id);
             }
             event_exposure_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_TrafficInfluenceData (ADR-0210, gap-closure task #164, fourth NEF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kTrafficInfluenceDataApiRoot) + "/subscriptions",
+        [&verifier, &traffic_influence_subs, &traffic_influence_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::TrafficInfluDataSub>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            // Real YAML constraint beyond simple required fields: the request must include at
+            // least one of dnns/snssais (its own `anyOf: [{required:[dnns]},
+            // {required:[snssais]}]`) -- not expressible in the generated struct's own
+            // required/optional fields, so checked explicitly here.
+            if (!body->dnns.has_value() && !body->snssais.has_value()) {
+                return sbi_core::http2::problem_response(
+                    400, "Missing mandatory IE", "At least one of dnns/snssais is required");
+            }
+            json j = *body;
+            const auto id = traffic_influence_subs.create(j);
+            traffic_influence_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace(
+                "location", std::string(kTrafficInfluenceDataApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kTrafficInfluenceDataApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &traffic_influence_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            auto sub = traffic_influence_subs.get(id);
+            if (!sub.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No traffic influence subscription " + id);
+            }
+            return sbi_core::http2::Response::json(200, sub->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kTrafficInfluenceDataApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &traffic_influence_subs, &traffic_influence_put_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::TrafficInfluDataSub>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            if (!body->dnns.has_value() && !body->snssais.has_value()) {
+                return sbi_core::http2::problem_response(
+                    400, "Missing mandatory IE", "At least one of dnns/snssais is required");
+            }
+            json j = *body;
+            if (!traffic_influence_subs.put(id, j)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No traffic influence subscription " + id);
+            }
+            traffic_influence_put_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kTrafficInfluenceDataApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &traffic_influence_subs, &traffic_influence_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            if (!traffic_influence_subs.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No traffic influence subscription " + id);
+            }
+            traffic_influence_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_Inference (ADR-0210, gap-closure task #164, fourth NEF slice) ---
+    // Real, disclosed: this YAML has no GET operation on the Individual Inference Subscription
+    // resource at all (confirmed by direct read) -- Create/Update/PartialUpdate/Delete only.
+
+    server.add_route(
+        "POST",
+        std::string(kInferenceApiRoot) + "/subscriptions",
+        [&verifier, &inference_subs, &inference_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::InferEventSubsc_Nnef_Inference>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = inference_subs.create(j);
+            inference_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kInferenceApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kInferenceApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &inference_subs, &inference_put_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::InferEventSubsc_Nnef_Inference>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            if (!inference_subs.put(id, j)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No inference subscription " + id);
+            }
+            inference_put_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kInferenceApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &inference_subs, &inference_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto typed_patch =
+                sbi_core::http2::parse_json_body<sbi_gen::InferEventSubscPatch_Nnef_Inference>(req,
+                                                                                               err);
+            if (!typed_patch.has_value()) {
+                return err;
+            }
+            if (!inference_subs.patch(id, json(*typed_patch))) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No inference subscription " + id);
+            }
+            inference_patch_counter->Add(1);
+            auto updated = inference_subs.get(id);
+            return sbi_core::http2::Response::json(200, updated->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kInferenceApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &inference_subs, &inference_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            if (!inference_subs.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No inference subscription " + id);
+            }
+            inference_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_Training (ADR-0210, gap-closure task #164, fourth NEF slice) ---
+    // Same real, disclosed gap as Nnef_Inference above: no GET operation on this real resource.
+
+    server.add_route(
+        "POST",
+        std::string(kTrainingApiRoot) + "/subscriptions",
+        [&verifier, &training_subs, &training_create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::TrainEventsSubsc_Nnef_Training>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = training_subs.create(j);
+            training_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kTrainingApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kTrainingApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &training_subs, &training_put_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::TrainEventsSubsc_Nnef_Training>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            if (!training_subs.put(id, j)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No training subscription " + id);
+            }
+            training_put_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kTrainingApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &training_subs, &training_patch_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto typed_patch =
+                sbi_core::http2::parse_json_body<sbi_gen::TrainEventsSubscPatch_Nnef_Training>(req,
+                                                                                               err);
+            if (!typed_patch.has_value()) {
+                return err;
+            }
+            if (!training_subs.patch(id, json(*typed_patch))) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No training subscription " + id);
+            }
+            training_patch_counter->Add(1);
+            auto updated = training_subs.get(id);
+            return sbi_core::http2::Response::json(200, updated->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kTrainingApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &training_subs, &training_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            if (!training_subs.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No training subscription " + id);
+            }
+            training_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_VFLInference (ADR-0210, gap-closure task #164, fourth NEF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kVflInferenceApiRoot) + "/subscriptions",
+        [&verifier, &vfl_inference_subs, &vfl_inference_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::VflInferSub_Nnef_VFLInference>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = vfl_inference_subs.create(j);
+            vfl_inference_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kVflInferenceApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kVflInferenceApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &vfl_inference_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            auto sub = vfl_inference_subs.get(id);
+            if (!sub.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No VFL inference subscription " + id);
+            }
+            return sbi_core::http2::Response::json(200, sub->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kVflInferenceApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &vfl_inference_subs, &vfl_inference_put_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::VflInferSub_Nnef_VFLInference>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            if (!vfl_inference_subs.put(id, j)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No VFL inference subscription " + id);
+            }
+            vfl_inference_put_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kVflInferenceApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &vfl_inference_subs, &vfl_inference_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto typed_patch =
+                sbi_core::http2::parse_json_body<sbi_gen::VflInferSubPatch_Nnef_VFLInference>(req,
+                                                                                              err);
+            if (!typed_patch.has_value()) {
+                return err;
+            }
+            if (!vfl_inference_subs.patch(id, json(*typed_patch))) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No VFL inference subscription " + id);
+            }
+            vfl_inference_patch_counter->Add(1);
+            auto updated = vfl_inference_subs.get(id);
+            return sbi_core::http2::Response::json(200, updated->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kVflInferenceApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &vfl_inference_subs, &vfl_inference_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            if (!vfl_inference_subs.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No VFL inference subscription " + id);
+            }
+            vfl_inference_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_VFLTraining (ADR-0210, gap-closure task #164, fourth and final NEF slice) ---
+    // Real, disclosed: unlike every other NEF subscription resource this project has built, this
+    // one's own required fields are just `vflTrainSubs` -- notifUri/notifCorrId are both genuinely
+    // optional per this YAML's own schema (confirmed by direct read, not assumed).
+
+    server.add_route(
+        "POST",
+        std::string(kVflTrainingApiRoot) + "/subscriptions",
+        [&verifier, &vfl_training_subs, &vfl_training_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::NefVflTrainSubs>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = vfl_training_subs.create(j);
+            vfl_training_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kVflTrainingApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kVflTrainingApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &vfl_training_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            auto sub = vfl_training_subs.get(id);
+            if (!sub.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No VFL training subscription " + id);
+            }
+            return sbi_core::http2::Response::json(200, sub->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kVflTrainingApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &vfl_training_subs, &vfl_training_put_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::NefVflTrainSubs>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            if (!vfl_training_subs.put(id, j)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No VFL training subscription " + id);
+            }
+            vfl_training_put_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kVflTrainingApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &vfl_training_subs, &vfl_training_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto typed_patch =
+                sbi_core::http2::parse_json_body<sbi_gen::NefVflTrainSubsPatch>(req, err);
+            if (!typed_patch.has_value()) {
+                return err;
+            }
+            if (!vfl_training_subs.patch(id, json(*typed_patch))) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No VFL training subscription " + id);
+            }
+            vfl_training_patch_counter->Add(1);
+            auto updated = vfl_training_subs.get(id);
+            return sbi_core::http2::Response::json(200, updated->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kVflTrainingApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &vfl_training_subs, &vfl_training_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            if (!vfl_training_subs.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No VFL training subscription " + id);
+            }
+            vfl_training_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
