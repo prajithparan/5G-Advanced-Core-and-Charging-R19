@@ -493,7 +493,7 @@ int main() {
             confirm_5g_aka_counter->Add(1);
             sbi_gen::ConfirmationDataResponse resp_data{};
             if (*res_star == ctx->xres_star) {
-                resp_data.authResult.value = sbi_gen::AuthResult::AUTHENTICATION_SUCCESS;
+                resp_data.authResult.value = sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_SUCCESS;
                 resp_data.supi = ctx->supi;
                 resp_data.kseaf = aka_crypto::to_hex(
                     aka_crypto::derive_kseaf(ctx->kausf_5g_aka, ctx->serving_network_name));
@@ -504,7 +504,7 @@ int main() {
                 // from UDM, well after this exchange completes).
                 kausf_store.store_fresh_kausf(ctx->supi, ctx->kausf_5g_aka);
             } else {
-                resp_data.authResult.value = sbi_gen::AuthResult::AUTHENTICATION_FAILURE;
+                resp_data.authResult.value = sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_FAILURE;
             }
             json j = resp_data;
             return sbi_core::http2::Response::json(200, j.dump());
@@ -569,8 +569,8 @@ int main() {
                     aka_crypto::derive_kseaf(ctx->kausf_eap, ctx->serving_network_name);
                 resp_data.eapPayload =
                     aka_crypto::eap::base64_encode(aka_crypto::eap::build_success(identifier));
-                resp_data.authResult = sbi_gen::AuthResult{};
-                resp_data.authResult->value = sbi_gen::AuthResult::AUTHENTICATION_SUCCESS;
+                resp_data.authResult = sbi_gen::AuthResult_Nausf_UEAuthentication{};
+                resp_data.authResult->value = sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_SUCCESS;
                 resp_data.supi = ctx->supi;
                 resp_data.kSeaf = aka_crypto::to_hex(kseaf);
                 resp_data.msk =
@@ -581,8 +581,8 @@ int main() {
             } else {
                 resp_data.eapPayload =
                     aka_crypto::eap::base64_encode(aka_crypto::eap::build_failure(identifier));
-                resp_data.authResult = sbi_gen::AuthResult{};
-                resp_data.authResult->value = sbi_gen::AuthResult::AUTHENTICATION_FAILURE;
+                resp_data.authResult = sbi_gen::AuthResult_Nausf_UEAuthentication{};
+                resp_data.authResult->value = sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_FAILURE;
             }
             json j = resp_data;
             return sbi_core::http2::Response::json(200, j.dump());
@@ -836,15 +836,15 @@ int main() {
 
                 resp_data.eapPayload =
                     aka_crypto::eap::base64_encode(aka_crypto::eap::build_success(identifier));
-                resp_data.authResult = sbi_gen::AuthResult{};
-                resp_data.authResult->value = sbi_gen::AuthResult::AUTHENTICATION_SUCCESS;
+                resp_data.authResult = sbi_gen::AuthResult_Nausf_UEAuthentication{};
+                resp_data.authResult->value = sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_SUCCESS;
                 resp_data.knrProSe = aka_crypto::to_hex(knr_prose);
                 resp_data.nonce2 = aka_crypto::eap::base64_encode(nonce2_vec);
             } else {
                 resp_data.eapPayload =
                     aka_crypto::eap::base64_encode(aka_crypto::eap::build_failure(identifier));
-                resp_data.authResult = sbi_gen::AuthResult{};
-                resp_data.authResult->value = sbi_gen::AuthResult::AUTHENTICATION_FAILURE;
+                resp_data.authResult = sbi_gen::AuthResult_Nausf_UEAuthentication{};
+                resp_data.authResult->value = sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_FAILURE;
             }
             json j = resp_data;
             return sbi_core::http2::Response::json(200, j.dump());

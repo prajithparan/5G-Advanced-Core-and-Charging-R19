@@ -4154,3 +4154,29 @@ so `TS29522_DNAIMapping.yaml` needed its own additional pilot-set entry. Real, p
 "fixed") spec quirk: `Nnef_SMService`'s own `securitySchemes` block declares scope
 `nnef-smcontext`, not `nnef-smservice`, a genuine mismatch in the vendored 3GPP spec text itself.
 See ADR-0207 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0208 -- NEF `Nnef_SMContext` + `Nnef_Authentication` + `Nnef_ECSAddress` (thirteenth ADR-0193 gap-closure, second NEF slice)
+
+| Requirement | Test |
+|---|---|
+| `Nnef_SMContext` full lifecycle | `NefSMContextIntegration.CreateUpdateDeliverReleaseLifecycle`: real `201`/`204` (update)/`204` (deliver, real multipart)/`204` (release), real `404` on repeat release |
+| `Nnef_SMContext` required-field validation | `NefSMContextIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `dlNiddEndPoint`/`notificationUri` |
+| `Nnef_Authentication` honest no-backend failure | `NefAuthenticationIntegration.UAVAuthenticationReturnsRealHonest403NoBackend`: real `403` `UAVAuthFailure` |
+| `Nnef_ECSAddress` full lifecycle (create/read/put/patch/delete) | `NefECSAddressIntegration.CreateReadPutPatchDeleteLifecycle`: real `201`/`200`/`200`(PUT)/`200`(PATCH, real RFC 7396 merge, untouched fields verified to survive)/`204`, real `404` on repeat delete |
+| `Nnef_ECSAddress` required-field validation | `NefECSAddressIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `notifCorrId` |
+| No regression -- new work | Full reconfigure+rebuild against the complete pilot set clean; all 5 new tests pass |
+| No regression -- cross-NF collision fixes | `SmfIntegration` (9), `SmfNiddIntegration` (1), `AmfIntegration` (5), `AusfIntegration`+`AusfUpuProtectionIntegration` (7) explicitly re-run to confirm the `SmContext*`/`DeliverReqData`/`AuthResult` rename fixes below didn't regress SMF/AMF/AUSF; full suite 417/417 |
+
+Real Tier-A gap-closure (second of NEF's own remaining slices, task #164 -- 6 of 13 files remain).
+Real cross-NF codegen name collisions found and fixed, a new consequence class not seen in this
+project's prior 12 gap-closure ADRs: adding `Nnef_SMContext`/`Nnef_Authentication` to the pilot set
+collided with **other NFs'** own already-shipping types, not just NEF's own. `SmContextCreateData`/
+`SmContextCreatedData`/`SmContextUpdateData`/`SmContextReleaseData`/`SmContextStatusNotification`
+(real `Nsmf_PDUSession` schemas) and `DeliverReqData` (already-suffixed `_Nsmf_NIDD`) both picked
+up a third/new real same-named collision from `Nnef_SMContext`'s own schemas; `AuthResult` (real
+`Nausf_UEAuthentication` schema) collided with `Nnef_Authentication`'s own differently-valued
+`AuthResult`. Fixed 9 real bare-name references in `nfs/smf/src/main.cpp`, 2 in
+`nfs/amf/src/ngap_task.cpp`, 8 in `nfs/ausf/src/main.cpp`, and 5 across
+`tests/integration/test_smf_pdu_session.cpp`/`test_ausf_ue_authentication.cpp` to the newly
+generated suffixed names -- pure renames, no behavioral change, confirmed by the explicit
+SMF/AMF/AUSF re-runs above. See ADR-0208 in `docs/DECISIONS.md` for full disclosure.

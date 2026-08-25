@@ -160,7 +160,7 @@ TEST(SmfIntegration, FullSmContextLifecycleOverRealHttp2) {
     auto create_resp = client.send(create_req);
     ASSERT_TRUE(create_resp.has_value());
     ASSERT_EQ(create_resp->status, 201);
-    const auto created = json::parse(create_resp->body).get<sbi_gen::SmContextCreatedData>();
+    const auto created = json::parse(create_resp->body).get<sbi_gen::SmContextCreatedData_Nsmf_PDUSession>();
     (void)created; // proves real deserialization, not just a 2xx status
     const auto location_it = create_resp->headers.find("location");
     ASSERT_NE(location_it, create_resp->headers.end());

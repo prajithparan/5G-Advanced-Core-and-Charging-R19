@@ -81,6 +81,10 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29537_Npcf_MBSPolicyControl.yaml
     TS29543_Npcf_PDTQPolicyControl.yaml
     TS29554_Npcf_BDTPolicyControl.yaml
+    TS29541_Nnef_SMContext.yaml
+    TS29256_Nnef_Authentication.yaml
+    TS29591_Nnef_ECSAddress.yaml
+    TS29522_ECSAddress.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -147,6 +151,10 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29537_Npcf_MBSPolicyControl.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29543_Npcf_PDTQPolicyControl.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29554_Npcf_BDTPolicyControl.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29541_Nnef_SMContext.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29256_Nnef_Authentication.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_ECSAddress.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29522_ECSAddress.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES

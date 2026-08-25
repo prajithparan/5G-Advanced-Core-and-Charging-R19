@@ -120,4 +120,78 @@ bool EasDeploySubStore::remove(const std::string& sub_id) {
     return subscriptions_.erase(sub_id) > 0;
 }
 
+std::string SmContextStore::create(nlohmann::json created_data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "smctx-" + std::to_string(next_id_++);
+    contexts_.emplace(id, std::move(created_data));
+    return id;
+}
+
+std::optional<nlohmann::json> SmContextStore::get(const std::string& sm_context_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = contexts_.find(sm_context_id);
+    if (it == contexts_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool SmContextStore::update(const std::string& sm_context_id, const nlohmann::json& partial_update) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = contexts_.find(sm_context_id);
+    if (it == contexts_.end()) {
+        return false;
+    }
+    for (const auto& [key, value] : partial_update.items()) {
+        it->second[key] = value;
+    }
+    return true;
+}
+
+bool SmContextStore::remove(const std::string& sm_context_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return contexts_.erase(sm_context_id) > 0;
+}
+
+std::string EcsAddrCfgInfoSubStore::create(nlohmann::json subscription) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "ecsaddrsub-" + std::to_string(next_id_++);
+    subscriptions_.emplace(id, std::move(subscription));
+    return id;
+}
+
+std::optional<nlohmann::json> EcsAddrCfgInfoSubStore::get(const std::string& sub_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(sub_id);
+    if (it == subscriptions_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool EcsAddrCfgInfoSubStore::put(const std::string& sub_id, nlohmann::json subscription) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(sub_id);
+    if (it == subscriptions_.end()) {
+        return false;
+    }
+    it->second = std::move(subscription);
+    return true;
+}
+
+bool EcsAddrCfgInfoSubStore::patch(const std::string& sub_id, const nlohmann::json& merge_patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(sub_id);
+    if (it == subscriptions_.end()) {
+        return false;
+    }
+    it->second.merge_patch(merge_patch);
+    return true;
+}
+
+bool EcsAddrCfgInfoSubStore::remove(const std::string& sub_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return subscriptions_.erase(sub_id) > 0;
+}
+
 } // namespace nef

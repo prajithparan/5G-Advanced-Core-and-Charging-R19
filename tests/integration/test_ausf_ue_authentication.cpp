@@ -208,7 +208,7 @@ TEST(AusfIntegration, FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf) 
     ASSERT_TRUE(confirm_resp.has_value());
     EXPECT_EQ(confirm_resp->status, 200);
     const auto confirmed = json::parse(confirm_resp->body).get<sbi_gen::ConfirmationDataResponse>();
-    EXPECT_EQ(confirmed.authResult.value, sbi_gen::AuthResult::AUTHENTICATION_SUCCESS);
+    EXPECT_EQ(confirmed.authResult.value, sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_SUCCESS);
     ASSERT_TRUE(confirmed.supi.has_value());
     EXPECT_EQ(*confirmed.supi, supi);
     ASSERT_TRUE(confirmed.kseaf.has_value());
@@ -274,7 +274,7 @@ TEST(AusfIntegration, FiveGAkaWrongResStarIsAuthenticationFailure) {
     ASSERT_TRUE(confirm_resp.has_value());
     EXPECT_EQ(confirm_resp->status, 200); // spec: same status for match or mismatch
     const auto confirmed = json::parse(confirm_resp->body).get<sbi_gen::ConfirmationDataResponse>();
-    EXPECT_EQ(confirmed.authResult.value, sbi_gen::AuthResult::AUTHENTICATION_FAILURE);
+    EXPECT_EQ(confirmed.authResult.value, sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_FAILURE);
     EXPECT_FALSE(confirmed.kseaf.has_value());
 
     reap_all(t);
@@ -353,7 +353,7 @@ TEST(AusfIntegration, EapAkaPrimeSuccessfulAuthenticationCrossChecksMacKseafAndM
     EXPECT_EQ(eap_resp->status, 200);
     const auto eap_result = json::parse(eap_resp->body).get<sbi_gen::EapSession>();
     ASSERT_TRUE(eap_result.authResult.has_value());
-    EXPECT_EQ(eap_result.authResult->value, sbi_gen::AuthResult::AUTHENTICATION_SUCCESS);
+    EXPECT_EQ(eap_result.authResult->value, sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_SUCCESS);
     ASSERT_TRUE(eap_result.supi.has_value());
     EXPECT_EQ(*eap_result.supi, supi);
 
@@ -449,7 +449,7 @@ TEST(AusfIntegration, EapAkaPrimeWrongResIsAuthenticationFailure) {
     EXPECT_EQ(eap_resp->status, 200);
     const auto eap_result = json::parse(eap_resp->body).get<sbi_gen::EapSession>();
     ASSERT_TRUE(eap_result.authResult.has_value());
-    EXPECT_EQ(eap_result.authResult->value, sbi_gen::AuthResult::AUTHENTICATION_FAILURE);
+    EXPECT_EQ(eap_result.authResult->value, sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_FAILURE);
     EXPECT_FALSE(eap_result.kSeaf.has_value());
 
     const auto failure_packet = aka_crypto::eap::base64_decode(eap_result.eapPayload);

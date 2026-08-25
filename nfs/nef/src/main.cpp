@@ -69,6 +69,26 @@
 // YAML's own documented semantics for that case, not a fabricated lookup. `SendSMS` carries the
 // same disclosed non-scope as `nfs/smsf`'s own `SendMtSMS`: no real TS 24.011 SMS-DELIVER-REPORT
 // encoder and no real onward IP-SM-GW/SMSF relay exist in this build.
+//
+// UPDATE (ADR-0208, gap-closure task #164, second NEF slice): `Nnef_SMContext` (TS29541, 4 ops:
+// Create/Delete(release)/Update/Deliver -- real `multipart/related` on Deliver, same disclosed
+// non-scope as SendSMS above: no real onward NIDD MT/MO relay exists), `Nnef_Authentication`
+// (TS29256, 1 op: UAV authentication -- real, honest `403` `UAVAuthFailure` since this NEF has no
+// real UAS-NF/USS authentication backend, TS 23.256 scope, not a fabricated `200` success), and
+// `Nnef_ECSAddress` (TS29591 paths + `TS29522_ECSAddress.yaml` schemas, 5 ops: subscription
+// create/get/put/patch/delete, real RFC 7396 merge-patch on PATCH) added -- 3 more of NEF's
+// remaining 9 real Tier-A gaps (6 remain: `Nnef_EventExposure`, `Nnef_Inference`,
+// `Nnef_TrafficInfluenceData`, `Nnef_Training`, `Nnef_VFLInference`, `Nnef_VFLTraining`). Real
+// finding: adding `Nnef_SMContext`/`Nnef_Authentication` to the pilot set collided not just with
+// NEF's own types but with **other NFs'** already-shipping ones -- `SmContextCreateData`/
+// `SmContextCreatedData`/`SmContextUpdateData`/`SmContextReleaseData`/`SmContextStatusNotification`
+// (real `Nsmf_PDUSession` schemas) and `DeliverReqData` (already `_Nsmf_NIDD`-suffixed from
+// ADR-0201) both picked up a new same-named collision from this slice's own `Nnef_SMContext`
+// schemas; `AuthResult` (real `Nausf_UEAuthentication` schema) collided with this slice's own
+// differently-valued `Nnef_Authentication` `AuthResult`. Fixed 9 bare-name references in
+// `nfs/smf/src/main.cpp`, 2 in `nfs/amf/src/ngap_task.cpp`, 8 in `nfs/ausf/src/main.cpp`, and 5
+// across two integration test files to the newly-suffixed real generated names -- pure renames, no
+// behavioral change (see ADR-0208 for full detail and the explicit SMF/AMF/AUSF re-verification).
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -91,10 +111,13 @@
 #include <thread>
 #include <vector>
 
+#include "TS29256_Nnef_Authentication.hpp"
 #include "TS29522_DNAIMapping.hpp"
+#include "TS29541_Nnef_SMContext.hpp"
 #include "TS29551_Nnef_PFDmanagement.hpp"
 #include "TS29577_Nipsmgw_SMService.hpp"
 #include "TS29591_Nnef_EASDeployment.hpp"
+#include "TS29591_Nnef_ECSAddress.hpp"
 #include "TS29591_Nnef_UEId.hpp"
 #include "nf_config/nf_config.hpp"
 #include "stores.hpp"
@@ -118,6 +141,10 @@ constexpr const char* kSmServiceApiRoot = "/nnef-smservice/v1";
 constexpr const char* kUeIdApiRoot = "/nnef-ueid/v1";
 constexpr const char* kDnaiMappingApiRoot = "/nnef-dnai-mapping/v1";
 constexpr const char* kEasDeploymentApiRoot = "/nnef-eas-deployment/v1";
+// ADR-0208 (gap-closure task #164, second NEF slice).
+constexpr const char* kSmContextApiRoot = "/nnef-smcontext/v1";
+constexpr const char* kAuthenticationApiRoot = "/nnef-authentication/v1";
+constexpr const char* kEcsAddressApiRoot = "/nnef-ecs-addr-cfg-info/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -273,6 +300,8 @@ int main() {
     nef::PfdSubscriptionStore subscriptions;
     nef::DnaiMapSubStore dnai_map_subs;
     nef::EasDeploySubStore eas_deploy_subs;
+    nef::SmContextStore sm_contexts;
+    nef::EcsAddrCfgInfoSubStore ecs_addr_subs;
 
     auto meter = sbi_core::get_meter("nef");
     auto all_fetch_counter = meter->CreateUInt64Counter("nef_pfd_all_fetch_total",
@@ -303,6 +332,24 @@ int main() {
     auto eas_deploy_delete_counter =
         meter->CreateUInt64Counter("nef_eas_deploy_delete_total",
                                    "Total Nnef_EASDeployment DeleteIndividualSubcription calls");
+    auto sm_context_create_counter =
+        meter->CreateUInt64Counter("nef_smcontext_create_total", "Total Nnef_SMContext Create calls");
+    auto sm_context_release_counter = meter->CreateUInt64Counter(
+        "nef_smcontext_release_total", "Total Nnef_SMContext Delete (release) calls");
+    auto sm_context_update_counter =
+        meter->CreateUInt64Counter("nef_smcontext_update_total", "Total Nnef_SMContext Update calls");
+    auto sm_context_deliver_counter = meter->CreateUInt64Counter(
+        "nef_smcontext_deliver_total", "Total Nnef_SMContext Deliver calls");
+    auto uav_auth_counter = meter->CreateUInt64Counter(
+        "nef_uav_authentication_total", "Total Nnef_Authentication UAV authentication calls");
+    auto ecs_addr_create_counter = meter->CreateUInt64Counter(
+        "nef_ecs_addr_sub_create_total", "Total Nnef_ECSAddress CreateIndividualSubcription calls");
+    auto ecs_addr_put_counter = meter->CreateUInt64Counter(
+        "nef_ecs_addr_sub_put_total", "Total Nnef_ECSAddress ReplaceIndividualSubcription calls");
+    auto ecs_addr_patch_counter = meter->CreateUInt64Counter(
+        "nef_ecs_addr_sub_patch_total", "Total Nnef_ECSAddress ModifyIndividualSubcription calls");
+    auto ecs_addr_delete_counter = meter->CreateUInt64Counter(
+        "nef_ecs_addr_sub_delete_total", "Total Nnef_ECSAddress DeleteIndividualSubcription calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -672,6 +719,281 @@ int main() {
                     404, "Not Found", "No EAS deployment subscription " + id);
             }
             eas_deploy_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_SMContext (ADR-0208, gap-closure task #164, second NEF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kSmContextApiRoot) + "/sm-contexts",
+        [&verifier, &sm_contexts, &sm_context_create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::SmContextCreateData_Nnef_SMContext>(req,
+                                                                                               err);
+            if (!body.has_value()) {
+                return err;
+            }
+            sm_context_create_counter->Add(1);
+
+            // Real, disclosed simplification: echoes only the fields the real
+            // SmContextCreatedData shares with the create request (supi/pduSessionId/dnn/
+            // snssai/nefId) -- rdsSupport/extBufSupport/supportedFeatures/maxPacketSize are left
+            // unset since no real small-data-rate/feature-negotiation logic exists in this build.
+            sbi_gen::SmContextCreatedData_Nnef_SMContext created;
+            created.supi = body->supi;
+            created.pduSessionId = body->pduSessionId;
+            created.dnn = body->dnn;
+            created.snssai = body->snssai;
+            created.nefId = body->nefId;
+            json j = created;
+            const auto id = sm_contexts.create(json(*body));
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", std::string(kSmContextApiRoot) + "/sm-contexts/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kSmContextApiRoot) + "/sm-contexts/{smContextId}/release",
+        [&verifier, &sm_contexts, &sm_context_release_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("smContextId");
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::SmContextReleaseData_Nnef_SMContext>(req,
+                                                                                                err);
+            if (!body.has_value()) {
+                return err;
+            }
+            if (!sm_contexts.remove(id)) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No SM context " + id);
+            }
+            sm_context_release_counter->Add(1);
+            // Real, disclosed simplification: no real small-data-rate-control tracking exists to
+            // report back in a SmContextReleasedData body -- honest 204, not a fabricated 200 with
+            // an empty-but-typed body.
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kSmContextApiRoot) + "/sm-contexts/{smContextId}/update",
+        [&verifier, &sm_contexts, &sm_context_update_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("smContextId");
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::SmContextUpdateData_Nnef_SMContext>(req,
+                                                                                               err);
+            if (!body.has_value()) {
+                return err;
+            }
+            if (!sm_contexts.update(id, json(*body))) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No SM context " + id);
+            }
+            sm_context_update_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kSmContextApiRoot) + "/sm-contexts/{smContextId}/deliver",
+        [&verifier, &sm_contexts, &sm_context_deliver_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("smContextId");
+            if (!sm_contexts.get(id).has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No SM context " + id);
+            }
+            const auto content_type_it = req.headers.find("content-type");
+            if (content_type_it == req.headers.end()) {
+                return sbi_core::http2::problem_response(
+                    400, "Invalid Service Request", "Content-Type header is required");
+            }
+            auto parts = sbi_core::multipart::parse(content_type_it->second, req.body);
+            if (!parts.has_value() || parts->empty()) {
+                return sbi_core::http2::problem_response(
+                    400, "Invalid Service Request", "Malformed multipart/related body");
+            }
+            sbi_gen::DeliverReqData_Nnef_SMContext json_data;
+            try {
+                json_data = json::parse((*parts)[0].body).get<sbi_gen::DeliverReqData_Nnef_SMContext>();
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid Service Request", e.what());
+            }
+            bool found_payload = false;
+            for (const auto& part : *parts) {
+                if (part.content_id.has_value() && *part.content_id == json_data.data.contentId) {
+                    found_payload = true;
+                    break;
+                }
+            }
+            if (!found_payload) {
+                return sbi_core::http2::problem_response(
+                    400, "Invalid Service Request", "binaryMoData part not found");
+            }
+            sm_context_deliver_counter->Add(1);
+            // Real, disclosed gap: same class as SendSMS/UEId above -- no real onward NIDD
+            // MT/MO relay exists in this build, so this is NEF-level acceptance only.
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_Authentication (ADR-0208, gap-closure task #164, second NEF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kAuthenticationApiRoot) + "/uav-authentications",
+        [&verifier, &uav_auth_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::UAVAuthInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            uav_auth_counter->Add(1);
+            // Real, disclosed gap: this NEF has no real UAS-NF/USS backend to authenticate a UAV
+            // against (TS 23.256's own Uncrewed Aerial Systems authentication/authorization
+            // architecture is out of scope for this build) -- the real 403 UAVAuthFailure path
+            // (one of only two success/failure response bodies this operation's own YAML
+            // defines, unlike several other NEF gaps closed this project where an honest 501 was
+            // available; it is not here) is the honest response, not a fabricated 200 success.
+            sbi_gen::UAVAuthFailure failure;
+            failure.error.status = 403;
+            failure.error.title = "UAV Authentication Failure";
+            failure.error.detail =
+                "No real UAS-NF/USS authentication backend exists in this build (gpsi=" +
+                body->gpsi + ")";
+            return sbi_core::http2::Response::json(403, json(failure).dump());
+        });
+
+    // --- Nnef_ECSAddress (ADR-0208, gap-closure task #164, second NEF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kEcsAddressApiRoot) + "/subscriptions",
+        [&verifier, &ecs_addr_subs, &ecs_addr_create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::EcsAddrCfgInfoSub>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = ecs_addr_subs.create(j);
+            ecs_addr_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", std::string(kEcsAddressApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kEcsAddressApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &ecs_addr_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            auto sub = ecs_addr_subs.get(id);
+            if (!sub.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No ECS address subscription " + id);
+            }
+            return sbi_core::http2::Response::json(200, sub->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kEcsAddressApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &ecs_addr_subs, &ecs_addr_put_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::EcsAddrCfgInfoSub>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            if (!ecs_addr_subs.put(id, j)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No ECS address subscription " + id);
+            }
+            ecs_addr_put_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kEcsAddressApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &ecs_addr_subs, &ecs_addr_patch_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            // Validated against the real generated EcsAddrCfgInfoSubPatch shape first (same
+            // precedent as PCF/UDR's own merge-patch routes), then applied as a real RFC 7396
+            // merge patch -- matching this operation's own declared
+            // application/merge-patch+json request content type exactly.
+            auto typed_patch = sbi_core::http2::parse_json_body<sbi_gen::EcsAddrCfgInfoSubPatch>(req,
+                                                                                                  err);
+            if (!typed_patch.has_value()) {
+                return err;
+            }
+            if (!ecs_addr_subs.patch(id, json(*typed_patch))) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No ECS address subscription " + id);
+            }
+            ecs_addr_patch_counter->Add(1);
+            auto updated = ecs_addr_subs.get(id);
+            return sbi_core::http2::Response::json(200, updated->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kEcsAddressApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &ecs_addr_subs, &ecs_addr_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            if (!ecs_addr_subs.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No ECS address subscription " + id);
+            }
+            ecs_addr_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

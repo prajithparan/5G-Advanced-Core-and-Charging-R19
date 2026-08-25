@@ -86,4 +86,40 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// ADR-0208 (gap-closure task #164, second NEF slice). Backs Nnef_SMContext's Individual SM
+// Context resource (TS29541) -- keyed by an NEF-generated smContextId. `update` applies the real
+// `SmContextUpdateData` fields present in the request on top of the stored representation (all
+// its own fields are optional per the real YAML, i.e. a partial update), not a full replace.
+class SmContextStore {
+public:
+    std::string create(nlohmann::json created_data);
+    std::optional<nlohmann::json> get(const std::string& sm_context_id);
+    bool update(const std::string& sm_context_id, const nlohmann::json& partial_update);
+    bool remove(const std::string& sm_context_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> contexts_;
+    std::uint64_t next_id_ = 1;
+};
+
+// ADR-0208 (gap-closure task #164, second NEF slice). Backs Nnef_ECSAddress's Individual ECS
+// Address Configuration Information Subscription resource (TS29591). `patch` applies a real RFC
+// 7396 JSON Merge Patch (matches the YAML's own declared `application/merge-patch+json` request
+// content type for `ModifyIndividualSubcription` exactly -- nlohmann::json's own `merge_patch`
+// implements RFC 7396 natively, not a hand-rolled approximation).
+class EcsAddrCfgInfoSubStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> get(const std::string& sub_id);
+    bool put(const std::string& sub_id, nlohmann::json subscription);
+    bool patch(const std::string& sub_id, const nlohmann::json& merge_patch);
+    bool remove(const std::string& sub_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
 } // namespace nef

@@ -1545,7 +1545,7 @@ int main() {
             }
             sbi_core::http2::Response err;
             auto body =
-                sbi_core::http2::parse_multipart_json_body<sbi_gen::SmContextCreateData>(req, err);
+                sbi_core::http2::parse_multipart_json_body<sbi_gen::SmContextCreateData_Nsmf_PDUSession>(req, err);
             if (!body.has_value()) {
                 return err;
             }
@@ -1836,7 +1836,7 @@ int main() {
                 }
             }
 
-            sbi_gen::SmContextCreatedData resp_data;
+            sbi_gen::SmContextCreatedData_Nsmf_PDUSession resp_data;
             resp_data.pduSessionId = body->pduSessionId;
             resp_data.sNssai = body->sNssai;
             json j = resp_data;
@@ -1895,7 +1895,7 @@ int main() {
             // which is multipart-ONLY, most real Updates (upCnxState-only, etc.) carry no N2SmInfo
             // and use plain JSON; gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #101,
             // ADR-0092) is the first real reason this handler ever needs the multipart branch.
-            std::optional<sbi_gen::SmContextUpdateData> body;
+            std::optional<sbi_gen::SmContextUpdateData_Nsmf_PDUSession> body;
             std::vector<std::uint8_t> n2_sm_info_bytes;
             bool has_n2_sm_info_bytes = false;
             const auto content_type_it = req.headers.find("content-type");
@@ -1909,7 +1909,7 @@ int main() {
                         400, "Malformed multipart body", "no parts found");
                 }
                 try {
-                    body = json::parse((*parts)[0].body).get<sbi_gen::SmContextUpdateData>();
+                    body = json::parse((*parts)[0].body).get<sbi_gen::SmContextUpdateData_Nsmf_PDUSession>();
                 } catch (const json::exception& e) {
                     return sbi_core::http2::problem_response(
                         400, "Missing or invalid mandatory IE", e.what());
@@ -1926,7 +1926,7 @@ int main() {
                 }
             } else {
                 sbi_core::http2::Response err;
-                body = sbi_core::http2::parse_json_body<sbi_gen::SmContextUpdateData>(req, err);
+                body = sbi_core::http2::parse_json_body<sbi_gen::SmContextUpdateData_Nsmf_PDUSession>(req, err);
                 if (!body.has_value()) {
                     return err;
                 }
@@ -2197,7 +2197,7 @@ int main() {
             if (!req.body.empty()) {
                 sbi_core::http2::Response err;
                 auto body =
-                    sbi_core::http2::parse_json_body<sbi_gen::SmContextReleaseData>(req, err);
+                    sbi_core::http2::parse_json_body<sbi_gen::SmContextReleaseData_Nsmf_PDUSession>(req, err);
                 if (!body.has_value()) {
                     return err;
                 }
@@ -2358,7 +2358,7 @@ int main() {
             }
             sbi_core::http2::Response err;
             auto body =
-                sbi_core::http2::parse_multipart_json_body<sbi_gen::DeliverReqData>(req, err);
+                sbi_core::http2::parse_multipart_json_body<sbi_gen::DeliverReqData_Nsmf_NIDD>(req, err);
             if (!body.has_value()) {
                 return err;
             }
