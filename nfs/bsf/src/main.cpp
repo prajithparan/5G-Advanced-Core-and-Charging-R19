@@ -779,7 +779,7 @@ int main() {
 
             if (auto existing = pcf_mbs_bindings.find_by_mbs_session_id(json(body->mbsSessionId));
                 existing.has_value()) {
-                sbi_gen::MbsExtProblemDetails existing_details;
+                sbi_gen::MbsExtProblemDetails_Nbsf_Management existing_details;
                 existing_details.status = 403;
                 existing_details.title = "Forbidden";
                 existing_details.detail =

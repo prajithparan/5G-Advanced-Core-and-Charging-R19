@@ -17,6 +17,7 @@ add_executable(integration_tests
     test_ausf_upu_protection.cpp
     test_pcf_policy_control.cpp
     test_pcf_ue_policy_event_exposure.cpp
+    test_pcf_am_mbs_policy_auth_control.cpp
     test_n28_spending_limit.cpp
     test_product_catalog_postgres.cpp
     test_subscriber_management_postgres.cpp

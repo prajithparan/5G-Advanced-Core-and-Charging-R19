@@ -195,4 +195,97 @@ bool PcEventExposureStore::remove(const std::string& subscription_id) {
     return subscriptions_.erase(subscription_id) > 0;
 }
 
+std::string AppAmContextStore::create(nlohmann::json context) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "appamctx-" + std::to_string(next_id_++);
+    contexts_.emplace(id, std::move(context));
+    return id;
+}
+
+std::optional<nlohmann::json> AppAmContextStore::get(const std::string& app_am_context_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = contexts_.find(app_am_context_id);
+    if (it == contexts_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool AppAmContextStore::put(const std::string& app_am_context_id, nlohmann::json context) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = contexts_.find(app_am_context_id);
+    if (it == contexts_.end()) {
+        return false;
+    }
+    it->second = std::move(context);
+    return true;
+}
+
+bool AppAmContextStore::remove(const std::string& app_am_context_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return contexts_.erase(app_am_context_id) > 0;
+}
+
+std::string MbsAppSessionStore::create(nlohmann::json context) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "mbsappsess-" + std::to_string(next_id_++);
+    contexts_.emplace(id, std::move(context));
+    return id;
+}
+
+std::optional<nlohmann::json> MbsAppSessionStore::get(const std::string& context_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = contexts_.find(context_id);
+    if (it == contexts_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool MbsAppSessionStore::put(const std::string& context_id, nlohmann::json context) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = contexts_.find(context_id);
+    if (it == contexts_.end()) {
+        return false;
+    }
+    it->second = std::move(context);
+    return true;
+}
+
+bool MbsAppSessionStore::remove(const std::string& context_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return contexts_.erase(context_id) > 0;
+}
+
+std::string MbsPolicyStore::create(nlohmann::json policy) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "mbspolicy-" + std::to_string(next_id_++);
+    policies_.emplace(id, std::move(policy));
+    return id;
+}
+
+std::optional<nlohmann::json> MbsPolicyStore::get(const std::string& mbs_policy_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = policies_.find(mbs_policy_id);
+    if (it == policies_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool MbsPolicyStore::put(const std::string& mbs_policy_id, nlohmann::json policy) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = policies_.find(mbs_policy_id);
+    if (it == policies_.end()) {
+        return false;
+    }
+    it->second = std::move(policy);
+    return true;
+}
+
+bool MbsPolicyStore::remove(const std::string& mbs_policy_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return policies_.erase(mbs_policy_id) > 0;
+}
+
 } // namespace pcf

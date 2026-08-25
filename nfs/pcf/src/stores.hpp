@@ -135,4 +135,54 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// ADR-0205 (gap-closure task #163, second PCF slice). Backs Npcf_AMPolicyAuthorization's
+// individual Application AM Context resource (TS29534). Keyed by a PCF-generated appAmContextId.
+// The `events-subscription` subresource (`updateAmEventsSubsc`/`DeleteAmEventsSubsc`) is stored
+// nested inside the context's own `evSubsc` field, same real approach the pre-existing
+// `Npcf_PolicyAuthorization` app-sessions events-subscription routes already use on
+// `AppSessionStore`.
+class AppAmContextStore {
+public:
+    std::string create(nlohmann::json context);
+    std::optional<nlohmann::json> get(const std::string& app_am_context_id);
+    bool put(const std::string& app_am_context_id, nlohmann::json context);
+    bool remove(const std::string& app_am_context_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> contexts_;
+    std::uint64_t next_id_ = 1;
+};
+
+// ADR-0205 (gap-closure task #163, second PCF slice). Backs Npcf_MBSPolicyAuthorization's
+// individual MBS Application Session Context resource (TS29537). Keyed by a PCF-generated
+// contextId.
+class MbsAppSessionStore {
+public:
+    std::string create(nlohmann::json context);
+    std::optional<nlohmann::json> get(const std::string& context_id);
+    bool put(const std::string& context_id, nlohmann::json context);
+    bool remove(const std::string& context_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> contexts_;
+    std::uint64_t next_id_ = 1;
+};
+
+// ADR-0205 (gap-closure task #163, second PCF slice). Backs Npcf_MBSPolicyControl's individual
+// MBS Policy resource (TS29537). Keyed by a PCF-generated mbsPolicyId.
+class MbsPolicyStore {
+public:
+    std::string create(nlohmann::json policy);
+    std::optional<nlohmann::json> get(const std::string& mbs_policy_id);
+    bool put(const std::string& mbs_policy_id, nlohmann::json policy);
+    bool remove(const std::string& mbs_policy_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> policies_;
+    std::uint64_t next_id_ = 1;
+};
+
 } // namespace pcf

@@ -4089,3 +4089,27 @@ orphaned-process pipe-hang from an `ASSERT_NE` firing before test cleanup once b
 unexpected `400` -- same class of bug as ADR-0202's own finding, reproduced here despite knowing the
 pattern; fixed with the same `EXPECT_*`-plus-guarded-body pattern. See ADR-0204 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0205 -- PCF `Npcf_AMPolicyAuthorization` + `Npcf_MBSPolicyAuthorization` + `Npcf_MBSPolicyControl` (tenth ADR-0193 gap-closure, second PCF slice)
+
+| Requirement | Test |
+|---|---|
+| `Npcf_AMPolicyAuthorization` full lifecycle + events-subscription | `AmPolicyAuthorizationIntegration.CreateReadUpdateDeleteAndEventsSubscriptionLifecycle`: real `201`/`200`/`200`/`204` for the context, real `201`-then-`200` for repeat PUT of the events-subscription, real `204` delete, real `404` on repeat context delete |
+| `Npcf_AMPolicyAuthorization` required-field validation | `AmPolicyAuthorizationIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `termNotifUri` |
+| `Npcf_MBSPolicyAuthorization` full lifecycle | `MbsPolicyAuthorizationIntegration.CreateReadModifyDeleteLifecycle`: real `201`/`200`/`200`/`204`, real `404` on repeat delete |
+| `Npcf_MBSPolicyAuthorization` required-field validation | `MbsPolicyAuthorizationIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `mbsSessionId` |
+| `Npcf_MBSPolicyControl` full lifecycle | `MbsPolicyControlIntegration.CreateReadUpdateDeleteLifecycle`: real `201`/`200`/`200`/`204`, real `404` on repeat delete |
+| `Npcf_MBSPolicyControl` required-field validation | `MbsPolicyControlIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `mbsSessionId` |
+| No regression | Full reconfigure+rebuild against the complete pilot set clean (`EXIT=0` verified from the build log); all 6 new tests pass, all 10 pre-existing PCF tests still pass after the real BSF collision fix; full suite 402/402 |
+
+Real Tier-A gap-closure (second of three PCF slices, task #163 -- 2 more YAML files remain:
+`Npcf_PDTQPolicyControl`, `Npcf_BDTPolicyControl`). Real, honest codegen limitation confirmed, not
+a bug: `AppAmContextRespData`/`AmEventsSubscRespData` are real `anyOf`-of-two-full-objects response
+shapes that `tools/sbi-codegen` falls back to a plain `nlohmann::json` typedef for (its own
+disclosed "OPAQUE FALLBACK" comment) -- same real pattern already used for the pre-existing
+`Npcf_PolicyAuthorization`'s own `EventsSubscPutData`. Real name collision found and fixed wiring
+`Npcf_MBSPolicyAuthorization`: `MbsExtProblemDetails` is independently declared by the
+already-wired `TS29521_Nbsf_Management.yaml` too (an unrelated real BSF schema of the same name) --
+disambiguated by the codegen; `nfs/bsf/src/main.cpp`'s own pre-existing bare-name reference
+updated, a real necessary fix with no functional change to BSF's own behavior. See ADR-0205 in
+`docs/DECISIONS.md` for full disclosure.

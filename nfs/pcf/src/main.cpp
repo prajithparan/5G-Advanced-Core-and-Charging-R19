@@ -84,6 +84,25 @@
 // own behavior. `TerminationNotification` also collides three ways
 // (AM/SM/UE Policy Control) but was never referenced bare anywhere in this codebase, so nothing to
 // fix there.
+//
+// UPDATE (ADR-0205, gap-closure task #163, second PCF slice): Npcf_AMPolicyAuthorization
+// (TS29534, 6 ops: PostAppAmContexts/GetAppAmContext/ModAppAmContext/DeleteAppAmContext/
+// updateAmEventsSubsc/DeleteAmEventsSubsc), Npcf_MBSPolicyAuthorization (TS29537, 4 ops:
+// CreateMBSAppSessionCtxt/GetMBSAppSessionCtxt/ModifyMBSAppSessionCtxt/DeleteMBSAppSessionCtxt),
+// and Npcf_MBSPolicyControl (TS29537, 4 ops: CreateMBSPolicy/GetIndMBSPolicy/DeleteIndMBSPolicy/
+// UpdateIndMBSPolicy) added -- 3 of the remaining 5 real Tier-A gaps (2 remain:
+// Npcf_PDTQPolicyControl, Npcf_BDTPolicyControl). AppAmContextRespData and AmEventsSubscRespData
+// are real anyOf-of-two-full-objects shapes tools/sbi-codegen falls back to an opaque
+// nlohmann::json typedef for (see TS29122_CommonData_grp.hpp's own "OPAQUE FALLBACK" comment) --
+// routes return the real stored representation directly rather than fabricating a merged shape.
+// Real name collision found and fixed wiring Npcf_MBSPolicyAuthorization: MbsExtProblemDetails is
+// independently declared by the already-wired TS29521_Nbsf_Management.yaml too (an unrelated real
+// BSF schema of the same name) -- disambiguated by the codegen; BSF's own pre-existing bare-name
+// reference (nfs/bsf/src/main.cpp) updated, a real necessary fix with no functional change to
+// BSF's own behavior. Disclosed: no real MBS PCC-rule/QoS decision engine exists in this build, so
+// UpdateIndMBSPolicy's accepted mbsPcrts/mbsErrorReport are structurally validated but never
+// applied to any real mbsPolicies decision data, same class of gap as this file's own pre-existing
+// SM/AM policy fixed-default disclosure above.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -104,6 +123,8 @@
 #include <thread>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "TS29537_Npcf_MBSPolicyAuthorization.hpp"
+#include "TS29537_Npcf_MBSPolicyControl.hpp"
 #include "stores.hpp"
 
 // docs/DECISIONS.md ADR-0077 -- no hardcoded deployment literal in source.
@@ -129,6 +150,11 @@ constexpr const char* kPolicyAuthApiRoot = "/npcf-policyauthorization/v1";
 // block.
 constexpr const char* kUePolicyApiRoot = "/npcf-ue-policy-control/v1";
 constexpr const char* kEventExposureApiRoot = "/npcf-eventexposure/v1";
+// ADR-0205 (gap-closure task #163, second PCF slice). Real api roots confirmed from each YAML's
+// own `servers:` block.
+constexpr const char* kAmPolicyAuthApiRoot = "/npcf-am-policyauthorization/v1";
+constexpr const char* kMbsPolicyAuthApiRoot = "/npcf-mbspolicyauth/v1";
+constexpr const char* kMbsPolicyControlApiRoot = "/npcf-mbspolicycontrol/v1";
 
 // ADR-0072 (gap-closure: real N28 end-to-end). PCF's real UDR client (fetches SmPolicyData,
 // TS29519_Policy_Data.yaml) and CHF client (Nchf_SpendingLimitControl, TS29594) -- same
@@ -465,6 +491,9 @@ int main() {
     pcf::AppSessionStore app_sessions;
     pcf::UePolicyStore ue_policies;
     pcf::PcEventExposureStore pc_event_subs;
+    pcf::AppAmContextStore app_am_contexts;
+    pcf::MbsAppSessionStore mbs_app_sessions;
+    pcf::MbsPolicyStore mbs_policies;
 
     // ADR-0072 (gap-closure: real N28 end-to-end) -- PCF's own client identity + token source for
     // calling UDR and CHF, same separate-http2::Client-per-target-NF pattern this project already
@@ -529,6 +558,28 @@ int main() {
                                                         "Total PutPcEventExposureSubsc calls");
     auto ee_delete_counter = meter->CreateUInt64Counter("pcf_ee_delete_subscription_total",
                                                         "Total DeletePcEventExposureSubsc calls");
+    auto am_auth_create_counter =
+        meter->CreateUInt64Counter("pcf_am_auth_create_total", "Total PostAppAmContexts calls");
+    auto am_auth_update_counter =
+        meter->CreateUInt64Counter("pcf_am_auth_update_total", "Total ModAppAmContext calls");
+    auto am_auth_delete_counter =
+        meter->CreateUInt64Counter("pcf_am_auth_delete_total", "Total DeleteAppAmContext calls");
+    auto am_auth_evsubsc_put_counter = meter->CreateUInt64Counter(
+        "pcf_am_auth_evsubsc_put_total", "Total updateAmEventsSubsc calls");
+    auto am_auth_evsubsc_delete_counter = meter->CreateUInt64Counter(
+        "pcf_am_auth_evsubsc_delete_total", "Total DeleteAmEventsSubsc calls");
+    auto mbs_auth_create_counter = meter->CreateUInt64Counter(
+        "pcf_mbs_auth_create_total", "Total CreateMBSAppSessionCtxt calls");
+    auto mbs_auth_update_counter = meter->CreateUInt64Counter(
+        "pcf_mbs_auth_update_total", "Total ModifyMBSAppSessionCtxt calls");
+    auto mbs_auth_delete_counter = meter->CreateUInt64Counter(
+        "pcf_mbs_auth_delete_total", "Total DeleteMBSAppSessionCtxt calls");
+    auto mbs_policy_create_counter =
+        meter->CreateUInt64Counter("pcf_mbs_policy_create_total", "Total CreateMBSPolicy calls");
+    auto mbs_policy_update_counter =
+        meter->CreateUInt64Counter("pcf_mbs_policy_update_total", "Total UpdateIndMBSPolicy calls");
+    auto mbs_policy_delete_counter =
+        meter->CreateUInt64Counter("pcf_mbs_policy_delete_total", "Total DeleteIndMBSPolicy calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -1222,6 +1273,369 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // --- Npcf_AMPolicyAuthorization (ADR-0205, gap-closure task #163, second PCF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kAmPolicyAuthApiRoot) + "/app-am-contexts",
+        [&verifier, &app_am_contexts, &am_auth_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::AppAmContextData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = app_am_contexts.create(j);
+            am_auth_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kAmPolicyAuthApiRoot) + "/app-am-contexts/" + id);
+            // AppAmContextRespData is an opaque anyOf shape tools/sbi-codegen couldn't resolve
+            // into a typed struct (see TS29122_CommonData_grp.hpp's own "OPAQUE FALLBACK"
+            // comment) -- returning the real stored AppAmContextData representation instead: real
+            // schema-compatible content, not a fabricated shape. Disclosed: no real event-matching
+            // logic exists in this build, so the response never embeds an AmEventsNotification.
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kAmPolicyAuthApiRoot) + "/app-am-contexts/{appAmContextId}",
+        [&verifier, &app_am_contexts](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("appAmContextId");
+            auto ctx = app_am_contexts.get(id);
+            if (!ctx.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No application AM context " + id);
+            }
+            return sbi_core::http2::Response::json(200, ctx->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kAmPolicyAuthApiRoot) + "/app-am-contexts/{appAmContextId}",
+        [&verifier, &app_am_contexts, &am_auth_update_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("appAmContextId");
+            auto stored = app_am_contexts.get(id);
+            if (!stored.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No application AM context " + id);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::AppAmContextUpdateData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            auto context = stored->get<sbi_gen::AppAmContextData>();
+            if (body->termNotifUri.has_value()) {
+                context.termNotifUri = *body->termNotifUri;
+            }
+            if (body->expiry.has_value()) {
+                context.expiry = body->expiry;
+            }
+            if (body->highThruInd.has_value()) {
+                context.highThruInd = body->highThruInd;
+            }
+            if (body->covReq.has_value()) {
+                context.covReq = body->covReq;
+            }
+            if (body->asTimeDisParam.has_value()) {
+                context.asTimeDisParam = body->asTimeDisParam;
+            }
+            if (body->sliceReplReq.has_value()) {
+                context.sliceReplReq = body->sliceReplReq;
+            }
+            json j = context;
+            app_am_contexts.put(id, j);
+            am_auth_update_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kAmPolicyAuthApiRoot) + "/app-am-contexts/{appAmContextId}",
+        [&verifier, &app_am_contexts, &am_auth_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("appAmContextId");
+            if (!app_am_contexts.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No application AM context " + id);
+            }
+            am_auth_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kAmPolicyAuthApiRoot) + "/app-am-contexts/{appAmContextId}/events-subscription",
+        [&verifier, &app_am_contexts, &am_auth_evsubsc_put_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("appAmContextId");
+            auto ctx = app_am_contexts.get(id);
+            if (!ctx.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No application AM context " + id);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::AmEventsSubscData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const bool is_new = !ctx->contains("evSubsc") || (*ctx)["evSubsc"].is_null();
+            json j = *body;
+            (*ctx)["evSubsc"] = j;
+            app_am_contexts.put(id, *ctx);
+            am_auth_evsubsc_put_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = is_new ? 201 : 200;
+            resp.headers.emplace("content-type", "application/json");
+            if (is_new) {
+                resp.headers.emplace("location",
+                                     std::string(kAmPolicyAuthApiRoot) + "/app-am-contexts/" + id +
+                                         "/events-subscription");
+            }
+            // AmEventsSubscRespData is the same opaque anyOf shape as AppAmContextRespData above
+            // -- returning the real stored AmEventsSubscData representation instead.
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kAmPolicyAuthApiRoot) + "/app-am-contexts/{appAmContextId}/events-subscription",
+        [&verifier, &app_am_contexts, &am_auth_evsubsc_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("appAmContextId");
+            auto ctx = app_am_contexts.get(id);
+            if (!ctx.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No application AM context " + id);
+            }
+            ctx->erase("evSubsc");
+            app_am_contexts.put(id, *ctx);
+            am_auth_evsubsc_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Npcf_MBSPolicyAuthorization (ADR-0205, gap-closure task #163, second PCF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kMbsPolicyAuthApiRoot) + "/contexts",
+        [&verifier, &mbs_app_sessions, &mbs_auth_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::MbsAppSessionCtxt>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = mbs_app_sessions.create(j);
+            mbs_auth_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kMbsPolicyAuthApiRoot) + "/contexts/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kMbsPolicyAuthApiRoot) + "/contexts/{contextId}",
+        [&verifier, &mbs_app_sessions](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("contextId");
+            auto ctx = mbs_app_sessions.get(id);
+            if (!ctx.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No MBS application session context " + id);
+            }
+            return sbi_core::http2::Response::json(200, ctx->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kMbsPolicyAuthApiRoot) + "/contexts/{contextId}",
+        [&verifier, &mbs_app_sessions, &mbs_auth_update_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("contextId");
+            auto stored = mbs_app_sessions.get(id);
+            if (!stored.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No MBS application session context " + id);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::MbsAppSessionCtxtPatch>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            auto context = stored->get<sbi_gen::MbsAppSessionCtxt>();
+            if (body->mbsServInfo.has_value()) {
+                context.mbsServInfo = body->mbsServInfo;
+            }
+            json j = context;
+            mbs_app_sessions.put(id, j);
+            mbs_auth_update_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kMbsPolicyAuthApiRoot) + "/contexts/{contextId}",
+        [&verifier, &mbs_app_sessions, &mbs_auth_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("contextId");
+            if (!mbs_app_sessions.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No MBS application session context " + id);
+            }
+            mbs_auth_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Npcf_MBSPolicyControl (ADR-0205, gap-closure task #163, second PCF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kMbsPolicyControlApiRoot) + "/mbs-policies",
+        [&verifier, &mbs_policies, &mbs_policy_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::MbsPolicyCtxtData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            sbi_gen::MbsPolicyData policy{};
+            policy.mbsPolicyCtxtData = *body;
+            json j = policy;
+            const auto id = mbs_policies.create(j);
+            mbs_policy_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kMbsPolicyControlApiRoot) + "/mbs-policies/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kMbsPolicyControlApiRoot) + "/mbs-policies/{mbsPolicyId}",
+        [&verifier, &mbs_policies](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("mbsPolicyId");
+            auto policy = mbs_policies.get(id);
+            if (!policy.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No MBS policy " + id);
+            }
+            return sbi_core::http2::Response::json(200, policy->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kMbsPolicyControlApiRoot) + "/mbs-policies/{mbsPolicyId}",
+        [&verifier, &mbs_policies, &mbs_policy_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("mbsPolicyId");
+            if (!mbs_policies.remove(id)) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No MBS policy " + id);
+            }
+            mbs_policy_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kMbsPolicyControlApiRoot) + "/mbs-policies/{mbsPolicyId}/update",
+        [&verifier, &mbs_policies, &mbs_policy_update_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("mbsPolicyId");
+            auto stored = mbs_policies.get(id);
+            if (!stored.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No MBS policy " + id);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::MbsPolicyCtxtDataUpdate>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            auto policy = stored->get<sbi_gen::MbsPolicyData>();
+            if (body->mbsServInfo.has_value()) {
+                policy.mbsPolicyCtxtData.mbsServInfo = body->mbsServInfo;
+            }
+            // Disclosed simplification (ADR-0205): no real MBS PCC-rule/QoS decision engine
+            // exists in this build, so `mbsPcrts`/`mbsErrorReport` in the update request are
+            // accepted (structurally validated) but not applied to any real `mbsPolicies`
+            // decision data -- same class of gap as PCF's own pre-existing SM/AM policy defaults
+            // (this file's own header, "fixed default policy... not real subscriber-specific
+            // decisioning").
+            json j = policy;
+            mbs_policies.put(id, j);
+            mbs_policy_update_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
         });
 
     std::thread(run_nrf_lifecycle, pcf_instance_id, nrf_base_url).detach();
