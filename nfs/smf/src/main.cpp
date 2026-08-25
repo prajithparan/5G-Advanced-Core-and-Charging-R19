@@ -1544,8 +1544,8 @@ int main() {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             sbi_core::http2::Response err;
-            auto body =
-                sbi_core::http2::parse_multipart_json_body<sbi_gen::SmContextCreateData_Nsmf_PDUSession>(req, err);
+            auto body = sbi_core::http2::parse_multipart_json_body<
+                sbi_gen::SmContextCreateData_Nsmf_PDUSession>(req, err);
             if (!body.has_value()) {
                 return err;
             }
@@ -1909,7 +1909,8 @@ int main() {
                         400, "Malformed multipart body", "no parts found");
                 }
                 try {
-                    body = json::parse((*parts)[0].body).get<sbi_gen::SmContextUpdateData_Nsmf_PDUSession>();
+                    body = json::parse((*parts)[0].body)
+                               .get<sbi_gen::SmContextUpdateData_Nsmf_PDUSession>();
                 } catch (const json::exception& e) {
                     return sbi_core::http2::problem_response(
                         400, "Missing or invalid mandatory IE", e.what());
@@ -1926,7 +1927,9 @@ int main() {
                 }
             } else {
                 sbi_core::http2::Response err;
-                body = sbi_core::http2::parse_json_body<sbi_gen::SmContextUpdateData_Nsmf_PDUSession>(req, err);
+                body =
+                    sbi_core::http2::parse_json_body<sbi_gen::SmContextUpdateData_Nsmf_PDUSession>(
+                        req, err);
                 if (!body.has_value()) {
                     return err;
                 }
@@ -2197,7 +2200,8 @@ int main() {
             if (!req.body.empty()) {
                 sbi_core::http2::Response err;
                 auto body =
-                    sbi_core::http2::parse_json_body<sbi_gen::SmContextReleaseData_Nsmf_PDUSession>(req, err);
+                    sbi_core::http2::parse_json_body<sbi_gen::SmContextReleaseData_Nsmf_PDUSession>(
+                        req, err);
                 if (!body.has_value()) {
                     return err;
                 }
@@ -2358,7 +2362,8 @@ int main() {
             }
             sbi_core::http2::Response err;
             auto body =
-                sbi_core::http2::parse_multipart_json_body<sbi_gen::DeliverReqData_Nsmf_NIDD>(req, err);
+                sbi_core::http2::parse_multipart_json_body<sbi_gen::DeliverReqData_Nsmf_NIDD>(req,
+                                                                                              err);
             if (!body.has_value()) {
                 return err;
             }

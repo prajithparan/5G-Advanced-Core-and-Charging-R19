@@ -354,12 +354,12 @@ int main() {
     auto eas_deploy_delete_counter =
         meter->CreateUInt64Counter("nef_eas_deploy_delete_total",
                                    "Total Nnef_EASDeployment DeleteIndividualSubcription calls");
-    auto sm_context_create_counter =
-        meter->CreateUInt64Counter("nef_smcontext_create_total", "Total Nnef_SMContext Create calls");
+    auto sm_context_create_counter = meter->CreateUInt64Counter(
+        "nef_smcontext_create_total", "Total Nnef_SMContext Create calls");
     auto sm_context_release_counter = meter->CreateUInt64Counter(
         "nef_smcontext_release_total", "Total Nnef_SMContext Delete (release) calls");
-    auto sm_context_update_counter =
-        meter->CreateUInt64Counter("nef_smcontext_update_total", "Total Nnef_SMContext Update calls");
+    auto sm_context_update_counter = meter->CreateUInt64Counter(
+        "nef_smcontext_update_total", "Total Nnef_SMContext Update calls");
     auto sm_context_deliver_counter = meter->CreateUInt64Counter(
         "nef_smcontext_deliver_total", "Total Nnef_SMContext Deliver calls");
     auto uav_auth_counter = meter->CreateUInt64Counter(
@@ -372,15 +372,15 @@ int main() {
         "nef_ecs_addr_sub_patch_total", "Total Nnef_ECSAddress ModifyIndividualSubcription calls");
     auto ecs_addr_delete_counter = meter->CreateUInt64Counter(
         "nef_ecs_addr_sub_delete_total", "Total Nnef_ECSAddress DeleteIndividualSubcription calls");
-    auto event_exposure_create_counter = meter->CreateUInt64Counter(
-        "nef_event_exposure_sub_create_total",
-        "Total Nnef_EventExposure CreateIndividualSubcription calls");
-    auto event_exposure_put_counter = meter->CreateUInt64Counter(
-        "nef_event_exposure_sub_put_total",
-        "Total Nnef_EventExposure ReplaceIndividualSubcription calls");
-    auto event_exposure_delete_counter = meter->CreateUInt64Counter(
-        "nef_event_exposure_sub_delete_total",
-        "Total Nnef_EventExposure DeleteIndividualSubcription calls");
+    auto event_exposure_create_counter =
+        meter->CreateUInt64Counter("nef_event_exposure_sub_create_total",
+                                   "Total Nnef_EventExposure CreateIndividualSubcription calls");
+    auto event_exposure_put_counter =
+        meter->CreateUInt64Counter("nef_event_exposure_sub_put_total",
+                                   "Total Nnef_EventExposure ReplaceIndividualSubcription calls");
+    auto event_exposure_delete_counter =
+        meter->CreateUInt64Counter("nef_event_exposure_sub_delete_total",
+                                   "Total Nnef_EventExposure DeleteIndividualSubcription calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -767,7 +767,7 @@ int main() {
             sbi_core::http2::Response err;
             auto body =
                 sbi_core::http2::parse_json_body<sbi_gen::SmContextCreateData_Nnef_SMContext>(req,
-                                                                                               err);
+                                                                                              err);
             if (!body.has_value()) {
                 return err;
             }
@@ -797,7 +797,8 @@ int main() {
     server.add_route(
         "POST",
         std::string(kSmContextApiRoot) + "/sm-contexts/{smContextId}/release",
-        [&verifier, &sm_contexts, &sm_context_release_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &sm_contexts, &sm_context_release_counter](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -805,7 +806,7 @@ int main() {
             sbi_core::http2::Response err;
             auto body =
                 sbi_core::http2::parse_json_body<sbi_gen::SmContextReleaseData_Nnef_SMContext>(req,
-                                                                                                err);
+                                                                                               err);
             if (!body.has_value()) {
                 return err;
             }
@@ -832,7 +833,7 @@ int main() {
             sbi_core::http2::Response err;
             auto body =
                 sbi_core::http2::parse_json_body<sbi_gen::SmContextUpdateData_Nnef_SMContext>(req,
-                                                                                               err);
+                                                                                              err);
             if (!body.has_value()) {
                 return err;
             }
@@ -848,7 +849,8 @@ int main() {
     server.add_route(
         "POST",
         std::string(kSmContextApiRoot) + "/sm-contexts/{smContextId}/deliver",
-        [&verifier, &sm_contexts, &sm_context_deliver_counter](const sbi_core::http2::Request& req) {
+        [&verifier, &sm_contexts, &sm_context_deliver_counter](
+            const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
@@ -868,7 +870,8 @@ int main() {
             }
             sbi_gen::DeliverReqData_Nnef_SMContext json_data;
             try {
-                json_data = json::parse((*parts)[0].body).get<sbi_gen::DeliverReqData_Nnef_SMContext>();
+                json_data =
+                    json::parse((*parts)[0].body).get<sbi_gen::DeliverReqData_Nnef_SMContext>();
             } catch (const json::exception& e) {
                 return sbi_core::http2::problem_response(400, "Invalid Service Request", e.what());
             }
@@ -942,7 +945,8 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 201;
             resp.headers.emplace("content-type", "application/json");
-            resp.headers.emplace("location", std::string(kEcsAddressApiRoot) + "/subscriptions/" + id);
+            resp.headers.emplace("location",
+                                 std::string(kEcsAddressApiRoot) + "/subscriptions/" + id);
             resp.body = j.dump();
             return resp;
         });
@@ -998,8 +1002,8 @@ int main() {
             // precedent as PCF/UDR's own merge-patch routes), then applied as a real RFC 7396
             // merge patch -- matching this operation's own declared
             // application/merge-patch+json request content type exactly.
-            auto typed_patch = sbi_core::http2::parse_json_body<sbi_gen::EcsAddrCfgInfoSubPatch>(req,
-                                                                                                  err);
+            auto typed_patch =
+                sbi_core::http2::parse_json_body<sbi_gen::EcsAddrCfgInfoSubPatch>(req, err);
             if (!typed_patch.has_value()) {
                 return err;
             }

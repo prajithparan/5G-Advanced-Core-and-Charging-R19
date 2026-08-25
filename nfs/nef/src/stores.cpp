@@ -136,7 +136,8 @@ std::optional<nlohmann::json> SmContextStore::get(const std::string& sm_context_
     return std::make_optional(it->second);
 }
 
-bool SmContextStore::update(const std::string& sm_context_id, const nlohmann::json& partial_update) {
+bool SmContextStore::update(const std::string& sm_context_id,
+                            const nlohmann::json& partial_update) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = contexts_.find(sm_context_id);
     if (it == contexts_.end()) {

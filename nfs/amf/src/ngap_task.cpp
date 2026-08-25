@@ -1265,7 +1265,8 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc,
         spdlog::error("amf-ngap: AUSF returned a malformed ConfirmationDataResponse: {}", e.what());
         return;
     }
-    if (cresp.authResult.value != sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_SUCCESS) {
+    if (cresp.authResult.value !=
+        sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_SUCCESS) {
         spdlog::warn("amf-ngap: AUSF confirmation reports authentication FAILURE for SUPI {} "
                      "(claimed RES* did not match XRES*)",
                      auth_state.supi);
