@@ -60,6 +60,8 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29518_Namf_MBSBroadcast.yaml
     TS29518_Namf_MBSCommunication.yaml
     TS29518_Namf_MT.yaml
+    TS29508_Nsmf_EventExposure.yaml
+    TS29542_Nsmf_NIDD.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -105,6 +107,8 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_MBSBroadcast.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_MBSCommunication.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29518_Namf_MT.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29508_Nsmf_EventExposure.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29542_Nsmf_NIDD.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES

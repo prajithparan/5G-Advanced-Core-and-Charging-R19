@@ -1272,7 +1272,7 @@ check couldn't resolve (none surfaced this pass).
 |---|---|
 | NRF | ~~`Nnrf_Bootstrapping`~~ CLOSED, ADR-0194 (the original finding that triggered this audit) |
 | AMF | ~~`Namf_AIoT`, `Namf_MBSBroadcast`, `Namf_MBSCommunication`, `Namf_MT`~~ CLOSED, ADR-0200 |
-| SMF | `Nsmf_EventExposure`, `Nsmf_NIDD` |
+| SMF | ~~`Nsmf_EventExposure`, `Nsmf_NIDD`~~ CLOSED, ADR-0201 |
 | UDM | `Nudm_MT`, `Nudm_NIDDAU`, `Nudm_RSDS`, `Nudm_SSAU`, `Nudm_UEID` |
 | UDR | ~~`Nudr_GroupIDmap`~~ CLOSED, ADR-0198 -- was a different failure mode: implemented, but with hand-written `nlohmann::json` validation bypassing sbi-codegen entirely, now replaced with the real generated DTO |
 | AUSF | ~~`Nausf_UPUProtection`~~ CLOSED, ADR-0195 |

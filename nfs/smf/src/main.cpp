@@ -20,8 +20,6 @@
 //   flow this turn targets.
 // - SendMoData/TransferMoData -- small-data-over-NAS operations, multipart-only, peripheral to
 //   the core session lifecycle.
-// - Nsmf_EventExposure.yaml and Nsmf_NIDD.yaml -- separate SMF services, out of scope for this
-//   turn's procedure list.
 // - UpdateSMContext still does NOT call PCF's UpdateSMPolicy -- kept out of this turn's scope
 //   (only Create/Release wired, see ADR-0029) to keep the turn to the two operations CLAUDE.md's
 //   stated PDU-session-establishment goal actually needs.
@@ -77,6 +75,29 @@
 // `_Nchf_ConvergedCharging` -- a real sbi-codegen schema-name collision with the newly-added
 // Nchf_OfflineOnlyCharging service, not a functional change. Verified via full rebuild + 146/146
 // tests, including this file's own real integration test (test_smf_pdu_session.cpp).
+//
+// UPDATE (ADR-0201, gap-closure task #160): the two SMF services explicitly deferred above are
+// now real, closing a Tier-A gap (neither YAML was in the sbi-codegen pilot set at all):
+// - TS29508_Nsmf_EventExposure.yaml (api root /nsmf-event-exposure/v1): all 4 operations, real
+//   full subscription CRUD backed by a new EventSubscriptionStore (event_subscription_store.hpp
+//   -- same real assign-id/store/remove shape as SmContextStore above, kept as a separate type
+//   since an event subscription is a genuinely distinct resource from an SM context). Real
+//   structural validation via the generated `NsmfEventExposure` DTO (required
+//   `notifId`/`notifUri`/`eventSubs`). Disclosed: no real event notification delivery exists (same
+//   gap class as AMF's own subscription types, ADR-0199/ADR-0200) -- subscriptions are stored and
+//   can be created/read/replaced/removed for real, but nothing in this build ever fires one, since
+//   none of the real `SmfEvent` values (AC_TY_CH, UP_PATH_CH, PDU_SES_REL, ...) have a trigger
+//   path wired to them.
+// - TS29542_Nsmf_NIDD.yaml (api root /nsmf-nidd/v1): Deliver, real multipart-only structural
+//   validation of `DeliverReqData`'s required `mtData`, then checks whether the path's
+//   `pduSessionRef` matches a live SM context. Disclosed, deliberate simplification: this
+//   project's only real concept of a "live PDU session" is `SmContextStore`'s own
+//   `smContextRef`-keyed resource (TS29502_Nsmf_PDUSession.yaml) -- `Nsmf_NIDD`'s own
+//   `pduSessionRef` path parameter is treated as referring to that same id space, since there is
+//   no separate real "pdu-sessions" resource anywhere else in this build to check against instead.
+//   Real 404 if no match; real 204 if found -- disclosed: no real NAS/5G-SM Non-IP-Data-Delivery
+//   pipeline exists to actually push the MT data to a UE, same class of gap as every other
+//   NAS-adjacent simplification in this file.
 
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
@@ -109,6 +130,8 @@
 #include <unordered_map>
 
 #include "TS29122_CommonData_grp.hpp"
+#include "TS29542_Nsmf_NIDD.hpp"
+#include "event_subscription_store.hpp"
 #include "nas_5gsm_codec.hpp"
 #include "pfcp_core/common_ies.hpp"
 #include "pfcp_core/header.hpp"
@@ -187,6 +210,10 @@ constexpr const char* kNfType = "SMF";
 // simplification as PCF's own fixed-default policy (ADR-0028).
 constexpr std::int64_t kDefaultRatingGroup = 1;
 constexpr const char* kApiRoot = "/nsmf-pdusession/v1";
+// TS29508_Nsmf_EventExposure.yaml / TS29542_Nsmf_NIDD.yaml own real api roots (ADR-0201),
+// confirmed via each YAML's own `servers:` block.
+constexpr const char* kEventExposureApiRoot = "/nsmf-event-exposure/v1";
+constexpr const char* kNiddApiRoot = "/nsmf-nidd/v1";
 // This build only ever creates one URR per session (Stage 1) -- shared here, not redefined
 // per-function, since Stage 5's real Update URR needs to reference the exact same ID Stage 1's
 // Create URR used.
@@ -1442,6 +1469,8 @@ int main() {
 
     smf::SmContextStore sm_contexts;
     UpfEndpointStore upf_endpoint_store;
+    // ADR-0201: Nsmf_EventExposure's subscription resource.
+    smf::EventSubscriptionStore event_subs;
 
     auto meter = sbi_core::get_meter("smf");
     auto create_counter =
@@ -1467,6 +1496,21 @@ int main() {
     auto chf_charging_data_release_counter = meter->CreateUInt64Counter(
         "smf_chf_charging_data_release_total",
         "Total successful (best-effort) Nchf_ConvergedCharging_Release calls to CHF");
+    // ADR-0201: Nsmf_EventExposure + Nsmf_NIDD counters.
+    auto event_sub_create_counter =
+        meter->CreateUInt64Counter("smf_event_exposure_create_subscription_total",
+                                   "Total Nsmf_EventExposure CreateIndividualSubcription calls");
+    auto event_sub_get_counter =
+        meter->CreateUInt64Counter("smf_event_exposure_get_subscription_total",
+                                   "Total Nsmf_EventExposure GetIndividualSubcription calls");
+    auto event_sub_replace_counter =
+        meter->CreateUInt64Counter("smf_event_exposure_replace_subscription_total",
+                                   "Total Nsmf_EventExposure ReplaceIndividualSubcription calls");
+    auto event_sub_delete_counter =
+        meter->CreateUInt64Counter("smf_event_exposure_delete_subscription_total",
+                                   "Total Nsmf_EventExposure DeleteIndividualSubcription calls");
+    auto nidd_deliver_counter =
+        meter->CreateUInt64Counter("smf_nidd_deliver_total", "Total Nsmf_NIDD Deliver calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2214,6 +2258,122 @@ int main() {
 
             sm_contexts.remove(sm_context_ref);
             release_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // ---- TS29508_Nsmf_EventExposure.yaml (ADR-0201) ----
+
+    server.add_route(
+        "POST",
+        std::string(kEventExposureApiRoot) + "/subscriptions",
+        [&verifier, &event_subs, &event_sub_create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::NsmfEventExposure>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto sub_id = event_subs.create(*body);
+            event_sub_create_counter->Add(1);
+            body->subId = sub_id;
+            json j = *body;
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kEventExposureApiRoot) + "/subscriptions/" + sub_id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subId}",
+        [&verifier, &event_subs, &event_sub_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subId");
+            auto stored = event_subs.get(sub_id);
+            if (!stored.has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No such subscription");
+            }
+            event_sub_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, stored->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subId}",
+        [&verifier, &event_subs, &event_sub_replace_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subId");
+            if (!event_subs.get(sub_id).has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No such subscription");
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::NsmfEventExposure>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            body->subId = sub_id;
+            event_subs.update(sub_id, *body);
+            event_sub_replace_counter->Add(1);
+            json j = *body;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subId}",
+        [&verifier, &event_subs, &event_sub_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subId");
+            if (!event_subs.get(sub_id).has_value()) {
+                return sbi_core::http2::problem_response(404, "Not Found", "No such subscription");
+            }
+            event_subs.remove(sub_id);
+            event_sub_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // ---- TS29542_Nsmf_NIDD.yaml (ADR-0201) ----
+
+    server.add_route(
+        "POST",
+        std::string(kNiddApiRoot) + "/pdu-sessions/{pduSessionRef}/deliver",
+        [&verifier, &sm_contexts, &nidd_deliver_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_multipart_json_body<sbi_gen::DeliverReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            // Disclosed simplification (see file header): pduSessionRef is treated as referring
+            // to this project's own smContextRef id space -- there is no separate real
+            // "pdu-sessions" resource anywhere else in this build.
+            const auto pdu_session_ref = req.path_params.at("pduSessionRef");
+            if (!sm_contexts.get(pdu_session_ref).has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No such PDU session: " + pdu_session_ref);
+            }
+            nidd_deliver_counter->Add(1);
+            // Disclosed simplification: no real NAS/5G-SM NIDD delivery pipeline exists to
+            // actually push the MT data to a UE, same class of gap as every other NAS-adjacent
+            // simplification in this file.
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

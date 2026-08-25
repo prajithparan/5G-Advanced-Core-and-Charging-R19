@@ -6,6 +6,7 @@ add_executable(integration_tests
     test_amf_namf_location_eventexposure.cpp
     test_amf_namf_aiot_mbs_mt.cpp
     test_smf_pdu_session.cpp
+    test_smf_event_exposure_nidd.cpp
     test_udm_uecm_sdm.cpp
     test_udm_ueau.cpp
     test_udr_context_data.cpp

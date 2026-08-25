@@ -3995,3 +3995,25 @@ disambiguated to `N2MbsSmInfo_Namf_MBSBroadcast`/`N2MbsSmInfo_Namf_MBSCommunicat
 forward disclosed capability gaps already established elsewhere in this AMF (no real N2/device
 delivery pipeline, no real UE reachability state machine, no real merge of `ContextUpdate`'s
 fields into stored state). See ADR-0200 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0201 -- SMF `Nsmf_EventExposure` + `Nsmf_NIDD` (sixth ADR-0193 gap-closure)
+
+| Requirement | Test |
+|---|---|
+| `Nsmf_EventExposure` full subscription CRUD | `SmfEventExposureIntegration.CreateGetReplaceDeleteLifecycle`: real `201`->`200` `GET`->`404` `GET` on unknown id->`200` `PUT`->`204` `DELETE`->`404` `DELETE` again |
+| `Nsmf_EventExposure` required-field validation | `SmfEventExposureIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `eventSubs` |
+| `Nsmf_NIDD` `Deliver` -- no PDU session vs. real one | `SmfNiddIntegration.DeliverMissingContextIs404ThenRealContextIs204`: real `404` against a nonexistent `pduSessionRef`, real `204` against a real, PCF-backed `smContextRef` |
+| No regression | Full reconfigure+rebuild against the complete pilot set clean (`EXIT=0` verified from the build log); all 7 SMF integration tests pass |
+
+Real Tier-A gap-closure: both YAMLs were explicitly named and deferred in `nfs/smf/src/main.cpp`'s
+own file header since this project's original SMF turn, never in the sbi-codegen pilot set. Real
+cross-file dependency resolution confirmed by reading `tools/sbi-codegen/sbi_codegen/loader.py`:
+external `$ref`s resolve lazily against any file in `specs_dir` regardless of pilot-set
+membership, so `NsmfEventExposure`'s large real fan-out (7 other YAMLs' schemas) generated
+correctly without those files needing their own pilot-set entries -- only the two entry-point
+files did. Real collision (`EventSubscription`/`EventNotification`/`NotificationMethod`,
+independently declared elsewhere) disambiguated by the codegen to `*_Nsmf_EventExposure`.
+`Nsmf_NIDD`'s `pduSessionRef` is deliberately mapped onto the existing `SmContextStore`'s
+`smContextRef` id space (disclosed, not a literal separate `/pdu-sessions` resource). Both
+services carry forward the same disclosed no-real-delivery-pipeline gap class already established
+elsewhere in this project. See ADR-0201 in `docs/DECISIONS.md` for full disclosure.
