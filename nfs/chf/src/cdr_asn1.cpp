@@ -97,7 +97,7 @@ std::array<std::uint8_t, 9> encode_timestamp(std::time_t unix_time) {
 // TS 32.298 §5.2.1 `NetworkFunctionality`, real INTEGER values confirmed directly against the
 // spec's own ENUMERATED definition -- only the subset with a real, cited correspondent to this
 // project's own generated `NodeFunctionality_Nchf_ConvergedCharging` open-enum values (see
-// TS29122_CommonData_grp.hpp) is mapped. `SMS`/`NEFF`/`GMLC`/`AIOTF`/`CCF`/`NWDAF` have no real
+// TS26510_CommonData_grp.hpp) is mapped. `SMS`/`NEFF`/`GMLC`/`AIOTF`/`CCF`/`NWDAF` have no real
 // TS 32.298 v18.8.0 `NetworkFunctionality` value at all (confirmed by reading the full real
 // enumeration, not assumed absent) -- real, disclosed gap, not fabricated with a guessed number.
 std::optional<std::int32_t> map_network_functionality(const std::string& value) {

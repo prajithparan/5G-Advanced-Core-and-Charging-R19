@@ -14,7 +14,7 @@
 #include <cstring>
 #include <thread>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "TS29509_Nausf_UEAuthentication.hpp"
 #include "aka_crypto/hex.hpp"
 #include "aka_crypto/kdf.hpp"

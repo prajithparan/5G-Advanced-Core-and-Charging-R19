@@ -21,6 +21,7 @@ add_executable(integration_tests
     test_pcf_pdtq_bdt_policy_control.cpp
     test_nef_sms_ueid_dnaimapping_easdeployment.cpp
     test_nef_smcontext_authentication_ecsaddress.cpp
+    test_nef_event_exposure.cpp
     test_n28_spending_limit.cpp
     test_product_catalog_postgres.cpp
     test_subscriber_management_postgres.cpp

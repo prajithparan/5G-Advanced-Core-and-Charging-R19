@@ -654,16 +654,16 @@
 // nf_config.hpp's own comment.
 #include "nf_config/nf_config.hpp"
 
-// TS29505_Subscription_Data's own types now live in TS29122_CommonData_grp.hpp -- see
+// TS29505_Subscription_Data's own types now live in TS26510_CommonData_grp.hpp -- see
 // nfs/chf/src/stores.hpp's own comment (ADR-0072).
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 // Gap-closure (ADR-0193 audit, ADR-0198): real generated Nudr_GroupIDmap DTOs, replacing the
 // hand-written raw-JSON validation this file used to have -- see this file's own comment at the
 // GroupIDmap subscription-family route registrations for the full disclosure.
 #include "TS29504_Nudr_GroupIDmap.hpp"
 // AuthEvent (real Authentication Status resource schema, TS29503_Nudm_UEAU.yaml, reused verbatim
 // per TS29505_Subscription_Data.yaml's own $ref -- ADR-0083, gap-closure task #106) lives in its
-// own generated group file, not TS29122_CommonData_grp.hpp.
+// own generated group file, not TS26510_CommonData_grp.hpp.
 #include "TS29503_Nudm_UEAU_grp.hpp"
 #include "stores.hpp"
 

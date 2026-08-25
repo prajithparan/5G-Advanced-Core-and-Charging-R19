@@ -2,7 +2,7 @@
 // PFCP/N4 server (TS 29.244), UPF's real primary protocol interface -- real 3GPP architecture has
 // SMF talk to UPF over N4/PFCP for session control, never SBI, for that core exchange. UPF's SBI
 // role has always included being a REGISTRATION CLIENT to NRF (real: NFType=UPF and
-// NFProfile.upfInfo are genuine fields in TS29122_CommonData_grp.hpp's generated types, confirmed
+// NFProfile.upfInfo are genuine fields in TS26510_CommonData_grp.hpp's generated types, confirmed
 // before writing this, not assumed) so SMF can discover it -- Stage 2 wires that discovery up for
 // real.
 //
@@ -86,7 +86,7 @@
 #include <thread>
 #include <unordered_map>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "TS29564_Nupf_GetUEPrivateIPaddrAndIdentifiers.hpp"
 #include "datapath.hpp"
 #include "event_subscription_store.hpp"

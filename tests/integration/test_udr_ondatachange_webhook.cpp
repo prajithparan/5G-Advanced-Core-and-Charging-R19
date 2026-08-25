@@ -24,9 +24,9 @@
 #include <unistd.h>
 #include <vector>
 
-// TS29505_Subscription_Data's own types now live in TS29122_CommonData_grp.hpp -- see
+// TS29505_Subscription_Data's own types now live in TS26510_CommonData_grp.hpp -- see
 // nfs/chf/src/stores.hpp's own comment (ADR-0072).
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 
 #include <gtest/gtest.h>
 

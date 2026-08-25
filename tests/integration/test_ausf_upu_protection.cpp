@@ -18,7 +18,7 @@
 #include <thread>
 #include <unistd.h>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "TS29509_Nausf_UEAuthentication.hpp"
 #include "aka_crypto/eap_aka_prime.hpp"
 #include "aka_crypto/hex.hpp"

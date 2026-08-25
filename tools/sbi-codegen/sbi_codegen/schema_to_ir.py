@@ -79,6 +79,20 @@ def _is_pattern_only(member: dict) -> bool:
     return set(member.keys()) <= {"pattern"} and "pattern" in member
 
 
+def _is_opaque_type_ref(type_ref: TypeRef) -> bool:
+    """True for a TypeRef that resolves (through any array nesting) to the catch-all
+    `nlohmann::json` placeholder `_property_type_ref` emits for an intentionally
+    unconstrained schema (e.g. `items: {}`) -- see its own 'not confidently modeled inline'
+    fallback below. Used only to detect the real 'abstract base narrowed by concrete allOf
+    subtype' pattern (e.g. TS26512_EventExposure.yaml's own `BaseEventCollection.records:
+    array, items: {}`, narrowed by `QoEMetricsCollection` et al. to `array of QoEMetricsEvent`)
+    -- standard JSON-Schema allOf composition, not a genuine conflict, found while wiring
+    Nnef_EventExposure (ADR-0209)."""
+    while type_ref.kind == "array":
+        type_ref = type_ref.array_of
+    return type_ref.kind == "primitive" and type_ref.cpp_name == "nlohmann::json"
+
+
 def _type_ref_key(type_ref: TypeRef) -> tuple:
     """A hashable, structural-equality key for a TypeRef, usable before collision
     disambiguation has assigned final cpp_names (ref_key -- (source_file, yaml_name) -- is
@@ -291,6 +305,7 @@ class Converter:
         if isinstance(all_of, list) and all_of:
             merged_fields: list[FieldIR] = []
             seen_by_json_name: dict[str, FieldIR] = {}
+            index_by_json_name: dict[str, int] = {}
             for member in all_of:
                 if "$ref" in member:
                     ref_name, ref_schema, ref_file = self.registry.resolve_ref(member["$ref"], source_file)
@@ -324,6 +339,7 @@ class Converter:
                     prior = seen_by_json_name.get(f.json_name)
                     if prior is None:
                         seen_by_json_name[f.json_name] = f
+                        index_by_json_name[f.json_name] = len(merged_fields)
                         merged_fields.append(f)
                         continue
                     if (
@@ -331,6 +347,23 @@ class Converter:
                         or prior.required != f.required
                         or prior.nullable != f.nullable
                     ):
+                        # Real, confirmed case (not hypothetical, found wiring
+                        # Nnef_EventExposure, ADR-0209): an abstract base allOf member
+                        # intentionally leaves a field's item type unconstrained (`items: {}`,
+                        # converted to the `nlohmann::json` placeholder above) and a later
+                        # allOf member narrows it to a specific type -- standard JSON-Schema
+                        # allOf composition (the effective type is the more specific one), not
+                        # a genuine conflict. required/nullable must still agree; only the type
+                        # is allowed to narrow, and only one side may be the opaque placeholder.
+                        if (
+                            prior.required == f.required
+                            and prior.nullable == f.nullable
+                            and _is_opaque_type_ref(prior.type_ref) != _is_opaque_type_ref(f.type_ref)
+                        ):
+                            narrower = f if _is_opaque_type_ref(prior.type_ref) else prior
+                            seen_by_json_name[f.json_name] = narrower
+                            merged_fields[index_by_json_name[f.json_name]] = narrower
+                            continue
                         raise NotImplementedError(
                             f"{name}: allOf members disagree on field '{f.json_name}' "
                             f"(first: {prior.type_ref}, required={prior.required}; "

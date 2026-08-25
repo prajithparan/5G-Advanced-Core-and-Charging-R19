@@ -91,7 +91,7 @@
 // strongly-connected-component-grouped header rather than a standalone TS29572_Nlmf_Location.hpp
 // -- same real cross-file $ref-cycle mechanism already documented in nfs/gmlc/src/main.cpp's own
 // include comment (ADR-0189), not specific to this NF.
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 // Gap-closure (ADR-0193 audit, ADR-0196): Nlmf_Broadcast/Nlmf_DataExposure's own types stayed in
 // their own standalone headers (no cross-file $ref cycle pulled them into the shared group
 // header above).

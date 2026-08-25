@@ -122,4 +122,21 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// ADR-0209 (gap-closure task #164, third NEF slice). Backs Nnef_EventExposure's Individual
+// Network Exposure Event Subscription resource (TS29591). Same real create/get/put/remove shape
+// as `PfdSubscriptionStore` -- no PATCH exists on this real resource (only Create/Get/Replace/
+// Delete per its own YAML).
+class NefEventExposureSubStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> get(const std::string& sub_id);
+    bool put(const std::string& sub_id, nlohmann::json subscription);
+    bool remove(const std::string& sub_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
 } // namespace nef

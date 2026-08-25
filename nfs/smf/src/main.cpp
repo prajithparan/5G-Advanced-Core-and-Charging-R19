@@ -129,7 +129,7 @@
 #include <thread>
 #include <unordered_map>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "TS29542_Nsmf_NIDD.hpp"
 #include "event_subscription_store.hpp"
 #include "nas_5gsm_codec.hpp"

@@ -93,7 +93,7 @@
 // UpdateIndMBSPolicy) added -- 3 of the remaining 5 real Tier-A gaps (2 remain:
 // Npcf_PDTQPolicyControl, Npcf_BDTPolicyControl). AppAmContextRespData and AmEventsSubscRespData
 // are real anyOf-of-two-full-objects shapes tools/sbi-codegen falls back to an opaque
-// nlohmann::json typedef for (see TS29122_CommonData_grp.hpp's own "OPAQUE FALLBACK" comment) --
+// nlohmann::json typedef for (see TS26510_CommonData_grp.hpp's own "OPAQUE FALLBACK" comment) --
 // routes return the real stored representation directly rather than fabricating a merged shape.
 // Real name collision found and fixed wiring Npcf_MBSPolicyAuthorization: MbsExtProblemDetails is
 // independently declared by the already-wired TS29521_Nbsf_Management.yaml too (an unrelated real
@@ -136,7 +136,7 @@
 #include <optional>
 #include <thread>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "TS29537_Npcf_MBSPolicyAuthorization.hpp"
 #include "TS29537_Npcf_MBSPolicyControl.hpp"
 #include "stores.hpp"
@@ -1076,7 +1076,7 @@ int main() {
                                          "/events-subscription");
             }
             // EventsSubscPutData is an opaque anyOf shape tools/sbi-codegen couldn't resolve into
-            // a typed struct (see TS29122_CommonData_grp.hpp's own "OPAQUE FALLBACK" comment) --
+            // a typed struct (see TS26510_CommonData_grp.hpp's own "OPAQUE FALLBACK" comment) --
             // returning the real stored EventsSubscReqData representation instead: real,
             // schema-compatible content, not a fabricated shape.
             resp.body = j.dump();
@@ -1332,7 +1332,7 @@ int main() {
             resp.headers.emplace("location",
                                  std::string(kAmPolicyAuthApiRoot) + "/app-am-contexts/" + id);
             // AppAmContextRespData is an opaque anyOf shape tools/sbi-codegen couldn't resolve
-            // into a typed struct (see TS29122_CommonData_grp.hpp's own "OPAQUE FALLBACK"
+            // into a typed struct (see TS26510_CommonData_grp.hpp's own "OPAQUE FALLBACK"
             // comment) -- returning the real stored AppAmContextData representation instead: real
             // schema-compatible content, not a fabricated shape. Disclosed: no real event-matching
             // logic exists in this build, so the response never embeds an AmEventsNotification.

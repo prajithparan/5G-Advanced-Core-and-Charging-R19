@@ -85,6 +85,9 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29256_Nnef_Authentication.yaml
     TS29591_Nnef_ECSAddress.yaml
     TS29522_ECSAddress.yaml
+    TS29591_Nnef_EventExposure.yaml
+    TS29517_Naf_EventExposure.yaml
+    TS26512_EventExposure.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -155,6 +158,9 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29256_Nnef_Authentication.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_ECSAddress.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29522_ECSAddress.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_EventExposure.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29517_Naf_EventExposure.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS26512_EventExposure.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES

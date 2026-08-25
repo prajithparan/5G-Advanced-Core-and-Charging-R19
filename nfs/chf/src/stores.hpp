@@ -8,12 +8,12 @@
 #include <vector>
 
 // TS29594_Nchf_SpendingLimitControl's own real types (SpendingLimitContext/Status/
-// PolicyCounterInfo/etc.) now live in TS29122_CommonData_grp.hpp -- adding
+// PolicyCounterInfo/etc.) now live in TS26510_CommonData_grp.hpp -- adding
 // TS29519_Policy_Data.yaml as a codegen pilot file (ADR-0072) created a new file-level cross-
 // reference cycle that pulled TS29594's own schemas into the shared SCC group; see
 // libs/sbi-generated/CMakeLists.txt's own comment on why a stale include here would otherwise
 // silently keep compiling against last build's now-wrong header name.
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 
 // Private to nfs/chf -- not shared with any other NF, per CLAUDE.md's "no NF includes another
 // NF's private headers" rule.

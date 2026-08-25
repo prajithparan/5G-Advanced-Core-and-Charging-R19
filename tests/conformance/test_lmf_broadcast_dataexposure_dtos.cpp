@@ -3,11 +3,11 @@
 // specs/5G_APIs-REL-19/TS29572_Nlmf_Broadcast.yaml, TS29572_Nlmf_DataExposure.yaml. Same
 // precedent as test_lmf_dtos.cpp: construct -> to_json -> from_json -> compare, using the real
 // generated types, not synthetic ones. Both land in their own standalone headers (no cross-file
-// $ref cycle pulled them into the shared TS29122_CommonData_grp.hpp).
+// $ref cycle pulled them into the shared TS26510_CommonData_grp.hpp).
 
 #include <nlohmann/json.hpp>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "TS29572_Nlmf_Broadcast.hpp"
 #include "TS29572_Nlmf_DataExposure.hpp"
 

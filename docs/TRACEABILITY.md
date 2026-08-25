@@ -4180,3 +4180,26 @@ up a third/new real same-named collision from `Nnef_SMContext`'s own schemas; `A
 `tests/integration/test_smf_pdu_session.cpp`/`test_ausf_ue_authentication.cpp` to the newly
 generated suffixed names -- pure renames, no behavioral change, confirmed by the explicit
 SMF/AMF/AUSF re-runs above. See ADR-0208 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0209 -- NEF `Nnef_EventExposure` (fourteenth ADR-0193 gap-closure, third NEF slice); real codegen allOf-narrowing fix; real project-wide common-data group rename
+
+| Requirement | Test |
+|---|---|
+| `Nnef_EventExposure` full lifecycle (create/read/put/delete) | `NefEventExposureIntegration.CreateReadPutDeleteLifecycle`: real `201`/`200`/`200`(PUT, `notifId` change verified)/`204`, real `404` on repeat delete |
+| `Nnef_EventExposure` required-field validation | `NefEventExposureIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `notifUri` |
+| No regression -- new work | Full reconfigure+rebuild against the complete pilot set clean; both new tests pass |
+| No regression -- codegen fix + group rename | Full suite re-run clean: 419/419 (`ctest --timeout 120 -E "UdrIntegration.AmfContextLifecycle\|UdmIntegration.SdmDataRetrievalAndSubscriptions"`) |
+
+Real Tier-A gap-closure (third of NEF's own remaining slices, task #164 -- 5 of 13 files remain).
+Two real findings beyond the gap-closure itself, both fully disclosed in ADR-0208's own successor
+entry (ADR-0209) in `docs/DECISIONS.md`: (1) a real `tools/sbi-codegen` limitation -- the generator
+couldn't distinguish a genuine allOf field conflict from `TS26512_EventExposure.yaml`'s own real
+"abstract base (`items: {}`, deliberately unconstrained) narrowed by a concrete allOf subtype
+(specific `$ref`)" pattern, fixed properly in the shared generator (`schema_to_ir.py`'s new
+`_is_opaque_type_ref` helper), not routed around; (2) that fix's own real, large, disclosed
+consequence -- pulling in `TS26512_EventExposure.yaml`/`TS29517_Naf_EventExposure.yaml` bridged a
+real cyclic `$ref` into this project's pre-existing giant common-data SCC group, renaming its own
+generated file project-wide (`TS29122_CommonData_grp.hpp` -> `TS26510_CommonData_grp.hpp`,
+deterministic per `render.py`'s own `sorted(file_stems)[0]` naming rule), breaking 21 real
+`#include` lines across `nfs/`/`tests/` until fixed as a mechanical rename (plus 15 stale
+comment-only mentions kept accurate). See ADR-0209 in `docs/DECISIONS.md` for full disclosure.

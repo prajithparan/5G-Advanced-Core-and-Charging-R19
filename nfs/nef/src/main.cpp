@@ -62,7 +62,7 @@
 // owns at least one schema, so `TS29522_DNAIMapping.yaml` needed its own, additional pilot-set
 // entry for `DnaiMapSub`/`DnaiMapUpdateNotif` to actually generate; the prior "only the
 // entry-point file needs adding" rule (confirmed by reading `loader.py`, ADR-0193/ADR-0201) holds
-// for common-data groupings folded into `TS29122_CommonData_grp.hpp`, but not for a distinct,
+// for common-data groupings folded into `TS26510_CommonData_grp.hpp`, but not for a distinct,
 // separately-numbered 3GPP schema file like this one. Disclosed: `FetchUEId`/
 // `UEIDMappingInfoRetrieval` both real-`204` ("does not exist") since this NEF has no real
 // roaming H-NEF/internal-UE-identity mapping database to look anything up in, matching the real
@@ -89,6 +89,24 @@
 // `nfs/smf/src/main.cpp`, 2 in `nfs/amf/src/ngap_task.cpp`, 8 in `nfs/ausf/src/main.cpp`, and 5
 // across two integration test files to the newly-suffixed real generated names -- pure renames, no
 // behavioral change (see ADR-0208 for full detail and the explicit SMF/AMF/AUSF re-verification).
+//
+// UPDATE (ADR-0209, gap-closure task #164, third NEF slice): `Nnef_EventExposure` (TS29591, 4 ops:
+// Create/Get/Replace(PUT)/Delete subscription) added -- 8 of NEF's remaining 13 real Tier-A gaps
+// (5 remain: `Nnef_Inference`, `Nnef_TrafficInfluenceData`, `Nnef_Training`, `Nnef_VFLInference`,
+// `Nnef_VFLTraining`). Same real, disclosed non-scope as every other EventExposure-family gap
+// closed this project: the subscription resource is real, live CRUD, but no notification is ever
+// actually fired (no real cross-NF event-detection pipeline exists to trigger one). Two real
+// findings beyond the gap itself, both fully disclosed in ADR-0209: (1) a real `tools/sbi-codegen`
+// limitation -- `TS26512_EventExposure.yaml`'s own real "abstract base (`items: {}`, deliberately
+// unconstrained) narrowed by a concrete allOf subtype" pattern tripped the generator's existing
+// allOf-conflict safety check (ADR-0190); fixed properly in the shared generator itself
+// (`schema_to_ir.py`'s new `_is_opaque_type_ref` helper), not routed around. (2) That fix's own
+// real, disclosed, project-wide consequence -- pulling in the two dependency files this required
+// (`TS26512_EventExposure.yaml`, `TS29517_Naf_EventExposure.yaml`) bridged a real cyclic `$ref`
+// into this project's pre-existing giant common-data SCC group, renaming its own generated file
+// project-wide (`TS29122_CommonData_grp.hpp` -> `TS26510_CommonData_grp.hpp`, deterministic per
+// `render.py`'s own naming rule), which broke 21 real `#include` lines across `nfs/`/`tests/`
+// until fixed as a mechanical rename -- see ADR-0209 for the full file list and re-verification.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -111,6 +129,7 @@
 #include <thread>
 #include <vector>
 
+#include "TS26510_CommonData_grp.hpp"
 #include "TS29256_Nnef_Authentication.hpp"
 #include "TS29522_DNAIMapping.hpp"
 #include "TS29541_Nnef_SMContext.hpp"
@@ -145,6 +164,8 @@ constexpr const char* kEasDeploymentApiRoot = "/nnef-eas-deployment/v1";
 constexpr const char* kSmContextApiRoot = "/nnef-smcontext/v1";
 constexpr const char* kAuthenticationApiRoot = "/nnef-authentication/v1";
 constexpr const char* kEcsAddressApiRoot = "/nnef-ecs-addr-cfg-info/v1";
+// ADR-0209 (gap-closure task #164, third NEF slice).
+constexpr const char* kEventExposureApiRoot = "/nnef-eventexposure/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -302,6 +323,7 @@ int main() {
     nef::EasDeploySubStore eas_deploy_subs;
     nef::SmContextStore sm_contexts;
     nef::EcsAddrCfgInfoSubStore ecs_addr_subs;
+    nef::NefEventExposureSubStore event_exposure_subs;
 
     auto meter = sbi_core::get_meter("nef");
     auto all_fetch_counter = meter->CreateUInt64Counter("nef_pfd_all_fetch_total",
@@ -350,6 +372,15 @@ int main() {
         "nef_ecs_addr_sub_patch_total", "Total Nnef_ECSAddress ModifyIndividualSubcription calls");
     auto ecs_addr_delete_counter = meter->CreateUInt64Counter(
         "nef_ecs_addr_sub_delete_total", "Total Nnef_ECSAddress DeleteIndividualSubcription calls");
+    auto event_exposure_create_counter = meter->CreateUInt64Counter(
+        "nef_event_exposure_sub_create_total",
+        "Total Nnef_EventExposure CreateIndividualSubcription calls");
+    auto event_exposure_put_counter = meter->CreateUInt64Counter(
+        "nef_event_exposure_sub_put_total",
+        "Total Nnef_EventExposure ReplaceIndividualSubcription calls");
+    auto event_exposure_delete_counter = meter->CreateUInt64Counter(
+        "nef_event_exposure_sub_delete_total",
+        "Total Nnef_EventExposure DeleteIndividualSubcription calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -994,6 +1025,92 @@ int main() {
                     404, "Not Found", "No ECS address subscription " + id);
             }
             ecs_addr_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_EventExposure (ADR-0209, gap-closure task #164, third NEF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kEventExposureApiRoot) + "/subscriptions",
+        [&verifier, &event_exposure_subs, &event_exposure_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::NefEventExposureSubsc>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = event_exposure_subs.create(j);
+            event_exposure_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kEventExposureApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &event_exposure_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            auto sub = event_exposure_subs.get(id);
+            if (!sub.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No event exposure subscription " + id);
+            }
+            return sbi_core::http2::Response::json(200, sub->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &event_exposure_subs, &event_exposure_put_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::NefEventExposureSubsc>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            if (!event_exposure_subs.put(id, j)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No event exposure subscription " + id);
+            }
+            event_exposure_put_counter->Add(1);
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kEventExposureApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &event_exposure_subs, &event_exposure_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            if (!event_exposure_subs.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No event exposure subscription " + id);
+            }
+            event_exposure_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

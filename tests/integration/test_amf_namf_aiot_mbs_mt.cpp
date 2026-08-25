@@ -21,7 +21,7 @@
 #include <thread>
 #include <unistd.h>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "TS29518_Namf_AIoT.hpp"
 #include "TS29518_Namf_MBSBroadcast.hpp"
 #include "TS29518_Namf_MBSCommunication.hpp"

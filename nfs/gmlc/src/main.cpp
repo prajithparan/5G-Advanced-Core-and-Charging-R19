@@ -59,7 +59,7 @@
 // -- see tools/sbi-codegen/sbi_codegen/render.py's own module docstring for why (real, cross-file
 // $ref cycles with TS29572_Nlmf_Location.yaml force the merge, same mechanism already documented
 // project-wide, not specific to this NF).
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "nf_config/nf_config.hpp"
 #include "stores.hpp"
 

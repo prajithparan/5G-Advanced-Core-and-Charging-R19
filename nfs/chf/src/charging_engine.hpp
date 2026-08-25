@@ -22,9 +22,9 @@
 #include <optional>
 #include <string>
 
-// TS29594_Nchf_SpendingLimitControl's own types now live in TS29122_CommonData_grp.hpp -- see
+// TS29594_Nchf_SpendingLimitControl's own types now live in TS26510_CommonData_grp.hpp -- see
 // stores.hpp's own comment (ADR-0072).
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "ai_inference.hpp"
 #include "bss_sid/balance.hpp"
 #include "bss_sid/product.hpp"

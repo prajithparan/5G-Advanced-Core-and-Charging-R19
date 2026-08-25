@@ -6,7 +6,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "TS29518_Namf_MBSBroadcast.hpp"
 
 // Private to nfs/amf. Five id-keyed subscription stores, plus one id-keyed non-subscription

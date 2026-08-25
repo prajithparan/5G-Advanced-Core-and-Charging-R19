@@ -22,7 +22,7 @@
 #include <thread>
 #include <unistd.h>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 #include "TS29503_Nudm_MT.hpp"
 #include "TS29503_Nudm_UEID.hpp"
 

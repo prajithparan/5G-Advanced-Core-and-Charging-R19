@@ -1,7 +1,7 @@
 // Round-trip schema-conformance test for tools/sbi-codegen output (Phase 1,
 // DoD item 6: "Conformance test against the generated OpenAPI schema
 // (request AND response)"). Exercises real generated types -- not synthetic
-// ones -- from the merged TS29122_CommonData_grp header (see
+// ones -- from the merged TS26510_CommonData_grp header (see
 // docs/DECISIONS.md ADR-0010 for why 22 source YAML files ended up merged
 // into that one header: a genuine circular dependency in 3GPP's own schema
 // graph, not a codegen artifact).
@@ -23,7 +23,7 @@
 #include <filesystem>
 #include <fstream>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 
 #include <gtest/gtest.h>
 

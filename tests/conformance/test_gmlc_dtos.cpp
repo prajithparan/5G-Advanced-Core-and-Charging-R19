@@ -2,12 +2,12 @@
 // Source: specs/5G_APIs-REL-19/TS29515_Ngmlc_Location.yaml. Same precedent as
 // test_smsf_dtos.cpp/test_eir_dtos.cpp: construct -> to_json -> from_json -> compare, using the
 // real generated types, not synthetic ones. These types land in the shared,
-// strongly-connected-component-grouped TS29122_CommonData_grp.hpp rather than a standalone
+// strongly-connected-component-grouped TS26510_CommonData_grp.hpp rather than a standalone
 // TS29515_Ngmlc_Location.hpp -- see nfs/gmlc/src/main.cpp's own include comment for why.
 
 #include <nlohmann/json.hpp>
 
-#include "TS29122_CommonData_grp.hpp"
+#include "TS26510_CommonData_grp.hpp"
 
 #include <gtest/gtest.h>
 
