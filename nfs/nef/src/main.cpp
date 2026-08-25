@@ -45,6 +45,30 @@
 //    timestamps -- correct for this project's own generated `DateTime` string format (always
 //    zero-padded, always UTC/`Z`-suffixed), a real, disclosed narrower assumption than a full
 //    calendar-aware datetime comparison would need for arbitrary input formats.
+//
+// UPDATE (ADR-0207, gap-closure task #164, first of NEF's own remaining Tier-A slices):
+// `Nnef_SMService` (TS29541, 1 op: SendSMS -- real `multipart/related` handling reusing the
+// already-wired `SmsData`/`SmsDeliveryData` types from `TS29577_Nipsmgw_SMService.yaml`, same
+// pattern as `nfs/smsf`'s own `SendMtSMS`, ADR-0188), `Nnef_UEId` (TS29591, 2 ops: FetchUEId,
+// UEIDMappingInfoRetrieval), `Nnef_DNAIMapping` (TS29591 paths +
+// `TS29522_DNAIMapping.yaml` schemas, 3 ops: create/get/delete subscription), and
+// `Nnef_EASDeployment` (TS29591, 3 ops: create/get/delete subscription) added -- 4 of NEF's
+// remaining 13 real Tier-A gaps (9 remain: `Nnef_SMContext`, `Nnef_ECSAddress`,
+// `Nnef_EventExposure`, `Nnef_Inference`, `Nnef_TrafficInfluenceData`, `Nnef_Training`,
+// `Nnef_VFLInference`, `Nnef_VFLTraining`, `Nnef_Authentication`). Real finding: unlike prior
+// cross-file `$ref` cases in this project, `TS29591_Nnef_DNAIMapping.yaml` itself owns zero
+// schemas (its request/response types are entirely `$ref`'d from the separate, real
+// `TS29522_DNAIMapping.yaml`) -- `tools/sbi-codegen` only emits a real output file for a YAML that
+// owns at least one schema, so `TS29522_DNAIMapping.yaml` needed its own, additional pilot-set
+// entry for `DnaiMapSub`/`DnaiMapUpdateNotif` to actually generate; the prior "only the
+// entry-point file needs adding" rule (confirmed by reading `loader.py`, ADR-0193/ADR-0201) holds
+// for common-data groupings folded into `TS29122_CommonData_grp.hpp`, but not for a distinct,
+// separately-numbered 3GPP schema file like this one. Disclosed: `FetchUEId`/
+// `UEIDMappingInfoRetrieval` both real-`204` ("does not exist") since this NEF has no real
+// roaming H-NEF/internal-UE-identity mapping database to look anything up in, matching the real
+// YAML's own documented semantics for that case, not a fabricated lookup. `SendSMS` carries the
+// same disclosed non-scope as `nfs/smsf`'s own `SendMtSMS`: no real TS 24.011 SMS-DELIVER-REPORT
+// encoder and no real onward IP-SM-GW/SMSF relay exist in this build.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -52,6 +76,7 @@
 #include "sbi_core/jwt.hpp"
 #include "sbi_core/logging.hpp"
 #include "sbi_core/metrics.hpp"
+#include "sbi_core/multipart.hpp"
 #include "sbi_core/oauth2_client.hpp"
 #include "sbi_core/otel.hpp"
 #include "sbi_core/sbi_headers.hpp"
@@ -66,7 +91,11 @@
 #include <thread>
 #include <vector>
 
+#include "TS29522_DNAIMapping.hpp"
 #include "TS29551_Nnef_PFDmanagement.hpp"
+#include "TS29577_Nipsmgw_SMService.hpp"
+#include "TS29591_Nnef_EASDeployment.hpp"
+#include "TS29591_Nnef_UEId.hpp"
 #include "nf_config/nf_config.hpp"
 #include "stores.hpp"
 
@@ -83,6 +112,12 @@ using nlohmann::json;
 
 constexpr const char* kNfType = "NEF";
 constexpr const char* kApiRoot = "/nnef-pfdmanagement/v1";
+// ADR-0207 (gap-closure task #164, first NEF slice). Real api roots confirmed from each YAML's
+// own `servers:` block.
+constexpr const char* kSmServiceApiRoot = "/nnef-smservice/v1";
+constexpr const char* kUeIdApiRoot = "/nnef-ueid/v1";
+constexpr const char* kDnaiMappingApiRoot = "/nnef-dnai-mapping/v1";
+constexpr const char* kEasDeploymentApiRoot = "/nnef-eas-deployment/v1";
 
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
@@ -236,6 +271,8 @@ int main() {
     nef::PfdCatalogStore pfd_catalog;
     seed_pfd_catalog(pfd_catalog);
     nef::PfdSubscriptionStore subscriptions;
+    nef::DnaiMapSubStore dnai_map_subs;
+    nef::EasDeploySubStore eas_deploy_subs;
 
     auto meter = sbi_core::get_meter("nef");
     auto all_fetch_counter = meter->CreateUInt64Counter("nef_pfd_all_fetch_total",
@@ -250,6 +287,22 @@ int main() {
         "nef_pfd_sub_modify_total", "Total Nnef_PFDmanagement_ModifySubscr calls");
     auto sub_delete_counter = meter->CreateUInt64Counter(
         "nef_pfd_sub_delete_total", "Total Nnef_PFDmanagement_Unsubscribe calls");
+    auto send_sms_counter =
+        meter->CreateUInt64Counter("nef_send_sms_total", "Total Nnef_SMService SendSMS calls");
+    auto fetch_ueid_counter =
+        meter->CreateUInt64Counter("nef_fetch_ueid_total", "Total Nnef_UEId FetchUEId calls");
+    auto ueid_mapping_counter = meter->CreateUInt64Counter(
+        "nef_ueid_mapping_total", "Total Nnef_UEId UEIDMappingInfoRetrieval calls");
+    auto dnai_map_create_counter = meter->CreateUInt64Counter(
+        "nef_dnai_map_create_total", "Total Nnef_DNAIMapping CreateIndividualSubcription calls");
+    auto dnai_map_delete_counter = meter->CreateUInt64Counter(
+        "nef_dnai_map_delete_total", "Total Nnef_DNAIMapping DeleteIndividualSubcription calls");
+    auto eas_deploy_create_counter =
+        meter->CreateUInt64Counter("nef_eas_deploy_create_total",
+                                   "Total Nnef_EASDeployment CreateIndividualSubcription calls");
+    auto eas_deploy_delete_counter =
+        meter->CreateUInt64Counter("nef_eas_deploy_delete_total",
+                                   "Total Nnef_EASDeployment DeleteIndividualSubcription calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -391,6 +444,234 @@ int main() {
                 return sbi_core::http2::problem_response(404, "Not Found", "No subscription " + id);
             }
             sub_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_SMService (ADR-0207, gap-closure task #164, first NEF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kSmServiceApiRoot) + "/sm-contexts/{supi}/sendsms",
+        [&verifier, &send_sms_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto content_type_it = req.headers.find("content-type");
+            if (content_type_it == req.headers.end()) {
+                return sbi_core::http2::problem_response(
+                    400, "Invalid Service Request", "Content-Type header is required");
+            }
+            auto parts = sbi_core::multipart::parse(content_type_it->second, req.body);
+            if (!parts.has_value() || parts->empty()) {
+                return sbi_core::http2::problem_response(
+                    400, "Invalid Service Request", "Malformed multipart/related body");
+            }
+            sbi_gen::SmsData jsonData;
+            try {
+                jsonData = json::parse((*parts)[0].body).get<sbi_gen::SmsData>();
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(400, "Invalid Service Request", e.what());
+            }
+            bool found_payload = false;
+            for (const auto& part : *parts) {
+                if (part.content_id.has_value() &&
+                    *part.content_id == jsonData.smsPayload.contentId) {
+                    found_payload = true;
+                    break;
+                }
+            }
+            if (!found_payload) {
+                return sbi_core::http2::problem_response(
+                    400, "Invalid Service Request", "smsPayload binary part not found");
+            }
+
+            send_sms_counter->Add(1);
+            // Real, disclosed simplification -- same class of gap as nfs/smsf's own
+            // SendMtSMS (ADR-0188): no real TS 24.011 SMS-DELIVER-REPORT encoder exists in this
+            // build, so the binary delivery-report part is an honest empty placeholder, not a
+            // fabricated PDU. This NEF also has no real onward IP-SM-GW/SMSF relay wired -- the
+            // real ack is NEF-level acceptance only, same disclosed non-scope.
+            sbi_gen::SmsDeliveryData resp_json;
+            resp_json.smsPayload.contentId = "smsPayload";
+
+            sbi_core::multipart::Part json_part;
+            json_part.content_type = "application/json";
+            json_part.body = json(resp_json).dump();
+            sbi_core::multipart::Part bin_part;
+            bin_part.content_type = "application/vnd.3gpp.sms";
+            bin_part.content_id = "smsPayload";
+            const auto encoded = sbi_core::multipart::encode({json_part, bin_part});
+
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", encoded.content_type_header);
+            resp.body = encoded.body;
+            return resp;
+        });
+
+    // --- Nnef_UEId (ADR-0207, gap-closure task #164, first NEF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kUeIdApiRoot) + "/fetch",
+        [&verifier, &fetch_ueid_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::UeIdReq>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            fetch_ueid_counter->Add(1);
+            // Real, disclosed gap: this NEF has no real roaming H-NEF/internal-UE-identity
+            // mapping database to look anything up in -- real 204 "does not exist", matching the
+            // real YAML's own documented semantics for this case, not a fabricated lookup.
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kUeIdApiRoot) + "/get-ueid-mapping",
+        [&verifier, &ueid_mapping_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::MapUeIdInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            ueid_mapping_counter->Add(1);
+            // Same real, disclosed gap as FetchUEId above -- no real UE ID mapping database.
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_DNAIMapping (ADR-0207, gap-closure task #164, first NEF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kDnaiMappingApiRoot) + "/subscriptions",
+        [&verifier, &dnai_map_subs, &dnai_map_create_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::DnaiMapSub>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = dnai_map_subs.create(j);
+            dnai_map_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kDnaiMappingApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kDnaiMappingApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &dnai_map_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            auto sub = dnai_map_subs.get(id);
+            if (!sub.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No DNAI mapping subscription " + id);
+            }
+            return sbi_core::http2::Response::json(200, sub->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kDnaiMappingApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &dnai_map_subs, &dnai_map_delete_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            if (!dnai_map_subs.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No DNAI mapping subscription " + id);
+            }
+            dnai_map_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nnef_EASDeployment (ADR-0207, gap-closure task #164, first NEF slice) ---
+
+    server.add_route(
+        "POST",
+        std::string(kEasDeploymentApiRoot) + "/subscriptions",
+        [&verifier, &eas_deploy_subs, &eas_deploy_create_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::EasDeploySubData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = eas_deploy_subs.create(j);
+            eas_deploy_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kEasDeploymentApiRoot) + "/subscriptions/" + id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kEasDeploymentApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &eas_deploy_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            auto sub = eas_deploy_subs.get(id);
+            if (!sub.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No EAS deployment subscription " + id);
+            }
+            return sbi_core::http2::Response::json(200, sub->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kEasDeploymentApiRoot) + "/subscriptions/{subscriptionId}",
+        [&verifier, &eas_deploy_subs, &eas_deploy_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("subscriptionId");
+            if (!eas_deploy_subs.remove(id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No EAS deployment subscription " + id);
+            }
+            eas_deploy_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

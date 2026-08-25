@@ -78,4 +78,46 @@ bool PfdSubscriptionStore::remove(const std::string& sub_id) {
     return subscriptions_.erase(sub_id) > 0;
 }
 
+std::string DnaiMapSubStore::create(nlohmann::json subscription) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "dnaimapsub-" + std::to_string(next_id_++);
+    subscriptions_.emplace(id, std::move(subscription));
+    return id;
+}
+
+std::optional<nlohmann::json> DnaiMapSubStore::get(const std::string& sub_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(sub_id);
+    if (it == subscriptions_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool DnaiMapSubStore::remove(const std::string& sub_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return subscriptions_.erase(sub_id) > 0;
+}
+
+std::string EasDeploySubStore::create(nlohmann::json subscription) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "easdeploysub-" + std::to_string(next_id_++);
+    subscriptions_.emplace(id, std::move(subscription));
+    return id;
+}
+
+std::optional<nlohmann::json> EasDeploySubStore::get(const std::string& sub_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(sub_id);
+    if (it == subscriptions_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool EasDeploySubStore::remove(const std::string& sub_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return subscriptions_.erase(sub_id) > 0;
+}
+
 } // namespace nef

@@ -45,6 +45,11 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29531_Nnssf_NSSAIAvailability.yaml
     TS29521_Nbsf_Management.yaml
     TS29551_Nnef_PFDmanagement.yaml
+    TS29541_Nnef_SMService.yaml
+    TS29591_Nnef_UEId.yaml
+    TS29591_Nnef_DNAIMapping.yaml
+    TS29522_DNAIMapping.yaml
+    TS29591_Nnef_EASDeployment.yaml
     TS29570_Nscp_EventExposure.yaml
     TS29511_N5g-eir_EquipmentIdentityCheck.yaml
     TS29540_Nsmsf_SMService.yaml
@@ -106,6 +111,11 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29531_Nnssf_NSSAIAvailability.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29521_Nbsf_Management.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29551_Nnef_PFDmanagement.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29541_Nnef_SMService.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_UEId.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_DNAIMapping.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29522_DNAIMapping.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_EASDeployment.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29570_Nscp_EventExposure.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29511_N5g-eir_EquipmentIdentityCheck.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29540_Nsmsf_SMService.yaml

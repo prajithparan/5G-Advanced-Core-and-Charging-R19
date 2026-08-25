@@ -55,4 +55,35 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// ADR-0207 (gap-closure task #164, first NEF slice). Backs Nnef_DNAIMapping's individual DNAI
+// Mapping Subscription resource (TS29591 paths + TS29522_DNAIMapping.yaml schemas) -- keyed by an
+// NEF-generated subscriptionId. Same real create/get/remove shape as `PfdSubscriptionStore`
+// above, deliberately re-implemented as its own class (not shared) since each real resource type
+// has its own real id namespace/lifecycle.
+class DnaiMapSubStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> get(const std::string& sub_id);
+    bool remove(const std::string& sub_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
+// ADR-0207 (gap-closure task #164, first NEF slice). Backs Nnef_EASDeployment's individual EAS
+// Deployment Event Subscription resource (TS29591). Keyed by an NEF-generated subscriptionId.
+class EasDeploySubStore {
+public:
+    std::string create(nlohmann::json subscription);
+    std::optional<nlohmann::json> get(const std::string& sub_id);
+    bool remove(const std::string& sub_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
 } // namespace nef

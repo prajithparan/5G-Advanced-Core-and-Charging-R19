@@ -4130,3 +4130,27 @@ disclosed constraint: `Npcf_BDTPolicyControl`'s `CreateBDTPolicy` never populate
 `bdtPolData` (no real BDT decision engine exists in this build to produce one), so
 `UpdateBDTPolicy`'s own transfer-policy-selection path always real-`400`s -- there is nothing
 valid to select. See ADR-0206 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0207 -- NEF `Nnef_SMService` + `Nnef_UEId` + `Nnef_DNAIMapping` + `Nnef_EASDeployment` (twelfth ADR-0193 gap-closure, first NEF slice)
+
+| Requirement | Test |
+|---|---|
+| `Nnef_SMService` real multipart round-trip | `NefSMServiceIntegration.SendSMSReturnsRealMultipartDeliveryReport`: real `200` with a verified two-part `multipart/related` request/response, `Content-Id` matched |
+| `Nnef_UEId` honest no-match responses | `NefUEIdIntegration.FetchAndMappingBothReturnRealHonestNoContent`: real `204` for both `FetchUEId` and `UEIDMappingInfoRetrieval` |
+| `Nnef_DNAIMapping` full lifecycle | `NefDNAIMappingIntegration.CreateReadDeleteLifecycle`: real `201`/`200`/`204`, real `404` on repeat delete |
+| `Nnef_DNAIMapping` required-field validation | `NefDNAIMappingIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `notifCorrId` |
+| `Nnef_EASDeployment` full lifecycle | `NefEASDeploymentIntegration.CreateReadDeleteLifecycle`: real `201`/`200`/`204`, real `404` on repeat delete |
+| `Nnef_EASDeployment` required-field validation | `NefEASDeploymentIntegration.CreateWithMissingRequiredFieldIs400`: real `400` on a body missing `notifId` |
+| No regression | Full reconfigure+rebuild against the complete pilot set clean (`EXIT=0` verified from the build log); all 6 new tests pass; full suite 412/412 |
+
+Real Tier-A gap-closure (first of NEF's own remaining slices, task #164 -- 9 of 13 files remain).
+NEF's own first-ever live integration test (`NEF_PATH` newly added to
+`tests/integration/CMakeLists.txt`; the pre-existing `Nnef_PFDmanagement`, ADR-0185, had only DTO
+conformance tests, disclosed as a real, pre-existing gap not introduced by this ADR). Real codegen
+limitation found and worked around: `TS29591_Nnef_DNAIMapping.yaml` owns zero schemas of its own
+(both request/response types are `$ref`'d entirely from the separate `TS29522_DNAIMapping.yaml`) --
+`tools/sbi-codegen` only emits an output file for a pilot-set YAML that owns at least one schema,
+so `TS29522_DNAIMapping.yaml` needed its own additional pilot-set entry. Real, preserved (not
+"fixed") spec quirk: `Nnef_SMService`'s own `securitySchemes` block declares scope
+`nnef-smcontext`, not `nnef-smservice`, a genuine mismatch in the vendored 3GPP spec text itself.
+See ADR-0207 in `docs/DECISIONS.md` for full disclosure.
