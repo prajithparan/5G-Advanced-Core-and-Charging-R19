@@ -367,6 +367,8 @@ int main() {
     sbi_core::jwt::Verifier verifier(CERTS_DIR "/nrf-jwt/public.pem", kNrfInstanceId);
 
     udm::AmfRegistrationStore amf_registrations;
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0215).
+    udm::RoamingInfoUpdateStore roaming_info_updates;
     udm::SmfRegistrationStore smf_registrations;
     udm::SdmSubscriptionStore sdm_subscriptions;
     udm::AuthenticationSubscriptionStore auth_subscriptions;
@@ -422,6 +424,11 @@ int main() {
         meter->CreateUInt64Counter("udm_amf_registration_total", "Total 3GppRegistration calls");
     auto amf_dereg_counter =
         meter->CreateUInt64Counter("udm_amf_deregistration_total", "Total deregAMF calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0215).
+    auto pei_update_counter =
+        meter->CreateUInt64Counter("udm_pei_update_total", "Total PeiUpdate calls");
+    auto roaming_info_update_counter = meter->CreateUInt64Counter(
+        "udm_roaming_info_update_total", "Total UpdateRoamingInformation calls");
     auto smf_reg_counter =
         meter->CreateUInt64Counter("udm_smf_registration_total", "Total SMF Registration calls");
     auto smf_dereg_counter =
@@ -573,6 +580,72 @@ int main() {
             amf_dereg_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
+            return resp;
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0215): real, previously
+    // undisclosed `PeiUpdate` -- real RFC 7396 merge into the already-existing AMF 3GPP-access
+    // registration document's own `pei` field (reuses `AmfRegistrationStore::merge_patch`
+    // verbatim), not a new resource.
+    server.add_route(
+        "POST",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/amf-3gpp-access/pei-update",
+        [&verifier, &amf_registrations, &pei_update_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::PeiUpdateInfo_Nudm_UECM>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const json patch = json{{"pei", body->pei}};
+            if (!amf_registrations.merge_patch(ue_id, patch).has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AMF 3GPP-access registration for ueId " + ue_id);
+            }
+            pei_update_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0215): real, previously
+    // undisclosed `UpdateRoamingInformation` -- genuinely distinct real resource from the AMF
+    // 3GPP-access registration document itself (own real `RoamingInfoUpdate` schema, own real
+    // `201`-with-`Location`-vs-`204` pair), backed by the new `RoamingInfoUpdateStore`.
+    server.add_route(
+        "POST",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/amf-3gpp-access/roaming-info-update",
+        [&verifier, &roaming_info_updates, &roaming_info_update_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::RoamingInfoUpdate>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const bool is_new = !roaming_info_updates.get(ue_id).has_value();
+            json j = *body;
+            roaming_info_updates.put(ue_id, j);
+            roaming_info_update_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            if (is_new) {
+                resp.status = 201;
+                resp.headers.emplace("content-type", "application/json");
+                resp.headers.emplace("location",
+                                     std::string(kUecmApiRoot) + "/" + ue_id +
+                                         "/registrations/amf-3gpp-access/roaming-info-update");
+                resp.body = j.dump();
+            } else {
+                resp.status = 204;
+            }
             return resp;
         });
 

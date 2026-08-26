@@ -4329,3 +4329,20 @@ fabricated value. `GetRgAuthData`'s own `authInd` is backed by a new
 than echoing the caller's unverified claim. One real bug of my own caught and fixed in the test
 (not the implementation): asserted the wrong JSON key (`n3gAkaAv`, the C++ member name) instead of
 the real schema key (`"3gAkaAv"`). See ADR-0214 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0215 -- UDM `Nudm_UECM` Tier-B gap-closure (second slice: `PeiUpdate`/`UpdateRoamingInformation`)
+
+| Requirement | Test |
+|---|---|
+| `PeiUpdate` real merge into existing AMF registration | `UdmUecmGapClosureIntegration.PeiUpdateMergesIntoExistingAmfRegistration`: real `404` with no registration, real `204` after seeding one, GET confirms `pei` merged and prior fields survived |
+| `UpdateRoamingInformation` real distinct resource, `201`-vs-`204` pair | `UdmUecmGapClosureIntegration.UpdateRoamingInformationRealCreateThenUpdate`: real `201`+`Location`+body on first call, real `204` on second |
+| No regression | Full reconfigure+rebuild clean; both new tests pass; full suite 441/441 |
+
+Second slice off `Nudm_UECM`'s own Tier-B backlog. Per the background audit (ADR-0214), most of
+the remaining ~24 `Nudm_UECM` operations genuinely depend on other not-yet-built sub-resources
+(`amfNon3Gpp`/`smsf3Gpp`/`smsfNon3Gpp`/`ipSmGw`/`nwdafRegistration`) -- this slice picks the two
+confirmed independent of that chain. `PeiUpdate` reuses `AmfRegistrationStore::merge_patch`
+verbatim, no new store. `UpdateRoamingInformation` gets a new `RoamingInfoUpdateStore` (its own
+real resource, own real `201`-with-`Location`-vs-`204` response pair, confirmed distinct from the
+AMF registration document by its own real response schema). See ADR-0215 in `docs/DECISIONS.md`
+for full disclosure.

@@ -1338,9 +1338,12 @@ UDM has the largest raw undisclosed-op count -- **UDM is now the only NF with a 
 item project-wide.** A background audit (fork) produced the first real per-operation breakdown
 (replacing the earlier rough counts): ~~`Nudm_UEAU` (3 ops: `GetRgAuthData`, `GenerateAv`,
 `GenerateGbaAv`)~~ **CLOSED, ADR-0214** (first slice, smallest/clearest); `Nudm_UECM` (~24 ops:
-`GetRegistrations` bare aggregate, `SendRoutingInfoSm`, `PeiUpdate`/`UpdateRoamingInformation`,
-the full non-3gpp-access triple, smsf-3gpp/non-3gpp-access groups, ip-sm-gw-registration group,
-`Trigger P-CSCF Restoration`, `GetLocationInfo`, nwdaf-registrations group, `authTrigger`);
+`GetRegistrations` bare aggregate, `SendRoutingInfoSm`, ~~`PeiUpdate`/`UpdateRoamingInformation`~~
+**CLOSED, ADR-0215** (second slice -- the two confirmed independent of the other still-missing
+sub-resources below), the full non-3gpp-access triple, smsf-3gpp/non-3gpp-access groups,
+ip-sm-gw-registration group, `Trigger P-CSCF Restoration`, `GetLocationInfo`, nwdaf-registrations
+group, `authTrigger` -- `GetRegistrations`/`SendRoutingInfoSm` genuinely depend on these still-open
+sub-resources, confirmed by direct read of their own real response schemas, not assumed);
 `Nudm_SDM` (~33 ops: 21 simple per-SUPI GETs likely needing the existing UDM->UDR proxy pattern
 confirmed first rather than a new UDM-local store, plus 5 SOR/UPU/ack write ops, the 5-op
 non-per-UE shared-data family, and 2 identifier-lookup ops); `Nudm_PP` (11 ops: the

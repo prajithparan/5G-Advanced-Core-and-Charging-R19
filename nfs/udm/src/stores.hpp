@@ -102,6 +102,22 @@ private:
     std::unordered_map<std::string, nlohmann::json> registrations_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0215). Backs
+// `UpdateRoamingInformation`
+// (`/{ueId}/registrations/amf-3gpp-access/roaming-info-update`) -- real, genuinely distinct
+// resource from `AmfRegistrationStore` above (its own real `RoamingInfoUpdate` schema, its own
+// real `201`-with-`Location`-vs-`204` response pair, not a field merged into the AMF registration
+// document itself).
+class RoamingInfoUpdateStore {
+public:
+    void put(const std::string& ue_id, nlohmann::json info);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> info_;
+};
+
 // Backs Nudm_UECM's SMF registration group (Registration, RetrieveSmfRegistration,
 // UpdateSmfRegistration, SmfDeregistration, GetSmfRegistration). Keyed by (ueId, pduSessionId) --
 // a UE can have multiple concurrent PDU sessions, each with its own SMF registration

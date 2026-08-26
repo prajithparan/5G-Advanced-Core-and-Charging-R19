@@ -32,6 +32,20 @@ bool AmfRegistrationStore::remove(const std::string& ue_id) {
     return registrations_.erase(ue_id) > 0;
 }
 
+void RoamingInfoUpdateStore::put(const std::string& ue_id, nlohmann::json info) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    info_[ue_id] = std::move(info);
+}
+
+std::optional<nlohmann::json> RoamingInfoUpdateStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = info_.find(ue_id);
+    if (it == info_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
 void SmfRegistrationStore::put(const std::string& ue_id,
                                const std::string& pdu_session_id,
                                nlohmann::json registration) {

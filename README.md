@@ -135,11 +135,13 @@ the spec, and that resource was already fully implemented), and **UDR**'s remain
 Information, `ReadBdtData` collection GET, and the `Policy_Data`-specific Policy Data
 Subscriptions family). **UDR now has zero known Tier-B gaps.** UDM is now the only remaining real
 Tier-B item project-wide; a background audit produced the first real per-operation breakdown
-(`Nudm_UECM` ~24, `Nudm_SDM` ~33, `Nudm_PP` 11 already flagged deferred in ADR-0082) and closed the
-first slice: **UDM** `Nudm_UEAU`'s 3 operations — `GetRgAuthData`, `GenerateAv` (real HSS
+(`Nudm_UECM` ~24, `Nudm_SDM` ~33, `Nudm_PP` 11 already flagged deferred in ADR-0082) and closed two
+slices: **UDM** `Nudm_UEAU`'s 3 operations — `GetRgAuthData`, `GenerateAv` (real HSS
 EPS/IMS/GBA-domain vectors, real `501` for the one branch needing a KDF not yet in
-`libs/aka-crypto`), `GenerateGbaAv` (ADR-0214) — individual stubbed/missing operations within
-already-wired files, not a structural gap.
+`libs/aka-crypto`), `GenerateGbaAv` (ADR-0214) — and `Nudm_UECM`'s `PeiUpdate` +
+`UpdateRoamingInformation` (ADR-0215, the two ops confirmed independent of `Nudm_UECM`'s other
+still-missing sub-resources) — individual stubbed/missing operations within already-wired files,
+not a structural gap.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
