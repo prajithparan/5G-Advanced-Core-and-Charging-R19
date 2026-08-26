@@ -1087,6 +1087,18 @@ bool BdtDataStore::remove(const std::string& bdt_ref_id) {
     return result.affected_rows() > 0;
 }
 
+std::vector<nlohmann::json> BdtDataStore::list_all() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_bdt_data");
+    std::vector<nlohmann::json> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
 PlmnUePolicySetStore::PlmnUePolicySetStore(const std::string& conninfo) : conn_(conninfo) {}
 
 void PlmnUePolicySetStore::seed(const std::string& plmn_id, nlohmann::json data) {
@@ -2846,6 +2858,117 @@ std::optional<nlohmann::json> MbsSessionPolicyDataStore::get(const std::string& 
         return std::nullopt;
     }
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+UsageMonDataStore::UsageMonDataStore(const std::string& conninfo) : conn_(conninfo) {}
+
+void UsageMonDataStore::put(const std::string& ue_id,
+                            const std::string& usage_mon_id,
+                            nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_usage_mon_data (ue_id, usage_mon_id, data) "
+             "VALUES ($1, $2, $3::jsonb) "
+             "ON CONFLICT (ue_id, usage_mon_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, usage_mon_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> UsageMonDataStore::get(const std::string& ue_id,
+                                                     const std::string& usage_mon_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_usage_mon_data "
+                                 "WHERE ue_id = $1 AND usage_mon_id = $2",
+                                 pqxx::params{ue_id, usage_mon_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+bool UsageMonDataStore::remove(const std::string& ue_id, const std::string& usage_mon_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_usage_mon_data "
+                                 "WHERE ue_id = $1 AND usage_mon_id = $2",
+                                 pqxx::params{ue_id, usage_mon_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
+std::vector<nlohmann::json> UsageMonDataStore::list_by_ue_id(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_usage_mon_data WHERE ue_id = $1", pqxx::params{ue_id});
+    std::vector<nlohmann::json> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
+PolicyDataSubsToNotifyStore::PolicyDataSubsToNotifyStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+void PolicyDataSubsToNotifyStore::create(const std::string& subs_id,
+                                         const std::optional<std::string>& ue_id,
+                                         nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_policy_data_subs_to_notify (subs_id, ue_id, data) "
+             "VALUES ($1, $2, $3::jsonb)",
+             pqxx::params{subs_id, ue_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> PolicyDataSubsToNotifyStore::get(const std::string& subs_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_policy_data_subs_to_notify "
+                                 "WHERE subs_id = $1",
+                                 pqxx::params{subs_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::vector<nlohmann::json> PolicyDataSubsToNotifyStore::list_all() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_policy_data_subs_to_notify");
+    std::vector<nlohmann::json> out;
+    out.reserve(static_cast<std::size_t>(result.size()));
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
+std::optional<nlohmann::json> PolicyDataSubsToNotifyStore::replace(const std::string& subs_id,
+                                                                   nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("UPDATE udr_policy_data_subs_to_notify SET data = $2::jsonb "
+                                 "WHERE subs_id = $1",
+                                 pqxx::params{subs_id, data.dump()});
+    if (result.affected_rows() == 0) {
+        return std::nullopt;
+    }
+    txn.commit();
+    return std::make_optional(data);
+}
+
+bool PolicyDataSubsToNotifyStore::remove(const std::string& subs_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_policy_data_subs_to_notify WHERE subs_id = $1",
+                                 pqxx::params{subs_id});
+    txn.commit();
+    return result.affected_rows() > 0;
 }
 
 } // namespace udr

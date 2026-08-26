@@ -4281,3 +4281,28 @@ collection is `POST`-only) and that resource is already fully implemented (task 
 documentation-only correction, no code change. UDR's `Subscription_Data.yaml` Tier-B item is now
 fully closed; `Policy_Data.yaml`'s own ~12 undisclosed operations and UDM's ~58+ remain the two
 largest real Tier-B items still open. See ADR-0212 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0213 -- UDR `Policy_Data.yaml` Tier-B gap-closure (all ~12 undisclosed operations closed)
+
+| Requirement | Test |
+|---|---|
+| `CreateUsageMonitoringResource`/`ReadUsageMonitoringInformation`/`DeleteUsageMonitoringInformation`, keyed by `(ueId, usageMonId)` | `UdrPolicyDataGapClosureIntegration.UsageMonitoringResourceLifecycle`: real `404` before PUT, real `201`+`Location` on PUT, real `200` round-trip on GET, real `204` DELETE, real `404` after |
+| `ReadPolicyData` composes the real `PolicyDataForIndividualUe` aggregate | `UdrPolicyDataGapClosureIntegration.ReadPolicyDataComposesSeededSubResources`: seeded `am-data`/`ue-policy-set`/usage-mon-data all present with no filter, `data-subset-names=AM_POLICY_DATA` filter returns only `amPolicyDataSet`, unknown `ueId` returns real `200 {}` |
+| `ReadBdtData` real bare collection GET | `UdrPolicyDataGapClosureIntegration.ReadBdtDataListsSeededDataAndHonorsFilter`: seeded individual BDT Data doc appears in the collection GET, `bdt-ref-ids` filter excludes it for an unrelated id |
+| `CreateIndividualPolicyDataSubscription`/`ReadPolicyDataSubscriptions`/`ReadIndividualPolicySubscriptionData`/`ReplaceIndividualPolicyDataSubscription`/`DeleteIndividualPolicyDataSubscription` | `UdrPolicyDataGapClosureIntegration.PolicyDataSubsToNotifyLifecycle`: real `201`+`Location` on POST, collection GET lists it, individual GET `200`, PUT replace returns the real replaced body, DELETE `204`, GET after `404` |
+| No regression | Full reconfigure+rebuild clean; all 4 new tests pass; full suite 436/436 |
+
+Closes UDR's own remaining Tier-B backlog in full -- **UDR now has zero known Tier-B gaps.** New
+`UsageMonDataStore` and `PolicyDataSubsToNotifyStore` (`nfs/udr/src/stores.hpp`/`.cpp`,
+`udr_usage_mon_data`/`udr_policy_data_subs_to_notify` tables) back two real new resources; the
+bare `{ueId}` aggregate (`ReadPolicyData`) and bare `bdt-data` collection GET (`ReadBdtData`)
+compose entirely from already-existing stores, zero new schema for those two routes. Real,
+disclosed: the collection GET's own optional `mon-resources`/`ue-id` filters are accepted but not
+honored (`PolicyDataSubscription`'s own body has no `ueId` field, confirmed absent from the real
+schema), and the spec's own `policyDataChangeNotification` webhook callback is not implemented.
+A real test-design finding, not a code bug: this project's own dev PostgreSQL container is
+long-lived and shared across test runs, so an initial test assertion about a seeded `ueId`'s
+absent `smPolicyDataSet` failed against real leftover state from an unrelated, earlier test
+(ADR-0072/ADR-0084's own N28 wiring) -- fixed by not asserting on that ambient state. UDM's ~58+
+undisclosed operations (`Nudm_UECM`/`Nudm_SDM`/`UEAU`/`PP`) are now the only remaining real Tier-B
+item project-wide. See ADR-0213 in `docs/DECISIONS.md` for full disclosure.

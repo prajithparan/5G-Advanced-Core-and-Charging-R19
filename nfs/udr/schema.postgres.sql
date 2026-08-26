@@ -1192,3 +1192,32 @@ CREATE TABLE IF NOT EXISTS udr_mbs_session_pol_data (
     pol_session_id  TEXT   PRIMARY KEY,
     data            JSONB  NOT NULL
 );
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0213). Real Usage Monitoring
+-- Information (Document) resource (`/policy-data/ues/{ueId}/sm-data/{usageMonId}`,
+-- CreateUsageMonitoringResource/ReadUsageMonitoringInformation/
+-- DeleteUsageMonitoringInformation -- real PUT+GET+DELETE), keyed by `(ueId, usageMonId)`.
+-- Real, disclosed: the spec's own GET documents a `204` ("found but no data") state distinct from
+-- `404` -- this single-row-per-key model has no such intermediate state, so an absent row is
+-- always the real `404`.
+CREATE TABLE IF NOT EXISTS udr_usage_mon_data (
+    ue_id          TEXT   NOT NULL,
+    usage_mon_id   TEXT   NOT NULL,
+    data           JSONB  NOT NULL,
+    PRIMARY KEY (ue_id, usage_mon_id)
+);
+
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0213). Real `policy-data` group's
+-- own Policy Data Subscriptions (Collection) + Individual Policy (Data) Subscription (Document)
+-- resources (CreateIndividualPolicyDataSubscription/ReadPolicyDataSubscriptions/
+-- ReadIndividualPolicySubscriptionData/ReplaceIndividualPolicyDataSubscription/
+-- DeleteIndividualPolicyDataSubscription), real schema PolicyDataSubscription -- genuinely
+-- distinct real resource from udr_subs_to_notify above (different schema, different real
+-- individual-modify verb: PUT full replace here vs RFC 6902 PATCH there). `ue_id` nullable per
+-- udr_subs_to_notify's own ADR-0176 schema-fix precedent (a policy data subscription need not be
+-- per-UE). subs_id server-generated (real UUID v4, same precedent as udr_subs_to_notify).
+CREATE TABLE IF NOT EXISTS udr_policy_data_subs_to_notify (
+    subs_id  TEXT PRIMARY KEY,
+    ue_id    TEXT,
+    data     JSONB NOT NULL
+);

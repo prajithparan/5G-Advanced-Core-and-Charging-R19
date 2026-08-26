@@ -1061,6 +1061,9 @@ int main() {
     udr::SponsorConnectivityDataStore sponsor_connectivity_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0116).
     udr::BdtDataStore bdt_data(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0213).
+    udr::UsageMonDataStore usage_mon_data(conninfo);
+    udr::PolicyDataSubsToNotifyStore policy_data_subs_to_notify(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0117).
     udr::PlmnUePolicySetStore plmn_ue_policy_set(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0118).
@@ -1643,6 +1646,30 @@ int main() {
                                                              "Total UpdateIndividualBdtData calls");
     auto bdt_data_delete_counter = meter->CreateUInt64Counter(
         "udr_bdt_data_delete_total", "Total DeleteIndividualBdtData calls");
+    auto bdt_data_list_counter =
+        meter->CreateUInt64Counter("udr_bdt_data_list_total", "Total ReadBdtData calls");
+    auto usage_mon_data_put_counter = meter->CreateUInt64Counter(
+        "udr_usage_mon_data_put_total", "Total CreateUsageMonitoringResource calls");
+    auto usage_mon_data_get_counter = meter->CreateUInt64Counter(
+        "udr_usage_mon_data_get_total", "Total ReadUsageMonitoringInformation calls");
+    auto usage_mon_data_delete_counter = meter->CreateUInt64Counter(
+        "udr_usage_mon_data_delete_total", "Total DeleteUsageMonitoringInformation calls");
+    auto policy_data_read_counter =
+        meter->CreateUInt64Counter("udr_policy_data_read_total", "Total ReadPolicyData calls");
+    auto policy_data_subs_to_notify_list_counter = meter->CreateUInt64Counter(
+        "udr_policy_data_subs_to_notify_list_total", "Total ReadPolicyDataSubscriptions calls");
+    auto policy_data_subs_to_notify_create_counter =
+        meter->CreateUInt64Counter("udr_policy_data_subs_to_notify_create_total",
+                                   "Total CreateIndividualPolicyDataSubscription calls");
+    auto policy_data_subs_to_notify_get_counter =
+        meter->CreateUInt64Counter("udr_policy_data_subs_to_notify_get_total",
+                                   "Total ReadIndividualPolicySubscriptionData calls");
+    auto policy_data_subs_to_notify_replace_counter =
+        meter->CreateUInt64Counter("udr_policy_data_subs_to_notify_replace_total",
+                                   "Total ReplaceIndividualPolicyDataSubscription calls");
+    auto policy_data_subs_to_notify_delete_counter =
+        meter->CreateUInt64Counter("udr_policy_data_subs_to_notify_delete_total",
+                                   "Total DeleteIndividualPolicyDataSubscription calls");
     auto plmn_ue_policy_set_get_counter = meter->CreateUInt64Counter(
         "udr_plmn_ue_policy_set_get_total", "Total ReadPlmnUePolicySet calls");
     auto slice_control_data_get_counter = meter->CreateUInt64Counter(
@@ -2585,6 +2612,157 @@ int main() {
             // this project returns 200 with the real updated document, same real information a
             // future GUI editing this resource would want back without a second GET round-trip.
             return sbi_core::http2::Response::json(200, patched.dump());
+        });
+
+    // --- Nudr_DataRepository: policy-data group, Usage Monitoring Information (Document)
+    // resource (ADR-0213, gap-closure task #106) -- real PUT (create)+GET+DELETE per
+    // TS29519_Policy_Data.yaml, keyed by (ueId, usageMonId). Real, disclosed: the spec's own GET
+    // documents a real `204` ("found but no data") distinct from `404` -- this project's
+    // single-row-per-key model has no exists-but-empty state, so an absent row is the real `404`,
+    // not a fabricated `204` (see schema.postgres.sql's own comment). ---
+
+    const std::string usage_mon_data_path_pattern =
+        std::string(kApiRoot) + "/policy-data/ues/{ueId}/sm-data/{usageMonId}";
+
+    server.add_route(
+        "GET",
+        usage_mon_data_path_pattern,
+        [&verifier, &usage_mon_data, &usage_mon_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto usage_mon_id = req.path_params.at("usageMonId");
+            auto data = usage_mon_data.get(ue_id, usage_mon_id);
+            usage_mon_data_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No usage monitoring data for usageMonId " + usage_mon_id);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        usage_mon_data_path_pattern,
+        [&verifier, &usage_mon_data, &usage_mon_data_put_counter, usage_mon_data_path_pattern](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::UsageMonData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto usage_mon_id = req.path_params.at("usageMonId");
+            json j = *body;
+            usage_mon_data.put(ue_id, usage_mon_id, j);
+            usage_mon_data_put_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 resolved_location(usage_mon_data_path_pattern, req.path_params));
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        usage_mon_data_path_pattern,
+        [&verifier, &usage_mon_data, &usage_mon_data_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto usage_mon_id = req.path_params.at("usageMonId");
+            if (!usage_mon_data.remove(ue_id, usage_mon_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No usage monitoring data for usageMonId " + usage_mon_id);
+            }
+            usage_mon_data_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: PolicyDataForIndividualUe (Document), bare aggregate resource
+    // (ADR-0213, gap-closure task #106) -- real GET-only per TS29519_Policy_Data.yaml,
+    // `ReadPolicyData`. Same real "live view over already-independently-stored sub-resources"
+    // design as `QueryUeSubscribedData`/`QueryProvisionedData` (ADR-0166/ADR-0212): composes
+    // `uePolicyDataSet` (`ue_policy_set`), `smPolicyDataSet` (`sm_policy_data`), `amPolicyDataSet`
+    // (`am_policy_data`), `umData` (new `usage_mon_data`, keyed by `limitId` -- confirmed equal to
+    // `usageMonId`), `operatorSpecificDataSet` (`policy_operator_specific_data`, already the real
+    // map-shaped schema this field needs verbatim). Real, optional `data-subset-names` filter
+    // honored (`PolicyDataSubset` enum: `AM_POLICY_DATA`/`SM_POLICY_DATA`/`UE_POLICY_DATA`/
+    // `UM_DATA`/`OPERATOR_SPECIFIC_DATA`) via the same `wanted(name)` lambda pattern used
+    // elsewhere; absent means every composable field is attempted. Real `200`-always design: an
+    // empty result is `200 {}`, not `404`. ---
+
+    const std::string policy_data_for_ue_path_pattern =
+        std::string(kApiRoot) + "/policy-data/ues/{ueId}";
+
+    server.add_route(
+        "GET",
+        policy_data_for_ue_path_pattern,
+        [&verifier,
+         &ue_policy_set,
+         &sm_policy_data,
+         &am_policy_data,
+         &usage_mon_data,
+         &policy_operator_specific_data,
+         &policy_data_read_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            std::vector<std::string> names;
+            if (const auto names_it = req.query_params.find("data-subset-names");
+                names_it != req.query_params.end()) {
+                names = sbi_core::http2::split_form_array(names_it->second);
+            }
+            const auto wanted = [&names](const char* name) {
+                return names.empty() || std::find(names.begin(), names.end(), name) != names.end();
+            };
+
+            json result = json::object();
+            if (wanted("UE_POLICY_DATA")) {
+                if (auto v = ue_policy_set.get(ue_id); v.has_value()) {
+                    result["uePolicyDataSet"] = *v;
+                }
+            }
+            if (wanted("SM_POLICY_DATA")) {
+                if (auto v = sm_policy_data.get(ue_id); v.has_value()) {
+                    result["smPolicyDataSet"] = *v;
+                }
+            }
+            if (wanted("AM_POLICY_DATA")) {
+                if (auto v = am_policy_data.get(ue_id); v.has_value()) {
+                    result["amPolicyDataSet"] = *v;
+                }
+            }
+            if (wanted("UM_DATA")) {
+                if (auto entries = usage_mon_data.list_by_ue_id(ue_id); !entries.empty()) {
+                    json um = json::object();
+                    for (auto& entry : entries) {
+                        const auto limit_id = entry.at("limitId").get<std::string>();
+                        um[limit_id] = std::move(entry);
+                    }
+                    result["umData"] = std::move(um);
+                }
+            }
+            if (wanted("OPERATOR_SPECIFIC_DATA")) {
+                if (auto v = policy_operator_specific_data.get(ue_id); v.has_value()) {
+                    result["operatorSpecificDataSet"] = *v;
+                }
+            }
+
+            policy_data_read_counter->Add(1);
+            return sbi_core::http2::Response::json(200, result.dump());
         });
 
     // --- Nudr_DataRepository: Authentication Data group (ADR-0083, gap-closure task #106) ---
@@ -4182,6 +4360,45 @@ int main() {
             }
             mbs_session_pol_data_get_counter->Add(1);
             return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    // --- Nudr_DataRepository: policy-data group, bare BDT Data collection GET (ADR-0213,
+    // gap-closure task #106) -- real GET-only per TS29519_Policy_Data.yaml, `ReadBdtData`. Real,
+    // optional `bdt-ref-ids` array filter honored via the same "store returns all, route
+    // filters" pattern as `pdtq-data`'s own collection GET; `supp-feat` accepted but not honored
+    // (no supported-features layer exists in this store). ---
+
+    const std::string bdt_data_collection_path_pattern =
+        std::string(kApiRoot) + "/policy-data/bdt-data";
+
+    server.add_route(
+        "GET",
+        bdt_data_collection_path_pattern,
+        [&verifier, &bdt_data, &bdt_data_list_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            std::vector<std::string> ref_ids;
+            if (const auto ids_it = req.query_params.find("bdt-ref-ids");
+                ids_it != req.query_params.end()) {
+                ref_ids = sbi_core::http2::split_form_array(ids_it->second);
+            }
+            auto all = bdt_data.list_all();
+            json arr = json::array();
+            for (auto& item : all) {
+                if (ref_ids.empty()) {
+                    arr.push_back(std::move(item));
+                    continue;
+                }
+                const auto ref_id_it = item.find("bdtRefId");
+                if (ref_id_it != item.end() &&
+                    std::find(ref_ids.begin(), ref_ids.end(), ref_id_it->get<std::string>()) !=
+                        ref_ids.end()) {
+                    arr.push_back(std::move(item));
+                }
+            }
+            bdt_data_list_counter->Add(1);
+            return sbi_core::http2::Response::json(200, arr.dump());
         });
 
     // --- Nudr_DataRepository: policy-data group, individual BDT Data resource (ADR-0116,
@@ -7947,6 +8164,134 @@ int main() {
                     404, "Not Found", "No Subs To Notify for subsId " + subs_id);
             }
             subs_to_notify_delete_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: policy-data group's own Policy Data Subscriptions (Collection) +
+    // Individual Policy (Data) Subscription (Document) (ADR-0213, gap-closure task #106) -- real
+    // GET+POST on the collection, GET+PUT+DELETE on the individual document, per
+    // TS29519_Policy_Data.yaml. Genuinely distinct real resource from
+    // `Subscription_Data.yaml`'s own `subs-to-notify` above: different real schema
+    // (`PolicyDataSubscription`), different real individual-modify verb (PUT full replace here,
+    // not RFC 6902 PATCH). Real, optional `mon-resources`/`ue-id` collection-GET filters honored
+    // via the same "store returns all, route filters" pattern. Real, disclosed: the spec's own
+    // `policyDataChangeNotification` webhook callback is not implemented -- same disclosed gap
+    // class as `SubsToNotifyStore`'s own pre-ADR-0171 state. `subsId` server-generated (real
+    // UUID v4, same precedent as `subs-to-notify` above). ---
+
+    const std::string policy_subs_to_notify_collection_path_pattern =
+        std::string(kApiRoot) + "/policy-data/subs-to-notify";
+    const std::string policy_subs_to_notify_individual_path_pattern =
+        std::string(kApiRoot) + "/policy-data/subs-to-notify/{subsId}";
+
+    server.add_route(
+        "GET",
+        policy_subs_to_notify_collection_path_pattern,
+        [&verifier, &policy_data_subs_to_notify, &policy_data_subs_to_notify_list_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            // Real, disclosed: the optional `mon-resources`/`ue-id` filters are accepted but not
+            // honored -- `PolicyDataSubscription`'s own body has no `ueId` field to filter by (it
+            // is genuinely not part of this real schema, unlike `SubscriptionDataSubscriptions`'
+            // own), and `monResItems`' per-resource-path granularity isn't modeled by this store.
+            auto all = policy_data_subs_to_notify.list_all();
+            json arr = json::array();
+            for (auto& item : all) {
+                arr.push_back(std::move(item));
+            }
+            policy_data_subs_to_notify_list_counter->Add(1);
+            return sbi_core::http2::Response::json(200, arr.dump());
+        });
+
+    server.add_route(
+        "POST",
+        policy_subs_to_notify_collection_path_pattern,
+        [&verifier,
+         &policy_data_subs_to_notify,
+         &policy_data_subs_to_notify_create_counter,
+         policy_subs_to_notify_collection_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::PolicyDataSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto subs_id = sbi_core::generate_uuid_v4();
+            json j = *body;
+            policy_data_subs_to_notify.create(subs_id, std::nullopt, j);
+            policy_data_subs_to_notify_create_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 policy_subs_to_notify_collection_path_pattern + "/" + subs_id);
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        policy_subs_to_notify_individual_path_pattern,
+        [&verifier, &policy_data_subs_to_notify, &policy_data_subs_to_notify_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto subs_id = req.path_params.at("subsId");
+            auto data = policy_data_subs_to_notify.get(subs_id);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Policy Data Subscription for subsId " + subs_id);
+            }
+            policy_data_subs_to_notify_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "PUT",
+        policy_subs_to_notify_individual_path_pattern,
+        [&verifier, &policy_data_subs_to_notify, &policy_data_subs_to_notify_replace_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::PolicyDataSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto subs_id = req.path_params.at("subsId");
+            json j = *body;
+            auto replaced = policy_data_subs_to_notify.replace(subs_id, j);
+            if (!replaced.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Policy Data Subscription for subsId " + subs_id);
+            }
+            policy_data_subs_to_notify_replace_counter->Add(1);
+            return sbi_core::http2::Response::json(200, replaced->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        policy_subs_to_notify_individual_path_pattern,
+        [&verifier, &policy_data_subs_to_notify, &policy_data_subs_to_notify_delete_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto subs_id = req.path_params.at("subsId");
+            if (!policy_data_subs_to_notify.remove(subs_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Policy Data Subscription for subsId " + subs_id);
+            }
+            policy_data_subs_to_notify_delete_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

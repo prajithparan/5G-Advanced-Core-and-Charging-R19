@@ -1106,6 +1106,17 @@ previously-claimed "`subs-to-notify` bulk-DELETE" gap does not correspond to any
 the spec (the collection is `POST`-only) and that resource is already fully implemented
 (task #122) -- no code fix needed, documentation only.
 
+**Closed, docs/DECISIONS.md ADR-0213**: UDR's own `Policy_Data.yaml` Tier-B backlog, in full --
+`ReadPolicyData` (bare `{ueId}` aggregate, does **NOT** increment the resource-type count, same
+non-double-counting precedent as the aggregates above), Usage Monitoring Information (Document)
+(`sm-data/{usageMonId}`, a real new resource type), `ReadBdtData` (bare `bdt-data` collection GET,
+composed entirely from the already-closed individual `bdt-data/{bdtReferenceId}` resource, does
+**NOT** increment the count), and the `Policy_Data`-specific Policy Data Subscriptions
+(Collection) + Individual Policy (Data) Subscription (Document) (a real new resource type,
+genuinely distinct from `Subscription_Data`'s own `subs-to-notify`). **UDR now has zero known
+Tier-B gaps -- every real operation across both `Subscription_Data.yaml` and `Policy_Data.yaml`
+is either implemented or an explicitly disclosed, out-of-scope gap.**
+
 ---
 
 ## UPF
@@ -1314,9 +1325,10 @@ claimed item, "`subs-to-notify` bulk-DELETE", was a stale/inaccurate claim in th
 itself, corrected (not implemented) by ADR-0212: direct read of `TS29505_Subscription_Data.yaml`
 confirms no such operation exists in the real spec (the collection is `POST`-only; the individual
 resource is `GET`/`PATCH`/`DELETE`), and the entire `subs-to-notify` resource is already fully
-implemented (task #122). `Subscription_Data`'s own Tier-B item is now fully closed. ~12 remain in
+implemented (task #122). `Subscription_Data`'s own Tier-B item is now fully closed. ~~~12 in
 `Policy_Data` (bare `{ueId}` aggregate, `sm-data/{usageMonId}` family, bare `bdt-data` collection
-GET, and an entire `subs-to-notify` subscription family distinct from `Subscription_Data`'s own).
+GET, and an entire `subs-to-notify` subscription family distinct from `Subscription_Data`'s
+own)~~ **CLOSED, ADR-0213 -- UDR now has zero known Tier-B gaps.**
 ~~NRF's 4 undisclosed missing operations (`OptionsNFInstances`, `RetrieveStoredSearch`,
 `RetrieveCompleteSearch`, `RetrieveKeyRequest`)~~ **CLOSED, ADR-0211** (the audit's separately-flagged
 "stale `ScpDomainRoutingInfo*` disclosure comment" was checked directly and found already accurate
@@ -1324,7 +1336,8 @@ in the current source -- not the "SCP isn't built yet" phrasing this audit's own
 had flagged, no fix needed).
 UDM has the largest raw undisclosed-op count (~24 in `Nudm_UECM`, ~34 in `Nudm_SDM`, plus smaller
 gaps in `UEAU`/`PP`) but every one is a real, individually small CRUD/subscription operation
-within already-wired files, not a structural gap.
+within already-wired files, not a structural gap -- **UDM is now the only NF with a known real
+Tier-B item project-wide.**
 
 ### Prioritization for closure (per ADR-0193's continuous, one-at-a-time process)
 

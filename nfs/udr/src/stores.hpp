@@ -613,6 +613,11 @@ public:
     std::optional<nlohmann::json> merge_patch(const std::string& bdt_ref_id,
                                               const nlohmann::json& patch);
     bool remove(const std::string& bdt_ref_id);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0213). Backs the real bare
+    // `ReadBdtData` collection GET -- every stored `BdtData`, the real optional `bdt-ref-ids`
+    // filter applied by the caller (same "store returns all, route filters" precedent as
+    // `PdtqDataStore::list()`/the route's own `wanted()` idiom elsewhere in this file).
+    std::vector<nlohmann::json> list_all();
 
 private:
     std::mutex mutex_;
@@ -1515,6 +1520,61 @@ public:
 
     void seed(const std::string& pol_session_id, nlohmann::json data);
     std::optional<nlohmann::json> get(const std::string& pol_session_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0213). Backs the real
+// `policy-data` group's Usage Monitoring Information (Document) resource
+// (CreateUsageMonitoringResource/ReadUsageMonitoringInformation/DeleteUsageMonitoringInformation
+// -- real PUT (create)+GET+DELETE per TS29519_Policy_Data.yaml), keyed by `(ueId, usageMonId)`.
+// Real, disclosed: the spec's own GET documents a `204` ("resource found but no data") distinct
+// from `404` ("resource not found") -- this project's single-row-per-key model has no
+// exists-but-empty state, so an absent row is always the real `404`, not a fabricated `204`.
+class UsageMonDataStore {
+public:
+    explicit UsageMonDataStore(const std::string& conninfo);
+
+    void put(const std::string& ue_id, const std::string& usage_mon_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id, const std::string& usage_mon_id);
+    bool remove(const std::string& ue_id, const std::string& usage_mon_id);
+    // Backs the bare `{ueId}` aggregate's own `umData` map field (keyed by `limitId`, the real
+    // schema's own key -- confirmed equal to `usageMonId` in every real usage of this resource).
+    std::vector<nlohmann::json> list_by_ue_id(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0213). Backs the real `policy-data`
+// group's own Policy Data Subscriptions (Collection) + Individual Policy (Data) Subscription
+// (Document) resources (CreateIndividualPolicyDataSubscription/ReadPolicyDataSubscriptions/
+// ReadIndividualPolicySubscriptionData/ReplaceIndividualPolicyDataSubscription/
+// DeleteIndividualPolicyDataSubscription) -- genuinely distinct real resource from
+// `Subscription_Data.yaml`'s own `subs-to-notify` (`SubsToNotifyStore` above): different real
+// schema (`PolicyDataSubscription`, not `SubscriptionDataSubscriptions`), different real
+// individual-modify verb (PUT full replace here, RFC 6902 PATCH there), and the real, optional
+// collection-GET filters here are `mon-resources`+`ue-id` (both optional) rather than
+// `Subscription_Data`'s own required `ue-id`. Real, disclosed: the spec's own
+// `policyDataChangeNotification` webhook callback is not implemented -- same disclosed gap class
+// as `SubsToNotifyStore`'s own pre-ADR-0171 state and `Nudr_GroupIDmap`'s own
+// `onGroupIdMapChange`.
+class PolicyDataSubsToNotifyStore {
+public:
+    explicit PolicyDataSubsToNotifyStore(const std::string& conninfo);
+
+    void create(const std::string& subs_id,
+                const std::optional<std::string>& ue_id,
+                nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& subs_id);
+    std::vector<nlohmann::json> list_all();
+    // Real full replace (PUT), not a patch -- returns the replaced document, `std::nullopt` if
+    // `subs_id` doesn't exist.
+    std::optional<nlohmann::json> replace(const std::string& subs_id, nlohmann::json data);
+    bool remove(const std::string& subs_id);
 
 private:
     std::mutex mutex_;

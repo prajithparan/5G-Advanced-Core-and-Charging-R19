@@ -130,10 +130,13 @@ now closed project-wide.** Tier-B closure has begun: **NRF** `OptionsNFInstances
 remaining Tier-B item), and **UDR**'s Individual Authentication Status (Document) +
 `QueryProvisionedData` (ADR-0212 — also corrected a stale claim in the audit doc itself: a
 previously-recorded "`subs-to-notify` bulk-DELETE" gap does not correspond to any real operation in
-the spec, and that resource was already fully implemented). UDR's `Subscription_Data.yaml` Tier-B
-item is now fully closed; its own `Policy_Data.yaml` (~12 undisclosed operations) and UDM (~58+
-undisclosed operations) are the two largest remaining real Tier-B items — individual stubbed/missing
-operations within already-wired files, not structural gaps.
+the spec, and that resource was already fully implemented), and **UDR**'s remaining
+`Policy_Data.yaml` backlog in full (ADR-0213 — `ReadPolicyData` aggregate, Usage Monitoring
+Information, `ReadBdtData` collection GET, and the `Policy_Data`-specific Policy Data
+Subscriptions family). **UDR now has zero known Tier-B gaps.** UDM (~58+ undisclosed operations
+across `Nudm_UECM`/`Nudm_SDM`/`UEAU`/`PP`) is now the only remaining real Tier-B item
+project-wide — individual stubbed/missing operations within already-wired files, not a structural
+gap.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
