@@ -1281,6 +1281,102 @@ int main() {
             return resp;
         });
 
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0220): real, previously
+    // undisclosed `GetRegistrations` bare aggregate -- the last piece unblocked once every
+    // `RegistrationDataSets` field had a real backing store (ADR-0215 through ADR-0219). Composes
+    // from the already-built per-group stores exactly like UDR's own `QueryProvisionedData`
+    // (ADR-0212) and `dataset-names`-filtered routes (`ReadPolicyData`, ADR-0213) compose from
+    // their own stores, reusing the same real `split_form_array()` infra (ADR-0161) for the
+    // required `registration-dataset-names` query param. Real, disclosed: `single-nssai`/`dnn`
+    // query params are accepted but not honored -- the real spec documents them as narrowing the
+    // `SMF_PDU_SESSIONS` dataset's own PDU-session list by slice/DNN, but doing so correctly needs
+    // per-session S-NSSAI/DNN inspection this project hasn't built yet; `SMF_PDU_SESSIONS` always
+    // returns every PDU session's SMF registration for the ueId, unfiltered. `registration-dataset-
+    // names`'s own real `minItems: 2` is enforced as a real `400`, not silently ignored.
+    server.add_route(
+        "GET",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations",
+        [&verifier,
+         &amf_registrations,
+         &amf_non3gpp_registrations,
+         &smf_registrations,
+         &smsf_3gpp_registrations,
+         &smsf_non3gpp_registrations,
+         &ip_sm_gw_registrations,
+         &nwdaf_registrations](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            std::vector<std::string> names;
+            if (const auto it = req.query_params.find("registration-dataset-names");
+                it != req.query_params.end()) {
+                names = sbi_core::http2::split_form_array(it->second);
+            }
+            if (names.size() < 2) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "registration-dataset-names requires at least 2 real dataset names");
+            }
+            const auto wanted = [&names](const char* name) {
+                return std::find(names.begin(), names.end(), name) != names.end();
+            };
+
+            sbi_gen::RegistrationDataSets result{};
+            if (wanted("AMF_3GPP")) {
+                if (auto v = amf_registrations.get(ue_id); v.has_value()) {
+                    result.amf3Gpp = v->get<sbi_gen::Amf3GppAccessRegistration>();
+                }
+            }
+            if (wanted("AMF_NON_3GPP")) {
+                if (auto v = amf_non3gpp_registrations.get(ue_id); v.has_value()) {
+                    result.amfNon3Gpp = v->get<sbi_gen::AmfNon3GppAccessRegistration>();
+                }
+            }
+            if (wanted("SMF_PDU_SESSIONS")) {
+                auto list = smf_registrations.list_for_ue(ue_id);
+                if (!list.empty()) {
+                    json arr = json::array();
+                    for (const auto& r : list) {
+                        arr.push_back(r);
+                    }
+                    sbi_gen::SmfRegistrationInfo info{};
+                    info.smfRegistrationList = arr.get<std::vector<sbi_gen::SmfRegistration>>();
+                    result.smfRegistration = info;
+                }
+            }
+            if (wanted("SMSF_3GPP")) {
+                if (auto v = smsf_3gpp_registrations.get(ue_id); v.has_value()) {
+                    result.smsf3Gpp = v->get<sbi_gen::SmsfRegistration>();
+                }
+            }
+            if (wanted("SMSF_NON_3GPP")) {
+                if (auto v = smsf_non3gpp_registrations.get(ue_id); v.has_value()) {
+                    result.smsfNon3Gpp = v->get<sbi_gen::SmsfRegistration>();
+                }
+            }
+            if (wanted("IP_SM_GW")) {
+                if (auto v = ip_sm_gw_registrations.get(ue_id); v.has_value()) {
+                    result.ipSmGw = v->get<sbi_gen::IpSmGwRegistration>();
+                }
+            }
+            if (wanted("NWDAF")) {
+                auto list = nwdaf_registrations.list_for_ue(ue_id);
+                if (!list.empty()) {
+                    json arr = json::array();
+                    for (const auto& r : list) {
+                        arr.push_back(r);
+                    }
+                    sbi_gen::NwdafRegistrationInfo info{};
+                    info.nwdafRegistrationList = arr.get<std::vector<sbi_gen::NwdafRegistration>>();
+                    result.nwdafRegistration = info;
+                }
+            }
+            json j = result;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
     // --- Nudm_SDM: subscriber data retrieval (ADR-0069, gap-closure Tier 1b: real UDR calls,
     // replacing the permanently-empty stub the file header originally disclosed) ---
 

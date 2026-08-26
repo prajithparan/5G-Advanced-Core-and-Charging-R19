@@ -4415,3 +4415,19 @@ simplifications as every other registration group in this file. Closes the last 
 dependency of `GetRegistrations` -- every `RegistrationDataSets` field now has real backing data,
 though `GetRegistrations`/`SendRoutingInfoSm` themselves remain unimplemented. See ADR-0219 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0220 -- UDM `Nudm_UECM` Tier-B gap-closure (seventh slice: `GetRegistrations` bare aggregate)
+
+| Requirement | Test |
+|---|---|
+| `GetRegistrations` composes `RegistrationDataSets` from real per-group stores, gated by the required `registration-dataset-names` query param | `UdmGetRegistrationsGapClosureIntegration.ComposesAndFiltersRealRegistrationDataSets`: seeds real AMF_3GPP/SMSF_3GPP/NWDAF sub-resources; real `400` on a single dataset name (real spec `minItems: 2`); a 4-name request returns exactly the 3 seeded fields with correct data, omitting the unseeded 4th; narrowing to 2 of 3 seeded names correctly excludes the third |
+| No regression | Full reconfigure+rebuild clean; new test passes; full suite 446/446 |
+
+Seventh slice off `Nudm_UECM`'s own Tier-B backlog -- `GetRegistrations` itself, now that every
+`RegistrationDataSets` field has real backing data (ADR-0215 through ADR-0219). Reuses the real
+`split_form_array()` array-query-param infra (ADR-0161) for `registration-dataset-names`, the same
+pattern as UDR's own `QueryProvisionedData`/`ReadPolicyData` dataset-name filters. Real, disclosed
+simplification: `single-nssai`/`dnn` query params are accepted but not honored -- `SMF_PDU_SESSIONS`
+always returns every PDU session unfiltered, since per-session S-NSSAI/DNN inspection isn't built.
+`SendRoutingInfoSm` remains the next open item. See ADR-0220 in `docs/DECISIONS.md` for full
+disclosure.

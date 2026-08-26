@@ -136,7 +136,7 @@ Information, `ReadBdtData` collection GET, and the `Policy_Data`-specific Policy
 Subscriptions family). **UDR now has zero known Tier-B gaps.** UDM is now the only remaining real
 Tier-B item project-wide; a background audit produced the first real per-operation breakdown
 (`Nudm_UECM` ~24, `Nudm_SDM` ~33, `Nudm_PP` 11 already flagged deferred in ADR-0082) and closed
-six slices: **UDM** `Nudm_UEAU`'s 3 operations — `GetRgAuthData`, `GenerateAv` (real HSS
+seven slices: **UDM** `Nudm_UEAU`'s 3 operations — `GetRgAuthData`, `GenerateAv` (real HSS
 EPS/IMS/GBA-domain vectors, real `501` for the one branch needing a KDF not yet in
 `libs/aka-crypto`), `GenerateGbaAv` (ADR-0214) — `Nudm_UECM`'s `PeiUpdate` +
 `UpdateRoamingInformation` (ADR-0215), `Nudm_UECM`'s AMF non-3GPP-access registration group
@@ -145,12 +145,14 @@ already-built `amf-3gpp-access` group), `Nudm_UECM`'s SMSF registration groups (
 3GPP-access and non-3GPP-access, ADR-0217, sharing the identical `SmsfRegistration` schema),
 `Nudm_UECM`'s IP-SM-GW registration resource (`IpSmGwRegistration`/`GetIpSmGwRegistration`/
 `IpSmGwDeregistration`, ADR-0218 — genuinely no PATCH exists for this resource in the real spec
-at all), and `Nudm_UECM`'s NWDAF registration group
+at all), `Nudm_UECM`'s NWDAF registration group
 (`NwdafRegistration`/`GetNwdafRegistration`/`NwdafDeregistration`/`UpdateNwdafRegistration`,
 ADR-0219 — real finding: no individual GET exists for a single NWDAF registration at all, only the
-collection GET) — individual stubbed/missing operations within already-wired files, not a
-structural gap. Every `RegistrationDataSets` field is now backed by real data, though
-`GetRegistrations`/`SendRoutingInfoSm` themselves remain unimplemented.
+collection GET), and `Nudm_UECM`'s `GetRegistrations` bare aggregate itself (ADR-0220 — composes
+`RegistrationDataSets` from the six real per-group stores, gated by the required
+`registration-dataset-names` query param; disclosed: `single-nssai`/`dnn` filtering of the
+`SMF_PDU_SESSIONS` dataset not honored) — individual stubbed/missing operations within
+already-wired files, not a structural gap. `SendRoutingInfoSm` remains the next open item.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
