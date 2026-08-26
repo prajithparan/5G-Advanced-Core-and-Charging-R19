@@ -19555,3 +19555,42 @@ not a redesign of the build (no compiler cache/ccache, no reduced translation-un
 `build`/`tsan` still fail after this change, the next step is a deeper investigation (e.g. adding
 `ccache`, splitting the sanitizer matrix across more runners, or an even lower `-j` cap) rather than
 re-declaring this "flakiness" again.
+
+### Real, live verification of this ADR's own fix (run `32993336424`, the push containing it)
+
+- **`build`**: real `success` on the `Build` step itself -- direct confirmation the `-j2` cap fixed
+  the `pfcp_peer.cpp` stall this ADR targeted. The job's overall conclusion was still `failure`,
+  but from a *different*, later step (`Test`/`ctest`) -- see below, a real but separate finding.
+- **`sanitize (asan-ubsan)`**: failed again, but from a *different* signature than this ADR's own
+  target pattern -- died only 5.5 minutes in, at target 42 of 1408 (far too early for memory
+  pressure), with GitHub's own explicit annotation "The runner has received a shutdown signal...
+  This can happen when the runner service is stopped, or a manually started runner is canceled."
+  This is the account-level runner-reclaim pattern ADR-0124/ADR-0132 already disclosed and
+  mitigated (concurrency-group cancellation of *superseded* runs) -- not new, and this ADR's `-j2`
+  extension was never meant to address it; the two patterns are genuinely distinct despite both
+  ending in exit 143.
+- **`sanitize (tsan)`**: `cancelled`, not because of its own health -- GitHub Actions' default
+  `fail-fast: true` (no override previously set on this matrix) killed the still-running, unrelated
+  `tsan` leg the instant `asan-ubsan` failed. Real, observed waste: `tsan` might have passed cleanly
+  and told us nothing was wrong with it, but fail-fast discarded that signal. Fixed in this same
+  ADR: `strategy.fail-fast: false` added to the `sanitize` matrix job.
+- **`Test` step, `build` job -- a real, separate finding, not yet fixed here**: `ctest` reported
+  `96% tests passed, 20 tests failed out of 447`. All 20 were `Nef*Integration` tests (test IDs
+  91-109, every remaining NEF test in the suite) failing with `Error: null context when
+  constructing CivetServer. Possible problem binding to port.` The real root: test #90,
+  `NefSMServiceIntegration.SendSMSReturnsRealMultipartDeliveryReport`, genuinely timed out at the
+  full 120s (`ctest --timeout 120`) -- confirmed via three local runs *this same session*
+  (`full_ctest219.log`/`220`/`221`) where this exact test passed in 0.42-0.44s every time, ruling
+  out a deterministic bug in the SendSMS handler itself. The real, disclosed structural gap this
+  exposes: this project's own integration-test pattern (`fork()`+`execl()` to spawn real NF child
+  processes, reaped by an explicit `reap()` call at the end of each `TEST()` body) has no cleanup
+  path for the case where `ctest`'s own `--timeout` kills the test binary *before* it reaches that
+  `reap()` call -- the spawned NF child (here, `nef`) is orphaned still holding its port, and every
+  later test needing that same port fails to bind. This is the same underlying class of issue as
+  the already-tracked, not-yet-root-caused `UdrIntegration.AmfContextLifecycle` hang (task #165)
+  and `test_udm_uecm_sdm.cpp` timing fragility (task #166) -- not new, not caused by this session's
+  own UDM/CI changes (zero `nfs/nef` files touched this session), and **not fixed by this ADR**.
+  A real, general fix (e.g. process-group-based cleanup so a `SIGKILL`/`SIGTERM` to the test binary
+  also reaps its children, or a per-test RAII guard) is real, valuable work but a distinct,
+  larger-scoped initiative from this ADR's own `-j2`/`fail-fast` build-parallelism fix -- flagged
+  as follow-up, not silently absorbed into "still flaky."

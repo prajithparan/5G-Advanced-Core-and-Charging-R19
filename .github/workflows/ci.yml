@@ -276,6 +276,12 @@ jobs:
   sanitize:
     runs-on: ubuntu-latest
     strategy:
+      # fail-fast: false (ADR-0222) -- real, observed waste: default fail-fast:true cancelled a
+      # still-running, unrelated `tsan` leg the moment `asan-ubsan` failed from a GitHub-infra-level
+      # runner reclaim ("The runner has received a shutdown signal", unrelated to tsan's own
+      # progress or health). The two sanitizer legs test genuinely independent things and share no
+      # state; one leg's infra hiccup should not discard the other's real signal.
+      fail-fast: false
       matrix:
         sanitizer: [asan-ubsan, tsan]
     # See the build job's identical services block comment (ADR-0054/P4.7).
