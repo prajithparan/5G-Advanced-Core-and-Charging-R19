@@ -374,6 +374,8 @@ int main() {
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0217).
     udm::SmsfRegistrationStore smsf_3gpp_registrations;
     udm::SmsfRegistrationStore smsf_non3gpp_registrations;
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0218).
+    udm::IpSmGwRegistrationStore ip_sm_gw_registrations;
     udm::SmfRegistrationStore smf_registrations;
     udm::SdmSubscriptionStore sdm_subscriptions;
     udm::AuthenticationSubscriptionStore auth_subscriptions;
@@ -452,6 +454,11 @@ int main() {
         "udm_smsf_non3gpp_deregistration_total", "Total Non3GppSmsfDeregistration calls");
     auto smsf_non3gpp_patch_counter = meter->CreateUInt64Counter(
         "udm_smsf_non3gpp_patch_total", "Total UpdateSmsfNon3GppRegistration calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0218).
+    auto ip_sm_gw_reg_counter = meter->CreateUInt64Counter("udm_ip_sm_gw_registration_total",
+                                                           "Total IpSmGwRegistration calls");
+    auto ip_sm_gw_dereg_counter = meter->CreateUInt64Counter("udm_ip_sm_gw_deregistration_total",
+                                                             "Total IpSmGwDeregistration calls");
     auto smf_reg_counter =
         meter->CreateUInt64Counter("udm_smf_registration_total", "Total SMF Registration calls");
     auto smf_dereg_counter =
@@ -953,6 +960,78 @@ int main() {
                     404, "Not Found", "No SMSF non-3GPP-access registration for ueId " + ue_id);
             }
             smsf_non3gpp_patch_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0218): real, previously
+    // undisclosed IP-SM-GW registration resource -- real PUT+GET+DELETE, no PATCH exists for this
+    // resource in the real spec at all (genuinely simpler than the AMF/SMSF registration groups
+    // above, not an oversight). Real, disclosed: PUT uses only `201`/`200` (not the real spec's
+    // third alternative bodyless `204`), same convention already established for every other
+    // registration group in this file.
+    server.add_route(
+        "PUT",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/ip-sm-gw",
+        [&verifier, &ip_sm_gw_registrations, &ip_sm_gw_reg_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::IpSmGwRegistration>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const bool is_new = !ip_sm_gw_registrations.get(ue_id).has_value();
+            json j = *body;
+            ip_sm_gw_registrations.put(ue_id, j);
+            ip_sm_gw_reg_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = is_new ? 201 : 200;
+            resp.headers.emplace("content-type", "application/json");
+            if (is_new) {
+                resp.headers.emplace("location",
+                                     std::string(kUecmApiRoot) + "/" + ue_id +
+                                         "/registrations/ip-sm-gw");
+            }
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/ip-sm-gw",
+        [&verifier, &ip_sm_gw_registrations](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto registration = ip_sm_gw_registrations.get(ue_id);
+            if (!registration.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No IP-SM-GW registration for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, registration->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/ip-sm-gw",
+        [&verifier, &ip_sm_gw_registrations, &ip_sm_gw_dereg_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!ip_sm_gw_registrations.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No IP-SM-GW registration for ueId " + ue_id);
+            }
+            ip_sm_gw_dereg_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

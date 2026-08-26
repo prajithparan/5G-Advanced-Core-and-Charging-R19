@@ -136,14 +136,17 @@ Information, `ReadBdtData` collection GET, and the `Policy_Data`-specific Policy
 Subscriptions family). **UDR now has zero known Tier-B gaps.** UDM is now the only remaining real
 Tier-B item project-wide; a background audit produced the first real per-operation breakdown
 (`Nudm_UECM` ~24, `Nudm_SDM` ~33, `Nudm_PP` 11 already flagged deferred in ADR-0082) and closed
-four slices: **UDM** `Nudm_UEAU`'s 3 operations — `GetRgAuthData`, `GenerateAv` (real HSS
+five slices: **UDM** `Nudm_UEAU`'s 3 operations — `GetRgAuthData`, `GenerateAv` (real HSS
 EPS/IMS/GBA-domain vectors, real `501` for the one branch needing a KDF not yet in
 `libs/aka-crypto`), `GenerateGbaAv` (ADR-0214) — `Nudm_UECM`'s `PeiUpdate` +
 `UpdateRoamingInformation` (ADR-0215), `Nudm_UECM`'s AMF non-3GPP-access registration group
 (`Non3GppRegistration`/`GetNon3GppRegistration`/`UpdateNon3GppRegistration`, ADR-0216, mirrors the
-already-built `amf-3gpp-access` group), and `Nudm_UECM`'s SMSF registration groups (both
-3GPP-access and non-3GPP-access, ADR-0217, sharing the identical `SmsfRegistration` schema) —
-individual stubbed/missing operations within already-wired files, not a structural gap.
+already-built `amf-3gpp-access` group), `Nudm_UECM`'s SMSF registration groups (both
+3GPP-access and non-3GPP-access, ADR-0217, sharing the identical `SmsfRegistration` schema), and
+`Nudm_UECM`'s IP-SM-GW registration resource (`IpSmGwRegistration`/`GetIpSmGwRegistration`/
+`IpSmGwDeregistration`, ADR-0218 — genuinely no PATCH exists for this resource in the real spec
+at all) — individual stubbed/missing operations within already-wired files, not a structural gap.
+Only `nwdafRegistration` now blocks `GetRegistrations`/`SendRoutingInfoSm`.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075

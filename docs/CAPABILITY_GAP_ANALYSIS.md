@@ -1344,9 +1344,11 @@ sub-resources below), ~~the full non-3gpp-access triple~~ **CLOSED, ADR-0216** (
 `Non3GppRegistration`/`GetNon3GppRegistration`/`UpdateNon3GppRegistration`, mirrors the
 already-built `amf-3gpp-access` group's own real shape), ~~smsf-3gpp/non-3gpp-access groups~~
 **CLOSED, ADR-0217** (fourth slice -- both groups share the identical real
-`SmsfRegistration`/`SmsfRegistrationModification` schemas), ip-sm-gw-registration group,
+`SmsfRegistration`/`SmsfRegistrationModification` schemas), ~~ip-sm-gw-registration group~~
+**CLOSED, ADR-0218** (fifth slice -- `IpSmGwRegistration`/`GetIpSmGwRegistration`/
+`IpSmGwDeregistration`, genuinely no PATCH exists for this resource in the real spec at all),
 `Trigger P-CSCF Restoration`, `GetLocationInfo`, nwdaf-registrations group, `authTrigger` --
-`GetRegistrations`/`SendRoutingInfoSm` still genuinely depend on `ipSmGw`/`nwdafRegistration`,
+`GetRegistrations`/`SendRoutingInfoSm` now genuinely depend on only `nwdafRegistration`,
 confirmed by direct read of their own real response schemas, not assumed);
 `Nudm_SDM` (~33 ops: 21 simple per-SUPI GETs likely needing the existing UDM->UDR proxy pattern
 confirmed first rather than a new UDM-local store, plus 5 SOR/UPU/ack write ops, the 5-op

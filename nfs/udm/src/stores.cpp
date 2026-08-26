@@ -87,6 +87,25 @@ bool SmsfRegistrationStore::remove(const std::string& ue_id) {
     return registrations_.erase(ue_id) > 0;
 }
 
+void IpSmGwRegistrationStore::put(const std::string& ue_id, nlohmann::json registration) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    registrations_[ue_id] = std::move(registration);
+}
+
+std::optional<nlohmann::json> IpSmGwRegistrationStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = registrations_.find(ue_id);
+    if (it == registrations_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool IpSmGwRegistrationStore::remove(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return registrations_.erase(ue_id) > 0;
+}
+
 void RoamingInfoUpdateStore::put(const std::string& ue_id, nlohmann::json info) {
     std::lock_guard<std::mutex> lock(mutex_);
     info_[ue_id] = std::move(info);

@@ -4382,3 +4382,17 @@ real `204` not a fabricated `PatchResult`). Real step toward `GetRegistrations` 
 meaningful -- its own `smsf3Gpp`/`smsfNon3Gpp` fields are now backed by real data, though
 `ipSmGw`/`nwdafRegistration` remain missing. See ADR-0217 in `docs/DECISIONS.md` for full
 disclosure.
+
+## ADR-0218 -- UDM `Nudm_UECM` Tier-B gap-closure (fifth slice: IP-SM-GW registration resource)
+
+| Requirement | Test |
+|---|---|
+| `IpSmGwRegistration`/`GetIpSmGwRegistration`/`IpSmGwDeregistration` full lifecycle | `UdmIpSmGwGapClosureIntegration.IpSmGwRegistrationFullLifecycle`: real `404` before create, real `201`+`Location` on first PUT, real `200` on repeat PUT, GET round-trips, real `204` DELETE, real `404` on follow-up GET and repeat DELETE |
+| No regression | Full reconfigure+rebuild clean; new test passes; full suite 444/444 |
+
+Fifth slice off `Nudm_UECM`'s own Tier-B backlog -- the IP-SM-GW registration resource. New
+`IpSmGwRegistrationStore` mirrors `AmfRegistrationStore` minus `merge_patch`, since genuinely no
+PATCH operation exists for this resource in the real spec at all. Same disclosed PUT-response
+simplification as every other registration group in this file. Closes the second-to-last real
+dependency of `GetRegistrations` -- only `nwdafRegistration` remains missing after this ADR. See
+ADR-0218 in `docs/DECISIONS.md` for full disclosure.

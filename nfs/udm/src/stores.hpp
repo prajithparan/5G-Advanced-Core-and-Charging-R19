@@ -156,6 +156,21 @@ private:
     std::unordered_map<std::string, nlohmann::json> registrations_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0218). Backs Nudm_UECM's IP-SM-GW
+// registration resource (IpSmGwRegistration/GetIpSmGwRegistration/IpSmGwDeregistration -- real
+// PUT+GET+DELETE, no PATCH exists for this resource in the real spec at all). Keyed by ueId,
+// in-memory, same shape as `AmfRegistrationStore` above minus `merge_patch`.
+class IpSmGwRegistrationStore {
+public:
+    void put(const std::string& ue_id, nlohmann::json registration);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    bool remove(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> registrations_;
+};
+
 // Backs Nudm_UECM's SMF registration group (Registration, RetrieveSmfRegistration,
 // UpdateSmfRegistration, SmfDeregistration, GetSmfRegistration). Keyed by (ueId, pduSessionId) --
 // a UE can have multiple concurrent PDU sessions, each with its own SMF registration
