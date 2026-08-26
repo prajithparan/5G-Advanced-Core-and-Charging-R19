@@ -166,9 +166,8 @@ TEST(UdmGetRegistrationsGapClosureIntegration, ComposesAndFiltersRealRegistratio
     // and that an unseeded dataset is simply omitted, not a hard failure.
     sbi_core::http2::ClientRequest all_req;
     all_req.method = "GET";
-    all_req.url = base +
-                  "/registrations?registration-dataset-names=AMF_3GPP,SMSF_3GPP,NWDAF,"
-                  "AMF_NON_3GPP";
+    all_req.url = base + "/registrations?registration-dataset-names=AMF_3GPP,SMSF_3GPP,NWDAF,"
+                         "AMF_NON_3GPP";
     all_req.headers.emplace("authorization", "Bearer " + token);
     auto all_resp = client.send(all_req);
     ASSERT_TRUE(all_resp.has_value());

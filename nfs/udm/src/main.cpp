@@ -465,9 +465,9 @@ int main() {
     auto nwdaf_reg_counter =
         meter->CreateUInt64Counter("udm_nwdaf_registration_total", "Total NwdafRegistration calls");
     auto nwdaf_dereg_counter = meter->CreateUInt64Counter("udm_nwdaf_deregistration_total",
-                                                           "Total NwdafDeregistration calls");
-    auto nwdaf_patch_counter = meter->CreateUInt64Counter("udm_nwdaf_patch_total",
-                                                           "Total UpdateNwdafRegistration calls");
+                                                          "Total NwdafDeregistration calls");
+    auto nwdaf_patch_counter =
+        meter->CreateUInt64Counter("udm_nwdaf_patch_total", "Total UpdateNwdafRegistration calls");
     auto smf_reg_counter =
         meter->CreateUInt64Counter("udm_smf_registration_total", "Total SMF Registration calls");
     auto smf_dereg_counter =
@@ -1078,7 +1078,8 @@ int main() {
 
     server.add_route(
         "PUT",
-        std::string(kUecmApiRoot) + "/{ueId}/registrations/nwdaf-registrations/{nwdafRegistrationId}",
+        std::string(kUecmApiRoot) +
+            "/{ueId}/registrations/nwdaf-registrations/{nwdafRegistrationId}",
         [&verifier, &nwdaf_registrations, &nwdaf_reg_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -1090,8 +1091,7 @@ int main() {
             }
             const auto ue_id = req.path_params.at("ueId");
             const auto nwdaf_registration_id = req.path_params.at("nwdafRegistrationId");
-            const bool is_new =
-                !nwdaf_registrations.get(ue_id, nwdaf_registration_id).has_value();
+            const bool is_new = !nwdaf_registrations.get(ue_id, nwdaf_registration_id).has_value();
             json j = *body;
             nwdaf_registrations.put(ue_id, nwdaf_registration_id, j);
             nwdaf_reg_counter->Add(1);
@@ -1111,7 +1111,8 @@ int main() {
 
     server.add_route(
         "DELETE",
-        std::string(kUecmApiRoot) + "/{ueId}/registrations/nwdaf-registrations/{nwdafRegistrationId}",
+        std::string(kUecmApiRoot) +
+            "/{ueId}/registrations/nwdaf-registrations/{nwdafRegistrationId}",
         [&verifier, &nwdaf_registrations, &nwdaf_dereg_counter](
             const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
@@ -1134,7 +1135,8 @@ int main() {
 
     server.add_route(
         "PATCH",
-        std::string(kUecmApiRoot) + "/{ueId}/registrations/nwdaf-registrations/{nwdafRegistrationId}",
+        std::string(kUecmApiRoot) +
+            "/{ueId}/registrations/nwdaf-registrations/{nwdafRegistrationId}",
         [&verifier, &nwdaf_registrations, &nwdaf_patch_counter](
             const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {

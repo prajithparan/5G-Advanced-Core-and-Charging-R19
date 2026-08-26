@@ -187,8 +187,8 @@ void NwdafRegistrationStore::put(const std::string& ue_id,
     registrations_[ue_id][nwdaf_registration_id] = std::move(registration);
 }
 
-std::optional<nlohmann::json> NwdafRegistrationStore::get(const std::string& ue_id,
-                                                           const std::string& nwdaf_registration_id) {
+std::optional<nlohmann::json>
+NwdafRegistrationStore::get(const std::string& ue_id, const std::string& nwdaf_registration_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto ue_it = registrations_.find(ue_id);
     if (ue_it == registrations_.end()) {
