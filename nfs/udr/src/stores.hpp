@@ -203,6 +203,28 @@ private:
     pqxx::connection conn_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0212). Backs the real Individual
+// Authentication Status (Document) resource (CreateIndividualAuthenticationStatus/
+// QueryIndividualAuthenticationStatus/DeleteIndividualAuthenticationStatus -- real PUT (replace)
+// + GET + DELETE per TS29505_Subscription_Data.yaml), a genuinely distinct resource from
+// AuthenticationStatusStore above: keyed by (ueId, servingNetworkName), not ueId alone. Same real
+// `AuthEvent` schema (TS29503_Nudm_UEAU.yaml) as the bare resource, same composite-key doc-store
+// shape as ServiceSpecificAuthorizationInfoStore.
+class IndividualAuthenticationStatusStore {
+public:
+    explicit IndividualAuthenticationStatusStore(const std::string& conninfo);
+
+    void
+    put(const std::string& ue_id, const std::string& serving_network_name, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& ue_id,
+                                      const std::string& serving_network_name);
+    bool remove(const std::string& ue_id, const std::string& serving_network_name);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 // Backs the real `policy-data` group's AM Policy resource (ReadAccessAndMobilityPolicyData,
 // UpdateAccessAndMobilityPolicyData -- real GET + RFC 7396 merge-patch, the real UDR-side backing
 // for PCF's own Npcf_AMPolicyControl). Same real upsert-on-PATCH shape as SmPolicyDataStore

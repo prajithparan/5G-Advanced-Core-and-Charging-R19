@@ -4257,3 +4257,27 @@ separately-flagged "stale SCP disclosure" comment was already accurately worded 
 `jwt::Issuer issuer` object). Two real Tier-B items remain, both larger: UDR (~19 undisclosed
 operations) and UDM (~58+ undisclosed operations) -- see
 `docs/CAPABILITY_GAP_ANALYSIS.md`. See ADR-0211 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0212 -- UDR Individual Authentication Status (Document) + `QueryProvisionedData` (second Tier-B gap-closure) + stale-claim correction
+
+| Requirement | Test |
+|---|---|
+| `CreateIndividualAuthenticationStatus`/`QueryIndividualAuthenticationStatus`/`DeleteIndividualAuthenticationStatus`, keyed by `(ueId, servingNetworkName)` | `UdrGapClosureIntegration.IndividualAuthenticationStatusLifecycle`: real `404` before PUT, real `204` PUT with a real `AuthEvent` body, real `200` round-trip on GET, bare `authentication-status` for the same `ueId` stays independently `404`, real `204` DELETE, real `404` after |
+| `QueryProvisionedData` composes the real `ProvisionedDataSets` aggregate | `UdrGapClosureIntegration.QueryProvisionedDataComposesAllSeededFields`: all seeded PLMN-keyed and non-PLMN-keyed fields present with no filter, `niddAuthData` absent, `dataset-names=AM` filter returns only `amData`, unknown `ueId` returns real `200 {}` |
+| No regression | Full reconfigure+rebuild clean; both new tests pass; full suite 432/432 |
+
+Second item off ADR-0193's own UDR Tier-B backlog (`docs/CAPABILITY_GAP_ANALYSIS.md`'s "~7 further
+undisclosed missing resources in `Subscription_Data`"). New `IndividualAuthenticationStatusStore`
+(`nfs/udr/src/stores.hpp`/`.cpp`, `udr_individual_authentication_status` table) backs the real
+Individual Authentication Status resource, genuinely distinct from the already-existing bare
+`authentication-status` (keyed by `ueId` alone). `QueryProvisionedData` reuses the exact same
+per-field store/getter calls `QueryUeSubscribedData` (ADR-0166) already uses for its own
+`ProvisionedDataSets`-typed subset, confirmed field-for-field against the real schema -- a genuine
+improvement since `servingPlmnId` is a REQUIRED path parameter here, so all 7 PLMN-keyed fields are
+always composed (never gated on an optional query param). Also corrected a stale claim in
+`docs/CAPABILITY_GAP_ANALYSIS.md` itself: the previously-recorded "`subs-to-notify` bulk-DELETE"
+Tier-B gap does not correspond to any real operation in `TS29505_Subscription_Data.yaml` (the
+collection is `POST`-only) and that resource is already fully implemented (task #122) --
+documentation-only correction, no code change. UDR's `Subscription_Data.yaml` Tier-B item is now
+fully closed; `Policy_Data.yaml`'s own ~12 undisclosed operations and UDM's ~58+ remain the two
+largest real Tier-B items still open. See ADR-0212 in `docs/DECISIONS.md` for full disclosure.

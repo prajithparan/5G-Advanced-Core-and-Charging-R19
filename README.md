@@ -127,8 +127,12 @@ real, project-wide common-data-group-rename consequence, both disclosed in full 
 (ADR-0210, task #164 now complete — no NEF Tier-A gaps remain). **Every NF's real Tier-A gaps are
 now closed project-wide.** Tier-B closure has begun: **NRF** `OptionsNFInstances`+
 `RetrieveStoredSearch`/`RetrieveCompleteSearch`+`RetrieveKeyRequest` (ADR-0211, the smallest
-remaining Tier-B item). Still open: UDR (~19 undisclosed operations) and UDM (~58+ undisclosed
-operations) are the two largest remaining real Tier-B items — individual stubbed/missing
+remaining Tier-B item), and **UDR**'s Individual Authentication Status (Document) +
+`QueryProvisionedData` (ADR-0212 — also corrected a stale claim in the audit doc itself: a
+previously-recorded "`subs-to-notify` bulk-DELETE" gap does not correspond to any real operation in
+the spec, and that resource was already fully implemented). UDR's `Subscription_Data.yaml` Tier-B
+item is now fully closed; its own `Policy_Data.yaml` (~12 undisclosed operations) and UDM (~58+
+undisclosed operations) are the two largest remaining real Tier-B items — individual stubbed/missing
 operations within already-wired files, not structural gaps.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in

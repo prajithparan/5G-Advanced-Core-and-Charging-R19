@@ -348,6 +348,47 @@ bool AuthenticationStatusStore::remove(const std::string& ue_id) {
     return result.affected_rows() > 0;
 }
 
+IndividualAuthenticationStatusStore::IndividualAuthenticationStatusStore(
+    const std::string& conninfo)
+    : conn_(conninfo) {}
+
+void IndividualAuthenticationStatusStore::put(const std::string& ue_id,
+                                              const std::string& serving_network_name,
+                                              nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_individual_authentication_status "
+             "(ue_id, serving_network_name, data) VALUES ($1, $2, $3::jsonb) "
+             "ON CONFLICT (ue_id, serving_network_name) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, serving_network_name, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json>
+IndividualAuthenticationStatusStore::get(const std::string& ue_id,
+                                         const std::string& serving_network_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_individual_authentication_status "
+                                 "WHERE ue_id = $1 AND serving_network_name = $2",
+                                 pqxx::params{ue_id, serving_network_name});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+bool IndividualAuthenticationStatusStore::remove(const std::string& ue_id,
+                                                 const std::string& serving_network_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_individual_authentication_status "
+                                 "WHERE ue_id = $1 AND serving_network_name = $2",
+                                 pqxx::params{ue_id, serving_network_name});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 AmPolicyDataStore::AmPolicyDataStore(const std::string& conninfo) : conn_(conninfo) {}
 
 std::optional<nlohmann::json> AmPolicyDataStore::get(const std::string& ue_id) {

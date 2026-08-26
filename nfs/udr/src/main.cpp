@@ -1019,6 +1019,8 @@ int main() {
     udr::SmPolicyDataStore sm_policy_data(conninfo);
     udr::AuthenticationSubscriptionDataStore auth_subscription_data(conninfo);
     udr::AuthenticationStatusStore auth_status(conninfo);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0212).
+    udr::IndividualAuthenticationStatusStore individual_auth_status(conninfo);
     udr::AmPolicyDataStore am_policy_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0097).
     udr::SmsfContext3gppStore smsf_3gpp_context(conninfo);
@@ -1552,6 +1554,15 @@ int main() {
         "udr_auth_status_get_total", "Total QueryAuthenticationStatus calls");
     auto auth_status_delete_counter = meter->CreateUInt64Counter(
         "udr_auth_status_delete_total", "Total DeleteAuthenticationStatus calls");
+    auto individual_auth_status_put_counter = meter->CreateUInt64Counter(
+        "udr_individual_auth_status_put_total", "Total CreateIndividualAuthenticationStatus calls");
+    auto individual_auth_status_get_counter = meter->CreateUInt64Counter(
+        "udr_individual_auth_status_get_total", "Total QueryIndividualAuthenticationStatus calls");
+    auto individual_auth_status_delete_counter =
+        meter->CreateUInt64Counter("udr_individual_auth_status_delete_total",
+                                   "Total DeleteIndividualAuthenticationStatus calls");
+    auto provisioned_data_sets_get_counter = meter->CreateUInt64Counter(
+        "udr_provisioned_data_sets_get_total", "Total QueryProvisionedData calls");
     auto am_policy_data_get_counter = meter->CreateUInt64Counter(
         "udr_am_policy_data_get_total", "Total ReadAccessAndMobilityPolicyData calls");
     auto am_policy_data_patch_counter = meter->CreateUInt64Counter(
@@ -2349,6 +2360,175 @@ int main() {
             return sbi_core::http2::Response::json(200, data->dump());
         });
 
+    // --- Nudr_DataRepository: Provisioned Data (Document), aggregate resource (ADR-0212,
+    // gap-closure task #106) -- real GET-only per TS29505_Subscription_Data.yaml,
+    // `QueryProvisionedData`. Real, disclosed: the response is exactly the real
+    // `ProvisionedDataSets` schema's own 21 fields, backed by the SAME already-independently-stored
+    // sub-resources `QueryUeSubscribedData` (ADR-0166) already composes for its own
+    // `ProvisionedDataSets`-typed subset -- confirmed field-for-field against that schema's own
+    // real definition, no 22nd field exists. Genuine improvement over that bare aggregate: here
+    // `servingPlmnId` is a REQUIRED path parameter (not an optional query param), so all 7
+    // PLMN-keyed fields
+    // (`amData`/`smfSelData`/`smsSubsData`/`smData`/`traceData`/`smsMngData`/`lcsBcaData`) are
+    // ALWAYS composed, never skipped. `niddAuthData` (`AuthorizationData`) is still never composed
+    // here, same real disclosed gap as ADR-0166: its own composite key requires
+    // `mtc-provider-information`, a query param this resource does not expose. The real, optional
+    // `adjacent-plmns`/`single-nssai`/`dnn`/`ext-group-ids`/`uc-purpose` query params are accepted
+    // but not honored, matching the established precedent -- no existing store supports filtering
+    // by them. The real, optional `3gpp-Sbi-Etags` response header (a comma-separated
+    // ProvisionedDatasetName=Etag list) is NOT populated: this store has no per-field
+    // ETag/versioning layer -- a genuine, disclosed gap, not a fabricated header value. Same real
+    // `200`-always design as the other aggregates: a live view, so an empty result is `200 {}`, not
+    // `404`. ---
+
+    const std::string provisioned_data_sets_path_pattern =
+        std::string(kApiRoot) + "/subscription-data/{ueId}/{servingPlmnId}/provisioned-data";
+
+    server.add_route(
+        "GET",
+        provisioned_data_sets_path_pattern,
+        [&verifier,
+         &provisioned_data,
+         &lcs_privacy_data,
+         &lcs_mo_data,
+         &lcs_subscription_data,
+         &v2x_data,
+         &prose_data,
+         &odb_data,
+         &ee_profile_data,
+         &pp_profile_data,
+         &uc_data,
+         &mbs_data,
+         &pp_data,
+         &a2x_data,
+         &rangingsl_privacy_data,
+         &provisioned_data_sets_get_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto serving_plmn_id = req.path_params.at("servingPlmnId");
+            std::vector<std::string> names;
+            if (const auto names_it = req.query_params.find("dataset-names");
+                names_it != req.query_params.end()) {
+                names = sbi_core::http2::split_form_array(names_it->second);
+            }
+            const auto wanted = [&names](const char* name) {
+                return names.empty() || std::find(names.begin(), names.end(), name) != names.end();
+            };
+
+            json result = json::object();
+
+            if (wanted("AM")) {
+                if (auto v = provisioned_data.get_am_data(ue_id, serving_plmn_id); v.has_value()) {
+                    result["amData"] = *v;
+                }
+            }
+            if (wanted("SMF_SEL")) {
+                if (auto v = provisioned_data.get_smf_sel_data(ue_id, serving_plmn_id);
+                    v.has_value()) {
+                    result["smfSelData"] = *v;
+                }
+            }
+            if (wanted("SMS_SUB")) {
+                if (auto v = provisioned_data.get_sms_data(ue_id, serving_plmn_id); v.has_value()) {
+                    result["smsSubsData"] = *v;
+                }
+            }
+            if (wanted("SM")) {
+                if (auto v = provisioned_data.get_sm_data(ue_id, serving_plmn_id); v.has_value()) {
+                    result["smData"] = *v;
+                }
+            }
+            if (wanted("TRACE")) {
+                if (auto v = provisioned_data.get_trace_data(ue_id, serving_plmn_id);
+                    v.has_value()) {
+                    result["traceData"] = *v;
+                }
+            }
+            if (wanted("SMS_MNG")) {
+                if (auto v = provisioned_data.get_sms_mng_data(ue_id, serving_plmn_id);
+                    v.has_value()) {
+                    result["smsMngData"] = *v;
+                }
+            }
+            if (wanted("LCS_BCA")) {
+                if (auto v = provisioned_data.get_lcs_bca_data(ue_id, serving_plmn_id);
+                    v.has_value()) {
+                    result["lcsBcaData"] = *v;
+                }
+            }
+            if (wanted("LCS_PRIVACY")) {
+                if (auto v = lcs_privacy_data.get(ue_id); v.has_value()) {
+                    result["lcsPrivacyData"] = *v;
+                }
+            }
+            if (wanted("LCS_MO")) {
+                if (auto v = lcs_mo_data.get(ue_id); v.has_value()) {
+                    result["lcsMoData"] = *v;
+                }
+            }
+            if (wanted("LCS_SUB")) {
+                if (auto v = lcs_subscription_data.get(ue_id); v.has_value()) {
+                    result["lcsSubscriptionData"] = *v;
+                }
+            }
+            if (wanted("V2X")) {
+                if (auto v = v2x_data.get(ue_id); v.has_value()) {
+                    result["v2xData"] = *v;
+                }
+            }
+            if (wanted("PROSE")) {
+                if (auto v = prose_data.get(ue_id); v.has_value()) {
+                    result["proseData"] = *v;
+                }
+            }
+            if (wanted("ODB")) {
+                if (auto v = odb_data.get(ue_id); v.has_value()) {
+                    result["odbData"] = *v;
+                }
+            }
+            if (wanted("EE_PROF")) {
+                if (auto v = ee_profile_data.get(ue_id); v.has_value()) {
+                    result["eeProfileData"] = *v;
+                }
+            }
+            if (wanted("PP_PROF")) {
+                if (auto v = pp_profile_data.get(ue_id); v.has_value()) {
+                    result["ppProfileData"] = *v;
+                }
+            }
+            // NIDD_AUTH deliberately never composed here -- see this block's own header comment.
+            if (wanted("USER_CONSENT")) {
+                if (auto v = uc_data.get(ue_id); v.has_value()) {
+                    result["ucData"] = *v;
+                }
+            }
+            if (wanted("MBS")) {
+                if (auto v = mbs_data.get(ue_id); v.has_value()) {
+                    result["mbsSubscriptionData"] = *v;
+                }
+            }
+            if (wanted("PP_DATA")) {
+                if (auto v = pp_data.get(ue_id); v.has_value()) {
+                    result["ppData"] = *v;
+                }
+            }
+            if (wanted("A2X")) {
+                if (auto v = a2x_data.get(ue_id); v.has_value()) {
+                    result["a2xData"] = *v;
+                }
+            }
+            if (wanted("RANGINGSL_PRIVACY")) {
+                if (auto v = rangingsl_privacy_data.get(ue_id); v.has_value()) {
+                    result["rangingSlPrivacyData"] = *v;
+                }
+            }
+
+            provisioned_data_sets_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
     // --- Nudr_DataRepository: policy-data group, SM policy resource (ADR-0072, gap-closure: real
     // N28 end-to-end) -- real GET+PATCH per TS29519_Policy_Data.yaml, keyed by ueId alone (no
     // servingPlmnId in the real path, unlike provisioned-data above -- genuinely different
@@ -2542,6 +2722,109 @@ int main() {
                                ue_id,
                                resolved_location(auth_status_path_pattern, req.path_params),
                                change_remove());
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- Nudr_DataRepository: Individual Authentication Status (Document) (ADR-0212,
+    // gap-closure task #106) -- real PUT (replace) + GET + DELETE per
+    // TS29505_Subscription_Data.yaml (CreateIndividualAuthenticationStatus/
+    // QueryIndividualAuthenticationStatus/DeleteIndividualAuthenticationStatus), genuinely
+    // distinct from the bare `authentication-status` resource above: keyed by (ueId,
+    // servingNetworkName), not ueId alone. Same real `AuthEvent` schema. Real, disclosed: the
+    // GET operation's own optional `fields`/`supported-features` query params are accepted but
+    // not honored (matching the established "optional filter not honored" precedent elsewhere in
+    // this file -- no field-projection or supported-features layer exists in this store). ---
+
+    const std::string individual_auth_status_path_pattern =
+        std::string(kApiRoot) +
+        "/subscription-data/{ueId}/authentication-data/authentication-status/"
+        "{servingNetworkName}";
+
+    server.add_route(
+        "PUT",
+        individual_auth_status_path_pattern,
+        [&verifier,
+         &individual_auth_status,
+         &individual_auth_status_put_counter,
+         &subs_to_notify,
+         &notify_client,
+         individual_auth_status_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::AuthEvent>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto serving_network_name = req.path_params.at("servingNetworkName");
+            json j = *body;
+            individual_auth_status.put(ue_id, serving_network_name, j);
+            individual_auth_status_put_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(individual_auth_status_path_pattern, req.path_params),
+                change_replace(j));
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        individual_auth_status_path_pattern,
+        [&verifier, &individual_auth_status, &individual_auth_status_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto serving_network_name = req.path_params.at("servingNetworkName");
+            auto data = individual_auth_status.get(ue_id, serving_network_name);
+            individual_auth_status_get_counter->Add(1);
+            if (!data.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No individual authentication status for ueId " + ue_id +
+                        ", servingNetworkName " + serving_network_name);
+            }
+            return sbi_core::http2::Response::json(200, data->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        individual_auth_status_path_pattern,
+        [&verifier,
+         &individual_auth_status,
+         &individual_auth_status_delete_counter,
+         &subs_to_notify,
+         &notify_client,
+         individual_auth_status_path_pattern](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto serving_network_name = req.path_params.at("servingNetworkName");
+            if (!individual_auth_status.remove(ue_id, serving_network_name)) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No individual authentication status for ueId " + ue_id +
+                        ", servingNetworkName " + serving_network_name);
+            }
+            individual_auth_status_delete_counter->Add(1);
+            notify_subscribers(
+                subs_to_notify,
+                notify_client,
+                ue_id,
+                resolved_location(individual_auth_status_path_pattern, req.path_params),
+                change_remove());
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

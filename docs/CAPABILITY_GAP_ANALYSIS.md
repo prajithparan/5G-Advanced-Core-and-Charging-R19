@@ -1095,6 +1095,17 @@ comparison count.
 Influence Data (AF traffic-steering, needed once NEF
 exists) remains open, out of scope until NEF is built.
 
+**Closed, docs/DECISIONS.md ADR-0212**: Individual Authentication Status (Document)
+(`authentication-status/{servingNetworkName}`, keyed by `(ueId, servingNetworkName)`, genuinely
+distinct from the bare `authentication-status` document) -- a real new resource type. Also
+**closed, same ADR**: `QueryProvisionedData` (the real `ProvisionedDataSets` aggregate) -- does
+**NOT** increment the resource-type count, same non-double-counting precedent as
+`QueryUeSubscribedData`/`QueryContextData`, since it composes entirely from already-closed
+sub-resources. Same ADR corrected a stale claim in this doc's own earlier Tier-B audit: the
+previously-claimed "`subs-to-notify` bulk-DELETE" gap does not correspond to any real operation in
+the spec (the collection is `POST`-only) and that resource is already fully implemented
+(task #122) -- no code fix needed, documentation only.
+
 ---
 
 ## UPF
@@ -1296,12 +1307,17 @@ silently absent.
 factual errors, not just missing coverage -- **CLOSED, ADR-0197**: UDR's own ADR-0111/ADR-0114
 comments asserted `operator-specific-data` has no PUT/DELETE in the YAML -- it does (both
 `Subscription_Data.yaml` and `Policy_Data.yaml`, confirmed by direct read), and both now have real,
-live-verified PUT/DELETE routes. Beyond that, UDR (the most mature NF by route count) has ~7 further
-undisclosed missing resources in `Subscription_Data` (`authentication-status/{servingNetworkName}`,
-bare `provisioned-data` GET, `subs-to-notify` bulk-DELETE) and ~12 in `Policy_Data` (bare `{ueId}`
-aggregate, `sm-data/{usageMonId}` family, bare `bdt-data` collection GET, and an entire
-`subs-to-notify` subscription family distinct from `Subscription_Data`'s own). ~~NRF's 4
-undisclosed missing operations (`OptionsNFInstances`, `RetrieveStoredSearch`,
+live-verified PUT/DELETE routes. Beyond that, UDR (the most mature NF by route count) had ~7 further
+undisclosed missing resources in `Subscription_Data`: ~~`authentication-status/{servingNetworkName}`
+(3 ops), bare `provisioned-data` GET (`QueryProvisionedData`)~~ **CLOSED, ADR-0212**. The third
+claimed item, "`subs-to-notify` bulk-DELETE", was a stale/inaccurate claim in this audit doc
+itself, corrected (not implemented) by ADR-0212: direct read of `TS29505_Subscription_Data.yaml`
+confirms no such operation exists in the real spec (the collection is `POST`-only; the individual
+resource is `GET`/`PATCH`/`DELETE`), and the entire `subs-to-notify` resource is already fully
+implemented (task #122). `Subscription_Data`'s own Tier-B item is now fully closed. ~12 remain in
+`Policy_Data` (bare `{ueId}` aggregate, `sm-data/{usageMonId}` family, bare `bdt-data` collection
+GET, and an entire `subs-to-notify` subscription family distinct from `Subscription_Data`'s own).
+~~NRF's 4 undisclosed missing operations (`OptionsNFInstances`, `RetrieveStoredSearch`,
 `RetrieveCompleteSearch`, `RetrieveKeyRequest`)~~ **CLOSED, ADR-0211** (the audit's separately-flagged
 "stale `ScpDomainRoutingInfo*` disclosure comment" was checked directly and found already accurate
 in the current source -- not the "SCP isn't built yet" phrasing this audit's own original snapshot

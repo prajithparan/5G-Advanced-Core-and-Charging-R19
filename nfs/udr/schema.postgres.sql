@@ -137,6 +137,18 @@ CREATE TABLE IF NOT EXISTS udr_authentication_status (
     data  JSONB NOT NULL
 );
 
+-- Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0212). Real Individual
+-- Authentication Status (Document) resource (CreateIndividualAuthenticationStatus/
+-- QueryIndividualAuthenticationStatus/DeleteIndividualAuthenticationStatus,
+-- TS29505_Subscription_Data.yaml) -- genuinely distinct from udr_authentication_status above:
+-- keyed by (ueId, servingNetworkName), not ueId alone. Same real AuthEvent schema.
+CREATE TABLE IF NOT EXISTS udr_individual_authentication_status (
+    ue_id                 TEXT NOT NULL,
+    serving_network_name  TEXT NOT NULL,
+    data                  JSONB NOT NULL,
+    PRIMARY KEY (ue_id, serving_network_name)
+);
+
 -- Real Nudr_DataRepository `policy-data` group's AM Policy resource
 -- (TS29519_Policy_Data.yaml's /policy-data/ues/{ueId}/am-data, real schema AmPolicyData) --
 -- genuinely DIFFERENT real resource from udr_provisioned_data's own `am_data` column (that one is
