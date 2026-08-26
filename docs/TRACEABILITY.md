@@ -4396,3 +4396,22 @@ PATCH operation exists for this resource in the real spec at all. Same disclosed
 simplification as every other registration group in this file. Closes the second-to-last real
 dependency of `GetRegistrations` -- only `nwdafRegistration` remains missing after this ADR. See
 ADR-0218 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0219 -- UDM `Nudm_UECM` Tier-B gap-closure (sixth slice: NWDAF registration group)
+
+| Requirement | Test |
+|---|---|
+| `NwdafRegistration`/`GetNwdafRegistration`/`NwdafDeregistration`/`UpdateNwdafRegistration` full lifecycle | `UdmNwdafGapClosureIntegration.NwdafRegistrationFullLifecycle`: real `404` on the collection GET before create, real `201`+`Location` on first PUT, real `200` on repeat PUT, collection GET reflects the created registration, real `204` PATCH verified via a follow-up collection GET, real `204` DELETE, real `404` on follow-up collection GET and repeat DELETE |
+| No regression | Full reconfigure+rebuild clean; new test passes; full suite 445/445 |
+
+Sixth slice off `Nudm_UECM`'s own Tier-B backlog -- the NWDAF registration group. New
+`NwdafRegistrationStore` mirrors `SmfRegistrationStore`'s nested-map + `list_for_ue` shape, since a
+UE can be served by multiple NWDAF instances concurrently. Real, confirmed finding: no individual
+GET operation exists for a single NWDAF registration in the real spec at all -- only the collection
+GET is defined, and its own response schema is a bare array (`minItems: 1`), not the
+`NwdafRegistrationInfo` wrapper used elsewhere for this same schema -- so an empty result is real
+`404`, not a fabricated empty array. Same disclosed PUT-response and PATCH-returns-`204`
+simplifications as every other registration group in this file. Closes the last remaining real
+dependency of `GetRegistrations` -- every `RegistrationDataSets` field now has real backing data,
+though `GetRegistrations`/`SendRoutingInfoSm` themselves remain unimplemented. See ADR-0219 in
+`docs/DECISIONS.md` for full disclosure.

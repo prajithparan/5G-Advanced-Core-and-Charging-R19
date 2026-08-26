@@ -180,6 +180,68 @@ std::vector<nlohmann::json> SmfRegistrationStore::list_for_ue(const std::string&
     return result;
 }
 
+void NwdafRegistrationStore::put(const std::string& ue_id,
+                                 const std::string& nwdaf_registration_id,
+                                 nlohmann::json registration) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    registrations_[ue_id][nwdaf_registration_id] = std::move(registration);
+}
+
+std::optional<nlohmann::json> NwdafRegistrationStore::get(const std::string& ue_id,
+                                                           const std::string& nwdaf_registration_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto ue_it = registrations_.find(ue_id);
+    if (ue_it == registrations_.end()) {
+        return std::nullopt;
+    }
+    auto reg_it = ue_it->second.find(nwdaf_registration_id);
+    if (reg_it == ue_it->second.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(reg_it->second);
+}
+
+std::optional<nlohmann::json>
+NwdafRegistrationStore::merge_patch(const std::string& ue_id,
+                                    const std::string& nwdaf_registration_id,
+                                    const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto ue_it = registrations_.find(ue_id);
+    if (ue_it == registrations_.end()) {
+        return std::nullopt;
+    }
+    auto reg_it = ue_it->second.find(nwdaf_registration_id);
+    if (reg_it == ue_it->second.end()) {
+        return std::nullopt;
+    }
+    reg_it->second.merge_patch(patch);
+    return std::make_optional(reg_it->second);
+}
+
+bool NwdafRegistrationStore::remove(const std::string& ue_id,
+                                    const std::string& nwdaf_registration_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto ue_it = registrations_.find(ue_id);
+    if (ue_it == registrations_.end()) {
+        return false;
+    }
+    return ue_it->second.erase(nwdaf_registration_id) > 0;
+}
+
+std::vector<nlohmann::json> NwdafRegistrationStore::list_for_ue(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<nlohmann::json> result;
+    auto ue_it = registrations_.find(ue_id);
+    if (ue_it == registrations_.end()) {
+        return result;
+    }
+    result.reserve(ue_it->second.size());
+    for (const auto& [nwdaf_registration_id, registration] : ue_it->second) {
+        result.push_back(registration);
+    }
+    return result;
+}
+
 std::string SdmSubscriptionStore::create(SdmSubscriptionEntry entry) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::string id = "sdmsub-" + std::to_string(next_id_++);

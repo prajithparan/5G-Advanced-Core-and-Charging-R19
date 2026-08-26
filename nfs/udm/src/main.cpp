@@ -376,6 +376,8 @@ int main() {
     udm::SmsfRegistrationStore smsf_non3gpp_registrations;
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0218).
     udm::IpSmGwRegistrationStore ip_sm_gw_registrations;
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0219).
+    udm::NwdafRegistrationStore nwdaf_registrations;
     udm::SmfRegistrationStore smf_registrations;
     udm::SdmSubscriptionStore sdm_subscriptions;
     udm::AuthenticationSubscriptionStore auth_subscriptions;
@@ -459,6 +461,13 @@ int main() {
                                                            "Total IpSmGwRegistration calls");
     auto ip_sm_gw_dereg_counter = meter->CreateUInt64Counter("udm_ip_sm_gw_deregistration_total",
                                                              "Total IpSmGwDeregistration calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0219).
+    auto nwdaf_reg_counter =
+        meter->CreateUInt64Counter("udm_nwdaf_registration_total", "Total NwdafRegistration calls");
+    auto nwdaf_dereg_counter = meter->CreateUInt64Counter("udm_nwdaf_deregistration_total",
+                                                           "Total NwdafDeregistration calls");
+    auto nwdaf_patch_counter = meter->CreateUInt64Counter("udm_nwdaf_patch_total",
+                                                           "Total UpdateNwdafRegistration calls");
     auto smf_reg_counter =
         meter->CreateUInt64Counter("udm_smf_registration_total", "Total SMF Registration calls");
     auto smf_dereg_counter =
@@ -1032,6 +1041,123 @@ int main() {
                     404, "Not Found", "No IP-SM-GW registration for ueId " + ue_id);
             }
             ip_sm_gw_dereg_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0219): real, previously
+    // undisclosed NWDAF registration group (NwdafRegistration/GetNwdafRegistration/
+    // NwdafDeregistration/UpdateNwdafRegistration). A UE can be served by multiple NWDAF instances
+    // concurrently, each under its own `nwdafRegistrationId` -- same nested-map shape as the SMF
+    // registration group below. Real, disclosed: `GetNwdafRegistration`'s own response schema is a
+    // *bare* JSON array of `NwdafRegistration` (not wrapped in `NwdafRegistrationInfo` the way the
+    // SMF group's collection GET wraps in `SmfRegistrationInfo` -- confirmed by direct read of the
+    // real spec, the two collection GETs use genuinely different response shapes, not an
+    // inconsistency introduced here). Same PUT-uses-only-`201`/`200` and PATCH-returns-real-`204`
+    // conventions as every other registration group in this file.
+    server.add_route(
+        "GET",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/nwdaf-registrations",
+        [&verifier, &nwdaf_registrations](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto list = nwdaf_registrations.list_for_ue(ue_id);
+            if (list.empty()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No NWDAF registration for ueId " + ue_id);
+            }
+            json arr = json::array();
+            for (const auto& registration : list) {
+                arr.push_back(registration);
+            }
+            return sbi_core::http2::Response::json(200, arr.dump());
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/nwdaf-registrations/{nwdafRegistrationId}",
+        [&verifier, &nwdaf_registrations, &nwdaf_reg_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::NwdafRegistration>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto nwdaf_registration_id = req.path_params.at("nwdafRegistrationId");
+            const bool is_new =
+                !nwdaf_registrations.get(ue_id, nwdaf_registration_id).has_value();
+            json j = *body;
+            nwdaf_registrations.put(ue_id, nwdaf_registration_id, j);
+            nwdaf_reg_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = is_new ? 201 : 200;
+            resp.headers.emplace("content-type", "application/json");
+            if (is_new) {
+                resp.headers.emplace("location",
+                                     std::string(kUecmApiRoot) + "/" + ue_id +
+                                         "/registrations/nwdaf-registrations/" +
+                                         nwdaf_registration_id);
+            }
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/nwdaf-registrations/{nwdafRegistrationId}",
+        [&verifier, &nwdaf_registrations, &nwdaf_dereg_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto nwdaf_registration_id = req.path_params.at("nwdafRegistrationId");
+            if (!nwdaf_registrations.remove(ue_id, nwdaf_registration_id)) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No NWDAF registration for ueId/nwdafRegistrationId " + ue_id + "/" +
+                        nwdaf_registration_id);
+            }
+            nwdaf_dereg_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/nwdaf-registrations/{nwdafRegistrationId}",
+        [&verifier, &nwdaf_registrations, &nwdaf_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto patch_dto =
+                sbi_core::http2::parse_json_body<sbi_gen::NwdafRegistrationModification>(req, err);
+            if (!patch_dto.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto nwdaf_registration_id = req.path_params.at("nwdafRegistrationId");
+            auto patched = nwdaf_registrations.merge_patch(
+                ue_id, nwdaf_registration_id, json::parse(req.body));
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404,
+                    "Not Found",
+                    "No NWDAF registration for ueId/nwdafRegistrationId " + ue_id + "/" +
+                        nwdaf_registration_id);
+            }
+            nwdaf_patch_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

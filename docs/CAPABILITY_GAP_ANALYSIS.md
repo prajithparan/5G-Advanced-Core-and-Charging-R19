@@ -1347,9 +1347,13 @@ already-built `amf-3gpp-access` group's own real shape), ~~smsf-3gpp/non-3gpp-ac
 `SmsfRegistration`/`SmsfRegistrationModification` schemas), ~~ip-sm-gw-registration group~~
 **CLOSED, ADR-0218** (fifth slice -- `IpSmGwRegistration`/`GetIpSmGwRegistration`/
 `IpSmGwDeregistration`, genuinely no PATCH exists for this resource in the real spec at all),
-`Trigger P-CSCF Restoration`, `GetLocationInfo`, nwdaf-registrations group, `authTrigger` --
-`GetRegistrations`/`SendRoutingInfoSm` now genuinely depend on only `nwdafRegistration`,
-confirmed by direct read of their own real response schemas, not assumed);
+`Trigger P-CSCF Restoration`, `GetLocationInfo`, ~~nwdaf-registrations group~~ **CLOSED, ADR-0219**
+(sixth slice -- `NwdafRegistration`/`GetNwdafRegistration`/`NwdafDeregistration`/
+`UpdateNwdafRegistration`; real finding: no individual GET exists for a single NWDAF registration
+in the real spec at all, only the collection GET), `authTrigger` -- `GetRegistrations` now has
+every `RegistrationDataSets` field backed by real data, though `GetRegistrations` and
+`SendRoutingInfoSm` themselves remain unimplemented (they are the natural next slice), confirmed
+by direct read of their own real response schemas, not assumed);
 `Nudm_SDM` (~33 ops: 21 simple per-SUPI GETs likely needing the existing UDM->UDR proxy pattern
 confirmed first rather than a new UDM-local store, plus 5 SOR/UPU/ack write ops, the 5-op
 non-per-UE shared-data family, and 2 identifier-lookup ops); `Nudm_PP` (11 ops: the

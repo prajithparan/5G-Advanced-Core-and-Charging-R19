@@ -195,6 +195,33 @@ private:
     std::unordered_map<std::string, std::unordered_map<std::string, nlohmann::json>> registrations_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0219). Backs Nudm_UECM's NWDAF
+// registration group (NwdafRegistration/GetNwdafRegistration/NwdafDeregistration/
+// UpdateNwdafRegistration). Keyed by (ueId, nwdafRegistrationId) -- a UE can be served by multiple
+// NWDAF instances concurrently, each registered under its own `nwdafRegistrationId`
+// (`/{ueId}/registrations/nwdaf-registrations/{nwdafRegistrationId}`), while
+// `GetNwdafRegistration` retrieves the whole list for a ueId
+// (`/{ueId}/registrations/nwdaf-registrations`) -- same nested-map + `list_for_ue` shape as
+// `SmfRegistrationStore` above.
+class NwdafRegistrationStore {
+public:
+    void put(const std::string& ue_id,
+             const std::string& nwdaf_registration_id,
+             nlohmann::json registration);
+    std::optional<nlohmann::json> get(const std::string& ue_id,
+                                      const std::string& nwdaf_registration_id);
+    std::optional<nlohmann::json> merge_patch(const std::string& ue_id,
+                                              const std::string& nwdaf_registration_id,
+                                              const nlohmann::json& patch);
+    bool remove(const std::string& ue_id, const std::string& nwdaf_registration_id);
+    // All registrations for ue_id, in no particular order. Empty if ue_id has none.
+    std::vector<nlohmann::json> list_for_ue(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::unordered_map<std::string, nlohmann::json>> registrations_;
+};
+
 // Backs Nudm_SDM's Subscribe/Unsubscribe (`/{ueId}/sdm-subscriptions`). Same
 // assign-id/store/remove shape as nfs/nrf's SubscriptionRegistry and nfs/amf's IdKeyedStore --
 // UDM-local rather than reused from another NF's private header, per CLAUDE.md. Scoped by ueId
