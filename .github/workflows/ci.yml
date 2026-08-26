@@ -191,8 +191,18 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
           -DCMAKE_BUILD_TYPE=Debug
 
+      # Real, disclosed mitigation (docs/DECISIONS.md ADR-0222), extending ADR-0163's own -j2 cap
+      # (originally applied only to `sanitize (asan-ubsan)`, which alone showed this pattern at the
+      # time) to this job too: two consecutive real CI failures (run 32969733375, both the initial
+      # attempt and a manual rerun) stalled at the identical point in ninja's build graph
+      # (nfs/smf/src/pfcp_peer.cpp.o, ~89% through 1407 targets) before ending in the same "runner
+      # lost communication"/exit-143 pattern ADR-0163 already root-caused for asan-ubsan -- and the
+      # stalled file itself compiles in ~12s standalone locally, ruling out "this file is just
+      # slow" as the explanation. The codebase has grown substantially since ADR-0163 (more NFs,
+      # more sbi-codegen-generated types), a plausible reason memory pressure at full parallelism
+      # now also reaches this job, not just asan-ubsan.
       - name: Build
-        run: cmake --build build
+        run: cmake --build build -- -j2
 
       - name: Generate lab PKI (TLS 1.3 + mTLS certs for the integration test)
         # NOT the default arg-less invocation (nrf + hello-nf only, per the script's own default) --
@@ -420,21 +430,21 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
           -DCMAKE_BUILD_TYPE=Debug -D5GC_ENABLE_TSAN=ON
 
-      # Real, disclosed mitigation (docs/DECISIONS.md ADR-0163) for a real, recurring pattern:
-      # `sanitize (asan-ubsan)` -- and only that matrix leg, not `tsan` or the plain `build` job --
-      # repeatedly ends in a genuine job "failure" (not "cancelled") from "The runner has received
-      # a shutdown signal", consistently late in the build (~93%+ of 1309 targets done, deep into
-      # individual NF object compilation). This job has no build-parallelism cap and no compiler
-      # cache, so every run does a full from-scratch ninja build at default (full-core) parallelism
-      # -- and ASan+UBSan instrumentation is well known to use substantially more memory per
-      # compilation unit than TSan or a plain Debug build, making this leg specifically the most
-      # likely to hit real memory pressure on GitHub's resource-constrained hosted runners under
-      # full parallelism. Capping to -j2 here (not on `build`/`tsan`, which don't show this
-      # pattern) is a targeted, evidence-based mitigation -- disclosed honestly as that, not a
-      # proven root-cause fix, same epistemic standard as ADR-0124's own original disclosure for
-      # the concurrency-group mitigation. Needs watching across real future CI runs.
+      # Real, disclosed mitigation (docs/DECISIONS.md ADR-0163, extended by ADR-0222) for a real,
+      # recurring pattern: `sanitize (asan-ubsan)` repeatedly ended in a genuine job "failure" (not
+      # "cancelled") from "The runner has received a shutdown signal", consistently late in the
+      # build (~93%+ of targets done, deep into individual NF object compilation), attributed to
+      # ASan+UBSan's heavier per-compilation-unit memory use hitting GitHub's resource-constrained
+      # hosted runners under full-parallelism `ninja`. ADR-0222 found direct, reproducible evidence
+      # that `tsan` now shows the identical pattern too (two consecutive real CI failures stalling
+      # at the exact same point in the build graph, exit 143) -- the codebase has grown
+      # substantially since ADR-0163, a plausible reason memory pressure now also reaches `tsan`.
+      # Both sanitizer legs are capped to `-j2` now; the plain `build` job gets its own equivalent
+      # cap directly in its own step (see that job's comment). Disclosed honestly as a targeted,
+      # evidence-based mitigation, not a proven root-cause fix -- needs watching across real future
+      # CI runs, same epistemic standard as ADR-0124/ADR-0163's own original disclosures.
       - name: Build
-        run: cmake --build build ${{ matrix.sanitizer == 'asan-ubsan' && '-- -j2' || '' }}
+        run: cmake --build build -- -j2
 
       - name: Generate lab PKI (TLS 1.3 + mTLS certs for the integration test)
         # NOT the default arg-less invocation (nrf + hello-nf only, per the script's own default) --
