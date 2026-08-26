@@ -1334,10 +1334,19 @@ own)~~ **CLOSED, ADR-0213 -- UDR now has zero known Tier-B gaps.**
 "stale `ScpDomainRoutingInfo*` disclosure comment" was checked directly and found already accurate
 in the current source -- not the "SCP isn't built yet" phrasing this audit's own original snapshot
 had flagged, no fix needed).
-UDM has the largest raw undisclosed-op count (~24 in `Nudm_UECM`, ~34 in `Nudm_SDM`, plus smaller
-gaps in `UEAU`/`PP`) but every one is a real, individually small CRUD/subscription operation
-within already-wired files, not a structural gap -- **UDM is now the only NF with a known real
-Tier-B item project-wide.**
+UDM has the largest raw undisclosed-op count -- **UDM is now the only NF with a known real Tier-B
+item project-wide.** A background audit (fork) produced the first real per-operation breakdown
+(replacing the earlier rough counts): ~~`Nudm_UEAU` (3 ops: `GetRgAuthData`, `GenerateAv`,
+`GenerateGbaAv`)~~ **CLOSED, ADR-0214** (first slice, smallest/clearest); `Nudm_UECM` (~24 ops:
+`GetRegistrations` bare aggregate, `SendRoutingInfoSm`, `PeiUpdate`/`UpdateRoamingInformation`,
+the full non-3gpp-access triple, smsf-3gpp/non-3gpp-access groups, ip-sm-gw-registration group,
+`Trigger P-CSCF Restoration`, `GetLocationInfo`, nwdaf-registrations group, `authTrigger`);
+`Nudm_SDM` (~33 ops: 21 simple per-SUPI GETs likely needing the existing UDM->UDR proxy pattern
+confirmed first rather than a new UDM-local store, plus 5 SOR/UPU/ack write ops, the 5-op
+non-per-UE shared-data family, and 2 identifier-lookup ops); `Nudm_PP` (11 ops: the
+5g-vn-groups/pp-data-store/mbs-group-membership groups already flagged deferred in ADR-0082,
+unchanged). Every one is a real, individually small CRUD/subscription operation within
+already-wired files, not a structural gap.
 
 ### Prioritization for closure (per ADR-0193's continuous, one-at-a-time process)
 

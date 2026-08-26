@@ -186,6 +186,16 @@ bool AuthEventStore::remove(const std::string& supi, const std::string& auth_eve
     return true;
 }
 
+bool AuthEventStore::has_successful_event(const std::string& supi) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [id, entry] : events_) {
+        if (entry.supi == supi && entry.event.value("success", false)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string EeSubscriptionStore::create(EeSubscriptionEntry entry) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::string id = "eesub-" + std::to_string(next_id_++);

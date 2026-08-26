@@ -440,6 +440,13 @@ int main() {
         meter->CreateUInt64Counter("udm_confirm_auth_total", "Total ConfirmAuth calls");
     auto delete_auth_counter =
         meter->CreateUInt64Counter("udm_delete_auth_total", "Total DeleteAuth calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0214).
+    auto get_rg_auth_data_counter =
+        meter->CreateUInt64Counter("udm_get_rg_auth_data_total", "Total GetRgAuthData calls");
+    auto generate_av_counter =
+        meter->CreateUInt64Counter("udm_generate_av_total", "Total GenerateAv calls");
+    auto generate_gba_av_counter =
+        meter->CreateUInt64Counter("udm_generate_gba_av_total", "Total GenerateGbaAv calls");
     auto ee_subscribe_counter =
         meter->CreateUInt64Counter("udm_ee_subscribe_total", "Total CreateEeSubscription calls");
     auto ee_update_counter =
@@ -1010,6 +1017,191 @@ int main() {
             result.proseAuthenticationVectors = sbi_gen::ProSeAuthenticationVectors{av};
 
             generate_prose_av_counter->Add(1);
+            json j = result;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0214): real, previously
+    // undisclosed `GetRgAuthData`. Real, disclosed design choice -- see
+    // `AuthEventStore::has_successful_event`'s own header comment for why `authInd` is backed by
+    // an existing `ConfirmAuth`-created `AuthEvent`, not a new, separate notion of "authenticated".
+    // Real, structural: `authenticated-ind` (the caller's own claim) is accepted per the real
+    // spec's own required query param, but this project's own `authInd` in the response always
+    // reflects this UDM's own real stored state, not the caller's unverified claim -- returning
+    // the caller's own claim back unchecked would be a fabricated confirmation, not a real one.
+    server.add_route(
+        "GET",
+        std::string(kUeauApiRoot) + "/{supiOrSuci}/security-information-rg",
+        [&verifier, &auth_events, &get_rg_auth_data_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            if (req.query_params.find("authenticated-ind") == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "Required query parameter authenticated-ind is missing");
+            }
+            const auto raw_supi_or_suci = req.path_params.at("supiOrSuci");
+            const auto deconcealed = deconceal_suci_if_needed(raw_supi_or_suci);
+            if (!deconcealed.has_value()) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "Could not de-conceal SUCI " + raw_supi_or_suci +
+                        " (malformed, unsupported protection scheme, or MAC verification failed)");
+            }
+            const auto supi_or_suci = *deconcealed;
+
+            sbi_gen::RgAuthCtx_Nudm_UEAU result{};
+            result.authInd = auth_events.has_successful_event(supi_or_suci);
+            result.supi = supi_or_suci;
+
+            get_rg_auth_data_counter->Add(1);
+            json j = result;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0214): real, previously
+    // undisclosed `GenerateAv` (EPS/IMS/GBA-domain HSS vectors). Reuses the exact same Milenage
+    // `aka_crypto::f1`/`f2345` primitives + `auth_subscriptions` per-subscriber SQN advance
+    // already used by `GenerateAuthData`/`GenerateProseAV` above -- real vectors, not stubs, for
+    // 4 of 5 real `hssAuthType` branches. Real, disclosed gap: the `eps-aka` branch's own
+    // `AvEpsAka.kasme` needs TS 33.401 Annex A.2 KASME derivation, a distinct KDF this project's
+    // `libs/aka-crypto` does not yet implement (only the 5G KAUSF/KSEAF chain, TS 33.501, exists)
+    // -- returns the real, spec-documented `501` rather than fabricating a KASME value.
+    server.add_route(
+        "POST",
+        std::string(kUeauApiRoot) + "/{supi}/hss-security-information/{hssAuthType}/generate-av",
+        [&verifier, &auth_subscriptions, &generate_av_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::HssAuthenticationInfoRequest>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto supi = req.path_params.at("supi");
+            const auto hss_auth_type = req.path_params.at("hssAuthType");
+
+            if (hss_auth_type == "eps-aka") {
+                return sbi_core::http2::problem_response(
+                    501,
+                    "Not Implemented",
+                    "eps-aka KASME derivation (TS 33.401 Annex A.2) is not yet implemented in "
+                    "libs/aka-crypto");
+            }
+            std::string serving_network_name;
+            if (hss_auth_type == "eap-aka-prime") {
+                if (!body->servingNetworkId.has_value()) {
+                    return sbi_core::http2::problem_response(
+                        400,
+                        "Bad Request",
+                        "servingNetworkId is required to derive CK'/IK' for eap-aka-prime");
+                }
+                const auto& mnc = body->servingNetworkId->mnc;
+                const std::string padded_mnc =
+                    mnc.size() < 3 ? std::string(3 - mnc.size(), '0') + mnc : mnc;
+                serving_network_name = "5G:mnc" + padded_mnc + ".mcc" +
+                                       body->servingNetworkId->mcc + ".3gppnetwork.org";
+            } else if (hss_auth_type != "eap-aka" && hss_auth_type != "ims-aka" &&
+                       hss_auth_type != "gba-aka") {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "Unrecognized hssAuthType " + hss_auth_type);
+            }
+
+            const std::int64_t num_vectors = body->numOfRequestedVectors;
+            json vectors = json::array();
+            for (std::int64_t i = 0; i < num_vectors; ++i) {
+                auto sub = auth_subscriptions.get_and_advance_sqn(supi);
+                if (!sub.has_value()) {
+                    return sbi_core::http2::problem_response(
+                        404, "Not Found", "No authentication subscription for " + supi);
+                }
+                const auto rand = aka_crypto::generate_rand();
+                const auto mac_a = aka_crypto::f1(sub->opc, sub->k, rand, sub->sqn, sub->amf);
+                const auto out = aka_crypto::f2345(sub->opc, sub->k, rand);
+                const auto sqn_xor_ak_value = aka_crypto::sqn_xor_ak(sub->sqn, out.ak);
+                std::array<uint8_t, 16> autn{};
+                std::copy(sqn_xor_ak_value.begin(), sqn_xor_ak_value.end(), autn.begin());
+                std::copy(sub->amf.begin(), sub->amf.end(), autn.begin() + 6);
+                std::copy(mac_a.begin(), mac_a.end(), autn.begin() + 8);
+
+                if (hss_auth_type == "eap-aka-prime") {
+                    const auto ck_ik_prime = aka_crypto::derive_ck_ik_prime(
+                        out.ck, out.ik, serving_network_name, sqn_xor_ak_value);
+                    sbi_gen::AvEapAkaPrime av{};
+                    av.avType.value = sbi_gen::AvType::EAP_AKA_PRIME;
+                    av.rand = aka_crypto::to_hex(rand);
+                    av.xres = aka_crypto::to_hex(out.res);
+                    av.autn = aka_crypto::to_hex(autn);
+                    av.ckPrime = aka_crypto::to_hex(ck_ik_prime.first);
+                    av.ikPrime = aka_crypto::to_hex(ck_ik_prime.second);
+                    vectors.push_back(av);
+                } else {
+                    sbi_gen::AvImsGbaEapAka av{};
+                    av.avType.value = hss_auth_type == "eap-aka"   ? sbi_gen::HssAvType::EAP_AKA
+                                      : hss_auth_type == "ims-aka" ? sbi_gen::HssAvType::IMS_AKA
+                                                                   : sbi_gen::HssAvType::GBA_AKA;
+                    av.rand = aka_crypto::to_hex(rand);
+                    av.xres = aka_crypto::to_hex(out.res);
+                    av.autn = aka_crypto::to_hex(autn);
+                    av.ck = aka_crypto::to_hex(out.ck);
+                    av.ik = aka_crypto::to_hex(out.ik);
+                    vectors.push_back(av);
+                }
+            }
+
+            json result;
+            result["hssAuthenticationVectors"] = vectors;
+            generate_av_counter->Add(1);
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0214): real, previously
+    // undisclosed `GenerateGbaAv`. Only one real `GbaAuthType` value exists
+    // (`DIGEST_AKAV1_MD5`), and `N3GAkaAv`'s own real fields (rand/xres/autn/ck/ik) are exactly
+    // the same raw Milenage output already used above -- real vectors, no new primitive needed.
+    server.add_route(
+        "POST",
+        std::string(kUeauApiRoot) + "/{supi}/gba-security-information/generate-av",
+        [&verifier, &auth_subscriptions, &generate_gba_av_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::GbaAuthenticationInfoRequest>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto supi = req.path_params.at("supi");
+            auto sub = auth_subscriptions.get_and_advance_sqn(supi);
+            if (!sub.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No authentication subscription for " + supi);
+            }
+            const auto rand = aka_crypto::generate_rand();
+            const auto mac_a = aka_crypto::f1(sub->opc, sub->k, rand, sub->sqn, sub->amf);
+            const auto out = aka_crypto::f2345(sub->opc, sub->k, rand);
+            const auto sqn_xor_ak_value = aka_crypto::sqn_xor_ak(sub->sqn, out.ak);
+            std::array<uint8_t, 16> autn{};
+            std::copy(sqn_xor_ak_value.begin(), sqn_xor_ak_value.end(), autn.begin());
+            std::copy(sub->amf.begin(), sub->amf.end(), autn.begin() + 6);
+            std::copy(mac_a.begin(), mac_a.end(), autn.begin() + 8);
+
+            sbi_gen::N3GAkaAv av{};
+            av.rand = aka_crypto::to_hex(rand);
+            av.xres = aka_crypto::to_hex(out.res);
+            av.autn = aka_crypto::to_hex(autn);
+            av.ck = aka_crypto::to_hex(out.ck);
+            av.ik = aka_crypto::to_hex(out.ik);
+
+            sbi_gen::GbaAuthenticationInfoResult result{};
+            result.n3gAkaAv = av;
+            generate_gba_av_counter->Add(1);
             json j = result;
             return sbi_core::http2::Response::json(200, j.dump());
         });

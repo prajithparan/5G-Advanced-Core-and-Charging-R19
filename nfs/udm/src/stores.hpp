@@ -65,6 +65,13 @@ class AuthEventStore {
 public:
     std::string create(const std::string& supi, nlohmann::json event);
     bool remove(const std::string& supi, const std::string& auth_event_id);
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0214). Backs `GetRgAuthData`:
+    // real, disclosed design choice -- since TS29503_Nudm_UEAU.yaml's own `RgAuthCtx.authInd`
+    // isn't backed by any other real state this project already tracks, this project treats "the
+    // FN-RG's UE is authenticated" as "a `ConfirmAuth`-created `AuthEvent` with `success: true`
+    // exists for this supi", reusing the exact real event data `ConfirmAuth`/`DeleteAuth` already
+    // write/remove -- not a new, separate notion of "authenticated".
+    bool has_successful_event(const std::string& supi);
 
 private:
     struct Entry {

@@ -133,10 +133,13 @@ previously-recorded "`subs-to-notify` bulk-DELETE" gap does not correspond to an
 the spec, and that resource was already fully implemented), and **UDR**'s remaining
 `Policy_Data.yaml` backlog in full (ADR-0213 — `ReadPolicyData` aggregate, Usage Monitoring
 Information, `ReadBdtData` collection GET, and the `Policy_Data`-specific Policy Data
-Subscriptions family). **UDR now has zero known Tier-B gaps.** UDM (~58+ undisclosed operations
-across `Nudm_UECM`/`Nudm_SDM`/`UEAU`/`PP`) is now the only remaining real Tier-B item
-project-wide — individual stubbed/missing operations within already-wired files, not a structural
-gap.
+Subscriptions family). **UDR now has zero known Tier-B gaps.** UDM is now the only remaining real
+Tier-B item project-wide; a background audit produced the first real per-operation breakdown
+(`Nudm_UECM` ~24, `Nudm_SDM` ~33, `Nudm_PP` 11 already flagged deferred in ADR-0082) and closed the
+first slice: **UDM** `Nudm_UEAU`'s 3 operations — `GetRgAuthData`, `GenerateAv` (real HSS
+EPS/IMS/GBA-domain vectors, real `501` for the one branch needing a KDF not yet in
+`libs/aka-crypto`), `GenerateGbaAv` (ADR-0214) — individual stubbed/missing operations within
+already-wired files, not a structural gap.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075

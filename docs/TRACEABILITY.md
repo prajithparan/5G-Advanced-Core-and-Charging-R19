@@ -4306,3 +4306,26 @@ absent `smPolicyDataSet` failed against real leftover state from an unrelated, e
 (ADR-0072/ADR-0084's own N28 wiring) -- fixed by not asserting on that ambient state. UDM's ~58+
 undisclosed operations (`Nudm_UECM`/`Nudm_SDM`/`UEAU`/`PP`) are now the only remaining real Tier-B
 item project-wide. See ADR-0213 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0214 -- UDM `Nudm_UEAU` Tier-B gap-closure (first slice: `GetRgAuthData`/`GenerateAv`/`GenerateGbaAv`)
+
+| Requirement | Test |
+|---|---|
+| `GetRgAuthData` real `authInd` backed by confirmed auth state | `UdmUeauGapClosureIntegration.GetRgAuthDataReflectsRealConfirmedAuthState`: real `400` missing query param, real `200`+`authInd:false` before any `ConfirmAuth`, real `200`+`authInd:true` after |
+| `GenerateAv` real HSS vectors for eap-aka/ims-aka/gba-aka/eap-aka-prime, real `501` for eps-aka | `UdmUeauGapClosureIntegration.GenerateAvProducesRealVectorsForImsGbaEapAkaBranches`: 2 real distinct vectors for `ims-aka`, real `501` for `eps-aka` |
+| `GenerateGbaAv` real `N3GAkaAv` vector | `UdmUeauGapClosureIntegration.GenerateGbaAvProducesRealN3GAkaVector`: correct real hex lengths for rand/xres/autn/ck/ik, real `404` for unknown subscriber |
+| No regression | Full reconfigure+rebuild clean; all 3 new tests pass; full suite 439/439 |
+
+First slice off UDM's own Tier-B backlog (now the only NF with a real Tier-B item project-wide).
+A background audit (fork) produced the first real per-operation breakdown: `Nudm_UEAU` (3 ops,
+smallest/clearest, done here), `Nudm_UECM` (~24), `Nudm_SDM` (~33, likely needs the UDM->UDR proxy
+pattern confirmed first), `Nudm_PP` (11, already flagged deferred in ADR-0082). All 3 `Nudm_UEAU`
+ops reuse the exact same real Milenage `aka_crypto::f1`/`f2345` primitives + `auth_subscriptions`
+SQN-advance already proven by `GenerateAuthData`/`GenerateProseAV` -- real vectors, not stubs, for
+4 of `GenerateAv`'s 5 real `hssAuthType` branches. Real, disclosed gap: `eps-aka` needs TS 33.401
+Annex A.2 KASME derivation, not yet in `libs/aka-crypto` -- real spec-documented `501`, not a
+fabricated value. `GetRgAuthData`'s own `authInd` is backed by a new
+`AuthEventStore::has_successful_event()`, reusing `ConfirmAuth`'s own real stored state rather
+than echoing the caller's unverified claim. One real bug of my own caught and fixed in the test
+(not the implementation): asserted the wrong JSON key (`n3gAkaAv`, the C++ member name) instead of
+the real schema key (`"3gAkaAv"`). See ADR-0214 in `docs/DECISIONS.md` for full disclosure.
