@@ -32,6 +32,31 @@ bool AmfRegistrationStore::remove(const std::string& ue_id) {
     return registrations_.erase(ue_id) > 0;
 }
 
+void AmfNon3GppRegistrationStore::put(const std::string& ue_id, nlohmann::json registration) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    registrations_[ue_id] = std::move(registration);
+}
+
+std::optional<nlohmann::json> AmfNon3GppRegistrationStore::get(const std::string& ue_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = registrations_.find(ue_id);
+    if (it == registrations_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+std::optional<nlohmann::json>
+AmfNon3GppRegistrationStore::merge_patch(const std::string& ue_id, const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = registrations_.find(ue_id);
+    if (it == registrations_.end()) {
+        return std::nullopt;
+    }
+    it->second.merge_patch(patch);
+    return std::make_optional(it->second);
+}
+
 void RoamingInfoUpdateStore::put(const std::string& ue_id, nlohmann::json info) {
     std::lock_guard<std::mutex> lock(mutex_);
     info_[ue_id] = std::move(info);

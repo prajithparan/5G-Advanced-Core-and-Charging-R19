@@ -102,6 +102,23 @@ private:
     std::unordered_map<std::string, nlohmann::json> registrations_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0216). Backs Nudm_UECM's AMF
+// non-3GPP-access registration group (Non3GppRegistration, GetNon3GppRegistration,
+// UpdateNon3GppRegistration). Keyed by ueId (Supi), same real shape as `AmfRegistrationStore`
+// above -- genuinely distinct real resource (own real `AmfNon3GppAccessRegistration` schema,
+// TS29503_Nudm_UECM.yaml's own `/{ueId}/registrations/amf-non-3gpp-access`).
+class AmfNon3GppRegistrationStore {
+public:
+    void put(const std::string& ue_id, nlohmann::json registration);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    std::optional<nlohmann::json> merge_patch(const std::string& ue_id,
+                                              const nlohmann::json& patch);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> registrations_;
+};
+
 // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0215). Backs
 // `UpdateRoamingInformation`
 // (`/{ueId}/registrations/amf-3gpp-access/roaming-info-update`) -- real, genuinely distinct

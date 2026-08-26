@@ -1340,7 +1340,9 @@ item project-wide.** A background audit (fork) produced the first real per-opera
 `GenerateGbaAv`)~~ **CLOSED, ADR-0214** (first slice, smallest/clearest); `Nudm_UECM` (~24 ops:
 `GetRegistrations` bare aggregate, `SendRoutingInfoSm`, ~~`PeiUpdate`/`UpdateRoamingInformation`~~
 **CLOSED, ADR-0215** (second slice -- the two confirmed independent of the other still-missing
-sub-resources below), the full non-3gpp-access triple, smsf-3gpp/non-3gpp-access groups,
+sub-resources below), ~~the full non-3gpp-access triple~~ **CLOSED, ADR-0216** (third slice --
+`Non3GppRegistration`/`GetNon3GppRegistration`/`UpdateNon3GppRegistration`, mirrors the
+already-built `amf-3gpp-access` group's own real shape), smsf-3gpp/non-3gpp-access groups,
 ip-sm-gw-registration group, `Trigger P-CSCF Restoration`, `GetLocationInfo`, nwdaf-registrations
 group, `authTrigger` -- `GetRegistrations`/`SendRoutingInfoSm` genuinely depend on these still-open
 sub-resources, confirmed by direct read of their own real response schemas, not assumed);

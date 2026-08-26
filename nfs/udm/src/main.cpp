@@ -369,6 +369,8 @@ int main() {
     udm::AmfRegistrationStore amf_registrations;
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0215).
     udm::RoamingInfoUpdateStore roaming_info_updates;
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0216).
+    udm::AmfNon3GppRegistrationStore amf_non3gpp_registrations;
     udm::SmfRegistrationStore smf_registrations;
     udm::SdmSubscriptionStore sdm_subscriptions;
     udm::AuthenticationSubscriptionStore auth_subscriptions;
@@ -429,6 +431,11 @@ int main() {
         meter->CreateUInt64Counter("udm_pei_update_total", "Total PeiUpdate calls");
     auto roaming_info_update_counter = meter->CreateUInt64Counter(
         "udm_roaming_info_update_total", "Total UpdateRoamingInformation calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0216).
+    auto amf_non3gpp_reg_counter = meter->CreateUInt64Counter("udm_amf_non3gpp_registration_total",
+                                                              "Total Non3GppRegistration calls");
+    auto amf_non3gpp_patch_counter = meter->CreateUInt64Counter(
+        "udm_amf_non3gpp_patch_total", "Total UpdateNon3GppRegistration calls");
     auto smf_reg_counter =
         meter->CreateUInt64Counter("udm_smf_registration_total", "Total SMF Registration calls");
     auto smf_dereg_counter =
@@ -646,6 +653,90 @@ int main() {
             } else {
                 resp.status = 204;
             }
+            return resp;
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0216): real, previously
+    // undisclosed AMF non-3GPP-access registration group (Non3GppRegistration/
+    // GetNon3GppRegistration/UpdateNon3GppRegistration) -- genuinely distinct real resource from
+    // the AMF 3GPP-access registration group above (own real `AmfNon3GppAccessRegistration`
+    // schema), same real PUT+GET+PATCH shape and store design. Real, disclosed: the PATCH's own
+    // real spec documents a `200`+`PatchResult` response for a partial-failure execution report --
+    // this project's simple `nlohmann::json::merge_patch()` has no partial-apply/rollback
+    // semantics to report on, so a fully-applied merge returns the real, also-documented `204`
+    // (no content) instead of fabricating an always-empty `PatchResult.report`.
+    server.add_route(
+        "PUT",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/amf-non-3gpp-access",
+        [&verifier, &amf_non3gpp_registrations, &amf_non3gpp_reg_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::AmfNon3GppAccessRegistration>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const bool is_new = !amf_non3gpp_registrations.get(ue_id).has_value();
+            json j = *body;
+            amf_non3gpp_registrations.put(ue_id, j);
+            amf_non3gpp_reg_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = is_new ? 201 : 200;
+            resp.headers.emplace("content-type", "application/json");
+            if (is_new) {
+                resp.headers.emplace("location",
+                                     std::string(kUecmApiRoot) + "/" + ue_id +
+                                         "/registrations/amf-non-3gpp-access");
+            }
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/amf-non-3gpp-access",
+        [&verifier, &amf_non3gpp_registrations](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto registration = amf_non3gpp_registrations.get(ue_id);
+            if (!registration.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AMF non-3GPP-access registration for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, registration->dump());
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/amf-non-3gpp-access",
+        [&verifier, &amf_non3gpp_registrations, &amf_non3gpp_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto patch_dto =
+                sbi_core::http2::parse_json_body<sbi_gen::AmfNon3GppAccessRegistrationModification>(
+                    req, err);
+            if (!patch_dto.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto patched = amf_non3gpp_registrations.merge_patch(ue_id, json::parse(req.body));
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AMF non-3GPP-access registration for ueId " + ue_id);
+            }
+            amf_non3gpp_patch_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
             return resp;
         });
 

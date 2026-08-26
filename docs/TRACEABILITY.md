@@ -4346,3 +4346,21 @@ verbatim, no new store. `UpdateRoamingInformation` gets a new `RoamingInfoUpdate
 real resource, own real `201`-with-`Location`-vs-`204` response pair, confirmed distinct from the
 AMF registration document by its own real response schema). See ADR-0215 in `docs/DECISIONS.md`
 for full disclosure.
+
+## ADR-0216 -- UDM `Nudm_UECM` Tier-B gap-closure (third slice: AMF non-3GPP-access registration group)
+
+| Requirement | Test |
+|---|---|
+| `Non3GppRegistration`/`GetNon3GppRegistration`/`UpdateNon3GppRegistration` full lifecycle | `UdmAmfNon3GppGapClosureIntegration.Non3GppRegistrationFullLifecycle`: real `404` before create, real `201`+`Location` on first PUT, real `200` on repeat PUT, GET round-trips the document, real `204` on PATCH with the merge confirmed via a follow-up GET, real `404` PATCH against an unknown `ueId` |
+| No regression | Full reconfigure+rebuild clean; new test passes; full suite 442/442 |
+
+Third slice off `Nudm_UECM`'s own Tier-B backlog -- the AMF non-3GPP-access registration group,
+one of the sub-resource groups ADR-0215 deliberately deferred. New `AmfNon3GppRegistrationStore`
+mirrors the already-existing `AmfRegistrationStore` (3GPP-access) exactly, reflecting the real
+schema symmetry between `Amf3GppAccessRegistration` and `AmfNon3GppAccessRegistration`. Real,
+disclosed: the PATCH's own real spec documents a `200`+`PatchResult` partial-failure execution
+report -- this project's simple merge-patch has no partial-apply semantics to report on, so a
+successful merge returns the real, also-documented `204` instead of a fabricated empty report.
+`GetRegistrations`/`SendRoutingInfoSm` remain open (still depend on
+`smsf3Gpp`/`smsfNon3Gpp`/`ipSmGw`/`nwdafRegistration`, none built here). See ADR-0216 in
+`docs/DECISIONS.md` for full disclosure.
