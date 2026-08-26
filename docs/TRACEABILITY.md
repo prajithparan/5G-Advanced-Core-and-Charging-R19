@@ -4431,3 +4431,18 @@ simplification: `single-nssai`/`dnn` query params are accepted but not honored -
 always returns every PDU session unfiltered, since per-session S-NSSAI/DNN inspection isn't built.
 `SendRoutingInfoSm` remains the next open item. See ADR-0220 in `docs/DECISIONS.md` for full
 disclosure.
+
+## ADR-0221 -- UDM `Nudm_UECM` Tier-B gap-closure (eighth slice: `SendRoutingInfoSm`)
+
+| Requirement | Test |
+|---|---|
+| `SendRoutingInfoSm` composes `RoutingInfoSmResponse` from real SMSF/IP-SM-GW stores | `UdmSendRoutingInfoSmGapClosureIntegration.ComposesRealRoutingInfoFromSeededStores`: real `404` with no SMSF/IP-SM-GW registration; after seeding real SMSF_3GPP + IP-SM-GW, a real `200` correctly composes both and confirms `smsfNon3Gpp`/`smsRouter` are correctly absent |
+| No regression | Full reconfigure+rebuild clean; new test passes; full suite 447/447 |
+
+Eighth and final slice off `Nudm_UECM`'s own CRUD/composition Tier-B backlog -- `SendRoutingInfoSm`,
+composing `RoutingInfoSmResponse` from the already-built SMSF/IP-SM-GW stores (no new store
+needed). Real, disclosed: `smsRouter`/`ipSmGwGuidance` are never populated (no data source built
+for either); a `ueId` with neither SMSF nor IP-SM-GW registration is a real `404`. Only `Trigger
+P-CSCF Restoration`, `GetLocationInfo`, and `authTrigger` remain as `Nudm_UECM`'s last three
+independent single ops. See ADR-0221 in `docs/DECISIONS.md` for full disclosure, including a real
+CI `lint` failure caught and fixed in this same window.

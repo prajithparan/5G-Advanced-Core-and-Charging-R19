@@ -1354,9 +1354,11 @@ in the real spec at all, only the collection GET), `authTrigger` -- ~~`GetRegist
 **CLOSED, ADR-0220** (seventh slice -- composes `RegistrationDataSets` from the six real per-group
 stores, gated by the required `registration-dataset-names` query param, real spec `minItems: 2`
 enforced as a real `400`; disclosed: `single-nssai`/`dnn` filtering of the `SMF_PDU_SESSIONS`
-dataset not honored), `SendRoutingInfoSm` still unimplemented -- a genuinely separate operation
-(SMS routing-info lookup, not a `RegistrationDataSets` composition), confirmed by direct read of
-its own real response schema, not assumed);
+dataset not honored), ~~`SendRoutingInfoSm`~~ **CLOSED, ADR-0221** (eighth and final CRUD/
+composition slice -- composes `RoutingInfoSmResponse` from the real SMSF/IP-SM-GW stores;
+disclosed: `smsRouter`/`ipSmGwGuidance` never populated, no data source for either) -- only
+`Trigger P-CSCF Restoration`, `GetLocationInfo`, `authTrigger` remain as `Nudm_UECM`'s last three
+independent single ops, confirmed by direct read of their own real response schemas, not assumed);
 `Nudm_SDM` (~33 ops: 21 simple per-SUPI GETs likely needing the existing UDM->UDR proxy pattern
 confirmed first rather than a new UDM-local store, plus 5 SOR/UPU/ack write ops, the 5-op
 non-per-UE shared-data family, and 2 identifier-lookup ops); `Nudm_PP` (11 ops: the

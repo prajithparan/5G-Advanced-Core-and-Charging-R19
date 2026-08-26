@@ -468,6 +468,9 @@ int main() {
                                                           "Total NwdafDeregistration calls");
     auto nwdaf_patch_counter =
         meter->CreateUInt64Counter("udm_nwdaf_patch_total", "Total UpdateNwdafRegistration calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0221).
+    auto send_routing_info_sm_counter = meter->CreateUInt64Counter("udm_send_routing_info_sm_total",
+                                                                   "Total SendRoutingInfoSm calls");
     auto smf_reg_counter =
         meter->CreateUInt64Counter("udm_smf_registration_total", "Total SMF Registration calls");
     auto smf_dereg_counter =
@@ -1375,6 +1378,61 @@ int main() {
                     result.nwdafRegistration = info;
                 }
             }
+            json j = result;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0221): real, previously
+    // undisclosed `SendRoutingInfoSm` custom operation -- composes `RoutingInfoSmResponse` from
+    // the real SMSF/IP-SM-GW stores, the last open item in `Nudm_UECM`'s own Tier-B backlog.
+    // Real, disclosed: `smsRouter` (an SMS-Router-at-UDM concept this project hasn't built any
+    // config surface for) and `ipSmGwGuidance` (delivery-time hints this project has no source of
+    // data for) are never populated; `mpsMsgIndication` is left absent, which is
+    // schema-equivalent to its own documented `false` default, not an omission of real data.
+    // Real, spec-consistent judgment call: a UE with neither SMSF nor IP-SM-GW registration has no
+    // real addressing information to return, so this returns a real `404` rather than a `200`
+    // with an empty body -- the real spec's own general-error responses list `404` as valid here
+    // and this project has no fabricated-empty-body convention to fall back on for this operation.
+    server.add_route(
+        "POST",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/send-routing-info-sm",
+        [&verifier,
+         &smsf_3gpp_registrations,
+         &smsf_non3gpp_registrations,
+         &ip_sm_gw_registrations,
+         &send_routing_info_sm_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::RoutingInfoSmRequest>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+
+            sbi_gen::RoutingInfoSmResponse result{};
+            bool found_any = false;
+            if (auto v = smsf_3gpp_registrations.get(ue_id); v.has_value()) {
+                result.smsf3Gpp = v->get<sbi_gen::SmsfRegistration>();
+                found_any = true;
+            }
+            if (auto v = smsf_non3gpp_registrations.get(ue_id); v.has_value()) {
+                result.smsfNon3Gpp = v->get<sbi_gen::SmsfRegistration>();
+                found_any = true;
+            }
+            if (auto v = ip_sm_gw_registrations.get(ue_id); v.has_value()) {
+                sbi_gen::IpSmGwInfo info{};
+                info.ipSmGwRegistration = v->get<sbi_gen::IpSmGwRegistration>();
+                result.ipSmGw = info;
+                found_any = true;
+            }
+            if (!found_any) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMS routing information available for ueId " + ue_id);
+            }
+            result.supi = ue_id;
+            send_routing_info_sm_counter->Add(1);
             json j = result;
             return sbi_core::http2::Response::json(200, j.dump());
         });
