@@ -13,6 +13,7 @@ add_executable(integration_tests
     test_udm_ueau_gap_closure_214.cpp
     test_udm_uecm_gap_closure_215.cpp
     test_udm_uecm_gap_closure_216.cpp
+    test_udm_uecm_gap_closure_217.cpp
     test_udm_mt_niddau_rsds_ssau_ueid.cpp
     test_upf_event_exposure_gueip.cpp
     test_udr_context_data.cpp

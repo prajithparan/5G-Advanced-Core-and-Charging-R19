@@ -4364,3 +4364,21 @@ successful merge returns the real, also-documented `204` instead of a fabricated
 `GetRegistrations`/`SendRoutingInfoSm` remain open (still depend on
 `smsf3Gpp`/`smsfNon3Gpp`/`ipSmGw`/`nwdafRegistration`, none built here). See ADR-0216 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0217 -- UDM `Nudm_UECM` Tier-B gap-closure (fourth slice: SMSF registration groups)
+
+| Requirement | Test |
+|---|---|
+| `3GppSmsfRegistration`/`Get3GppSmsfRegistration`/`UpdateSmsf3GppRegistration`/`3GppSmsfDeregistration` and non-3GPP-access counterparts, full lifecycle | `UdmSmsfGapClosureIntegration.Smsf3GppAndNon3GppRegistrationGroupsFullLifecycle`: real `404` before create, real `201`+`Location` on first PUT, real `200` on repeat PUT, GET round-trips, real `204` PATCH with merge confirmed, real `204` DELETE, real `404` on repeat DELETE -- exercised for both groups via a shared helper |
+| No regression | Full reconfigure+rebuild clean; new test passes; full suite 443/443 |
+
+Fourth slice off `Nudm_UECM`'s own Tier-B backlog -- both SMSF registration groups (3GPP-access and
+non-3GPP-access), which share the identical real `SmsfRegistration`/`SmsfRegistrationModification`
+schemas per the spec. New `SmsfRegistrationStore` backs both as two distinct instances (same
+"real, distinct resource, not a rename" precedent as `nfs/udr`'s own
+`SmsfContext3gppStore`/`SmsfNon3GppContextStore`). Same disclosed simplifications as ADR-0216
+(PUT uses only `201`/`200`, ETag/`If-Match`/`smsf-set-id` accepted but not honored, PATCH returns
+real `204` not a fabricated `PatchResult`). Real step toward `GetRegistrations` eventually being
+meaningful -- its own `smsf3Gpp`/`smsfNon3Gpp` fields are now backed by real data, though
+`ipSmGw`/`nwdafRegistration` remain missing. See ADR-0217 in `docs/DECISIONS.md` for full
+disclosure.

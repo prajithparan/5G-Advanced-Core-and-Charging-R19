@@ -135,6 +135,27 @@ private:
     std::unordered_map<std::string, nlohmann::json> info_;
 };
 
+// Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0217). Backs Nudm_UECM's SMSF
+// registration groups (3GppSmsfRegistration/Get3GppSmsfRegistration/
+// UpdateSmsf3GppRegistration/3GppSmsfDeregistration and their real, separate non-3GPP-access
+// counterparts). Real, deliberate: kept as two distinct instances of this one class rather than
+// merged into a single store, even though both real spec resources share the identical
+// `SmsfRegistration` schema -- same "real, distinct resource, not a rename" precedent
+// `nfs/udr`'s own `SmsfContext3gppStore`/`SmsfNon3GppContextStore` already established. Keyed by
+// ueId, in-memory, same shape as `AmfRegistrationStore` above.
+class SmsfRegistrationStore {
+public:
+    void put(const std::string& ue_id, nlohmann::json registration);
+    std::optional<nlohmann::json> get(const std::string& ue_id);
+    std::optional<nlohmann::json> merge_patch(const std::string& ue_id,
+                                              const nlohmann::json& patch);
+    bool remove(const std::string& ue_id);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> registrations_;
+};
+
 // Backs Nudm_UECM's SMF registration group (Registration, RetrieveSmfRegistration,
 // UpdateSmfRegistration, SmfDeregistration, GetSmfRegistration). Keyed by (ueId, pduSessionId) --
 // a UE can have multiple concurrent PDU sessions, each with its own SMF registration

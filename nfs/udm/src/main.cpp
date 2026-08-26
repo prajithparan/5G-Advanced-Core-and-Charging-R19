@@ -371,6 +371,9 @@ int main() {
     udm::RoamingInfoUpdateStore roaming_info_updates;
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0216).
     udm::AmfNon3GppRegistrationStore amf_non3gpp_registrations;
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0217).
+    udm::SmsfRegistrationStore smsf_3gpp_registrations;
+    udm::SmsfRegistrationStore smsf_non3gpp_registrations;
     udm::SmfRegistrationStore smf_registrations;
     udm::SdmSubscriptionStore sdm_subscriptions;
     udm::AuthenticationSubscriptionStore auth_subscriptions;
@@ -436,6 +439,19 @@ int main() {
                                                               "Total Non3GppRegistration calls");
     auto amf_non3gpp_patch_counter = meter->CreateUInt64Counter(
         "udm_amf_non3gpp_patch_total", "Total UpdateNon3GppRegistration calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0217).
+    auto smsf_3gpp_reg_counter = meter->CreateUInt64Counter("udm_smsf_3gpp_registration_total",
+                                                            "Total 3GppSmsfRegistration calls");
+    auto smsf_3gpp_dereg_counter = meter->CreateUInt64Counter("udm_smsf_3gpp_deregistration_total",
+                                                              "Total 3GppSmsfDeregistration calls");
+    auto smsf_3gpp_patch_counter = meter->CreateUInt64Counter(
+        "udm_smsf_3gpp_patch_total", "Total UpdateSmsf3GppRegistration calls");
+    auto smsf_non3gpp_reg_counter = meter->CreateUInt64Counter(
+        "udm_smsf_non3gpp_registration_total", "Total Non3GppSmsfRegistration calls");
+    auto smsf_non3gpp_dereg_counter = meter->CreateUInt64Counter(
+        "udm_smsf_non3gpp_deregistration_total", "Total Non3GppSmsfDeregistration calls");
+    auto smsf_non3gpp_patch_counter = meter->CreateUInt64Counter(
+        "udm_smsf_non3gpp_patch_total", "Total UpdateSmsfNon3GppRegistration calls");
     auto smf_reg_counter =
         meter->CreateUInt64Counter("udm_smf_registration_total", "Total SMF Registration calls");
     auto smf_dereg_counter =
@@ -735,6 +751,208 @@ int main() {
                     404, "Not Found", "No AMF non-3GPP-access registration for ueId " + ue_id);
             }
             amf_non3gpp_patch_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0217): real, previously
+    // undisclosed SMSF registration groups (3GPP-access and non-3GPP-access), both using the
+    // real, identical `SmsfRegistration` schema per TS29503_Nudm_UECM.yaml (kept as two distinct
+    // store instances, see `SmsfRegistrationStore`'s own header comment). Real, disclosed
+    // simplifications applied identically to both groups:
+    // - PUT's own real spec documents three success codes (`201`/`200`/`204`); this project uses
+    //   only `201` (create) and `200` (update, with body) -- same convention already established
+    //   for `3GppRegistration`/`Non3GppRegistration` above, not the alternate bodyless `204`.
+    // - The real, optional response `ETag` header (PUT/DELETE) and request `If-Match` header
+    //   (DELETE) are accepted/not populated -- no per-resource ETag/versioning layer exists
+    //   anywhere in this project (same disclosed gap class as UDR's own `3gpp-Sbi-Etags`,
+    //   ADR-0212).
+    // - DELETE's own real, optional `smsf-set-id` query filter is accepted but not honored -- this
+    //   store has no notion of an SMSF set distinct from the single stored registration.
+    // - PATCH's own real spec documents a `200`+`PatchResult` partial-failure execution report;
+    //   this project's simple merge-patch has no partial-apply semantics to report on, so a
+    //   successful merge returns the real, also-documented `204` (same precedent as
+    //   `UpdateNon3GppRegistration` above).
+    server.add_route(
+        "PUT",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/smsf-3gpp-access",
+        [&verifier, &smsf_3gpp_registrations, &smsf_3gpp_reg_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SmsfRegistration>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const bool is_new = !smsf_3gpp_registrations.get(ue_id).has_value();
+            json j = *body;
+            smsf_3gpp_registrations.put(ue_id, j);
+            smsf_3gpp_reg_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = is_new ? 201 : 200;
+            resp.headers.emplace("content-type", "application/json");
+            if (is_new) {
+                resp.headers.emplace("location",
+                                     std::string(kUecmApiRoot) + "/" + ue_id +
+                                         "/registrations/smsf-3gpp-access");
+            }
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/smsf-3gpp-access",
+        [&verifier, &smsf_3gpp_registrations](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto registration = smsf_3gpp_registrations.get(ue_id);
+            if (!registration.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMSF 3GPP-access registration for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, registration->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/smsf-3gpp-access",
+        [&verifier, &smsf_3gpp_registrations, &smsf_3gpp_dereg_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!smsf_3gpp_registrations.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMSF 3GPP-access registration for ueId " + ue_id);
+            }
+            smsf_3gpp_dereg_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/smsf-3gpp-access",
+        [&verifier, &smsf_3gpp_registrations, &smsf_3gpp_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto patch_dto =
+                sbi_core::http2::parse_json_body<sbi_gen::SmsfRegistrationModification>(req, err);
+            if (!patch_dto.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto patched = smsf_3gpp_registrations.merge_patch(ue_id, json::parse(req.body));
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMSF 3GPP-access registration for ueId " + ue_id);
+            }
+            smsf_3gpp_patch_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "PUT",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/smsf-non-3gpp-access",
+        [&verifier, &smsf_non3gpp_registrations, &smsf_non3gpp_reg_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SmsfRegistration>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const bool is_new = !smsf_non3gpp_registrations.get(ue_id).has_value();
+            json j = *body;
+            smsf_non3gpp_registrations.put(ue_id, j);
+            smsf_non3gpp_reg_counter->Add(1);
+
+            sbi_core::http2::Response resp;
+            resp.status = is_new ? 201 : 200;
+            resp.headers.emplace("content-type", "application/json");
+            if (is_new) {
+                resp.headers.emplace("location",
+                                     std::string(kUecmApiRoot) + "/" + ue_id +
+                                         "/registrations/smsf-non-3gpp-access");
+            }
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/smsf-non-3gpp-access",
+        [&verifier, &smsf_non3gpp_registrations](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto registration = smsf_non3gpp_registrations.get(ue_id);
+            if (!registration.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMSF non-3GPP-access registration for ueId " + ue_id);
+            }
+            return sbi_core::http2::Response::json(200, registration->dump());
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/smsf-non-3gpp-access",
+        [&verifier, &smsf_non3gpp_registrations, &smsf_non3gpp_dereg_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!smsf_non3gpp_registrations.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMSF non-3GPP-access registration for ueId " + ue_id);
+            }
+            smsf_non3gpp_dereg_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/smsf-non-3gpp-access",
+        [&verifier, &smsf_non3gpp_registrations, &smsf_non3gpp_patch_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto patch_dto =
+                sbi_core::http2::parse_json_body<sbi_gen::SmsfRegistrationModification>(req, err);
+            if (!patch_dto.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto patched = smsf_non3gpp_registrations.merge_patch(ue_id, json::parse(req.body));
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SMSF non-3GPP-access registration for ueId " + ue_id);
+            }
+            smsf_non3gpp_patch_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

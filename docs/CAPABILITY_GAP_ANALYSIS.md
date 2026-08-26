@@ -1342,10 +1342,12 @@ item project-wide.** A background audit (fork) produced the first real per-opera
 **CLOSED, ADR-0215** (second slice -- the two confirmed independent of the other still-missing
 sub-resources below), ~~the full non-3gpp-access triple~~ **CLOSED, ADR-0216** (third slice --
 `Non3GppRegistration`/`GetNon3GppRegistration`/`UpdateNon3GppRegistration`, mirrors the
-already-built `amf-3gpp-access` group's own real shape), smsf-3gpp/non-3gpp-access groups,
-ip-sm-gw-registration group, `Trigger P-CSCF Restoration`, `GetLocationInfo`, nwdaf-registrations
-group, `authTrigger` -- `GetRegistrations`/`SendRoutingInfoSm` genuinely depend on these still-open
-sub-resources, confirmed by direct read of their own real response schemas, not assumed);
+already-built `amf-3gpp-access` group's own real shape), ~~smsf-3gpp/non-3gpp-access groups~~
+**CLOSED, ADR-0217** (fourth slice -- both groups share the identical real
+`SmsfRegistration`/`SmsfRegistrationModification` schemas), ip-sm-gw-registration group,
+`Trigger P-CSCF Restoration`, `GetLocationInfo`, nwdaf-registrations group, `authTrigger` --
+`GetRegistrations`/`SendRoutingInfoSm` still genuinely depend on `ipSmGw`/`nwdafRegistration`,
+confirmed by direct read of their own real response schemas, not assumed);
 `Nudm_SDM` (~33 ops: 21 simple per-SUPI GETs likely needing the existing UDM->UDR proxy pattern
 confirmed first rather than a new UDM-local store, plus 5 SOR/UPU/ack write ops, the 5-op
 non-per-UE shared-data family, and 2 identifier-lookup ops); `Nudm_PP` (11 ops: the
