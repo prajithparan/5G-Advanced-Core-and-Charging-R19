@@ -201,8 +201,24 @@ jobs:
       # slow" as the explanation. The codebase has grown substantially since ADR-0163 (more NFs,
       # more sbi-codegen-generated types), a plausible reason memory pressure at full parallelism
       # now also reaches this job, not just asan-ubsan.
+      #
+      # Real, disclosed mitigation (docs/DECISIONS.md ADR-0225): bounded retry on top of the -j2
+      # cap above. `ninja` is incremental, so a retry after a transient runner-reclaim resumes from
+      # whatever objects already compiled rather than starting over -- cheap when it works. This
+      # does NOT silence a genuine compile error: a real failure re-fails identically on every
+      # attempt (nothing about the source changes between retries) and still fails the job once
+      # attempts are exhausted. Only absorbs the specific transient case (GitHub's own runner
+      # infra reclaiming the job mid-build, exit 143/"shutdown signal"), which is external to this
+      # repo and not fixable from the workflow file itself.
       - name: Build
-        run: cmake --build build -- -j2
+        run: |
+          for attempt in 1 2 3; do
+            if cmake --build build -- -j2; then
+              exit 0
+            fi
+            echo "::warning::Build attempt ${attempt} failed (possibly a transient runner issue, see ADR-0225) -- retrying" >&2
+          done
+          exit 1
 
       - name: Generate lab PKI (TLS 1.3 + mTLS certs for the integration test)
         # NOT the default arg-less invocation (nrf + hello-nf only, per the script's own default) --
@@ -462,8 +478,21 @@ jobs:
       # cap directly in its own step (see that job's comment). Disclosed honestly as a targeted,
       # evidence-based mitigation, not a proven root-cause fix -- needs watching across real future
       # CI runs, same epistemic standard as ADR-0124/ADR-0163's own original disclosures.
+      #
+      # Real, disclosed mitigation (docs/DECISIONS.md ADR-0225): bounded retry on top of the -j2
+      # cap above -- see the `build` job's identical step for the full rationale (incremental
+      # `ninja` resumes cheaply on retry; a genuine compile error still fails identically on every
+      # attempt and still fails the job once exhausted; only absorbs GitHub's own transient runner
+      # reclaim, external to this repo).
       - name: Build
-        run: cmake --build build -- -j2
+        run: |
+          for attempt in 1 2 3; do
+            if cmake --build build -- -j2; then
+              exit 0
+            fi
+            echo "::warning::Build attempt ${attempt} failed (possibly a transient runner issue, see ADR-0225) -- retrying" >&2
+          done
+          exit 1
 
       - name: Generate lab PKI (TLS 1.3 + mTLS certs for the integration test)
         # NOT the default arg-less invocation (nrf + hello-nf only, per the script's own default) --
