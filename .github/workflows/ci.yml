@@ -484,10 +484,23 @@ jobs:
       # `ninja` resumes cheaply on retry; a genuine compile error still fails identically on every
       # attempt and still fails the job once exhausted; only absorbs GitHub's own transient runner
       # reclaim, external to this repo).
+      #
+      # Real, disclosed mitigation (docs/DECISIONS.md ADR-0229): even with the -j2 cap and the
+      # bounded retry above, `asan-ubsan` specifically still hit the identical runner-reclaim
+      # failure on every one of 4 consecutive real CI runs (including all 3 retry attempts each
+      # time) -- `tsan` never did, despite sharing the same -j2 cap since ADR-0222. ASan+UBSan's
+      # combined instrumentation has a real, evidence-consistent higher per-translation-unit memory
+      # footprint than TSan alone, so `asan-ubsan` alone drops to `-j1` here -- untested before this
+      # change, same epistemic standard as ADR-0163/ADR-0222's own disclosures (a targeted,
+      # evidence-based mitigation, not a proven fix; needs watching across real future runs).
       - name: Build
         run: |
+          JOBS=2
+          if [ "${{ matrix.sanitizer }}" = "asan-ubsan" ]; then
+            JOBS=1
+          fi
           for attempt in 1 2 3; do
-            if cmake --build build -- -j2; then
+            if cmake --build build -- -j${JOBS}; then
               exit 0
             fi
             echo "::warning::Build attempt ${attempt} failed (possibly a transient runner issue, see ADR-0225) -- retrying" >&2
