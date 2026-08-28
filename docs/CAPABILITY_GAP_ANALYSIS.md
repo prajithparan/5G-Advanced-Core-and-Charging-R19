@@ -1347,18 +1347,22 @@ already-built `amf-3gpp-access` group's own real shape), ~~smsf-3gpp/non-3gpp-ac
 `SmsfRegistration`/`SmsfRegistrationModification` schemas), ~~ip-sm-gw-registration group~~
 **CLOSED, ADR-0218** (fifth slice -- `IpSmGwRegistration`/`GetIpSmGwRegistration`/
 `IpSmGwDeregistration`, genuinely no PATCH exists for this resource in the real spec at all),
-`Trigger P-CSCF Restoration`, `GetLocationInfo`, ~~nwdaf-registrations group~~ **CLOSED, ADR-0219**
+~~nwdaf-registrations group~~ **CLOSED, ADR-0219**
 (sixth slice -- `NwdafRegistration`/`GetNwdafRegistration`/`NwdafDeregistration`/
 `UpdateNwdafRegistration`; real finding: no individual GET exists for a single NWDAF registration
-in the real spec at all, only the collection GET), `authTrigger` -- ~~`GetRegistrations`~~
+in the real spec at all, only the collection GET), ~~`GetRegistrations`~~
 **CLOSED, ADR-0220** (seventh slice -- composes `RegistrationDataSets` from the six real per-group
 stores, gated by the required `registration-dataset-names` query param, real spec `minItems: 2`
 enforced as a real `400`; disclosed: `single-nssai`/`dnn` filtering of the `SMF_PDU_SESSIONS`
-dataset not honored), ~~`SendRoutingInfoSm`~~ **CLOSED, ADR-0221** (eighth and final CRUD/
+dataset not honored), ~~`SendRoutingInfoSm`~~ **CLOSED, ADR-0221** (eighth CRUD/
 composition slice -- composes `RoutingInfoSmResponse` from the real SMSF/IP-SM-GW stores;
-disclosed: `smsRouter`/`ipSmGwGuidance` never populated, no data source for either) -- only
-`Trigger P-CSCF Restoration`, `GetLocationInfo`, `authTrigger` remain as `Nudm_UECM`'s last three
-independent single ops, confirmed by direct read of their own real response schemas, not assumed);
+disclosed: `smsRouter`/`ipSmGwGuidance` never populated, no data source for either), ~~`Trigger
+P-CSCF Restoration`, `GetLocationInfo`, `authTrigger`~~ **CLOSED, ADR-0227** (ninth and final
+slice -- `GetLocationInfo` is a real, complete local composition from the already-stored AMF
+registration records; the other two are real accept-and-validate operations with a disclosed
+non-relay to the serving AMF/AUSF, same class as ADR-0207's own SendSMS disclosure) --
+**`Nudm_UECM`'s entire Tier-B backlog is now fully closed**, confirmed by direct read of every
+operation's own real response schema, not assumed);
 `Nudm_SDM` (~33 ops: 21 simple per-SUPI GETs likely needing the existing UDM->UDR proxy pattern
 confirmed first rather than a new UDM-local store, plus 5 SOR/UPU/ack write ops, the 5-op
 non-per-UE shared-data family, and 2 identifier-lookup ops); `Nudm_PP` (11 ops: the

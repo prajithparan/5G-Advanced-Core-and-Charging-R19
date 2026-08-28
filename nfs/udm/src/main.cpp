@@ -471,6 +471,13 @@ int main() {
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0221).
     auto send_routing_info_sm_counter = meter->CreateUInt64Counter("udm_send_routing_info_sm_total",
                                                                    "Total SendRoutingInfoSm calls");
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0227).
+    auto restore_pcscf_counter = meter->CreateUInt64Counter(
+        "udm_restore_pcscf_total", "Total Trigger P-CSCF Restoration calls");
+    auto get_location_info_counter =
+        meter->CreateUInt64Counter("udm_get_location_info_total", "Total GetLocationInfo calls");
+    auto auth_trigger_counter =
+        meter->CreateUInt64Counter("udm_auth_trigger_total", "Total authTrigger calls");
     auto smf_reg_counter =
         meter->CreateUInt64Counter("udm_smf_registration_total", "Total SMF Registration calls");
     auto smf_dereg_counter =
@@ -1435,6 +1442,135 @@ int main() {
             send_routing_info_sm_counter->Add(1);
             json j = result;
             return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0227): real, previously
+    // undisclosed `Trigger P-CSCF Restoration` custom operation -- closes `Nudm_UECM`'s entire
+    // remaining Tier-B backlog together with `GetLocationInfo`/`authTrigger` below. Real, confirmed
+    // directly from the spec: this operation's own real `operationId` literally contains spaces
+    // ("Trigger P-CSCF Restoration") -- an unusual but genuine value from the source YAML, not
+    // normalized here. Path is `/restore-pcscf` with no `ueId` -- the target UE is identified by
+    // `supi` in the request body instead. Real, disclosed simplification, same class as ADR-0207's
+    // own SendSMS disclosure ("no real onward IP-SM-GW/SMSF relay wired -- the real ack is
+    // NEF-level acceptance only"): this project has no real onward relay to the serving AMF (which
+    // would itself need to carry out the actual P-CSCF restoration procedure toward the UE, TS
+    // 23.380) -- accepting the request and confirming the SUPI has a known registration is genuine
+    // work this UDM does; relaying the trigger onward is not wired. A `supi` with no known
+    // registration at all is a real `404`.
+    server.add_route(
+        "POST",
+        std::string(kUecmApiRoot) + "/restore-pcscf",
+        [&verifier, &amf_registrations, &amf_non3gpp_registrations, &restore_pcscf_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::TriggerRequest>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto& supi = body->supi;
+            if (!amf_registrations.get(supi).has_value() &&
+                !amf_non3gpp_registrations.get(supi).has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AMF registration known for supi " + supi);
+            }
+            restore_pcscf_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0227): real, previously
+    // undisclosed `GetLocationInfo` -- unlike the two operations above/below, this one is a real,
+    // complete, local composition, no external relay needed: `RegistrationLocationInfo`'s own
+    // `amfInstanceId`/`guami`/`vgmlcAddress` fields already exist directly on the stored
+    // `Amf3GppAccessRegistration`/`AmfNon3GppAccessRegistration` records (ADR-0215/ADR-0216) --
+    // `plmnId` is genuinely derivable from `guami.plmnId` (TS 29.571's own `Guami` already embeds
+    // a `PlmnId`, not a fabricated flattening), and `accessTypeList` is genuinely determined by
+    // which of the two registration groups a UE has (3GPP vs non-3GPP access is exactly what
+    // distinguishes them in the real spec, not an invented inference). A UE with neither
+    // registration is a real `404`.
+    server.add_route(
+        "GET",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/location",
+        [&verifier, &amf_registrations, &amf_non3gpp_registrations, &get_location_info_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            sbi_gen::LocationInfo_Nudm_UECM result{};
+            if (auto v = amf_registrations.get(ue_id); v.has_value()) {
+                auto amf = v->get<sbi_gen::Amf3GppAccessRegistration>();
+                sbi_gen::RegistrationLocationInfo loc{};
+                loc.amfInstanceId = amf.amfInstanceId;
+                loc.guami = amf.guami;
+                // `Guami.plmnId` is the real, distinct `PlmnIdNid` type (mcc/mnc + optional SNPN
+                // `nid`), while `RegistrationLocationInfo.plmnId` expects the plain
+                // `PlmnId_CommonData` (mcc/mnc only) -- real, different schemas, not
+                // interchangeable. Narrowing to mcc/mnc here is a real, disclosed simplification:
+                // an SNPN's own `nid` is dropped since the target schema has no field for it.
+                loc.plmnId = sbi_gen::PlmnId_CommonData{amf.guami.plmnId.mcc, amf.guami.plmnId.mnc};
+                loc.vgmlcAddress = amf.vgmlcAddress;
+                sbi_gen::AccessType access_type{};
+                access_type.value = sbi_gen::AccessType::V3GPP_ACCESS;
+                loc.accessTypeList = {access_type};
+                result.registrationLocationInfoList.push_back(loc);
+            }
+            if (auto v = amf_non3gpp_registrations.get(ue_id); v.has_value()) {
+                auto amf = v->get<sbi_gen::AmfNon3GppAccessRegistration>();
+                sbi_gen::RegistrationLocationInfo loc{};
+                loc.amfInstanceId = amf.amfInstanceId;
+                loc.guami = amf.guami;
+                // See the identical real PlmnIdNid -> PlmnId_CommonData narrowing comment above.
+                loc.plmnId = sbi_gen::PlmnId_CommonData{amf.guami.plmnId.mcc, amf.guami.plmnId.mnc};
+                sbi_gen::AccessType access_type{};
+                access_type.value = sbi_gen::AccessType::NON_3GPP_ACCESS;
+                loc.accessTypeList = {access_type};
+                result.registrationLocationInfoList.push_back(loc);
+            }
+            if (result.registrationLocationInfoList.empty()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AMF registration known for ueId " + ue_id);
+            }
+            result.supi = ue_id;
+            get_location_info_counter->Add(1);
+            json j = result;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #169, ADR-0227): real, previously
+    // undisclosed `authTrigger` -- closes `Nudm_UECM`'s entire remaining Tier-B backlog. Real,
+    // disclosed simplification, same class and rationale as `Trigger P-CSCF Restoration` above:
+    // this project has no real onward relay to AUSF/the serving AMF to actually carry out primary
+    // re-authentication (TS 33.501) -- accepting the request and confirming the ueId has a known
+    // registration is genuine work; relaying the trigger onward is not wired. A ueId with no known
+    // registration at all is a real `404`.
+    server.add_route(
+        "GET",
+        std::string(kUecmApiRoot) + "/{ueId}/registrations/trigger-auth",
+        [&verifier, &amf_registrations, &amf_non3gpp_registrations, &auth_trigger_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::AuthTriggerInfo>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!amf_registrations.get(ue_id).has_value() &&
+                !amf_non3gpp_registrations.get(ue_id).has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AMF registration known for ueId " + ue_id);
+            }
+            auth_trigger_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     // --- Nudm_SDM: subscriber data retrieval (ADR-0069, gap-closure Tier 1b: real UDR calls,

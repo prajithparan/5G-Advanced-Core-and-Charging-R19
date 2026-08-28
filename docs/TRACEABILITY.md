@@ -4439,10 +4439,29 @@ disclosure.
 | `SendRoutingInfoSm` composes `RoutingInfoSmResponse` from real SMSF/IP-SM-GW stores | `UdmSendRoutingInfoSmGapClosureIntegration.ComposesRealRoutingInfoFromSeededStores`: real `404` with no SMSF/IP-SM-GW registration; after seeding real SMSF_3GPP + IP-SM-GW, a real `200` correctly composes both and confirms `smsfNon3Gpp`/`smsRouter` are correctly absent |
 | No regression | Full reconfigure+rebuild clean; new test passes; full suite 447/447 |
 
-Eighth and final slice off `Nudm_UECM`'s own CRUD/composition Tier-B backlog -- `SendRoutingInfoSm`,
+Eighth slice off `Nudm_UECM`'s own CRUD/composition Tier-B backlog -- `SendRoutingInfoSm`,
 composing `RoutingInfoSmResponse` from the already-built SMSF/IP-SM-GW stores (no new store
 needed). Real, disclosed: `smsRouter`/`ipSmGwGuidance` are never populated (no data source built
 for either); a `ueId` with neither SMSF nor IP-SM-GW registration is a real `404`. Only `Trigger
 P-CSCF Restoration`, `GetLocationInfo`, and `authTrigger` remain as `Nudm_UECM`'s last three
 independent single ops. See ADR-0221 in `docs/DECISIONS.md` for full disclosure, including a real
 CI `lint` failure caught and fixed in this same window.
+
+## ADR-0227 -- UDM `Nudm_UECM` Tier-B gap-closure (ninth and final slice: `Trigger P-CSCF
+Restoration`, `GetLocationInfo`, `authTrigger`)
+
+| Requirement | Test |
+|---|---|
+| `GetLocationInfo` composes `LocationInfo` from real AMF registration data; `Trigger P-CSCF Restoration`/`authTrigger` accept-and-validate | `UdmUecmFinalOpsGapClosureIntegration.TriggerPcscfRestorationGetLocationInfoAuthTrigger`: real `404` for all three before any AMF registration exists; after seeding a real `amf-3gpp-access` registration, `GetLocationInfo` returns the exact seeded `amfInstanceId`/`plmnId`/`3GPP_ACCESS`, both trigger ops return real `204` |
+| No regression | Full reconfigure+rebuild clean; new test passes; full suite green |
+
+Ninth and final slice off `Nudm_UECM`'s own Tier-B backlog. `GetLocationInfo` is a real, complete
+local composition from the already-stored AMF registration records -- no external relay needed.
+Real, disclosed narrowing found during implementation: `Guami.plmnId` (`PlmnIdNid`, includes an
+optional SNPN `nid`) is genuinely a different schema than `RegistrationLocationInfo.plmnId`
+(`PlmnId_CommonData`, mcc/mnc only) -- the `nid` is dropped in the conversion since the target
+schema has no field for it. `Trigger P-CSCF Restoration`/`authTrigger` are real accept-and-validate
+operations (real `404` for an unknown UE, real `204` otherwise) with a disclosed non-relay to the
+serving AMF/AUSF, same class as ADR-0207's own SendSMS disclosure. This closes `Nudm_UECM`'s entire
+Tier-B backlog -- `Nudm_SDM` (~33) and `Nudm_PP` (11, already flagged deferred in ADR-0082) are
+UDM's only remaining Tier-B items. See ADR-0227 in `docs/DECISIONS.md` for full disclosure.
