@@ -1363,9 +1363,22 @@ registration records; the other two are real accept-and-validate operations with
 non-relay to the serving AMF/AUSF, same class as ADR-0207's own SendSMS disclosure) --
 **`Nudm_UECM`'s entire Tier-B backlog is now fully closed**, confirmed by direct read of every
 operation's own real response schema, not assumed);
-`Nudm_SDM` (~33 ops: 21 simple per-SUPI GETs likely needing the existing UDM->UDR proxy pattern
-confirmed first rather than a new UDM-local store, plus 5 SOR/UPU/ack write ops, the 5-op
-non-per-UE shared-data family, and 2 identifier-lookup ops); `Nudm_PP` (11 ops: the
+`Nudm_SDM` (37 real ops, real-scoped in detail against TS29503_Nudm_SDM.yaml directly rather than
+the earlier rough "~33" estimate: 3 already wired -- `GetAmData`/`GetSmfSelData`/`GetSmData`;
+~~4 more individual-resource GETs backed by UDR's own existing individual routes
+(`GetSmsData`/`GetSmsMngtData`/`GetTraceConfigData`/`GetLcsBcaData`) plus 9 individual-resource
+GETs backed only by UDR's bulk `ProvisionedDataSets` aggregate, no individual UDR route of their
+own (`GetLcsPrivacyData`/`GetLcsMoData`/`GetLcsSubscriptionData`/`GetV2xData`/`GetProseData`/
+`GetMbsData`/`GetUcData`/`GetA2xData`/`GetRangingSlPrivacyData`)~~ **CLOSED, ADR-0228** (13-op
+combined slice -- confirmed real, disclosed: none of the 9 bulk-backed ops expose a `plmn-id`
+query param in the real spec, so UDM's existing `kDefaultServingPlmnId` single-PLMN-lab fallback
+is reused to satisfy UDR's bulk-route's own required `servingPlmnId` path param; `GetUcData`'s
+real optional `uc-purpose` filter is accepted-but-unhonored, matching this project's own
+established precedent for other unhonored optional filters); leaving ~7 ops whose real data
+source is not yet confirmed (`GetNSSAI`/`GetUeCtxInAmfData`/`GetUeCtxInSmfData`/
+`GetUeCtxInSmsfData`/`GetEcrData`/`GetTimeSyncSubscriptionData`/`GetRangingSlPosData`), plus
+`Subscribe`/`Unsubscribe`/`Modify` completion, 5 SOR/UPU/ack write ops, a 6-op shared-data family,
+and 2 identifier-lookup ops, all still open); `Nudm_PP` (11 ops: the
 5g-vn-groups/pp-data-store/mbs-group-membership groups already flagged deferred in ADR-0082,
 unchanged). Every one is a real, individually small CRUD/subscription operation within
 already-wired files, not a structural gap.

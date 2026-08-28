@@ -482,8 +482,14 @@ int main() {
         meter->CreateUInt64Counter("udm_smf_registration_total", "Total SMF Registration calls");
     auto smf_dereg_counter =
         meter->CreateUInt64Counter("udm_smf_deregistration_total", "Total SmfDeregistration calls");
+    // UPDATE (ADR-0228, gap-closure Nudm_SDM group A+B): extended to cover all 16 real
+    // individual-resource GET ops this counter now backs, not just the original 3.
     auto sdm_get_counter = meter->CreateUInt64Counter(
-        "udm_sdm_data_get_total", "Total GetAmData/GetSmfSelData/GetSmData calls");
+        "udm_sdm_data_get_total",
+        "Total Nudm_SDM individual-resource GET calls (GetAmData/GetSmfSelData/GetSmData/"
+        "GetSmsData/GetSmsMngtData/GetTraceConfigData/GetLcsBcaData/GetLcsPrivacyData/"
+        "GetLcsMoData/GetLcsSubscriptionData/GetV2xData/GetProseData/GetMbsData/GetUcData/"
+        "GetA2xData/GetRangingSlPrivacyData)");
     auto sdm_subscribe_counter =
         meter->CreateUInt64Counter("udm_sdm_subscribe_total", "Total SDM Subscribe calls");
     auto generate_auth_data_counter =
@@ -1666,6 +1672,292 @@ int main() {
             sdm_get_counter->Add(1);
             const auto supi = req.path_params.at("supi");
             auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "sm-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    // Gap-closure (ADR-0228, Nudm_SDM group A): 4 more real individual-resource GET ops --
+    // identical fetch_from_udr shape to am-data/smf-select-data/sm-data above, each backed by
+    // UDR's own real individual provisioned-data route (TS29505_Subscription_Data.yaml, real
+    // response schemas confirmed against TS29503_Nudm_SDM.yaml directly, not inferred from the
+    // operationId).
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/sms-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "sms-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/sms-mng-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "sms-mng-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/trace-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "trace-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/lcs-bca-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "lcs-bca-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    // Gap-closure (ADR-0228, Nudm_SDM group B): 9 real individual-resource GET ops whose data
+    // exists in UDR's own real ProvisionedDataSets aggregate (ADR-0212, Nudr_DataRepository
+    // QueryProvisionedData) but has no individual UDR REST route of its own -- genuinely distinct
+    // from group A above, so a new shared helper: fetch the whole aggregate once (real, always
+    // 200 per ADR-0212 -- a live view) and extract one named field, real-404ing here (not in UDR)
+    // when that specific field is absent. Real, disclosed: none of these 9 ops expose a `plmn-id`
+    // query param in TS29503_Nudm_SDM.yaml (unlike am-data/sm-data/etc above), yet UDR's aggregate
+    // path requires servingPlmnId -- resolve_serving_plmn_id's existing kDefaultServingPlmnId
+    // fallback (already used for other plmn-id-less callers in this file) is reused rather than
+    // inventing new special-casing, matching this lab's already-established single-PLMN scope.
+    auto fetch_from_udr_bulk_field =
+        [&udr_client, &udr_oauth, &udr_base_url](
+            const std::string& ue_id,
+            const std::string& serving_plmn_id,
+            const std::string& field_name) -> std::variant<json, sbi_core::http2::Response> {
+        auto token = udr_oauth.get_bearer_token();
+        if (!token.has_value()) {
+            return sbi_core::http2::problem_response(500,
+                                                     "Internal Server Error",
+                                                     "UDM could not obtain a token for UDR: " +
+                                                         token.error());
+        }
+        sbi_core::http2::ClientRequest udr_req;
+        udr_req.method = "GET";
+        udr_req.url = udr_base_url + kUdrApiRoot + "/subscription-data/" + ue_id + "/" +
+                      serving_plmn_id + "/provisioned-data";
+        udr_req.headers.emplace("authorization", "Bearer " + *token);
+        auto udr_resp = udr_client.send(udr_req);
+        if (!udr_resp.has_value()) {
+            return sbi_core::http2::problem_response(
+                500, "Internal Server Error", "UDM could not reach UDR: " + udr_resp.error());
+        }
+        if (udr_resp->status != 200) {
+            return sbi_core::http2::problem_response(500,
+                                                     "Internal Server Error",
+                                                     "UDR returned unexpected status " +
+                                                         std::to_string(udr_resp->status));
+        }
+        json parsed;
+        try {
+            parsed = json::parse(udr_resp->body);
+        } catch (const json::exception& e) {
+            return sbi_core::http2::problem_response(500,
+                                                     "Internal Server Error",
+                                                     "UDR returned malformed JSON: " +
+                                                         std::string(e.what()));
+        }
+        if (!parsed.contains(field_name)) {
+            return sbi_core::http2::problem_response(
+                404, "Not Found", "No provisioned " + field_name + " for ueId " + ue_id);
+        }
+        return parsed.at(field_name);
+    };
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{ueId}/lcs-privacy-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_bulk_field](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto ue_id = req.path_params.at("ueId");
+            auto result =
+                fetch_from_udr_bulk_field(ue_id, resolve_serving_plmn_id(req), "lcsPrivacyData");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/lcs-mo-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_bulk_field](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result =
+                fetch_from_udr_bulk_field(supi, resolve_serving_plmn_id(req), "lcsMoData");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/lcs-subscription-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_bulk_field](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr_bulk_field(
+                supi, resolve_serving_plmn_id(req), "lcsSubscriptionData");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/v2x-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_bulk_field](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr_bulk_field(supi, resolve_serving_plmn_id(req), "v2xData");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/prose-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_bulk_field](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result =
+                fetch_from_udr_bulk_field(supi, resolve_serving_plmn_id(req), "proseData");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/5mbs-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_bulk_field](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr_bulk_field(
+                supi, resolve_serving_plmn_id(req), "mbsSubscriptionData");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    // Real, disclosed simplification: the spec's own optional `uc-purpose` query param (a filter
+    // over UcSubscriptionData's own per-purpose list) is accepted-but-ignored here -- same
+    // established precedent as UDR's own aggregate route already documents for its other
+    // real-but-unhonored optional filter params (single-nssai/dnn/adjacent-plmns/ext-group-ids).
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/uc-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_bulk_field](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr_bulk_field(supi, resolve_serving_plmn_id(req), "ucData");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/a2x-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_bulk_field](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr_bulk_field(supi, resolve_serving_plmn_id(req), "a2xData");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{ueId}/rangingsl-privacy-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_bulk_field](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto ue_id = req.path_params.at("ueId");
+            auto result = fetch_from_udr_bulk_field(
+                ue_id, resolve_serving_plmn_id(req), "rangingSlPrivacyData");
             if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
                 return *err;
             }

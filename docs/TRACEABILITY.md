@@ -4463,5 +4463,33 @@ optional SNPN `nid`) is genuinely a different schema than `RegistrationLocationI
 schema has no field for it. `Trigger P-CSCF Restoration`/`authTrigger` are real accept-and-validate
 operations (real `404` for an unknown UE, real `204` otherwise) with a disclosed non-relay to the
 serving AMF/AUSF, same class as ADR-0207's own SendSMS disclosure. This closes `Nudm_UECM`'s entire
-Tier-B backlog -- `Nudm_SDM` (~33) and `Nudm_PP` (11, already flagged deferred in ADR-0082) are
+Tier-B backlog -- `Nudm_SDM` (37) and `Nudm_PP` (11, already flagged deferred in ADR-0082) are
 UDM's only remaining Tier-B items. See ADR-0227 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0228 -- UDM `Nudm_SDM` Tier-B gap-closure (group A+B: 13 individual-resource GET ops)
+
+| Requirement | Test |
+|---|---|
+| Group A (`GetSmsData`/`GetSmsMngtData`/`GetTraceConfigData`/`GetLcsBcaData`) returns real UDR-seeded data via UDR's own individual provisioned-data routes | `UdmSdmGapClosure228Integration.GroupAIndividualUdrRoutesReturnRealSeededData`: real 200 + exact seeded field values for the seeded SUPI on all 4 paths; real 404 on all 4 for an unseeded SUPI |
+| Group B (`GetLcsPrivacyData`/`GetLcsMoData`/`GetLcsSubscriptionData`/`GetV2xData`/`GetProseData`/`GetMbsData`/`GetUcData`/`GetA2xData`/`GetRangingSlPrivacyData`) returns real UDR-seeded data via UDR's bulk `ProvisionedDataSets` aggregate, field-extracted | `UdmSdmGapClosure228Integration.GroupBBulkExtractedFieldsReturnRealSeededData`: real 200 (with a field-value spot-check on `GetLcsPrivacyData`) for the seeded SUPI on all 9 paths; real 404 on all 9 for an unseeded SUPI, proving the per-field-absence 404 lives in UDM's own helper (UDR's bulk route itself never 404s) |
+| No regression | Full reconfigure+rebuild clean; both new tests pass; full suite green |
+
+13-operation combined slice (group A: 4 ops mechanically identical to the existing
+`GetAmData`/`GetSmfSelData`/`GetSmData` `fetch_from_udr` pattern, backed by UDR's own individual
+routes; group B: 9 ops with no individual UDR route of their own, backed only by UDR's bulk
+`ProvisionedDataSets` aggregate -- ADR-0212 -- via a new `fetch_from_udr_bulk_field` helper that
+fetches the whole aggregate once and extracts one named field, real-404ing locally when that field
+is absent since the aggregate itself always 200s). Real, disclosed: none of the 9 group-B ops
+expose a `plmn-id` query parameter in TS29503_Nudm_SDM.yaml (confirmed by direct read, unlike
+`am-data`/`sm-data`/etc above), yet UDR's aggregate route requires `servingPlmnId` as a path
+parameter -- the existing `resolve_serving_plmn_id` helper's `kDefaultServingPlmnId` fallback
+(already used elsewhere in this file for plmn-id-less callers) is reused rather than inventing new
+special-casing, consistent with this lab's already-established single-PLMN scope.
+`GetLcsPrivacyData`/`GetRangingSlPrivacyData` use a real `{ueId}` path parameter in the spec
+(`VarUeId`) rather than `{supi}` like the other 11 ops -- both route patterns registered exactly as
+the spec defines them, not normalized to a single naming convention. `GetUcData`'s real optional
+`uc-purpose` filter query param is accepted-but-unhonored, matching this project's own established
+precedent (UDR's own bulk aggregate route already documents the same choice for its other
+unhonored optional filters). Leaves `Nudm_SDM`'s ~7-op group C (real data source unconfirmed),
+`Subscribe`/`Unsubscribe`/`Modify` completion, 5 SOR/UPU/ack write ops, a 6-op shared-data family,
+and 2 identifier-lookup ops open. See ADR-0228 in `docs/DECISIONS.md` for full disclosure.

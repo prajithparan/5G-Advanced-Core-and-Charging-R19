@@ -158,7 +158,14 @@ composes `RoutingInfoSmResponse` from the real SMSF/IP-SM-GW stores; disclosed: 
 real, complete local composition from the already-stored AMF registration records; the other two
 are real accept-and-validate operations with a disclosed non-relay to the serving AMF/AUSF) —
 individual stubbed/missing operations within already-wired files, not a structural gap.
-**`Nudm_UECM`'s entire Tier-B backlog is now fully closed.**
+**`Nudm_UECM`'s entire Tier-B backlog is now fully closed.** `Nudm_SDM` closure has begun:
+group A (`GetSmsData`/`GetSmsMngtData`/`GetTraceConfigData`/`GetLcsBcaData`, backed by UDR's own
+individual provisioned-data routes) and group B (`GetLcsPrivacyData`/`GetLcsMoData`/
+`GetLcsSubscriptionData`/`GetV2xData`/`GetProseData`/`GetMbsData`/`GetUcData`/`GetA2xData`/
+`GetRangingSlPrivacyData`, backed only by UDR's bulk `ProvisionedDataSets` aggregate, extracted via
+a new helper) closed together as a 13-operation slice (ADR-0228). `Nudm_SDM`'s remaining ~7-op
+group C (real data source unconfirmed), subscription-CRUD completion, SOR/UPU/ack write ops,
+shared-data family, and identifier-lookup ops, plus `Nudm_PP` (11 ops), remain open.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
