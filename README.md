@@ -166,9 +166,10 @@ individual provisioned-data routes) and group B (`GetLcsPrivacyData`/`GetLcsMoDa
 a new helper) closed together as a 13-operation slice (ADR-0228), then group C1 (`GetNSSAI`/
 `GetUeCtxInAmfData`/`GetUeCtxInSmfData`/`GetUeCtxInSmsfData`/`GetEcrData`, real local composition
 from UDM's own already-stored AMF/SMF/SMSF registration records or an existing UDR route) closed as
-a 5-operation slice (ADR-0230). `Nudm_SDM`'s remaining group C2 (2 ops, need brand-new UDR stores
-first), subscription-CRUD completion, SOR/UPU/ack write ops, shared-data family, and
-identifier-lookup ops, plus `Nudm_PP` (11 ops), remain open.
+a 5-operation slice (ADR-0230), then `Modify` (real RFC 7396 merge-patch) closed
+`Subscribe`/`Unsubscribe`/`Modify` in full (ADR-0232). `Nudm_SDM`'s remaining group C2 (2 ops, need
+brand-new UDR stores first), SOR/UPU/ack write ops, shared-data family, and identifier-lookup ops,
+plus `Nudm_PP` (11 ops), remain open.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075

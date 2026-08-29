@@ -4529,3 +4529,15 @@ longer than `udm`'s port coming up, so a test waiting only on `udm` reachability
 `wait_reachable` on `udr` before spawning `udm`, the same pattern already proven in ADR-0228/
 ADR-0230's own new tests. `.github/workflows/ci.yml`'s both `ctest -E` invocations updated to drop
 this test from the exclusion list. See ADR-0231 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0232 -- UDM `Nudm_SDM` Modify (completes Subscribe/Unsubscribe/Modify)
+
+| Requirement | Test |
+|---|---|
+| `Modify` real RFC 7396 merge-patches an existing subscription; ownership-checked real 404 | `UdmSdmGapClosure232Integration.ModifyMergePatchesExistingSubscription`: subscribes, merge-patches `expires`, confirms the patched field changes while unrelated fields survive; real 404 for a subscriptionId belonging to a different ueId; real 404 for an unknown subscriptionId |
+| No regression | Full reconfigure+rebuild clean; new test passes; full suite green at `-j1`, 454/454 |
+
+Completes `Subscribe`/`Unsubscribe`/`Modify` in full -- `Modify` was the one remaining op, a real
+RFC 7396 JSON Merge Patch matching the same shape this file already uses for every registration
+resource's own PATCH route. New `SdmSubscriptionStore::merge_patch` added with a real ownership
+check baked in. See ADR-0232 in `docs/DECISIONS.md` for full disclosure.

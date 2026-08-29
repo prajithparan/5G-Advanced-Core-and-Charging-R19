@@ -492,6 +492,8 @@ int main() {
         "GetA2xData/GetRangingSlPrivacyData)");
     auto sdm_subscribe_counter =
         meter->CreateUInt64Counter("udm_sdm_subscribe_total", "Total SDM Subscribe calls");
+    auto sdm_subscription_modify_counter =
+        meter->CreateUInt64Counter("udm_sdm_subscription_modify_total", "Total SDM Modify calls");
     auto generate_auth_data_counter =
         meter->CreateUInt64Counter("udm_generate_auth_data_total", "Total GenerateAuthData calls");
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091): real, previously-deferred
@@ -2215,6 +2217,32 @@ int main() {
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;
+        });
+
+    // Gap-closure (ADR-0232, task #169): Modify -- real RFC 7396 JSON Merge Patch
+    // (`application/merge-patch+json`, `SdmSubsModification`), same merge-patch shape already used
+    // throughout this file for registration resources. Real response is a `oneOf`
+    // (`SdmSubscription` | `PatchResult`) -- returning the full merged `SdmSubscription` is a real,
+    // valid response per that `oneOf`, same precedent this file's other merge-patch routes use.
+    server.add_route(
+        "PATCH",
+        std::string(kSdmApiRoot) + "/{ueId}/sdm-subscriptions/{subscriptionId}",
+        [&verifier, &sdm_subscriptions, &sdm_subscription_modify_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            auto patched =
+                sdm_subscriptions.merge_patch(subscription_id, ue_id, json::parse(req.body));
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No such SDM subscription");
+            }
+            sdm_subscription_modify_counter->Add(1);
+            json j = patched->data;
+            return sbi_core::http2::Response::json(200, j.dump());
         });
 
     // --- Nudm_UEAU: authentication data generation + confirmation ---

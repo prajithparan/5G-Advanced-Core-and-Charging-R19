@@ -1383,10 +1383,11 @@ registration records), `GetEcrData` (UDR's own existing `coverage-restriction-da
 nested path)~~ **CLOSED, ADR-0230** (5-op slice -- real, disclosed narrowing:
 `PduSession.dnn` is required while the source `SmfRegistration.dnn` is optional, so a registration
 with no `dnn` is skipped rather than fabricated; `epsInterworkingInfo`/`pgwInfo`/`emergencyInfo`
-remain real, disclosed gaps with no data source); leaving group C2's 2 ops needing brand-new UDR
-stores + routes first (`GetTimeSyncSubscriptionData`/`GetRangingSlPosData`), plus
-`Subscribe`/`Unsubscribe`/`Modify` completion, 5 SOR/UPU/ack write ops, a 6-op shared-data family,
-and 2 identifier-lookup ops, all still open); `Nudm_PP` (11 ops: the
+remain real, disclosed gaps with no data source); ~~`Modify`~~ **CLOSED, ADR-0232** (real RFC 7396
+merge-patch, same shape this file's other PATCH routes already use -- completes
+`Subscribe`/`Unsubscribe`/`Modify` in full); leaving group C2's 2 ops needing brand-new UDR
+stores + routes first (`GetTimeSyncSubscriptionData`/`GetRangingSlPosData`), 5 SOR/UPU/ack write
+ops, a 6-op shared-data family, and 2 identifier-lookup ops, all still open); `Nudm_PP` (11 ops: the
 5g-vn-groups/pp-data-store/mbs-group-membership groups already flagged deferred in ADR-0082,
 unchanged). Every one is a real, individually small CRUD/subscription operation within
 already-wired files, not a structural gap.

@@ -263,6 +263,17 @@ bool SdmSubscriptionStore::remove(const std::string& subscription_id) {
     return subscriptions_.erase(subscription_id) > 0;
 }
 
+std::optional<SdmSubscriptionEntry> SdmSubscriptionStore::merge_patch(
+    const std::string& subscription_id, const std::string& ue_id, const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(subscription_id);
+    if (it == subscriptions_.end() || it->second.ue_id != ue_id) {
+        return std::nullopt;
+    }
+    it->second.data.merge_patch(patch);
+    return std::make_optional(it->second);
+}
+
 void AuthenticationSubscriptionStore::seed(const std::string& supi,
                                            AuthenticationSubscription sub) {
     std::lock_guard<std::mutex> lock(mutex_);

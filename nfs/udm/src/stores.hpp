@@ -238,6 +238,14 @@ public:
     std::string create(SdmSubscriptionEntry entry);
     std::optional<SdmSubscriptionEntry> get(const std::string& subscription_id);
     bool remove(const std::string& subscription_id);
+    // Gap-closure (ADR-0232, task #169): backs Modify (real RFC 7396 JSON Merge Patch, same
+    // `.merge_patch()` pattern this file's own registration-store merge_patch methods already
+    // use). Real ownership check baked in -- a subscription_id that exists but belongs to a
+    // different ue_id returns nullopt, same real 404 semantics `remove` above already applies via
+    // the caller's own check in Unsubscribe.
+    std::optional<SdmSubscriptionEntry> merge_patch(const std::string& subscription_id,
+                                                    const std::string& ue_id,
+                                                    const nlohmann::json& patch);
 
 private:
     std::mutex mutex_;
