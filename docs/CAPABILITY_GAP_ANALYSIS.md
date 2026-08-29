@@ -1374,9 +1374,17 @@ combined slice -- confirmed real, disclosed: none of the 9 bulk-backed ops expos
 query param in the real spec, so UDM's existing `kDefaultServingPlmnId` single-PLMN-lab fallback
 is reused to satisfy UDR's bulk-route's own required `servingPlmnId` path param; `GetUcData`'s
 real optional `uc-purpose` filter is accepted-but-unhonored, matching this project's own
-established precedent for other unhonored optional filters); leaving ~7 ops whose real data
-source is not yet confirmed (`GetNSSAI`/`GetUeCtxInAmfData`/`GetUeCtxInSmfData`/
-`GetUeCtxInSmsfData`/`GetEcrData`/`GetTimeSyncSubscriptionData`/`GetRangingSlPosData`), plus
+established precedent for other unhonored optional filters); ~~group C1: `GetNSSAI`
+(a real subset view into already-fetched am-data's own `nssai` field, same schema),
+`GetUeCtxInAmfData`/`GetUeCtxInSmfData` (real, near-complete local composition from the
+already-stored AMF/SMF registration records, same pattern ADR-0227's `GetLocationInfo`
+established), `GetUeCtxInSmsfData` (real, COMPLETE local composition from the already-stored SMSF
+registration records), `GetEcrData` (UDR's own existing `coverage-restriction-data` route under a
+nested path)~~ **CLOSED, ADR-0230** (5-op slice -- real, disclosed narrowing:
+`PduSession.dnn` is required while the source `SmfRegistration.dnn` is optional, so a registration
+with no `dnn` is skipped rather than fabricated; `epsInterworkingInfo`/`pgwInfo`/`emergencyInfo`
+remain real, disclosed gaps with no data source); leaving group C2's 2 ops needing brand-new UDR
+stores + routes first (`GetTimeSyncSubscriptionData`/`GetRangingSlPosData`), plus
 `Subscribe`/`Unsubscribe`/`Modify` completion, 5 SOR/UPU/ack write ops, a 6-op shared-data family,
 and 2 identifier-lookup ops, all still open); `Nudm_PP` (11 ops: the
 5g-vn-groups/pp-data-store/mbs-group-membership groups already flagged deferred in ADR-0082,

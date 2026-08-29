@@ -163,9 +163,12 @@ group A (`GetSmsData`/`GetSmsMngtData`/`GetTraceConfigData`/`GetLcsBcaData`, bac
 individual provisioned-data routes) and group B (`GetLcsPrivacyData`/`GetLcsMoData`/
 `GetLcsSubscriptionData`/`GetV2xData`/`GetProseData`/`GetMbsData`/`GetUcData`/`GetA2xData`/
 `GetRangingSlPrivacyData`, backed only by UDR's bulk `ProvisionedDataSets` aggregate, extracted via
-a new helper) closed together as a 13-operation slice (ADR-0228). `Nudm_SDM`'s remaining ~7-op
-group C (real data source unconfirmed), subscription-CRUD completion, SOR/UPU/ack write ops,
-shared-data family, and identifier-lookup ops, plus `Nudm_PP` (11 ops), remain open.
+a new helper) closed together as a 13-operation slice (ADR-0228), then group C1 (`GetNSSAI`/
+`GetUeCtxInAmfData`/`GetUeCtxInSmfData`/`GetUeCtxInSmsfData`/`GetEcrData`, real local composition
+from UDM's own already-stored AMF/SMF/SMSF registration records or an existing UDR route) closed as
+a 5-operation slice (ADR-0230). `Nudm_SDM`'s remaining group C2 (2 ops, need brand-new UDR stores
+first), subscription-CRUD completion, SOR/UPU/ack write ops, shared-data family, and
+identifier-lookup ops, plus `Nudm_PP` (11 ops), remain open.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075

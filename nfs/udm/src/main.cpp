@@ -1964,6 +1964,208 @@ int main() {
             return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
         });
 
+    // Gap-closure (ADR-0230, Nudm_SDM group C1): 5 real ops, real data source confirmed by direct
+    // read of TS29503_Nudm_SDM.yaml against this file's own already-stored data -- none needed a
+    // new store.
+    //
+    // GetNSSAI (`GET /{supi}/nssai`) -- real, confirmed by direct schema read: `Nssai` is the
+    // exact same schema as `AccessAndMobilitySubscriptionData.nssai` (both `$ref
+    // '#/components/schemas/Nssai'`), so this is a real subset view into the already-fetched
+    // am-data, not a new resource.
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/nssai",
+        [&verifier, &sdm_get_counter, &fetch_from_udr](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "am-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            auto& am_data = std::get<json>(result);
+            if (!am_data.contains("nssai")) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No provisioned nssai for ueId " + supi);
+            }
+            return sbi_core::http2::Response::json(200, am_data.at("nssai").dump());
+        });
+
+    // GetUeCtxInAmfData (`GET /{supi}/ue-context-in-amf-data`) -- real, complete local composition
+    // of `amfInfo` from the already-stored AMF 3GPP/non-3GPP registration records, same
+    // amfInstanceId/guami/accessType pattern ADR-0227's GetLocationInfo already established. Real,
+    // disclosed gap: `epsInterworkingInfo` has no data source anywhere in this file (no EPS/N26
+    // interworking state is tracked) -- omitted, not fabricated. Real, honest: `UeContextInAmfData`
+    // has no required fields at all, so this is always a real `200` (never a fabricated `404`);
+    // `amfInfo` itself is omitted (not an empty array) when neither registration exists, since the
+    // real schema's own `minItems: 1` on that field forbids an empty array.
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/ue-context-in-amf-data",
+        [&verifier, &sdm_get_counter, &amf_registrations, &amf_non3gpp_registrations](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            std::vector<sbi_gen::AmfInfo_Nudm_SDM> amf_info_list;
+            if (auto v = amf_registrations.get(supi); v.has_value()) {
+                auto amf = v->get<sbi_gen::Amf3GppAccessRegistration>();
+                sbi_gen::AmfInfo_Nudm_SDM info{};
+                info.amfInstanceId = amf.amfInstanceId;
+                info.guami = amf.guami;
+                sbi_gen::AccessType access_type{};
+                access_type.value = sbi_gen::AccessType::V3GPP_ACCESS;
+                info.accessType = access_type;
+                amf_info_list.push_back(info);
+            }
+            if (auto v = amf_non3gpp_registrations.get(supi); v.has_value()) {
+                auto amf = v->get<sbi_gen::AmfNon3GppAccessRegistration>();
+                sbi_gen::AmfInfo_Nudm_SDM info{};
+                info.amfInstanceId = amf.amfInstanceId;
+                info.guami = amf.guami;
+                sbi_gen::AccessType access_type{};
+                access_type.value = sbi_gen::AccessType::NON_3GPP_ACCESS;
+                info.accessType = access_type;
+                amf_info_list.push_back(info);
+            }
+            sbi_gen::UeContextInAmfData result{};
+            if (!amf_info_list.empty()) {
+                result.amfInfo = amf_info_list;
+            }
+            json j = result;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // GetUeCtxInSmfData (`GET /{supi}/ue-context-in-smf-data`) -- real, near-complete local
+    // composition of `pduSessions` from the already-stored SmfRegistrationStore (its own
+    // `smfInstanceId`/`plmnId`/`singleNssai`/`dnn` fields are a real superset of `PduSession`'s
+    // schema, confirmed by direct read of both TS29503_Nudm_SDM.yaml's `PduSession` and
+    // TS29503_Nudm_UECM.yaml's `SmfRegistration`). Real, disclosed narrowing: `PduSession.dnn` is
+    // required while `SmfRegistration.dnn` is optional -- a stored registration with no `dnn` (a
+    // real, valid `SmfRegistration` per its own schema, e.g. this project's own
+    // SmfRegistrationLifecycle test data) cannot be represented as a valid `PduSession` without
+    // fabricating the field, so that entry is skipped rather than invented. Real, disclosed gap:
+    // `pgwInfo`/`emergencyInfo` have no data source anywhere in this file -- omitted. Real, honest:
+    // `UeContextInSmfData` has no required fields, always a real `200`.
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/ue-context-in-smf-data",
+        [&verifier, &sdm_get_counter, &smf_registrations](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            json pdu_sessions = json::object();
+            for (const auto& reg_json : smf_registrations.list_for_ue(supi)) {
+                auto reg = reg_json.get<sbi_gen::SmfRegistration>();
+                if (!reg.dnn.has_value()) {
+                    continue;
+                }
+                sbi_gen::PduSession session{};
+                session.dnn = *reg.dnn;
+                session.smfInstanceId = reg.smfInstanceId;
+                session.plmnId = reg.plmnId;
+                session.singleNssai = reg.singleNssai;
+                pdu_sessions[std::to_string(reg.pduSessionId)] = session;
+            }
+            json result = json::object();
+            if (!pdu_sessions.empty()) {
+                result["pduSessions"] = pdu_sessions;
+            }
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    // GetUeCtxInSmsfData (`GET /{supi}/ue-context-in-smsf-data`) -- real, COMPLETE local
+    // composition from the already-stored SMSF 3GPP/non-3GPP registration records: `SmsfInfo`'s
+    // own `smsfInstanceId`/`plmnId`/`smsfSetId` fields are an exact 1:1 match with
+    // `SmsfRegistration`'s own fields (confirmed by direct read of both schemas), no gap. Real,
+    // honest: `UeContextInSmsfData` has no required fields, always a real `200`.
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/ue-context-in-smsf-data",
+        [&verifier, &sdm_get_counter, &smsf_3gpp_registrations, &smsf_non3gpp_registrations](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            sbi_gen::UeContextInSmsfData result{};
+            if (auto v = smsf_3gpp_registrations.get(supi); v.has_value()) {
+                auto smsf = v->get<sbi_gen::SmsfRegistration>();
+                sbi_gen::SmsfInfo_Nudm_SDM info{};
+                info.smsfInstanceId = smsf.smsfInstanceId;
+                info.plmnId = smsf.plmnId;
+                info.smsfSetId = smsf.smsfSetId;
+                result.smsfInfo3GppAccess = info;
+            }
+            if (auto v = smsf_non3gpp_registrations.get(supi); v.has_value()) {
+                auto smsf = v->get<sbi_gen::SmsfRegistration>();
+                sbi_gen::SmsfInfo_Nudm_SDM info{};
+                info.smsfInstanceId = smsf.smsfInstanceId;
+                info.plmnId = smsf.plmnId;
+                info.smsfSetId = smsf.smsfSetId;
+                result.smsfInfoNon3GppAccess = info;
+            }
+            json j = result;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // GetEcrData (`GET /{supi}/am-data/ecr-data`) -- real, confirmed by direct schema read:
+    // `EnhancedCoverageRestrictionData` (`{plmnEcInfoList}`) is an exact match for UDR's own
+    // already-live `coverage-restriction-data` resource (ADR-0102/ADR-0106). Genuinely distinct
+    // URL shape from `fetch_from_udr`'s own (ueId, servingPlmnId, segment) pattern -- UDR's
+    // coverage-restriction-data resource is keyed by ueId alone, no servingPlmnId in its path -- so
+    // this is a small, dedicated call rather than reusing that helper.
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/am-data/ecr-data",
+        [&verifier, &sdm_get_counter, &udr_client, &udr_oauth, &udr_base_url](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto token = udr_oauth.get_bearer_token();
+            if (!token.has_value()) {
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "UDM could not obtain a token for UDR: " +
+                                                             token.error());
+            }
+            sbi_core::http2::ClientRequest udr_req;
+            udr_req.method = "GET";
+            udr_req.url = udr_base_url + kUdrApiRoot + "/subscription-data/" + supi +
+                          "/coverage-restriction-data";
+            udr_req.headers.emplace("authorization", "Bearer " + *token);
+            auto udr_resp = udr_client.send(udr_req);
+            if (!udr_resp.has_value()) {
+                return sbi_core::http2::problem_response(
+                    500, "Internal Server Error", "UDM could not reach UDR: " + udr_resp.error());
+            }
+            if (udr_resp->status == 404) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No provisioned ecr-data for ueId " + supi);
+            }
+            if (udr_resp->status != 200) {
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "UDR returned unexpected status " +
+                                                             std::to_string(udr_resp->status));
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = udr_resp->body;
+            return resp;
+        });
+
     // --- Nudm_SDM: notification subscriptions ---
 
     server.add_route(

@@ -4493,3 +4493,25 @@ precedent (UDR's own bulk aggregate route already documents the same choice for 
 unhonored optional filters). Leaves `Nudm_SDM`'s ~7-op group C (real data source unconfirmed),
 `Subscribe`/`Unsubscribe`/`Modify` completion, 5 SOR/UPU/ack write ops, a 6-op shared-data family,
 and 2 identifier-lookup ops open. See ADR-0228 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0230 -- UDM `Nudm_SDM` Tier-B gap-closure (group C1: 5 ops, local composition + existing UDR routes)
+
+| Requirement | Test |
+|---|---|
+| `GetNSSAI`/`GetEcrData` return real UDR-backed data, real 404 for an unseeded SUPI | `UdmSdmGapClosure230Integration.UdrBackedOpsReturnRealData`: real 200 with the exact seeded `nssai.defaultSingleNssais`/`ecr.plmnEcInfoList` for the seeded SUPI on both paths; real 404 on both for an unseeded SUPI |
+| `GetUeCtxInAmfData`/`GetUeCtxInSmfData`/`GetUeCtxInSmsfData` compose real local data from already-stored AMF/SMF/SMSF registrations, real honest 200-always | `UdmSdmGapClosure230Integration.LocalCompositionOpsReturnRealSeededData`: real 200 with no composed sub-field present before any registration exists; after seeding real AMF-3GPP-access/SMF (with a real `dnn`)/SMSF 3GPP+non-3GPP registrations via their own existing PUT routes, each op's real composed response matches the seeded data exactly |
+| No regression | Full reconfigure+rebuild clean; both new tests pass; full suite green at `-j1` |
+
+Closes group C1 (5 of `Nudm_SDM`'s remaining 7 group-C ops): `GetNSSAI` (a real subset view into
+already-fetched am-data's own `nssai` field, same schema), `GetUeCtxInAmfData`/`GetUeCtxInSmfData`
+(real, near-complete local composition from the already-stored AMF/SMF registration records, same
+pattern ADR-0227's `GetLocationInfo` established -- each has one real, disclosed gap:
+`epsInterworkingInfo`/`pgwInfo`+`emergencyInfo` have no data source), `GetUeCtxInSmsfData` (real,
+COMPLETE local composition from the already-stored SMSF registration records, no gap),
+`GetEcrData` (UDR's own existing `coverage-restriction-data` route, under a nested
+`/{supi}/am-data/ecr-data` path). Real, disclosed narrowing found during implementation:
+`PduSession.dnn` is required while the source `SmfRegistration.dnn` is optional -- a stored
+registration with no `dnn` is skipped rather than fabricated. Leaves group C2 (2 ops,
+`GetTimeSyncSubscriptionData`/`GetRangingSlPosData`, need brand-new UDR stores + routes first),
+`Subscribe`/`Unsubscribe`/`Modify` completion, 5 SOR/UPU/ack write ops, a 6-op shared-data family,
+and 2 identifier-lookup ops open. See ADR-0230 in `docs/DECISIONS.md` for full disclosure.
