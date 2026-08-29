@@ -4572,3 +4572,25 @@ KDF primitive needed already exists (`libs/aka-crypto`'s `derive_sor_mac_iausf`,
 A.17), but a real per-UE `CounterSoR` state machine and real steering-of-roaming list content do
 not exist anywhere in this build; fabricating either was rejected. See ADR-0234 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0235 -- UDM `Nudm_SDM` shared-data family (6 ops)
+
+| Requirement | Test |
+|---|---|
+| `GetIndividualSharedData` real 200 for UDR-seeded id, real 404 for unknown | `UdmSdmGapClosure235Integration.SharedDataAndGroupIdentifiersReturnRealUdrSeededData`: real 200 for `10000-default`, real 404 for an unknown id |
+| `GetSharedData` real bulk composition, unknown ids silently omitted, real 400 with no `shared-data-ids` | same test: real 200 with exactly 1 entry for a mixed known+unknown id list; real 400 with the param absent |
+| `GetGroupIdentifiers` real 200 by `ext-group-id` and by `int-group-id` against UDR's seeded group, real 400 with neither | same test: real 200 on both query variants; real 400 with neither param |
+| `SubscribeToSharedData`/`ModifySharedDataSubs`/`UnsubscribeForSharedData` real CRUD lifecycle | same test: real 201 with `Location` on subscribe; real 200 merge-patch on modify; real 204 on delete; real 404 on a second delete |
+| No regression | Full reconfigure+rebuild clean; new test passes standalone; full suite green at `-j1` |
+
+`GetIndividualSharedData`/`GetGroupIdentifiers` are real, direct proxies to UDR's own already-live
+routes (`SharedDataStore`/`GroupIdentifiersStore`, ADR-0110/ADR-0140, checked first per this
+project's own re-learned lesson from ADR-0233). `GetSharedData` -- UDR's own disclosed gap
+(ADR-0110) -- is composed at the UDM layer via N real UDR calls, one per `shared-data-ids` entry.
+`SubscribeToSharedData`/`UnsubscribeForSharedData`/`ModifySharedDataSubs` are backed by a new
+UDM-local `SharedDataSubscriptionStore`, genuinely global (no `ue_id` ownership), unlike every
+other `Nudm_SDM` resource closed so far. A real bug in the test's own `SubscribeToSharedData` body
+(missing 2 required `SdmSubscription` fields) reproduced this project's documented leaked-process
+pipe-hang pattern during development; root-caused by manual per-route verification against a fresh
+process (all 6 routes correct), fixed in the test, not the server. See ADR-0235 in
+`docs/DECISIONS.md` for full disclosure.

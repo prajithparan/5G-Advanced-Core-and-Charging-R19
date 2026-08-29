@@ -274,6 +274,39 @@ std::optional<SdmSubscriptionEntry> SdmSubscriptionStore::merge_patch(
     return std::make_optional(it->second);
 }
 
+std::string SharedDataSubscriptionStore::create(nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string id = "shdsub-" + std::to_string(next_id_++);
+    subscriptions_.emplace(id, std::move(data));
+    return id;
+}
+
+std::optional<nlohmann::json> SharedDataSubscriptionStore::get(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(subscription_id);
+    if (it == subscriptions_.end()) {
+        return std::nullopt;
+    }
+    return std::make_optional(it->second);
+}
+
+bool SharedDataSubscriptionStore::remove(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return subscriptions_.erase(subscription_id) > 0;
+}
+
+std::optional<nlohmann::json>
+SharedDataSubscriptionStore::merge_patch(const std::string& subscription_id,
+                                         const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = subscriptions_.find(subscription_id);
+    if (it == subscriptions_.end()) {
+        return std::nullopt;
+    }
+    it->second.merge_patch(patch);
+    return std::make_optional(it->second);
+}
+
 void AuthenticationSubscriptionStore::seed(const std::string& supi,
                                            AuthenticationSubscription sub) {
     std::lock_guard<std::mutex> lock(mutex_);

@@ -1390,9 +1390,14 @@ merge-patch, same shape this file's other PATCH routes already use -- completes
 note -- UDR already had both resources fully live, no new UDR stores were actually needed, only
 UDM-side wiring; closes `Nudm_SDM`'s entire group C in full); ~~`SorAckInfo`/`UpuAck`/
 `S-NSSAIs Ack`/`CAG Ack`~~ **CLOSED, ADR-0234** (4 of 5 real SOR/UPU/ack write ops, real
-accept-and-validate); leaving `Update SOR Info` (real KDF primitive already exists in
-`libs/aka-crypto`, but a real CounterSoR state machine and real steering list content do not --
-disclosed, not stubbed), a 6-op shared-data family, and 2 identifier-lookup ops, all still open);
+accept-and-validate); ~~6-op shared-data family: `GetIndividualSharedData`/`GetSharedData`/
+`GetGroupIdentifiers`/`SubscribeToSharedData`/`UnsubscribeForSharedData`/`ModifySharedDataSubs`~~
+**CLOSED, ADR-0235** (`GetIndividualSharedData`/`GetGroupIdentifiers` real proxies to UDR's
+already-live routes, ADR-0110/ADR-0140; `GetSharedData` composed at UDM via N real UDR calls since
+UDR itself never built the bulk endpoint; subscription CRUD backed by a new, genuinely global
+UDM-local `SharedDataSubscriptionStore`); leaving `Update SOR Info` (real KDF primitive already
+exists in `libs/aka-crypto`, but a real CounterSoR state machine and real steering list content do
+not -- disclosed, not stubbed) and 2 identifier-lookup ops still open);
 `Nudm_PP` (11 ops: the
 5g-vn-groups/pp-data-store/mbs-group-membership groups already flagged deferred in ADR-0082,
 unchanged). Every one is a real, individually small CRUD/subscription operation within

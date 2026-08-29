@@ -380,6 +380,7 @@ int main() {
     udm::NwdafRegistrationStore nwdaf_registrations;
     udm::SmfRegistrationStore smf_registrations;
     udm::SdmSubscriptionStore sdm_subscriptions;
+    udm::SharedDataSubscriptionStore shared_data_subscriptions;
     udm::AuthenticationSubscriptionStore auth_subscriptions;
     udm::AuthEventStore auth_events;
     udm::EeSubscriptionStore ee_subscriptions;
@@ -496,6 +497,14 @@ int main() {
         meter->CreateUInt64Counter("udm_sdm_subscription_modify_total", "Total SDM Modify calls");
     auto sdm_ack_counter = meter->CreateUInt64Counter(
         "udm_sdm_ack_total", "Total SorAckInfo/UpuAck/S-NSSAIs Ack/CAG Ack calls");
+    auto shared_data_get_counter = meter->CreateUInt64Counter(
+        "udm_shared_data_get_total", "Total GetSharedData/GetIndividualSharedData calls");
+    auto group_identifiers_get_counter = meter->CreateUInt64Counter(
+        "udm_group_identifiers_get_total", "Total GetGroupIdentifiers calls");
+    auto shared_data_subscribe_counter = meter->CreateUInt64Counter(
+        "udm_shared_data_subscribe_total", "Total SubscribeToSharedData calls");
+    auto shared_data_modify_counter = meter->CreateUInt64Counter(
+        "udm_shared_data_modify_total", "Total ModifySharedDataSubs calls");
     auto generate_auth_data_counter =
         meter->CreateUInt64Counter("udm_generate_auth_data_total", "Total GenerateAuthData calls");
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091): real, previously-deferred
@@ -2343,6 +2352,223 @@ int main() {
             sdm_subscription_modify_counter->Add(1);
             json j = patched->data;
             return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    // --- Nudm_SDM: shared-data group (ADR-0235, task #169) -- real, genuinely NOT per-UE, unlike
+    // every other Nudm_SDM resource above. Confirmed by direct read of both TS29503_Nudm_SDM.yaml
+    // and nfs/udr/src/main.cpp's own real routes: UDR already has GetIndividualSharedData and
+    // GetGroupIdentifiers fully live (ADR-0110/ADR-0140) -- this closes the UDM-side wiring for
+    // both, plus GetSharedData (the real bulk/collection op UDR itself never implemented, per
+    // ADR-0110's own disclosed gap) composed here by calling UDR's individual route once per real
+    // `shared-data-ids` entry rather than needing a new UDR-side bulk endpoint, and the 3
+    // subscription-CRUD ops via a new UDM-local SharedDataSubscriptionStore (same shape as
+    // SdmSubscriptionStore minus ue_id ownership, since shared-data subscriptions are genuinely
+    // global). ---
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/shared-data/{sharedDataId}",
+        [&verifier, &udr_client, &udr_oauth, &udr_base_url, &shared_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto shared_data_id = req.path_params.at("sharedDataId");
+            auto token = udr_oauth.get_bearer_token();
+            if (!token.has_value()) {
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "UDM could not obtain a token for UDR: " +
+                                                             token.error());
+            }
+            sbi_core::http2::ClientRequest udr_req;
+            udr_req.method = "GET";
+            udr_req.url =
+                udr_base_url + kUdrApiRoot + "/subscription-data/shared-data/" + shared_data_id;
+            udr_req.headers.emplace("authorization", "Bearer " + *token);
+            auto udr_resp = udr_client.send(udr_req);
+            if (!udr_resp.has_value()) {
+                return sbi_core::http2::problem_response(
+                    500, "Internal Server Error", "UDM could not reach UDR: " + udr_resp.error());
+            }
+            if (udr_resp->status == 404) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No shared data for sharedDataId " + shared_data_id);
+            }
+            if (udr_resp->status != 200) {
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "UDR returned unexpected status " +
+                                                             std::to_string(udr_resp->status));
+            }
+            shared_data_get_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = udr_resp->body;
+            return resp;
+        });
+
+    // GetSharedData: real bulk retrieval composed from N real individual UDR calls (UDR itself
+    // never implemented a bulk route, ADR-0110's own disclosed gap). Real, disclosed: an id that
+    // individually 404s at UDR is simply omitted from the result array rather than failing the
+    // whole request -- the real response schema (`array of SharedData`) has no `minItems`/
+    // completeness constraint, so a partial result for a partially-known id set is a real, valid
+    // response, not an invented one.
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/shared-data",
+        [&verifier, &udr_client, &udr_oauth, &udr_base_url, &shared_data_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ids_it = req.query_params.find("shared-data-ids");
+            if (ids_it == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "shared-data-ids is required");
+            }
+            auto token = udr_oauth.get_bearer_token();
+            if (!token.has_value()) {
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "UDM could not obtain a token for UDR: " +
+                                                             token.error());
+            }
+            json result = json::array();
+            for (const auto& shared_data_id : sbi_core::http2::split_form_array(ids_it->second)) {
+                sbi_core::http2::ClientRequest udr_req;
+                udr_req.method = "GET";
+                udr_req.url =
+                    udr_base_url + kUdrApiRoot + "/subscription-data/shared-data/" + shared_data_id;
+                udr_req.headers.emplace("authorization", "Bearer " + *token);
+                auto udr_resp = udr_client.send(udr_req);
+                if (!udr_resp.has_value() || udr_resp->status != 200) {
+                    continue;
+                }
+                try {
+                    result.push_back(json::parse(udr_resp->body));
+                } catch (const json::exception&) {
+                    continue;
+                }
+            }
+            shared_data_get_counter->Add(1);
+            return sbi_core::http2::Response::json(200, result.dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/group-data/group-identifiers",
+        [&verifier, &udr_client, &udr_oauth, &udr_base_url, &group_identifiers_get_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_it = req.query_params.find("ext-group-id");
+            const auto int_it = req.query_params.find("int-group-id");
+            if (ext_it == req.query_params.end() && int_it == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "At least one of ext-group-id or int-group-id is required");
+            }
+            auto token = udr_oauth.get_bearer_token();
+            if (!token.has_value()) {
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "UDM could not obtain a token for UDR: " +
+                                                             token.error());
+            }
+            sbi_core::http2::ClientRequest udr_req;
+            udr_req.method = "GET";
+            udr_req.url = udr_base_url + kUdrApiRoot + "/subscription-data/group-data/" +
+                          std::string("group-identifiers") + "?" +
+                          (ext_it != req.query_params.end() ? "ext-group-id=" + ext_it->second
+                                                            : "int-group-id=" + int_it->second);
+            udr_req.headers.emplace("authorization", "Bearer " + *token);
+            auto udr_resp = udr_client.send(udr_req);
+            if (!udr_resp.has_value()) {
+                return sbi_core::http2::problem_response(
+                    500, "Internal Server Error", "UDM could not reach UDR: " + udr_resp.error());
+            }
+            if (udr_resp->status == 404) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No Group Identifiers found");
+            }
+            if (udr_resp->status != 200) {
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "UDR returned unexpected status " +
+                                                             std::to_string(udr_resp->status));
+            }
+            group_identifiers_get_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = udr_resp->body;
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kSdmApiRoot) + "/shared-data-subscriptions",
+        [&verifier, &shared_data_subscriptions, &shared_data_subscribe_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SdmSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            json j = *body;
+            const auto id = shared_data_subscriptions.create(j);
+            shared_data_subscribe_counter->Add(1);
+            body->subscriptionId = id;
+            json j2 = *body;
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location",
+                                 std::string(kSdmApiRoot) + "/shared-data-subscriptions/" + id);
+            resp.body = j2.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kSdmApiRoot) + "/shared-data-subscriptions/{subscriptionId}",
+        [&verifier, &shared_data_subscriptions](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            if (!shared_data_subscriptions.get(subscription_id).has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No such shared-data subscription");
+            }
+            shared_data_subscriptions.remove(subscription_id);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        std::string(kSdmApiRoot) + "/shared-data-subscriptions/{subscriptionId}",
+        [&verifier, &shared_data_subscriptions, &shared_data_modify_counter](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            auto patched =
+                shared_data_subscriptions.merge_patch(subscription_id, json::parse(req.body));
+            if (!patched.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No such shared-data subscription");
+            }
+            shared_data_modify_counter->Add(1);
+            return sbi_core::http2::Response::json(200, patched->dump());
         });
 
     // --- Nudm_UEAU: authentication data generation + confirmation ---

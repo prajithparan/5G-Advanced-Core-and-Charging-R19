@@ -253,6 +253,25 @@ private:
     std::uint64_t next_id_ = 1;
 };
 
+// Gap-closure (ADR-0235, task #169): backs Nudm_SDM's shared-data subscription group
+// (SubscribeToSharedData/UnsubscribeForSharedData/ModifySharedDataSubs,
+// `/shared-data-subscriptions`
+// -- real, genuinely NOT per-UE, unlike SdmSubscriptionStore above (no ue_id to scope ownership
+// by), same real `SdmSubscription` schema and create/id-assign/merge-patch shape otherwise.
+class SharedDataSubscriptionStore {
+public:
+    std::string create(nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& subscription_id);
+    bool remove(const std::string& subscription_id);
+    std::optional<nlohmann::json> merge_patch(const std::string& subscription_id,
+                                              const nlohmann::json& patch);
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, nlohmann::json> subscriptions_;
+    std::uint64_t next_id_ = 1;
+};
+
 // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #105, ADR-0082): backs Nudm_EE's
 // CreateEeSubscription/UpdateEeSubscription/DeleteEeSubscription
 // (`/{ueIdentity}/ee-subscriptions`). Same assign-id/store/remove shape as SdmSubscriptionStore
