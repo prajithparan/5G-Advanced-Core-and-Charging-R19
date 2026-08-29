@@ -4541,3 +4541,19 @@ Completes `Subscribe`/`Unsubscribe`/`Modify` in full -- `Modify` was the one rem
 RFC 7396 JSON Merge Patch matching the same shape this file already uses for every registration
 resource's own PATCH route. New `SdmSubscriptionStore::merge_patch` added with a real ownership
 check baked in. See ADR-0232 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0233 -- UDM `Nudm_SDM` group C2 (corrects ADR-0230's own scoping error)
+
+| Requirement | Test |
+|---|---|
+| `GetTimeSyncSubscriptionData`/`GetRangingSlPosData` return real UDR-seeded data; real 404 for an unseeded SUPI | `UdmSdmGapClosure233Integration.TimeSyncAndRangingSlPosReturnRealUdrSeededData`: real 200 with exact seeded `gptpAllowedInfoList[0].gptpAllowed`/`serviceIds[0].reference`/`rangingSlPosAuth.rgSlPosPc5Auth` for the seeded SUPI on both paths; real 404 on both for an unseeded SUPI |
+| No regression from the `fetch_from_udr_no_plmn` refactor | Re-ran `UdmSdmGapClosure230Integration.*` (covers `GetEcrData`) -- still passes |
+| No regression overall | Full reconfigure+rebuild clean; full suite green at `-j1`, 455/455 |
+
+Real, disclosed correction: ADR-0230 claimed group C2 needed brand-new UDR-side stores. That was
+wrong -- UDR already had both `time-sync-data`/`ranging-slpos-data` fully live (real
+Postgres-backed stores, real routes, real seed data, ADR-0131/ADR-0136, pre-existing before this
+turn). This ADR closes the UDM-side wiring only. `GetEcrData`'s own inline UDR call was refactored
+into a new shared `fetch_from_udr_no_plmn` helper, reused by all 3 ueId-only-keyed ops. This closes
+`Nudm_SDM`'s entire group C (C1+C2) in full. See ADR-0233 in `docs/DECISIONS.md` for full
+disclosure, including the caught-and-reverted duplicate-schema mistake made while re-scoping.

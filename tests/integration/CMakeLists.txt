@@ -22,6 +22,7 @@ add_executable(integration_tests
     test_udm_sdm_gap_closure_228.cpp
     test_udm_sdm_gap_closure_230.cpp
     test_udm_sdm_gap_closure_232.cpp
+    test_udm_sdm_gap_closure_233.cpp
     test_udm_mt_niddau_rsds_ssau_ueid.cpp
     test_upf_event_exposure_gueip.cpp
     test_udr_context_data.cpp

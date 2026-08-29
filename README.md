@@ -167,9 +167,12 @@ a new helper) closed together as a 13-operation slice (ADR-0228), then group C1 
 `GetUeCtxInAmfData`/`GetUeCtxInSmfData`/`GetUeCtxInSmsfData`/`GetEcrData`, real local composition
 from UDM's own already-stored AMF/SMF/SMSF registration records or an existing UDR route) closed as
 a 5-operation slice (ADR-0230), then `Modify` (real RFC 7396 merge-patch) closed
-`Subscribe`/`Unsubscribe`/`Modify` in full (ADR-0232). `Nudm_SDM`'s remaining group C2 (2 ops, need
-brand-new UDR stores first), SOR/UPU/ack write ops, shared-data family, and identifier-lookup ops,
-plus `Nudm_PP` (11 ops), remain open.
+`Subscribe`/`Unsubscribe`/`Modify` in full (ADR-0232), then group C2
+(`GetTimeSyncSubscriptionData`/`GetRangingSlPosData`) closed as a 2-operation slice (ADR-0233 —
+a real, disclosed correction of ADR-0230's own scoping note: UDR already had both resources fully
+live, only UDM-side wiring was needed). **`Nudm_SDM`'s entire group C is now fully closed.**
+SOR/UPU/ack write ops, shared-data family, and identifier-lookup ops, plus `Nudm_PP` (11 ops),
+remain open.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075

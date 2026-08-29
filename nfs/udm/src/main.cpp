@@ -1803,6 +1803,52 @@ int main() {
         return parsed.at(field_name);
     };
 
+    // Gap-closure (ADR-0230/ADR-0233): a third real UDR-call shape, genuinely distinct from
+    // `fetch_from_udr`/`fetch_from_udr_bulk_field` above -- some UDR resources are keyed by ueId
+    // alone (no servingPlmnId in their path at all), matching those resources' own real spec
+    // definition (no plmn-id query param, no servingPlmnId path segment). Shared across
+    // GetEcrData/GetTimeSyncSubscriptionData/GetRangingSlPosData, all three confirmed by direct
+    // schema read to share this exact real shape.
+    auto fetch_from_udr_no_plmn =
+        [&udr_client, &udr_oauth, &udr_base_url](
+            const std::string& ue_id,
+            const std::string& segment) -> std::variant<json, sbi_core::http2::Response> {
+        auto token = udr_oauth.get_bearer_token();
+        if (!token.has_value()) {
+            return sbi_core::http2::problem_response(500,
+                                                     "Internal Server Error",
+                                                     "UDM could not obtain a token for UDR: " +
+                                                         token.error());
+        }
+        sbi_core::http2::ClientRequest udr_req;
+        udr_req.method = "GET";
+        udr_req.url = udr_base_url + kUdrApiRoot + "/subscription-data/" + ue_id + "/" + segment;
+        udr_req.headers.emplace("authorization", "Bearer " + *token);
+        auto udr_resp = udr_client.send(udr_req);
+        if (!udr_resp.has_value()) {
+            return sbi_core::http2::problem_response(
+                500, "Internal Server Error", "UDM could not reach UDR: " + udr_resp.error());
+        }
+        if (udr_resp->status == 404) {
+            return sbi_core::http2::problem_response(
+                404, "Not Found", "No provisioned " + segment + " for ueId " + ue_id);
+        }
+        if (udr_resp->status != 200) {
+            return sbi_core::http2::problem_response(500,
+                                                     "Internal Server Error",
+                                                     "UDR returned unexpected status " +
+                                                         std::to_string(udr_resp->status));
+        }
+        try {
+            return json::parse(udr_resp->body);
+        } catch (const json::exception& e) {
+            return sbi_core::http2::problem_response(500,
+                                                     "Internal Server Error",
+                                                     "UDR returned malformed JSON: " +
+                                                         std::string(e.what()));
+        }
+    };
+
     server.add_route(
         "GET",
         std::string(kSdmApiRoot) + "/{ueId}/lcs-privacy-data",
@@ -2120,52 +2166,63 @@ int main() {
 
     // GetEcrData (`GET /{supi}/am-data/ecr-data`) -- real, confirmed by direct schema read:
     // `EnhancedCoverageRestrictionData` (`{plmnEcInfoList}`) is an exact match for UDR's own
-    // already-live `coverage-restriction-data` resource (ADR-0102/ADR-0106). Genuinely distinct
-    // URL shape from `fetch_from_udr`'s own (ueId, servingPlmnId, segment) pattern -- UDR's
-    // coverage-restriction-data resource is keyed by ueId alone, no servingPlmnId in its path -- so
-    // this is a small, dedicated call rather than reusing that helper.
+    // already-live `coverage-restriction-data` resource (ADR-0102/ADR-0106).
     server.add_route(
         "GET",
         std::string(kSdmApiRoot) + "/{supi}/am-data/ecr-data",
-        [&verifier, &sdm_get_counter, &udr_client, &udr_oauth, &udr_base_url](
+        [&verifier, &sdm_get_counter, &fetch_from_udr_no_plmn](
             const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
             sdm_get_counter->Add(1);
             const auto supi = req.path_params.at("supi");
-            auto token = udr_oauth.get_bearer_token();
-            if (!token.has_value()) {
-                return sbi_core::http2::problem_response(500,
-                                                         "Internal Server Error",
-                                                         "UDM could not obtain a token for UDR: " +
-                                                             token.error());
+            auto result = fetch_from_udr_no_plmn(supi, "coverage-restriction-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
             }
-            sbi_core::http2::ClientRequest udr_req;
-            udr_req.method = "GET";
-            udr_req.url = udr_base_url + kUdrApiRoot + "/subscription-data/" + supi +
-                          "/coverage-restriction-data";
-            udr_req.headers.emplace("authorization", "Bearer " + *token);
-            auto udr_resp = udr_client.send(udr_req);
-            if (!udr_resp.has_value()) {
-                return sbi_core::http2::problem_response(
-                    500, "Internal Server Error", "UDM could not reach UDR: " + udr_resp.error());
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    // Gap-closure (ADR-0233, Nudm_SDM group C2): GetTimeSyncSubscriptionData
+    // (`GET /{supi}/time-sync-data`) and GetRangingSlPosData (`GET /{supi}/ranging-slpos-data`) --
+    // real, confirmed by direct read of both TS29503_Nudm_SDM.yaml (these two ops) and
+    // nfs/udr/src/main.cpp (its own real `time-sync-data`/`ranging-slpos-data` routes,
+    // ADR-0131/ADR-0136, already live and seeded -- corrects ADR-0230's own scoping note, which
+    // incorrectly assumed these needed brand-new UDR-side work; UDR already had both). Same
+    // ueId-only-keyed shape as GetEcrData above.
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/time-sync-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_no_plmn](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
-            if (udr_resp->status == 404) {
-                return sbi_core::http2::problem_response(
-                    404, "Not Found", "No provisioned ecr-data for ueId " + supi);
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr_no_plmn(supi, "time-sync-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
             }
-            if (udr_resp->status != 200) {
-                return sbi_core::http2::problem_response(500,
-                                                         "Internal Server Error",
-                                                         "UDR returned unexpected status " +
-                                                             std::to_string(udr_resp->status));
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{supi}/ranging-slpos-data",
+        [&verifier, &sdm_get_counter, &fetch_from_udr_no_plmn](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
             }
-            sbi_core::http2::Response resp;
-            resp.status = 200;
-            resp.headers.emplace("content-type", "application/json");
-            resp.body = udr_resp->body;
-            return resp;
+            sdm_get_counter->Add(1);
+            const auto supi = req.path_params.at("supi");
+            auto result = fetch_from_udr_no_plmn(supi, "ranging-slpos-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
         });
 
     // --- Nudm_SDM: notification subscriptions ---

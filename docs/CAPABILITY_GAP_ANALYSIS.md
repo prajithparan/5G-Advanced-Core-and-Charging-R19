@@ -1385,9 +1385,11 @@ nested path)~~ **CLOSED, ADR-0230** (5-op slice -- real, disclosed narrowing:
 with no `dnn` is skipped rather than fabricated; `epsInterworkingInfo`/`pgwInfo`/`emergencyInfo`
 remain real, disclosed gaps with no data source); ~~`Modify`~~ **CLOSED, ADR-0232** (real RFC 7396
 merge-patch, same shape this file's other PATCH routes already use -- completes
-`Subscribe`/`Unsubscribe`/`Modify` in full); leaving group C2's 2 ops needing brand-new UDR
-stores + routes first (`GetTimeSyncSubscriptionData`/`GetRangingSlPosData`), 5 SOR/UPU/ack write
-ops, a 6-op shared-data family, and 2 identifier-lookup ops, all still open); `Nudm_PP` (11 ops: the
+`Subscribe`/`Unsubscribe`/`Modify` in full); ~~group C2: `GetTimeSyncSubscriptionData`/
+`GetRangingSlPosData`~~ **CLOSED, ADR-0233** (real, disclosed correction of ADR-0230's own scoping
+note -- UDR already had both resources fully live, no new UDR stores were actually needed, only
+UDM-side wiring; closes `Nudm_SDM`'s entire group C in full); leaving 5 SOR/UPU/ack write ops,
+a 6-op shared-data family, and 2 identifier-lookup ops, all still open); `Nudm_PP` (11 ops: the
 5g-vn-groups/pp-data-store/mbs-group-membership groups already flagged deferred in ADR-0082,
 unchanged). Every one is a real, individually small CRUD/subscription operation within
 already-wired files, not a structural gap.
