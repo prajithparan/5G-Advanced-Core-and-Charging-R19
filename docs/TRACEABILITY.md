@@ -4515,3 +4515,17 @@ registration with no `dnn` is skipped rather than fabricated. Leaves group C2 (2
 `GetTimeSyncSubscriptionData`/`GetRangingSlPosData`, need brand-new UDR stores + routes first),
 `Subscribe`/`Unsubscribe`/`Modify` completion, 5 SOR/UPU/ack write ops, a 6-op shared-data family,
 and 2 identifier-lookup ops open. See ADR-0230 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0231 -- real fix for `UdmIntegration.SdmDataRetrievalAndSubscriptions`'s CI exclusion (task #166)
+
+| Requirement | Test |
+|---|---|
+| `test_udm_uecm_sdm.cpp`'s `SdmDataRetrievalAndSubscriptions` no longer races udr's own startup | Ran the fixed test 5 consecutive times locally -- 5/5 clean passes (previously excluded from CI for unreliability) |
+
+Real root cause found (not the same "never root-caused" bucket as
+`UdrIntegration.AmfContextLifecycle`, task #165, still open): `udr`'s own startup genuinely takes
+longer than `udm`'s port coming up, so a test waiting only on `udm` reachability can race ahead of
+`udr` still being mid-startup on its first UDM->UDR-dependent request. Fixed by adding an explicit
+`wait_reachable` on `udr` before spawning `udm`, the same pattern already proven in ADR-0228/
+ADR-0230's own new tests. `.github/workflows/ci.yml`'s both `ctest -E` invocations updated to drop
+this test from the exclusion list. See ADR-0231 in `docs/DECISIONS.md` for full disclosure.

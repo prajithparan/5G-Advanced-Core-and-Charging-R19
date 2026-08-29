@@ -273,10 +273,19 @@ TEST(UdmIntegration, SdmDataRetrievalAndSubscriptions) {
     ASSERT_GT(udr_pid, 0) << "failed to fork udr";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
+    auto client = make_client();
+    // Real, disclosed timing fix (task #166, confirmed by direct evidence from ADR-0228/ADR-0230's
+    // own new tests): udr's own startup (TLS + real Postgres seeding) genuinely takes longer than
+    // udm's port coming up, so waiting on udm reachability alone isn't enough here -- this test's
+    // very first real request needs udr already listening (udm proxies to it). Waiting on udr
+    // explicitly before spawning udm removes the race that made this test CI-flaky enough to need
+    // excluding from ctest (see .github/workflows/ci.yml's own `-E` exclusion, ADR-0113/ADR-0212).
+    ASSERT_TRUE(wait_reachable(
+        client, "https://127.0.0.1:7781/nudr-dr/v2/subscription-data/nonexistent", 50))
+        << "udr never became reachable";
+
     const pid_t udm_pid = spawn(UDM_PATH);
     ASSERT_GT(udm_pid, 0) << "failed to fork udm";
-
-    auto client = make_client();
     ASSERT_TRUE(wait_reachable(
         client,
         "https://127.0.0.1:7780/nudm-uecm/v1/nonexistent/registrations/amf-3gpp-access",
