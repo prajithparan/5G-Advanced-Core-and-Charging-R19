@@ -4557,3 +4557,18 @@ turn). This ADR closes the UDM-side wiring only. `GetEcrData`'s own inline UDR c
 into a new shared `fetch_from_udr_no_plmn` helper, reused by all 3 ueId-only-keyed ops. This closes
 `Nudm_SDM`'s entire group C (C1+C2) in full. See ADR-0233 in `docs/DECISIONS.md` for full
 disclosure, including the caught-and-reverted duplicate-schema mistake made while re-scoping.
+
+## ADR-0234 -- UDM `Nudm_SDM` 4 of 5 SOR/UPU/ack write ops
+
+| Requirement | Test |
+|---|---|
+| `SorAckInfo`/`UpuAck`/`S-NSSAIs Ack`/`CAG Ack` real 204 for known UE, real 404 for unknown, real 400 for malformed body | `UdmSdmGapClosure234Integration.AckOpsReturn204ForKnownUeAnd404ForUnknown`: real 204 for all 4 against the seeded SUPI; real 404 for all 4 against an unseeded SUPI; real 400 for a body missing required `provisioningTime` |
+| No regression | Full reconfigure+rebuild clean; new test passes; full suite green at `-j1`, 456/456 |
+
+4 of the 5 real SOR/UPU/ack write ops closed as real, structurally identical accept-and-validate
+ops (body `AcknowledgeInfo`, existence-checked via the same `fetch_from_udr(..., "am-data")` probe
+other ops already use). `Update SOR Info` (the 5th op) remains open -- real, disclosed: the
+KDF primitive needed already exists (`libs/aka-crypto`'s `derive_sor_mac_iausf`, TS 33.501 Annex
+A.17), but a real per-UE `CounterSoR` state machine and real steering-of-roaming list content do
+not exist anywhere in this build; fabricating either was rejected. See ADR-0234 in
+`docs/DECISIONS.md` for full disclosure.

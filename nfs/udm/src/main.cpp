@@ -494,6 +494,8 @@ int main() {
         meter->CreateUInt64Counter("udm_sdm_subscribe_total", "Total SDM Subscribe calls");
     auto sdm_subscription_modify_counter =
         meter->CreateUInt64Counter("udm_sdm_subscription_modify_total", "Total SDM Modify calls");
+    auto sdm_ack_counter = meter->CreateUInt64Counter(
+        "udm_sdm_ack_total", "Total SorAckInfo/UpuAck/S-NSSAIs Ack/CAG Ack calls");
     auto generate_auth_data_counter =
         meter->CreateUInt64Counter("udm_generate_auth_data_total", "Total GenerateAuthData calls");
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091): real, previously-deferred
@@ -2224,6 +2226,47 @@ int main() {
             }
             return sbi_core::http2::Response::json(200, std::get<json>(result).dump());
         });
+
+    // Gap-closure (ADR-0234): SorAckInfo/UpuAck/`S-NSSAIs Ack`/`CAG Ack` -- 4 real, structurally
+    // identical accept-and-validate ops (real spec operationIds for the latter two literally
+    // contain spaces, not normalized here, same precedent as ADR-0227's own `Trigger P-CSCF
+    // Restoration`). Each is `PUT /{supi}/am-data/<x>-ack`, real body `AcknowledgeInfo` (required
+    // `provisioningTime`), real `204`. Real, disclosed non-relay, same class as ADR-0227's own
+    // `Trigger P-CSCF Restoration`/`authTrigger` disclosure: no real onward relay to AUSF's own
+    // SoR-Protection/UPU-Protection service exists in this build to actually consume these acks,
+    // so this project accepts and validates (a real existence check against the same UDR am-data
+    // probe `GetAmData`/`Nudm_MT`'s own `GetLocationInfo`-adjacent ops already use) without
+    // forwarding. `Update SOR Info` (the 5th op in this group) is deferred -- real, disclosed gap:
+    // unlike this project's own AUSF ProSe deferral (ADR-0104, blocked on missing KDF material),
+    // the real SoR-MAC-IAUSF KDF primitive already exists (`libs/aka-crypto`'s own
+    // `derive_sor_mac_iausf`, TS 33.501 Annex A.17) -- what's missing is a real per-UE CounterSoR
+    // state machine (TS 33.501 clause 6.14.2.3) and real steering-of-roaming list content, neither
+    // of which exists anywhere in this build; fabricating either would violate this project's own
+    // no-invention rule, so it is left open rather than stubbed.
+    for (const std::string segment : {"sor-ack", "upu-ack", "subscribed-snssais-ack", "cag-ack"}) {
+        server.add_route(
+            "PUT",
+            std::string(kSdmApiRoot) + "/{supi}/am-data/" + segment,
+            [&verifier, &fetch_from_udr, &sdm_ack_counter](const sbi_core::http2::Request& req) {
+                if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                    return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+                }
+                sbi_core::http2::Response err;
+                auto body = sbi_core::http2::parse_json_body<sbi_gen::AcknowledgeInfo>(req, err);
+                if (!body.has_value()) {
+                    return err;
+                }
+                const auto supi = req.path_params.at("supi");
+                auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "am-data");
+                if (auto* udr_err = std::get_if<sbi_core::http2::Response>(&result)) {
+                    return *udr_err;
+                }
+                sdm_ack_counter->Add(1);
+                sbi_core::http2::Response resp;
+                resp.status = 204;
+                return resp;
+            });
+    }
 
     // --- Nudm_SDM: notification subscriptions ---
 

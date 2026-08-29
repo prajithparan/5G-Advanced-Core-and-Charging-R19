@@ -1388,8 +1388,12 @@ merge-patch, same shape this file's other PATCH routes already use -- completes
 `Subscribe`/`Unsubscribe`/`Modify` in full); ~~group C2: `GetTimeSyncSubscriptionData`/
 `GetRangingSlPosData`~~ **CLOSED, ADR-0233** (real, disclosed correction of ADR-0230's own scoping
 note -- UDR already had both resources fully live, no new UDR stores were actually needed, only
-UDM-side wiring; closes `Nudm_SDM`'s entire group C in full); leaving 5 SOR/UPU/ack write ops,
-a 6-op shared-data family, and 2 identifier-lookup ops, all still open); `Nudm_PP` (11 ops: the
+UDM-side wiring; closes `Nudm_SDM`'s entire group C in full); ~~`SorAckInfo`/`UpuAck`/
+`S-NSSAIs Ack`/`CAG Ack`~~ **CLOSED, ADR-0234** (4 of 5 real SOR/UPU/ack write ops, real
+accept-and-validate); leaving `Update SOR Info` (real KDF primitive already exists in
+`libs/aka-crypto`, but a real CounterSoR state machine and real steering list content do not --
+disclosed, not stubbed), a 6-op shared-data family, and 2 identifier-lookup ops, all still open);
+`Nudm_PP` (11 ops: the
 5g-vn-groups/pp-data-store/mbs-group-membership groups already flagged deferred in ADR-0082,
 unchanged). Every one is a real, individually small CRUD/subscription operation within
 already-wired files, not a structural gap.

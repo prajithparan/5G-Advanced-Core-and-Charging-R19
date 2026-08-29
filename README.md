@@ -171,8 +171,10 @@ a 5-operation slice (ADR-0230), then `Modify` (real RFC 7396 merge-patch) closed
 (`GetTimeSyncSubscriptionData`/`GetRangingSlPosData`) closed as a 2-operation slice (ADR-0233 —
 a real, disclosed correction of ADR-0230's own scoping note: UDR already had both resources fully
 live, only UDM-side wiring was needed). **`Nudm_SDM`'s entire group C is now fully closed.**
-SOR/UPU/ack write ops, shared-data family, and identifier-lookup ops, plus `Nudm_PP` (11 ops),
-remain open.
+`SorAckInfo`/`UpuAck`/`S-NSSAIs Ack`/`CAG Ack` (4 of 5 SOR/UPU/ack write ops, real
+accept-and-validate) closed as a 4-operation slice (ADR-0234). `Update SOR Info` (needs a real
+CounterSoR state machine and real steering-list content, neither of which exists in this build),
+the shared-data family, and identifier-lookup ops, plus `Nudm_PP` (11 ops), remain open.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
