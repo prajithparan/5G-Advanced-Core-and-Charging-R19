@@ -534,6 +534,12 @@ int main() {
         meter->CreateUInt64Counter("udm_pp_data_get_total", "Total Get PP Data calls");
     auto pp_update_counter =
         meter->CreateUInt64Counter("udm_pp_data_update_total", "Total PP Data Update calls");
+    auto pp_data_entry_counter = meter->CreateUInt64Counter(
+        "udm_pp_data_entry_total", "Total Create/Delete/Get PP Data Entry calls");
+    auto pp_5g_vn_group_counter = meter->CreateUInt64Counter(
+        "udm_pp_5g_vn_group_total", "Total Create/Delete/Modify/Get 5G VN Group calls");
+    auto pp_5g_mbs_group_counter = meter->CreateUInt64Counter(
+        "udm_pp_5g_mbs_group_total", "Total Create/Delete/Modify/Get 5G MBS Group calls");
     // ADR-0202: Nudm_MT/NIDDAU/RSDS/SSAU/UEID counters.
     auto mt_query_ue_info_counter =
         meter->CreateUInt64Counter("udm_mt_query_ue_info_total", "Total QueryUeInfo calls");
@@ -1862,6 +1868,45 @@ int main() {
         }
     };
 
+    // Generic verbatim-method passthrough proxy to a UDR route, relaying UDR's own status and
+    // JSON body untouched (including its ProblemDetails error bodies -- already the correct real
+    // shape, no re-wrapping needed). Genuinely justified now (ADR-0237) that 3 distinct real
+    // Nudm_PP-backing UDR resources (pp-data-store, 5g-vn-groups, mbs-group-membership) share this
+    // identical direct-proxy shape, same "N call sites, one real shared helper" precedent
+    // `fetch_from_udr_no_plmn` (ADR-0233) already established.
+    auto proxy_to_udr = [&udr_client, &udr_oauth, &udr_base_url](
+                            const std::string& method,
+                            const std::string& udr_path,
+                            const std::string& body) -> sbi_core::http2::Response {
+        auto token = udr_oauth.get_bearer_token();
+        if (!token.has_value()) {
+            return sbi_core::http2::problem_response(500,
+                                                     "Internal Server Error",
+                                                     "UDM could not obtain a token for UDR: " +
+                                                         token.error());
+        }
+        sbi_core::http2::ClientRequest udr_req;
+        udr_req.method = method;
+        udr_req.url = udr_base_url + kUdrApiRoot + udr_path;
+        udr_req.headers.emplace("authorization", "Bearer " + *token);
+        if (!body.empty()) {
+            udr_req.headers.emplace("content-type", "application/json");
+            udr_req.body = body;
+        }
+        auto udr_resp = udr_client.send(udr_req);
+        if (!udr_resp.has_value()) {
+            return sbi_core::http2::problem_response(
+                500, "Internal Server Error", "UDM could not reach UDR: " + udr_resp.error());
+        }
+        sbi_core::http2::Response resp;
+        resp.status = static_cast<int>(udr_resp->status);
+        if (!udr_resp->body.empty()) {
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = udr_resp->body;
+        }
+        return resp;
+    };
+
     server.add_route(
         "GET",
         std::string(kSdmApiRoot) + "/{ueId}/lcs-privacy-data",
@@ -3187,6 +3232,243 @@ int main() {
             auto patched = pp_data.merge_patch(ue_id, patch_doc);
             pp_update_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched->dump());
+        });
+
+    // --- Nudm_PP gap-closure (ADR-0237, task #169): 11 real ops across 3 real UDR-backed
+    // sub-groups named in ADR-0082's own disclosed scope-narrowing (5G VN Group CRUD, PP Data
+    // Entry CRUD, 5G MBS Group CRUD). UDR already has all 3 real backing stores fully live
+    // (PpDataStore/FiveGVnGroupStore/MbsGroupMembershipStore, ADR-0109/ADR-0144/ADR-0167), checked
+    // first per this project's own re-learned "check UDR before assuming new work" lesson
+    // (ADR-0233). Create/Delete/Get for all 3 groups are real, direct `proxy_to_udr` passthroughs
+    // -- UDR's own response shapes (201/204 for PUT, 204/404 for DELETE, 200/404 for GET) already
+    // match Nudm_PP's own real spec exactly. Modify (5G VN Group / 5G MBS Group only -- PP Data
+    // Entry has no Modify op) is genuinely NOT a passthrough: Nudm_PP's real spec uses
+    // `application/merge-patch+json` (RFC 7396) for both, but UDR's own PATCH for both resources
+    // is real RFC 6902 JSON Patch (confirmed by direct read of both YAMLs) -- so Modify is
+    // implemented as a real GET+merge_patch(locally)+PUT round trip against UDR instead, giving
+    // the real Nudm_PP caller correct RFC 7396 semantics without UDR needing to change. ---
+
+    // PP Data Entry: Create/Delete/Get -- real, direct proxies to UDR's own already-live
+    // pp-data-store/{afInstanceId} resource (ADR-0109). No Modify op exists for this resource.
+    server.add_route(
+        "PUT",
+        std::string(kPpApiRoot) + "/{ueId}/pp-data-store/{afInstanceId}",
+        [&verifier, &proxy_to_udr, &pp_data_entry_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto af_instance_id = req.path_params.at("afInstanceId");
+            auto resp =
+                proxy_to_udr("PUT",
+                             "/subscription-data/" + ue_id + "/pp-data-store/" + af_instance_id,
+                             req.body);
+            pp_data_entry_counter->Add(1);
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kPpApiRoot) + "/{ueId}/pp-data-store/{afInstanceId}",
+        [&verifier, &proxy_to_udr, &pp_data_entry_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto af_instance_id = req.path_params.at("afInstanceId");
+            auto resp = proxy_to_udr(
+                "DELETE", "/subscription-data/" + ue_id + "/pp-data-store/" + af_instance_id, "");
+            pp_data_entry_counter->Add(1);
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kPpApiRoot) + "/{ueId}/pp-data-store/{afInstanceId}",
+        [&verifier, &proxy_to_udr, &pp_data_entry_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto af_instance_id = req.path_params.at("afInstanceId");
+            auto resp = proxy_to_udr(
+                "GET", "/subscription-data/" + ue_id + "/pp-data-store/" + af_instance_id, "");
+            pp_data_entry_counter->Add(1);
+            return resp;
+        });
+
+    // 5G VN Group: Create/Delete/Get -- real, direct proxies to UDR's own already-live
+    // 5g-vn-groups/{externalGroupId} resource (ADR-0144).
+    server.add_route(
+        "PUT",
+        std::string(kPpApiRoot) + "/5g-vn-groups/{extGroupId}",
+        [&verifier, &proxy_to_udr, &pp_5g_vn_group_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id = req.path_params.at("extGroupId");
+            auto resp = proxy_to_udr(
+                "PUT", "/subscription-data/group-data/5g-vn-groups/" + ext_group_id, req.body);
+            pp_5g_vn_group_counter->Add(1);
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kPpApiRoot) + "/5g-vn-groups/{extGroupId}",
+        [&verifier, &proxy_to_udr, &pp_5g_vn_group_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id = req.path_params.at("extGroupId");
+            auto resp = proxy_to_udr(
+                "DELETE", "/subscription-data/group-data/5g-vn-groups/" + ext_group_id, "");
+            pp_5g_vn_group_counter->Add(1);
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kPpApiRoot) + "/5g-vn-groups/{extGroupId}",
+        [&verifier, &proxy_to_udr, &pp_5g_vn_group_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id = req.path_params.at("extGroupId");
+            auto resp = proxy_to_udr(
+                "GET", "/subscription-data/group-data/5g-vn-groups/" + ext_group_id, "");
+            pp_5g_vn_group_counter->Add(1);
+            return resp;
+        });
+
+    // 5G VN Group: Modify -- real RFC 7396 merge-patch semantics via GET+merge_patch+PUT against
+    // UDR's own RFC 6902 JSON-Patch-based resource (see this block's own top comment).
+    server.add_route(
+        "PATCH",
+        std::string(kPpApiRoot) + "/5g-vn-groups/{extGroupId}",
+        [&verifier, &proxy_to_udr, &pp_5g_vn_group_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id = req.path_params.at("extGroupId");
+            const std::string udr_path =
+                "/subscription-data/group-data/5g-vn-groups/" + ext_group_id;
+            auto get_resp = proxy_to_udr("GET", udr_path, "");
+            if (get_resp.status != 200) {
+                return get_resp;
+            }
+            json patch_doc;
+            try {
+                patch_doc = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            json current;
+            try {
+                current = json::parse(get_resp.body);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "UDR returned malformed JSON: " +
+                                                             std::string(e.what()));
+            }
+            current.merge_patch(patch_doc);
+            auto put_resp = proxy_to_udr("PUT", udr_path, current.dump());
+            if (put_resp.status != 201) {
+                return put_resp;
+            }
+            pp_5g_vn_group_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // 5G MBS Group: Create/Delete/Get -- real, direct proxies to UDR's own already-live
+    // mbs-group-membership/{externalGroupId} resource (ADR-0167).
+    server.add_route(
+        "PUT",
+        std::string(kPpApiRoot) + "/mbs-group-membership/{extGroupId}",
+        [&verifier, &proxy_to_udr, &pp_5g_mbs_group_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id = req.path_params.at("extGroupId");
+            auto resp =
+                proxy_to_udr("PUT",
+                             "/subscription-data/group-data/mbs-group-membership/" + ext_group_id,
+                             req.body);
+            pp_5g_mbs_group_counter->Add(1);
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        std::string(kPpApiRoot) + "/mbs-group-membership/{extGroupId}",
+        [&verifier, &proxy_to_udr, &pp_5g_mbs_group_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id = req.path_params.at("extGroupId");
+            auto resp = proxy_to_udr(
+                "DELETE", "/subscription-data/group-data/mbs-group-membership/" + ext_group_id, "");
+            pp_5g_mbs_group_counter->Add(1);
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kPpApiRoot) + "/mbs-group-membership/{extGroupId}",
+        [&verifier, &proxy_to_udr, &pp_5g_mbs_group_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id = req.path_params.at("extGroupId");
+            auto resp = proxy_to_udr(
+                "GET", "/subscription-data/group-data/mbs-group-membership/" + ext_group_id, "");
+            pp_5g_mbs_group_counter->Add(1);
+            return resp;
+        });
+
+    // 5G MBS Group: Modify -- real RFC 7396 merge-patch semantics via GET+merge_patch+PUT against
+    // UDR's own RFC 6902 JSON-Patch-based resource (see this block's own top comment).
+    server.add_route(
+        "PATCH",
+        std::string(kPpApiRoot) + "/mbs-group-membership/{extGroupId}",
+        [&verifier, &proxy_to_udr, &pp_5g_mbs_group_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ext_group_id = req.path_params.at("extGroupId");
+            const std::string udr_path =
+                "/subscription-data/group-data/mbs-group-membership/" + ext_group_id;
+            auto get_resp = proxy_to_udr("GET", udr_path, "");
+            if (get_resp.status != 200) {
+                return get_resp;
+            }
+            json patch_doc;
+            try {
+                patch_doc = json::parse(req.body);
+            } catch (const json::parse_error& e) {
+                return sbi_core::http2::problem_response(400, "Malformed JSON", e.what());
+            }
+            json current;
+            try {
+                current = json::parse(get_resp.body);
+            } catch (const json::exception& e) {
+                return sbi_core::http2::problem_response(500,
+                                                         "Internal Server Error",
+                                                         "UDR returned malformed JSON: " +
+                                                             std::string(e.what()));
+            }
+            current.merge_patch(patch_doc);
+            auto put_resp = proxy_to_udr("PUT", udr_path, current.dump());
+            if (put_resp.status != 201) {
+                return put_resp;
+            }
+            pp_5g_mbs_group_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
         });
 
     // ---- TS29503_Nudm_MT.yaml (ADR-0202) ----

@@ -1403,10 +1403,13 @@ real Nudr_DR API, and this project's NFs talk only over SBI, so it can't be buil
 inventing an API or duplicating UDR's data in UDM); leaving only `Update SOR Info` open (real KDF
 primitive already exists in `libs/aka-crypto`, but a real CounterSoR state machine and real
 steering list content do not -- disclosed, not stubbed) to fully close `Nudm_SDM`);
-`Nudm_PP` (11 ops: the
-5g-vn-groups/pp-data-store/mbs-group-membership groups already flagged deferred in ADR-0082,
-unchanged). Every one is a real, individually small CRUD/subscription operation within
-already-wired files, not a structural gap.
+~~`Nudm_PP` (11 ops: the 5g-vn-groups/pp-data-store/mbs-group-membership groups already flagged
+deferred in ADR-0082)~~ **CLOSED, ADR-0237** (all 3 real UDR backing resources were already fully
+live -- 9 of 11 ops are real, direct proxies; the 2 `Modify` ops are a real RFC
+7396-over-RFC-6902 translation via GET+merge_patch+PUT against UDR). Every one was a real,
+individually small CRUD/subscription operation within already-wired files, not a structural gap.
+**This closes `Nudm_PP` in full and, with it, UDM's entire Tier-B gap-closure backlog except
+`Update SOR Info`.**
 
 ### Prioritization for closure (per ADR-0193's continuous, one-at-a-time process)
 

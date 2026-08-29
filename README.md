@@ -182,7 +182,11 @@ new real `gpsis` field added to UDR's seeded am-data — as a 2-operation slice 
 reverse GPSI→SUPI direction remains a real, disclosed gap: no query-by-gpsi capability exists
 anywhere in the real Nudr_DR API). **`Nudm_SDM` is now fully closed except `Update SOR Info`**
 (needs a real CounterSoR state machine and real steering-list content, neither of which exists in
-this build). `Nudm_PP` (11 ops) remains UDM's only other open item.
+this build). `Nudm_PP`'s remaining 11 ops (5G VN Group / PP Data Entry / 5G MBS Group CRUD,
+disclosed-deferred since ADR-0082) are now closed too (ADR-0237) — all 3 real UDR backing
+resources were already fully live; 9 of 11 ops are real, direct proxies, and the 2 `Modify` ops are
+a real RFC 7396-over-RFC-6902 translation. **UDM's entire Tier-B gap-closure backlog is now closed
+except `Update SOR Info`.**
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075

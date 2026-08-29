@@ -4615,3 +4615,26 @@ assumed), and this project's NFs talk only over SBI, so it cannot be built witho
 or duplicating UDR's data in UDM -- both rejected. This closes `Nudm_SDM` entirely except
 `Update SOR Info` (ADR-0234's own disclosed gap). See ADR-0236 in `docs/DECISIONS.md` for full
 disclosure.
+
+## ADR-0237 -- UDM `Nudm_PP`: the 11 ops ADR-0082 disclosed but did not implement
+
+| Requirement | Test |
+|---|---|
+| PP Data Entry real 404/201/204/200/204/404 CRUD lifecycle | `UdmPpGapClosure237Integration.PpDataEntryFullLifecycle`: real 404 before create, 201 on create, 204 on re-PUT, 200 with the exact proxied `referenceId`, 204/404 on delete/re-delete |
+| 5G VN Group + 5G MBS Group real create/get/modify/delete lifecycle, Modify's real RFC 7396 semantics genuinely persisted | `UdmPpGapClosure237Integration.FiveGVnGroupAndFiveGMbsGroupFullLifecycle` (shared helper, both groups): real 404/201/200 create; real 204 Modify with the change persisted alongside original data (verified via follow-up GET); real 404 Modify against an unknown group; real 204/404 delete/re-delete |
+| No regression | Full reconfigure+rebuild clean (udm only); new tests pass standalone; full suite green at `-j1` |
+
+Checked UDR first (ADR-0233's own re-learned lesson) -- all 3 real backing resources
+(`FiveGVnGroupStore`/`MbsGroupMembershipStore`/`PpDataStore`, ADR-0144/ADR-0167/ADR-0109) already
+fully live, no new UDR work needed. 9 of 11 ops are real, direct `proxy_to_udr` passthroughs (new
+shared helper, same precedent as `fetch_from_udr_no_plmn`); the 2 `Modify` ops are a real RFC
+7396-over-RFC-6902 translation (UDR's own PATCH is JSON Patch, not merge-patch -- confirmed by
+direct read, not assumed) via GET+merge_patch+PUT against UDR. Two real bugs caught and fixed in
+the new test file during development (not the server): a wrong `PpDataEntry` field name
+(`afInstanceId` is a path param only, not a body field) that reproduced the documented
+leaked-process pipe-hang pattern, and a wrong JSON wire key for `N5GVnGroupConfiguration`'s nested
+group data (`5gVnGroupData`, numeric-leading per the real spec, not the C++-safe `n5gVnGroupData`
+field name) -- isolated by testing UDR directly before concluding it was a test bug, not a server
+bug. This closes `Nudm_PP` in full (13/13 ops) and, with it, UDM's entire Tier-B gap-closure
+backlog except `Update SOR Info` (`Nudm_SDM`, ADR-0234's own disclosed gap). See ADR-0237 in
+`docs/DECISIONS.md` for full disclosure.
