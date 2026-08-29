@@ -120,8 +120,7 @@ TEST(UdmSdmGapClosure230Integration, UdrBackedOpsReturnRealData) {
         auto resp = client.send(req);
         ASSERT_TRUE(resp.has_value());
         ASSERT_EQ(resp->status, 200) << resp->body;
-        const auto ecr =
-            json::parse(resp->body).get<sbi_gen::EnhancedCoverageRestrictionData>();
+        const auto ecr = json::parse(resp->body).get<sbi_gen::EnhancedCoverageRestrictionData>();
         ASSERT_TRUE(ecr.plmnEcInfoList.has_value());
         ASSERT_EQ(ecr.plmnEcInfoList->size(), 1u);
     }
