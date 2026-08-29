@@ -1395,9 +1395,14 @@ accept-and-validate); ~~6-op shared-data family: `GetIndividualSharedData`/`GetS
 **CLOSED, ADR-0235** (`GetIndividualSharedData`/`GetGroupIdentifiers` real proxies to UDR's
 already-live routes, ADR-0110/ADR-0140; `GetSharedData` composed at UDM via N real UDR calls since
 UDR itself never built the bulk endpoint; subscription CRUD backed by a new, genuinely global
-UDM-local `SharedDataSubscriptionStore`); leaving `Update SOR Info` (real KDF primitive already
-exists in `libs/aka-crypto`, but a real CounterSoR state machine and real steering list content do
-not -- disclosed, not stubbed) and 2 identifier-lookup ops still open);
+UDM-local `SharedDataSubscriptionStore`); ~~2 identifier-lookup ops: `GetSupiOrGpsi`/
+`GetMultipleIdentifiers`~~ **CLOSED (forward direction), ADR-0236** (real `gpsis` field added to
+UDR's seeded am-data; SUPI->GPSI direction genuinely real for both ops; GPSI->SUPI direction
+remains a real, disclosed architectural gap -- no query-by-gpsi capability exists anywhere in the
+real Nudr_DR API, and this project's NFs talk only over SBI, so it can't be built without either
+inventing an API or duplicating UDR's data in UDM); leaving only `Update SOR Info` open (real KDF
+primitive already exists in `libs/aka-crypto`, but a real CounterSoR state machine and real
+steering list content do not -- disclosed, not stubbed) to fully close `Nudm_SDM`);
 `Nudm_PP` (11 ops: the
 5g-vn-groups/pp-data-store/mbs-group-membership groups already flagged deferred in ADR-0082,
 unchanged). Every one is a real, individually small CRUD/subscription operation within

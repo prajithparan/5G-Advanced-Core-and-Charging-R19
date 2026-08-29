@@ -649,6 +649,7 @@
 #include <chrono>
 #include <optional>
 #include <thread>
+#include <unordered_map>
 
 // docs/DECISIONS.md ADR-0077 -- no hardcoded DB URL/deployment literal in source, see
 // nf_config.hpp's own comment.
@@ -1176,10 +1177,20 @@ int main() {
     // ID per TS 32.422) for this project's own real lab PLMN, and "MEDIUM" is a real TraceDepth
     // enum value, this project's own representative test choice (ADR-0127, gap-closure task
     // #106).
+    // gpsis (ADR-0236, gap-closure task #169): real field on AccessAndMobilitySubscriptionData
+    // (TS29503_Nudm_SDM.yaml) -- the real, spec-correct home for a subscriber's GPSI, not a new
+    // invented location. "msisdn-9997000001"/"...002" are this project's own representative test
+    // MSISDNs (real Gpsi pattern `msisdn-[0-9]{5,15}`), one per seeded SUPI so GetSupiOrGpsi/
+    // GetMultipleIdentifiers have real, non-degenerate SUPI->GPSI data to return.
+    const std::unordered_map<std::string, std::string> test_gpsi_by_supi = {
+        {"imsi-999700000000001", "msisdn-9997000001"},
+        {"imsi-999700000000002", "msisdn-9997000002"},
+    };
     for (const std::string& supi :
          {std::string("imsi-999700000000001"), std::string("imsi-999700000000002")}) {
         json am_data;
         am_data["nssai"]["defaultSingleNssais"] = json::array({json{{"sst", 1}, {"sd", "000001"}}});
+        am_data["gpsis"] = json::array({test_gpsi_by_supi.at(supi)});
         json sm_data;
         sm_data["singleNssai"] = json{{"sst", 1}, {"sd", "000001"}};
         json lcs_bca_data;

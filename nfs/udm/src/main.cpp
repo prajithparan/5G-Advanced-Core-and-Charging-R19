@@ -505,6 +505,8 @@ int main() {
         "udm_shared_data_subscribe_total", "Total SubscribeToSharedData calls");
     auto shared_data_modify_counter = meter->CreateUInt64Counter(
         "udm_shared_data_modify_total", "Total ModifySharedDataSubs calls");
+    auto id_translation_counter = meter->CreateUInt64Counter(
+        "udm_id_translation_total", "Total GetSupiOrGpsi/GetMultipleIdentifiers calls");
     auto generate_auth_data_counter =
         meter->CreateUInt64Counter("udm_generate_auth_data_total", "Total GenerateAuthData calls");
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #104, ADR-0091): real, previously-deferred
@@ -2569,6 +2571,77 @@ int main() {
             }
             shared_data_modify_counter->Add(1);
             return sbi_core::http2::Response::json(200, patched->dump());
+        });
+
+    // --- Nudm_SDM: identifier-lookup group (ADR-0236, task #169) -- real, genuinely bounded: the
+    // forward direction (given a SUPI, find its GPSI) is closed using the real `gpsis` field on
+    // AccessAndMobilitySubscriptionData (ADR-0236's own UDR seed-data addition). The reverse
+    // direction (given a GPSI, find its SUPI) is a real, disclosed gap -- it would need either a
+    // query-by-gpsi capability that does not exist anywhere in the real Nudr_DR API (checked, not
+    // assumed: no such resource in TS29504_Nudr_DR.yaml/TS29505_Subscription_Data.yaml), or UDM
+    // maintaining its own duplicate subscriber index, and this project's NFs talk only over SBI
+    // (CLAUDE.md), so neither is available. Real 404/omission, not a fabricated translation. ---
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/{ueId}/id-translation-result",
+        [&verifier, &fetch_from_udr, &id_translation_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const bool is_supi_shaped = ue_id.rfind("imsi-", 0) == 0 ||
+                                        ue_id.rfind("nai-", 0) == 0 ||
+                                        ue_id.rfind("gci-", 0) == 0 || ue_id.rfind("gli-", 0) == 0;
+            if (!is_supi_shaped) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "GPSI-to-SUPI translation is not available in this build");
+            }
+            auto result = fetch_from_udr(ue_id, resolve_serving_plmn_id(req), "am-data");
+            if (auto* err = std::get_if<sbi_core::http2::Response>(&result)) {
+                return *err;
+            }
+            const auto& am_data = std::get<json>(result);
+            sbi_gen::IdTranslationResult out;
+            out.supi = ue_id;
+            if (am_data.contains("gpsis") && am_data.at("gpsis").is_array() &&
+                !am_data.at("gpsis").empty()) {
+                out.gpsi = am_data.at("gpsis").at(0).get<std::string>();
+            }
+            id_translation_counter->Add(1);
+            json j = out;
+            return sbi_core::http2::Response::json(200, j.dump());
+        });
+
+    server.add_route(
+        "GET",
+        std::string(kSdmApiRoot) + "/multiple-identifiers",
+        [&verifier, &fetch_from_udr, &id_translation_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            json ue_id_gpsi_list = json::object();
+            const auto supi_list_it = req.query_params.find("supi-list");
+            if (supi_list_it != req.query_params.end()) {
+                for (const auto& supi : sbi_core::http2::split_form_array(supi_list_it->second)) {
+                    auto result = fetch_from_udr(supi, resolve_serving_plmn_id(req), "am-data");
+                    if (std::get_if<sbi_core::http2::Response>(&result) != nullptr) {
+                        continue;
+                    }
+                    const auto& am_data = std::get<json>(result);
+                    if (am_data.contains("gpsis") && am_data.at("gpsis").is_array() &&
+                        !am_data.at("gpsis").empty()) {
+                        ue_id_gpsi_list[supi] = json{{"gpsiList", am_data.at("gpsis")}};
+                    }
+                }
+            }
+            sbi_gen::UeIdentifiers out;
+            if (!ue_id_gpsi_list.empty()) {
+                out.ueIdGpsiList = ue_id_gpsi_list;
+            }
+            id_translation_counter->Add(1);
+            json j = out;
+            return sbi_core::http2::Response::json(200, j.dump());
         });
 
     // --- Nudm_UEAU: authentication data generation + confirmation ---

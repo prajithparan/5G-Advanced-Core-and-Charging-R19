@@ -4594,3 +4594,24 @@ other `Nudm_SDM` resource closed so far. A real bug in the test's own `Subscribe
 pipe-hang pattern during development; root-caused by manual per-route verification against a fresh
 process (all 6 routes correct), fixed in the test, not the server. See ADR-0235 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0236 -- UDM `Nudm_SDM` identifier-lookup group (GetSupiOrGpsi/GetMultipleIdentifiers)
+
+| Requirement | Test |
+|---|---|
+| `GetSupiOrGpsi` real 200 with the real seeded gpsi for a SUPI-shaped, known ueId | `UdmSdmGapClosure236Integration.IdentifierLookupOpsReturnRealGpsiDataAndDiscloseReverseGap`: real 200, `IdTranslationResult.gpsi` == the exact seeded `msisdn-...` value |
+| `GetSupiOrGpsi` real 404 for an unknown SUPI-shaped ueId, and real 404 (disclosed gap) for a GPSI-shaped ueId | same test: both real 404 |
+| `GetMultipleIdentifiers` real `ueIdGpsiList` populated with real seeded gpsis for a `supi-list` covering both seeded SUPIs | same test: real 200, both SUPIs' `gpsiList` entries match the exact seeded values |
+| `GetMultipleIdentifiers` real honest-empty result with no params | same test: real 200, both `ueIdList`/`ueIdGpsiList` absent |
+| No regression | Full reconfigure+rebuild clean (udm+udr); new test passes standalone; full suite green at `-j1` |
+
+Asked the user how to handle the missing SUPI<->GPSI mapping before building anything
+(`AskUserQuestion`) rather than guessing; chose to add real minimal GPSI seed data. UDR's am-data
+seed (ADR-0069) now sets a real `gpsis` array (real field on `AccessAndMobilitySubscriptionData`,
+no schema change needed -- `am_data` is already `JSONB`). Forward direction (SUPI->GPSI) is real
+and complete for both ops. Reverse direction (GPSI->SUPI) is a real, disclosed architectural gap:
+no query-by-gpsi capability exists anywhere in the real Nudr_DR API (checked directly, not
+assumed), and this project's NFs talk only over SBI, so it cannot be built without inventing an API
+or duplicating UDR's data in UDM -- both rejected. This closes `Nudm_SDM` entirely except
+`Update SOR Info` (ADR-0234's own disclosed gap). See ADR-0236 in `docs/DECISIONS.md` for full
+disclosure.

@@ -176,9 +176,13 @@ accept-and-validate) closed as a 4-operation slice (ADR-0234), then the shared-d
 (`GetIndividualSharedData`/`GetGroupIdentifiers`, real proxies to UDR's already-live routes;
 `GetSharedData`, composed at UDM via N real UDR calls since UDR never built the bulk endpoint;
 `SubscribeToSharedData`/`UnsubscribeForSharedData`/`ModifySharedDataSubs`, backed by a new,
-genuinely global UDM-local subscription store) closed as a 6-operation slice (ADR-0235).
-`Update SOR Info` (needs a real CounterSoR state machine and real steering-list content, neither of
-which exists in this build), 2 identifier-lookup ops, and `Nudm_PP` (11 ops), remain open.
+genuinely global UDM-local subscription store) closed as a 6-operation slice (ADR-0235), then
+`GetSupiOrGpsi`/`GetMultipleIdentifiers` closed for their real forward (SUPI→GPSI) direction — a
+new real `gpsis` field added to UDR's seeded am-data — as a 2-operation slice (ADR-0236; the
+reverse GPSI→SUPI direction remains a real, disclosed gap: no query-by-gpsi capability exists
+anywhere in the real Nudr_DR API). **`Nudm_SDM` is now fully closed except `Update SOR Info`**
+(needs a real CounterSoR state machine and real steering-list content, neither of which exists in
+this build). `Nudm_PP` (11 ops) remains UDM's only other open item.
 
 The full evidence base, current per-resource breakdown, and what's still open lives in
 [`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md); the ADR trail (ADR-0075
