@@ -74,6 +74,7 @@
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
+#include "sbi_core/io_context_pool.hpp"
 #include "sbi_core/json_body.hpp"
 #include "sbi_core/jwt.hpp"
 #include "sbi_core/logging.hpp"
@@ -3646,6 +3647,6 @@ int main() {
     server.start();
     spdlog::info("udm: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
     spdlog::info("udm: Prometheus metrics at http://{}/metrics", metrics_bind_address);
-    ioc.run();
+    sbi_core::run_multi_threaded(ioc);
     return 0;
 }

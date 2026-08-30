@@ -22,6 +22,7 @@ add_library(sbi_core STATIC
     src/metrics.cpp
     src/http2_server.cpp
     src/http2_client.cpp
+    src/io_context_pool.cpp
     src/oauth2_client.cpp
     src/jwt.cpp
     src/multipart.cpp

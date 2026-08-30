@@ -64,6 +64,7 @@
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
+#include "sbi_core/io_context_pool.hpp"
 #include "sbi_core/json_body.hpp"
 #include "sbi_core/jwt.hpp"
 #include "sbi_core/logging.hpp"
@@ -541,7 +542,7 @@ void run_sbi_server(unsigned short port, upf::EventSubscriptionStore& event_subs
 
     server.start();
     spdlog::info("upf: SBI server listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
-    ioc.run(); // blocks forever
+    sbi_core::run_multi_threaded(ioc); // blocks forever
 }
 
 // Builds a Heartbeat Response or Association Setup Response's IE region for the given sequence

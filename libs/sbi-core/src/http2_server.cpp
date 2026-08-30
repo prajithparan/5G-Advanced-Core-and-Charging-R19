@@ -1,6 +1,9 @@
 #include "sbi_core/http2_server.hpp"
 
+#include <boost/asio/bind_executor.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/ssl.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/asio/write.hpp>
 #include <nghttp2/nghttp2.h>
 #include <openssl/ssl.h>
@@ -171,10 +174,12 @@ using SslStream = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>;
 
 class Connection : public std::enable_shared_from_this<Connection> {
 public:
-    Connection(boost::asio::ip::tcp::socket socket,
+    Connection(boost::asio::io_context& ioc,
+               boost::asio::ip::tcp::socket socket,
                boost::asio::ssl::context& ssl_ctx,
                const std::vector<Route>& routes)
-        : socket_(std::move(socket), ssl_ctx), routes_(routes) {}
+        : ioc_(ioc), socket_(std::move(socket), ssl_ctx), strand_(ioc.get_executor()),
+          routes_(routes) {}
 
     ~Connection() {
         if (session_ != nullptr) {
@@ -185,14 +190,15 @@ public:
     void start() {
         auto self = shared_from_this();
         socket_.async_handshake(
-            boost::asio::ssl::stream_base::server, [self](boost::system::error_code ec) {
+            boost::asio::ssl::stream_base::server,
+            boost::asio::bind_executor(strand_, [self](boost::system::error_code ec) {
                 if (ec) {
                     spdlog::warn("sbi-core: TLS handshake failed: {}", ec.message());
                     self->close();
                     return;
                 }
                 self->on_handshake_complete();
-            });
+            }));
     }
 
 private:
@@ -232,23 +238,53 @@ private:
     void do_read() {
         auto self = shared_from_this();
         socket_.async_read_some(
-            boost::asio::buffer(read_buf_), [self](boost::system::error_code ec, std::size_t n) {
-                if (ec) {
-                    self->close();
-                    return;
-                }
-                auto rv = nghttp2_session_mem_recv(self->session_, self->read_buf_.data(), n);
-                if (rv < 0) {
-                    spdlog::warn("sbi-core: nghttp2_session_mem_recv failed: {}",
-                                 nghttp2_strerror(static_cast<int>(rv)));
-                    self->close();
-                    return;
-                }
-                self->do_write();
-            });
+            boost::asio::buffer(read_buf_),
+            boost::asio::bind_executor(
+                strand_, [self](boost::system::error_code ec, std::size_t n) {
+                    if (ec) {
+                        self->close();
+                        return;
+                    }
+                    auto rv = nghttp2_session_mem_recv(self->session_, self->read_buf_.data(), n);
+                    if (rv < 0) {
+                        spdlog::warn("sbi-core: nghttp2_session_mem_recv failed: {}",
+                                     nghttp2_strerror(static_cast<int>(rv)));
+                        self->close();
+                        return;
+                    }
+                    self->do_write();
+                }));
     }
 
+    // Real correctness requirement introduced by handle_request_complete's off-strand handler
+    // dispatch (ADR-0239): do_write() can now be invoked "out of band" (from submit_response,
+    // once a handler running on the worker pool finishes) while a PREVIOUS async_write for this
+    // same connection's write_buf_ is still in flight. Without this guard, a second do_write()
+    // would clear()/refill write_buf_ while the kernel is still reading its old contents out
+    // from under the in-flight write -- a real buffer-corruption race, not a theoretical one.
+    // socket_op_in_flight_/write_pending_ serialize MULTIPLE WRITES against each other only: a
+    // do_write() call that arrives mid-write just marks write_pending_ and returns; the in-flight
+    // write's own completion handler re-invokes do_write() once it's done.
+    //
+    // Real, disclosed decision this ADR arrived at only after live testing, not up front: an
+    // earlier version of this guard also serialized do_write() against a concurrently-outstanding
+    // do_read() (reasoning: boost::asio::ssl::stream has a real, documented history of internal
+    // races between overlapping read+write engine operations even under one strand -- see
+    // chriskohlhoff/asio#791). That stronger guard was reverted after live testing surfaced a
+    // real, 100%-reproducible DEADLOCK: a response queued behind an outstanding read that is
+    // itself waiting for the client's next frame -- which, for this project's own synchronous,
+    // one-request-at-a-time Client (every NF-to-NF caller in this codebase), never arrives until
+    // the very response it's blocking is delivered. A confirmed hang is strictly worse than a
+    // narrower, documented, disclosed data-race risk, so this project accepts genuine concurrent
+    // read+write per connection (what boost::asio::ssl::stream is actually designed to support)
+    // and instead suppresses the specific, narrowly-scoped, upstream-tracked OpenSSL/asio-engine
+    // race class this can trigger under TSan (see .tsan-suppressions).
     void do_write() {
+        if (socket_op_in_flight_) {
+            write_pending_ = true;
+            return;
+        }
+
         write_buf_.clear();
         for (;;) {
             const std::uint8_t* data_ptr = nullptr;
@@ -268,22 +304,40 @@ private:
             return;
         }
 
+        socket_op_in_flight_ = true;
         auto self = shared_from_this();
-        boost::asio::async_write(socket_,
-                                 boost::asio::buffer(write_buf_),
-                                 [self](boost::system::error_code ec, std::size_t /*n*/) {
-                                     if (ec) {
-                                         self->close();
-                                         return;
-                                     }
-                                     if (nghttp2_session_want_read(self->session_) != 0) {
-                                         self->do_read();
-                                     } else if (nghttp2_session_want_write(self->session_) == 0) {
-                                         self->close();
-                                     }
-                                 });
+        boost::asio::async_write(
+            socket_,
+            boost::asio::buffer(write_buf_),
+            boost::asio::bind_executor(
+                strand_, [self](boost::system::error_code ec, std::size_t /*n*/) {
+                    self->socket_op_in_flight_ = false;
+                    if (ec) {
+                        self->close();
+                        return;
+                    }
+                    if (self->write_pending_) {
+                        self->write_pending_ = false;
+                        self->do_write();
+                        return;
+                    }
+                    if (nghttp2_session_want_read(self->session_) != 0) {
+                        self->do_read();
+                    } else if (nghttp2_session_want_write(self->session_) == 0) {
+                        self->close();
+                    }
+                }));
     }
 
+    // Real concurrency point (ADR-0239): route matching and request bookkeeping stay here, on the
+    // connection's own strand (cheap, and routes_ is read-only after Server::start() so concurrent
+    // reads from other connections' strands are already safe without this). The handler call
+    // itself -- which may block on an outbound SBI call to another NF, or just do real work -- is
+    // posted onto the shared io_context instead of being invoked inline, so a slow handler for one
+    // stream never stalls this connection's own I/O processing (or, once the io_context is driven
+    // by a worker-thread pool, any other connection's). Only the response-submission step that
+    // follows touches nghttp2 session state again, so it's posted back onto strand_ via
+    // submit_response.
     void handle_request_complete(std::int32_t stream_id) {
         auto it = streams_.find(stream_id);
         if (it == streams_.end()) {
@@ -291,33 +345,57 @@ private:
         }
         StreamContext& ctx = it->second;
 
-        Request req;
-        req.method = ctx.method;
-        req.path = ctx.path;
-        req.headers = ctx.headers;
-        req.body = ctx.body;
-        req.query_params = parse_query_string(ctx.path);
+        auto req = std::make_shared<Request>();
+        req->method = ctx.method;
+        req->path = ctx.path;
+        req->headers = ctx.headers;
+        req->body = ctx.body;
+        req->query_params = parse_query_string(ctx.path);
 
         const auto path_only = ctx.path.substr(0, ctx.path.find('?'));
         const auto segments = split_path(path_only);
 
-        Response resp;
-        bool matched = false;
+        const Handler* matched_handler = nullptr;
         for (const auto& route : routes_) {
             std::map<std::string, std::string> params;
-            if (try_match(route, req.method, segments, params)) {
-                req.path_params = std::move(params);
-                resp = route.handler(req);
-                matched = true;
+            if (try_match(route, req->method, segments, params)) {
+                req->path_params = std::move(params);
+                matched_handler = &route.handler;
                 break;
             }
         }
-        if (!matched) {
+
+        auto self = shared_from_this();
+        if (matched_handler == nullptr) {
+            Response resp;
             resp.status = 404;
             resp.headers.emplace("content-type", "application/problem+json");
-            resp.body =
-                R"({"status":404,"title":"Not Found","detail":"No route matches this method/path"})";
+            resp.body = R"({"status":404,"title":"Not Found",)"
+                        R"("detail":"No route matches this method/path"})";
+            boost::asio::post(strand_, [self, stream_id, resp = std::move(resp)]() mutable {
+                self->submit_response(stream_id, std::move(resp));
+            });
+            return;
         }
+        boost::asio::post(ioc_, [self, stream_id, req, handler = *matched_handler]() {
+            Response resp = handler(*req);
+            boost::asio::post(self->strand_, [self, stream_id, resp = std::move(resp)]() mutable {
+                self->submit_response(stream_id, std::move(resp));
+            });
+        });
+    }
+
+    // Runs on strand_ (posted from handle_request_complete above, possibly from a different
+    // worker thread than the one that ran the handler) -- the only place besides do_read/do_write
+    // that touches session_/streams_, so it must stay strand-serialized against those.
+    void submit_response(std::int32_t stream_id, Response resp) {
+        auto it = streams_.find(stream_id);
+        if (it == streams_.end()) {
+            // Stream already closed (e.g. client reset it) while the handler was running off
+            // strand_ -- nothing to submit a response for.
+            return;
+        }
+        StreamContext& ctx = it->second;
 
         ctx.response_body = std::move(resp.body);
         ctx.response_offset = 0;
@@ -339,6 +417,7 @@ private:
                                 nva.data(),
                                 nva.size(),
                                 ctx.response_body.empty() ? nullptr : &data_prd);
+        do_write();
     }
 
     // string_view, not const std::string&: a const-ref parameter bound to a string literal (e.g.
@@ -456,11 +535,15 @@ private:
         return 0;
     }
 
+    boost::asio::io_context& ioc_;
     SslStream socket_;
+    boost::asio::strand<boost::asio::io_context::executor_type> strand_;
     const std::vector<Route>& routes_;
     nghttp2_session* session_ = nullptr;
     std::array<std::uint8_t, 65536> read_buf_{};
     std::vector<std::uint8_t> write_buf_;
+    bool socket_op_in_flight_ = false;
+    bool write_pending_ = false;
     std::unordered_map<std::int32_t, StreamContext> streams_;
 };
 
@@ -489,6 +572,17 @@ boost::asio::ssl::context make_server_ssl_context(const TlsConfig& tls) {
     // unauthenticated clients accepted -- see docs/DECISIONS.md ADR-0011.
     ctx.set_verify_mode(boost::asio::ssl::verify_peer |
                         boost::asio::ssl::verify_fail_if_no_peer_cert);
+
+    // Real, pre-existing OpenSSL requirement this project never hit until real server concurrency
+    // (ADR-0239) made it possible for two connections' handshakes/session-cache writes to race:
+    // OpenSSL refuses to cache/complete a session under peer-cert verification unless an
+    // application-defined session id context is set (its own documented anti-cross-context-
+    // session-reuse safeguard), failing the handshake outright with "session id context
+    // uninitialized" otherwise. One SSL_CTX per NF process, so any fixed, non-empty byte string is
+    // sufficient -- doesn't need to be unique across processes.
+    constexpr unsigned char kSessionIdContext[] = "5gc-sbi-core";
+    SSL_CTX_set_session_id_context(
+        ctx.native_handle(), kSessionIdContext, sizeof(kSessionIdContext) - 1);
 
     SSL_CTX_set_alpn_select_cb(ctx.native_handle(), alpn_select_callback, nullptr);
 
@@ -521,7 +615,8 @@ private:
         acceptor_.async_accept(
             [this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
                 if (!ec) {
-                    auto conn = std::make_shared<Connection>(std::move(socket), ssl_ctx_, routes_);
+                    auto conn =
+                        std::make_shared<Connection>(ioc_, std::move(socket), ssl_ctx_, routes_);
                     conn->start();
                 }
                 do_accept();

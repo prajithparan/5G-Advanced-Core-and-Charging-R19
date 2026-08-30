@@ -543,11 +543,16 @@ jobs:
         # TEST_POSTGRES_URL: points test_product_catalog_postgres.cpp at the real service above
         # instead of its local-dev default, so CI exercises the real DB path (ADR-0054) instead of
         # GTEST_SKIP()-ing it.
+        # TSAN_OPTIONS: real, disclosed, narrowly-scoped suppression (ADR-0239, .tsan-suppressions)
+        # for a known upstream OpenSSL 3.6.3 data race in its own ASN1_STRING_cmp/ASN1_STRING_set
+        # internals during concurrent handshake cert-chain verification -- not this project's own
+        # code. Harmless on the asan-ubsan leg (TSAN_OPTIONS is simply unused there).
         env:
           TEST_POSTGRES_URL: postgresql://product_catalog:product_catalog@localhost:5432/product_catalog
           TEST_SUBSCRIBER_MANAGEMENT_POSTGRES_URL: postgresql://subscriber_management:subscriber_management@localhost:5435/subscriber_management
           TEST_ROAMING_INTERCONNECT_POSTGRES_URL: postgresql://roaming_interconnect:roaming_interconnect@localhost:5436/roaming_interconnect
           UDR_DATABASE_URL: postgresql://udr:udr@localhost:5437/udr
+          TSAN_OPTIONS: suppressions=${{ github.workspace }}/.tsan-suppressions
         # See the "build" job's identical -E exclusion above for the real, disclosed reason
         # (ADR-0071/ADR-0072 pre-existing hang, never root-caused, task #165 open; this workflow's
         # ctest calls simply hadn't been kept in sync with local practice until 2026-08-18;

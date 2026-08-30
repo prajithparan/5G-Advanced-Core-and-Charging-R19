@@ -194,7 +194,14 @@ onward) is in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 Standing engineering debt and what's left before carrier-grade status (ADR-0049) is tracked in
 [`docs/DECISIONS.md`](docs/DECISIONS.md) and
-[`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md).
+[`docs/CAPABILITY_GAP_ANALYSIS.md`](docs/CAPABILITY_GAP_ANALYSIS.md). Carrier-grade test framework
+selected (ADR-0238): 3GPP TS 28.552 + TS 28.554, correcting ADR-0049's original ETSI NFV-TST/REL
+candidates once investigation found those target the NFV-MANO orchestration layer this project
+doesn't have. First concrete step against the synchronous-HTTP-client debt item now closed
+(ADR-0239, Phase 1 of 3): every NF's server was found to be fully single-threaded (zero request
+concurrency at all, worse than just "the client blocks") — now driven by a real worker-thread
+pool, live-verified (6 concurrent requests complete in ~320ms, not ~1800ms). Client-instance
+pooling (Phase 2) and true async I/O (Phase 3) remain open.
 
 ## Repository layout
 

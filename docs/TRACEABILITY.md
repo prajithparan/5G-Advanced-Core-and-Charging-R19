@@ -4638,3 +4638,27 @@ field name) -- isolated by testing UDR directly before concluding it was a test 
 bug. This closes `Nudm_PP` in full (13/13 ops) and, with it, UDM's entire Tier-B gap-closure
 backlog except `Update SOR Info` (`Nudm_SDM`, ADR-0234's own disclosed gap). See ADR-0237 in
 `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0239 -- Real server-side request concurrency (Phase 1 of the synchronous-HTTP debt, ADR-0009)
+
+| Requirement | Test |
+|---|---|
+| Real concurrent request handling across connections, not the old fully-serial single-threaded server | `SbiCoreConcurrencyIntegration.ConcurrentRequestsOnDifferentConnectionsRunInParallel`: 6 concurrent 300ms-handler requests (each its own `Client`/connection) complete in ~320ms, not the ~1800ms a fully-serial server would take |
+| No regression across the full project (every NF's `main()` changed) | Full regular-build `ctest` suite, 461/461 (6 legitimately skipped), re-run clean at `-j1` after every change in this ADR |
+| No new TSan-detectable races in this project's own code | Concurrency test + previously-hung `NrfGapClosureIntegration.OptionsNFInstancesReturnsRealAcceptEncoding`, 25 consecutive stress runs under TSan with `.tsan-suppressions` applied, 0 unsuppressed warnings, 0 failures |
+
+Real problem found to be worse than "the client is synchronous": every NF's server was fully
+single-threaded (`ioc.run()` called once), zero request concurrency at all. `sbi_core::run_multi_threaded`
+now drives each NF's `io_context` on a worker-thread pool; `Server::Impl::Connection` restructured
+with a per-connection strand + off-strand handler dispatch to make this safe (`nghttp2_session` is
+not thread-safe). Found and fixed along the way: a real, pre-existing missing
+`SSL_CTX_set_session_id_context()` (OpenSSL requirement, never hit until concurrent handshakes
+became possible). A stronger fix (fully serializing a connection's read+write socket ops against
+each other) was implemented then REVERTED after live testing found it introduced a real,
+100%-reproducible deadlock (a response queued behind a read waiting for a client frame that would
+never arrive, given this project's own synchronous one-request-at-a-time `Client`). The accepted
+design allows genuine concurrent read+write per connection and discloses/suppresses (via
+`.tsan-suppressions`, itself cited with two real upstream issue trackers) the resulting known,
+functionally-benign OpenSSL/boost::asio-internal TSan findings rather than reintroducing the
+deadlock. See ADR-0239 in `docs/DECISIONS.md` for the full account, including the reverted
+attempt.

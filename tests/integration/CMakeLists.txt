@@ -31,6 +31,7 @@ add_executable(integration_tests
     test_upf_event_exposure_gueip.cpp
     test_udr_context_data.cpp
     test_udr_ondatachange_webhook.cpp
+    test_sbi_core_concurrency.cpp
     test_udr_gap_closure_212.cpp
     test_udr_policy_data_gap_closure_213.cpp
     test_ausf_ue_authentication.cpp
