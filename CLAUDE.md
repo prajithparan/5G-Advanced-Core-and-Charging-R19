@@ -248,11 +248,16 @@ lab-grade scope — see ADR-0009 in `docs/DECISIONS.md`).
   client (ADR-0009), no HA/clustering across NF instances, no
   benchmarking/load-generation harness (Phase 8's synthetic traffic
   generator is the intended home, not started).
-- Carrier-grade test framework candidates named but not yet selected
-  (real "evaluate before picking" decision deferred to its own turn):
-  ETSI NFV-TST (pre-deployment testing) and NFV-REL (resiliency
-  requirements) series, standard telecom "five nines" HA convention as
-  industry context only.
+- Carrier-grade test framework selected (ADR-0238, 2026-08-30): **3GPP
+  TS 28.552** (5G performance measurements) + **TS 28.554** (5G
+  end-to-end KPIs) — real, current-through-R19 specs that measure 5G
+  Core network functions themselves. ETSI NFV-TST/NFV-REL (ADR-0049's
+  original named candidates) were investigated and found to target the
+  ETSI NFV-MANO virtualization/orchestration layer (VNF lifecycle
+  management), which this project has no plans to build (deployment is
+  plain Docker Compose/Helm, no MANO layer) — corrected, not silently
+  kept. Standard telecom "five nines" HA convention remains informal
+  industry context only, unchanged.
 - This does not retroactively make anything already built carrier-grade
   or proven superior to free5GC — no such claim exists anywhere in this
   codebase yet. The Reality check above (multi-engineer, multi-quarter
