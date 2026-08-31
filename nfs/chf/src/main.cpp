@@ -187,32 +187,30 @@ constexpr const char* kSpendingLimitApiRoot = "/nchf-spendinglimitcontrol/v1";
 // Must match nfs/nrf/src/main.cpp's kNrfInstanceId exactly -- see docs/DECISIONS.md ADR-0018.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
 
-// Redis/Valkey connection string for CHF's stores (E3 persistence, see stores.hpp) -- same
-// getenv-based-config precedent bss/product-catalog's PRODUCT_CATALOG_DATABASE_URL already
-// established (ADR-0054) for exactly this "never hardcode a connection string" reason. Default
-// matches this project's lab/dev convention.
-std::string chf_redis_conninfo() {
-    if (const char* env = std::getenv("CHF_REDIS_URL")) {
-        return env;
-    }
-    return "tcp://127.0.0.1:6379";
+// Redis/Valkey connection string for CHF's stores (E3 persistence, see stores.hpp).
+// ADR-0245 (task #109): the default now lives in config/chf.json, not a string literal here --
+// ADR-0077's project-wide rule. CHF_REDIS_URL still overrides at deployment time, exactly as
+// before, so deploy/docker/docker-compose.yml and .github/workflows/ci.yml are unaffected.
+std::string chf_redis_conninfo(const nlohmann::json& config) {
+    return nf_config::require<std::string>(config, "redis_url", "CHF_REDIS_URL");
 }
 
-// P4.4/ADR-0058, migrated ADR-0192: real Doris connection options for CdrWriter -- same
-// never-hardcode-credentials, getenv-based-config precedent as chf_redis_conninfo above. Defaults
-// match apache/doris's own official all-in-one Docker image (ADR-0192): FE MySQL-protocol port
-// 9030, root user with no password by default -- a real, disclosed lab-only credential shape,
-// same class as this project's own CHF PostgreSQL trust-auth precedent (ADR-0060).
-chf::DorisOptions chf_doris_options() {
+// P4.4/ADR-0058, migrated ADR-0192: real Doris connection options for CdrWriter. ADR-0245
+// (task #109): every default moved to config/chf.json, same rule and same per-key
+// CHF_DORIS_* env overrides as before. The config file's shipped values match apache/doris's own
+// official all-in-one Docker image (ADR-0192): FE MySQL-protocol port 9030, root user with no
+// password -- a real, disclosed lab-only credential shape, same class as this project's own CHF
+// PostgreSQL trust-auth precedent (ADR-0060). A real deployment overrides them; there is
+// deliberately no in-source fallback if the config file omits a key.
+chf::DorisOptions chf_doris_options(const nlohmann::json& config) {
     chf::DorisOptions options;
-    options.host = std::getenv("CHF_DORIS_HOST") ? std::getenv("CHF_DORIS_HOST") : "127.0.0.1";
-    options.port = std::getenv("CHF_DORIS_PORT")
-                       ? static_cast<std::uint16_t>(std::stoi(std::getenv("CHF_DORIS_PORT")))
-                       : 9030;
-    options.user = std::getenv("CHF_DORIS_USER") ? std::getenv("CHF_DORIS_USER") : "root";
-    options.password = std::getenv("CHF_DORIS_PASSWORD") ? std::getenv("CHF_DORIS_PASSWORD") : "";
+    options.host = nf_config::require<std::string>(config, "doris_host", "CHF_DORIS_HOST");
+    options.port = nf_config::require<std::uint16_t>(config, "doris_port", "CHF_DORIS_PORT");
+    options.user = nf_config::require<std::string>(config, "doris_user", "CHF_DORIS_USER");
+    options.password =
+        nf_config::require<std::string>(config, "doris_password", "CHF_DORIS_PASSWORD");
     options.database =
-        std::getenv("CHF_DORIS_DATABASE") ? std::getenv("CHF_DORIS_DATABASE") : "chf_cdr";
+        nf_config::require<std::string>(config, "doris_database", "CHF_DORIS_DATABASE");
     return options;
 }
 
@@ -352,7 +350,7 @@ int main() {
     // internally and is genuinely thread-safe, confirmed by reading its own header, not the
     // per-store single-connection-behind-a-mutex pattern bss/product-catalog uses for libpqxx
     // (ADR-0054), since libpqxx::connection has no such built-in pooling.
-    auto redis = std::make_shared<sw::redis::Redis>(chf_redis_conninfo());
+    auto redis = std::make_shared<sw::redis::Redis>(chf_redis_conninfo(config));
     // sw::redis::Redis's connection pool connects lazily on first command (confirmed: pool size
     // defaults to 1, no eager-connect option used here) -- a real PING here, not assumed
     // connectivity, gives the same fail-fast-at-startup behavior every other NF's real dependency
@@ -369,7 +367,7 @@ int main() {
     // the full disclosure of what this real CDR record is (and is not: not a conformant TS 32.298
     // CDR, that spec isn't vendored -- schema.doris.sql explains why). ADR-0192: CDR storage is
     // Apache Doris.
-    chf::CdrWriter cdr_writer(chf_doris_options());
+    chf::CdrWriter cdr_writer(chf_doris_options(config));
     if (cdr_writer.is_connected()) {
         spdlog::info("chf: connected to Doris (CDF)");
     } else {
@@ -394,27 +392,23 @@ int main() {
     // above. Only main.cpp's real HTTP Nchf_ConvergedCharging Create/Update handlers below use
     // this -- Diameter Gy and CAP gsmSCF stay deterministic-only (charging_engine.hpp's own
     // header comment explains why).
-    const bool ai_quota_sizing_enabled = [] {
-        const char* env = std::getenv("CHF_AI_QUOTA_SIZING_ENABLED");
-        return env != nullptr && std::string(env) == "true";
-    }();
+    // ADR-0245 (task #109): defaults now in config/chf.json; the same CHF_* env vars still
+    // override. Real, disclosed behaviour change: the enable flag is parsed as JSON, so "true"/
+    // "false" work as before but a typo now fails fast at startup instead of silently meaning
+    // "disabled" -- deliberate, matching nf_config's own stated no-silent-fallback discipline.
+    const bool ai_quota_sizing_enabled =
+        nf_config::require<bool>(config, "ai_quota_sizing_enabled", "CHF_AI_QUOTA_SIZING_ENABLED");
     const std::string quota_model_path =
-        std::getenv("CHF_QUOTA_MODEL_PATH") ? std::getenv("CHF_QUOTA_MODEL_PATH") : "";
-    // Real, disclosed (ADR-0150): optional override for chf::kDefaultAiQuotaLatencyBudget
-    // (50000us as of ADR-0150, raised from the original 5000us after a real observed CI failure
-    // on a contended runner -- see ai_inference.hpp's own header comment). Same getenv-based
-    // never-hardcode-config precedent as the two env vars above.
-    const std::chrono::microseconds ai_quota_latency_budget = [] {
-        const char* env = std::getenv("CHF_AI_QUOTA_LATENCY_BUDGET_US");
-        if (env == nullptr) {
-            return chf::kDefaultAiQuotaLatencyBudget;
-        }
-        try {
-            return std::chrono::microseconds(std::stoll(env));
-        } catch (const std::exception&) {
-            return chf::kDefaultAiQuotaLatencyBudget;
-        }
-    }();
+        nf_config::require<std::string>(config, "quota_model_path", "CHF_QUOTA_MODEL_PATH");
+    // Real, disclosed (ADR-0150): the AI inference latency budget (50000us, raised from the
+    // original 5000us after a real observed CI failure on a contended runner -- see
+    // ai_inference.hpp's own header comment). ADR-0245 (task #109): the value now lives in
+    // config/chf.json rather than being read from an env var against an in-source constant
+    // default; CHF_AI_QUOTA_LATENCY_BUDGET_US still overrides. chf::kDefaultAiQuotaLatencyBudget
+    // remains AiQuotaSizer's own library-level default for callers that construct one directly
+    // (the conformance tests do) -- it is no longer this binary's deployment default.
+    const std::chrono::microseconds ai_quota_latency_budget{nf_config::require<std::int64_t>(
+        config, "ai_quota_latency_budget_us", "CHF_AI_QUOTA_LATENCY_BUDGET_US")};
     chf::AiQuotaSizer ai_quota_sizer(
         quota_model_path, ai_quota_sizing_enabled, ai_quota_latency_budget);
     chf::QuotaFeatureStore quota_feature_store(redis);

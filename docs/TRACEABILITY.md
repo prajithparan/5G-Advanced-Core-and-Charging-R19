@@ -4786,3 +4786,17 @@ ADR-0238 step (3) delivered. Step (1) (TS 28.552/28.554 counter-family mapping) 
 neither spec is vendored in `specs/`, and inventing counter names is forbidden by CLAUDE.md.
 Step (4) (free5GC comparison) needs step (1) first. No superiority claim is made. See ADR-0244
 in `docs/DECISIONS.md`.
+
+## ADR-0245 -- CHF's Redis/Doris/AI config fields moved to `config/chf.json` (task #109)
+
+| Requirement | Test |
+|---|---|
+| No in-source literal deployment defaults left in CHF (ADR-0077) | 9 keys moved to `config/chf.json`: `redis_url`, `doris_host`/`_port`/`_user`/`_password`/`_database`, `ai_quota_sizing_enabled`, `quota_model_path`, `ai_quota_latency_budget_us` |
+| Every existing env override still works | `nf_config::require`'s own `env_name` mechanism; verified against the real setters -- compose/CI set `CHF_DORIS_PORT: "9030"`, `CHF_AI_QUOTA_SIZING_ENABLED: "false"`, `CHF_AI_QUOTA_LATENCY_BUDGET_US: "50000"`, all valid JSON for their target types. Neither file needed editing |
+| Config file alone is sufficient | Live start with all 8 CHF_* vars explicitly unset: `connected to Redis/Valkey`, `connected to Doris (CDF)`, `connected to PostgreSQL (RatingDecision audit, E5)`, `registered with NRF (HTTP 201)` |
+| No regression | conformance 333/333, `ctest` 469/469 |
+
+Task #109 closed for CHF -- the last service ADR-0085/ADR-0089/ADR-0192 each disclosed as
+deferred. See ADR-0245 in `docs/DECISIONS.md`, including two deliberate behaviour changes (a
+malformed enable flag now fails fast rather than silently disabling AI; `kDefaultAiQuotaLatencyBudget`
+stays a library default but is no longer the binary's deployment default).
