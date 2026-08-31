@@ -82,12 +82,12 @@ private:
         void* handle_;
     };
 
-    void* checkout();          // pops a pooled handle, or creates one; nullptr if curl_easy_init fails
+    void* checkout(); // pops a pooled handle, or creates one; nullptr if curl_easy_init fails
     void checkin(void* handle); // returns a handle to the pool, or destroys it if the pool is full
 
     TlsConfig tls_;
-    std::mutex mutex_;          // guards idle_ only -- never held across curl_easy_perform
-    std::vector<void*> idle_;   // CURL*, opaque here to avoid leaking <curl/curl.h> into includers
+    std::mutex mutex_;        // guards idle_ only -- never held across curl_easy_perform
+    std::vector<void*> idle_; // CURL*, opaque here to avoid leaking <curl/curl.h> into includers
 };
 
 } // namespace sbi_core::http2

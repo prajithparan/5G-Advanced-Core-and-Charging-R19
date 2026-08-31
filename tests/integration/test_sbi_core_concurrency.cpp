@@ -171,7 +171,8 @@ TEST(SbiCoreConcurrencyIntegration, ConcurrentRequestsThroughOneSharedClientRunI
     const auto elapsed = std::chrono::steady_clock::now() - start;
 
     for (int i = 0; i < kConcurrentRequests; ++i) {
-        EXPECT_TRUE(ok[static_cast<std::size_t>(i)] != 0) << "request " << i << " did not return 200";
+        EXPECT_TRUE(ok[static_cast<std::size_t>(i)] != 0)
+            << "request " << i << " did not return 200";
         EXPECT_EQ(bodies[static_cast<std::size_t>(i)], R"({"ok":true})")
             << "request " << i << " got a wrong/corrupted body";
     }
