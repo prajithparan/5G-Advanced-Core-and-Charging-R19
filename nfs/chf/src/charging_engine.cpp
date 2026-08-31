@@ -393,8 +393,8 @@ void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
     // distributed-transaction guarantee across CHF's several real dependencies" disclosure (see
     // finalize_subscriber_balance's own comment for the balance-management analogue). ADR-0192:
     // CdrWriter::write() itself already catches every real Doris error surface and logs a
-    // warning -- it never throws, so no try/catch is needed here (unlike the ClickHouse-backed
-    // version this replaced, whose own client could throw mid-insert).
+    // warning -- it never throws, so no try/catch is needed here (unlike the pre-migration
+    // version, whose own client could throw mid-insert; see ADR-0192).
     cdr_writer.write(cdr);
 }
 

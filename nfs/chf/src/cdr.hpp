@@ -18,9 +18,9 @@
 // conformant TS 32.298 CDR -- that spec isn't vendored) and what it IS (a real, working usage
 // record built entirely from TS 32.291 fields already confirmed and flowing through this file).
 //
-// ADR-0192: migrated off ClickHouse to Apache Doris (real, disclosed governance concern with
-// ClickHouse's own open-core drift -- see ADR-0192 for the full comparison). Doris speaks the real
-// MySQL wire protocol, so this uses `libmariadb`'s own real, plain C client API (`MYSQL*`,
+// ADR-0192: CDR storage is Apache Doris (that ADR records the migration, the governance concern
+// that drove it, and the full engine comparison). Doris speaks the real MySQL wire protocol, so
+// this uses `libmariadb`'s own real, plain C client API (`MYSQL*`,
 // `mysql_real_query`/`mysql_real_escape_string`, `mysql_store_result`/`mysql_fetch_row`) --
 // deliberately NOT the also-real `mariadb-connector-cpp` package, whose own C++ API mirrors
 // JDBC's class shape (`Connection`/`PreparedStatement`/`ResultSet`) -- explicit, user-directed:
@@ -83,7 +83,7 @@ public:
     // Real INSERT into Doris's `cdr` table (schema: ../schema.doris.sql). `MYSQL*` is not
     // documented as thread-safe for concurrent use from multiple threads the way
     // `sw::redis::Redis` is (confirmed when nfs/chf's Redis stores were built, ADR-0055). Real
-    // concurrency requirement carried over unchanged from the ClickHouse-backed version
+    // concurrency requirement carried over unchanged from the pre-migration version
     // (P4.5/ADR-0060 Stage 3): `mutex_` serializes CHF's HTTP io_context thread and the Diameter
     // Gy CCR path's own dedicated thread, both sharing this one connection.
     void write(const CdrRecord& record);

@@ -129,8 +129,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       # ADR-0073, migrated ADR-0192: real, self-hosted, open-source Apache Doris for CHF's own CDR
-      # generation (ADR-0058) -- real ClickHouse open-core governance drift, see ADR-0192 for the
-      # full comparison. Real, confirmed default: root user, no password (apache/doris's own
+      # generation (ADR-0058) -- see ADR-0192 for the full engine comparison. Real, confirmed
+      # default: root user, no password (apache/doris's own
       # official all-in-one image, ADR-0192) -- FE's own real MySQL-protocol query port is 9030.
       doris:
         image: apache/doris:all-in-one-4.1.3

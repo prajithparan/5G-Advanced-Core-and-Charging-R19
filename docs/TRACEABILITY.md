@@ -1131,6 +1131,10 @@ variant PCF's already-built surface needs was built.
 
 ## CHF-in-CI (Redis/ClickHouse/its own Postgres) + real full N28 loop as an automated test (ADR-0073)
 
+*(Historical record, kept as written. The CDR datastore named below was migrated to Apache Doris
+in ADR-0192 -- `.github/workflows/ci.yml` now provisions `doris` and applies
+`nfs/chf/schema.doris.sql`; the `CHF_CLICKHOUSE_*` env names below are now `CHF_DORIS_*`.)*
+
 ADR-0072 disclosed CHF as never having been a participant in this project's automated `ctest`
 suite -- it needs Redis, ClickHouse, and its own PostgreSQL (`chf_rating`), none of which
 `.github/workflows/ci.yml` provisioned. As a direct consequence, the real full N28 loop (subscribe
@@ -3835,6 +3839,9 @@ real usability, disclosed as filling a genuine spec gap, not fabricated content.
 | Real CDR write path (`Nchf_ConvergedCharging` Create) | Live curl over mTLS: real `201`, `ChargingDataRef=chg-21` |
 | Real row landed, correctly hex-encoded | Direct Doris query (`mysql` client, not through CHF): row present, `asn1_cdr` populated with valid hex-encoded TS 32.298 BER bytes |
 | No regression | Full project rebuild clean; full `ctest` (excluding the two known-flaky tests): 363/363 pass |
+| Follow-up (2026-08-31): training sidecar's real venv actually runnable, not just its `requirements.txt` | `nfs/chf/training/.venv` had `clickhouse-connect` installed and no `pymysql` (lazy import inside `fetch_real_examples()` hid it); uninstalled/installed and re-verified by direct import |
+| Follow-up (2026-08-31): training sidecar's real `pymysql` -> Doris fetch path, both branches | Live `chf-test-doris`: empty-table run -> `data_source=synthetic_bootstrap` (real SELECT, 0 usable rows); then real `nrf`+`chf`, 3 Creates + 27 mTLS Updates with real `usedUnitContainer` (all HTTP 200) -> 27 usage-bearing rows confirmed by direct `mysql` query -> re-run gives `training on 24 REAL CDR-derived examples`, `data_source=real_cdr`, real ONNX + MLflow run `acb61ab7cabb4b95a18a6ab8ba139260` |
+| Follow-up (2026-08-31): predecessor engine named nowhere in living code/config/design docs | `grep -ri clickhouse` over the tree returns hits only in this file's own historical per-ADR sections, `docs/DECISIONS.md`, and `docs/CAPABILITY_GAP_ANALYSIS.md` -- all deliberate history, not drift |
 
 User-directed, mandatory ("migrate to Apache Doris ASAP"), preceded by a strict standing rule
 (every datastore self-hosted open-source only, never cloud/managed). Real client-library pivot

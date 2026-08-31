@@ -1,5 +1,5 @@
--- nfs/chf's real Apache Doris CDR schema (P4.4/ADR-0058: CDF, TS 32.240/32.296; migrated off
--- ClickHouse to Apache Doris, ADR-0192).
+-- nfs/chf's real Apache Doris CDR schema (P4.4/ADR-0058: CDF, TS 32.240/32.296; migrated to
+-- Apache Doris, ADR-0192 -- that ADR holds the full comparison against the previous engine).
 --
 -- Disclosed history: through `recorded_at`, these columns were originally NOT a conformant
 -- TS 32.298 CDR -- that spec wasn't vendored yet at the time. Gap-closure task #108/ADR-0089
@@ -11,28 +11,27 @@
 -- service_type, operation) -- not a fabricated field name.
 --
 -- UNIQUE KEY model (real, native Doris duplicate-detection mechanism, ADR-0192): rows sharing the
--- same key columns are deduplicated -- unlike ClickHouse's ReplacingMergeTree, whose own
--- deduplication only happens during background merges (or when a query uses FINAL), Doris's
--- Unique Key model with Merge-on-Write performs REAL, IMMEDIATE dedup at write time -- a genuine,
--- disclosed improvement over the ClickHouse original this migration also picked up, not just a
--- like-for-like swap.
+-- same key columns are deduplicated. Doris's Unique Key model with Merge-on-Write performs REAL,
+-- IMMEDIATE dedup at write time, rather than only during background merges -- a genuine, disclosed
+-- improvement this migration picked up rather than a like-for-like swap (ADR-0192 has the
+-- engine-to-engine comparison).
 --
 -- Real, disclosed limitation: Doris requires any partition-by column to be part of the table's own
 -- key columns for a Unique Key table (confirmed via Doris's own documentation, not assumed). Using
--- `recorded_at` for date-range partitioning (matching ClickHouse's own 90-day TTL) would require
--- adding it to the key, which would change real dedup semantics (the same CDR written on two
--- different days would then no longer deduplicate). Rather than silently accept that behavior
+-- `recorded_at` for date-range partitioning (matching the pre-migration 90-day TTL) would
+-- require adding it to the key, which would change real dedup semantics (the same CDR written on
+-- two different days would then no longer deduplicate). Rather than silently accept that behavior
 -- change, this migration deliberately keeps the UNIQUE KEY identical to the original ORDER BY key
--- and does NOT partition/TTL this table -- the 90-day retention window ClickHouse's own TTL
+-- and does NOT partition/TTL this table -- the 90-day retention window the pre-migration TTL
 -- provided is a real, disclosed, deferred capability this migration does not yet replace (same
 -- "separate cold-archive tier NOT implemented this pass" disclosure the original schema already
 -- carried).
 --
 -- Real, disclosed limitation: Doris has no native BLOB type (confirmed via Doris's own
 -- documentation) -- `asn1_cdr` therefore stores the real BER-encoded bytes as a HEX-ENCODED TEXT
--- string (nfs/chf/src/cdr.cpp), not the raw bytes themselves the way ClickHouse's own String
+-- string (nfs/chf/src/cdr.cpp), not the raw bytes themselves the way the pre-migration String
 -- column held them. A real, disclosed representation change, not a silent one: nothing in this
--- project currently reads this column back (same as the ClickHouse original -- CdrWriter's own
+-- project currently reads this column back (same as before the migration -- CdrWriter's own
 -- detect_gaps() only ever queried invocation_sequence_number), so no decode path exists yet
 -- either; any future real consumer of this column must hex-decode it first.
 

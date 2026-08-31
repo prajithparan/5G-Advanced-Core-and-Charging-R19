@@ -7,8 +7,8 @@ script produces and calls it in-process. Nothing in this file runs inside CHF.
 
 What this model predicts, and why: the real, honest training target is "how much will this
 SUPI+ratingGroup actually consume in its next charging-request window" (a real regression
-problem over TS 32.291 fields CHF already writes to Apache Doris -- migrated off ClickHouse,
-ADR-0192; see nfs/chf/schema.doris.sql), NOT an invented "correct multiplier" label -- no such
+problem over TS 32.291 fields CHF already writes to Apache Doris -- ADR-0192,
+nfs/chf/schema.doris.sql), NOT an invented "correct multiplier" label -- no such
 label exists anywhere in this project's real data. CHF's own deterministic rule
 (build_rating_grant, ADR-0074) is what turns a predicted
 usage figure into a bounded grant-size multiplier; this script never decides a grant, only
@@ -60,8 +60,8 @@ MIN_REAL_EXAMPLES = 20
 
 def fetch_real_examples(doris_host: str, doris_port: int, database: str,
                          user: str, password: str) -> tuple[np.ndarray, np.ndarray]:
-    """Real Doris query (migrated off ClickHouse, ADR-0192) against
-    nfs/chf/schema.doris.sql's own `cdr` table, over Doris's real MySQL wire protocol.
+    """Real Doris query (ADR-0192) against nfs/chf/schema.doris.sql's own `cdr` table,
+    over Doris's real MySQL wire protocol.
 
     Builds one (features, target) pair per usage-bearing row that has at least one prior
     usage-bearing row for the same (subscriber_identifier, rating_group) -- the real sliding

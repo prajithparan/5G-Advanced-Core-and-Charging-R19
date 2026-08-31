@@ -1255,7 +1255,7 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
             }
             // ADR-0192: CdrWriter::write() catches every real Doris error surface internally and
             // logs a warning -- it never throws, so no try/catch is needed here (unlike the
-            // ClickHouse-backed version this replaced).
+            // pre-migration version; see ADR-0192).
             chf::CdrRecord cdr{};
             cdr.charging_data_ref = ref;
             cdr.invocation_sequence_number = static_cast<std::int64_t>(ccr->cc_request_number);

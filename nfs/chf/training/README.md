@@ -9,7 +9,7 @@ inference is in-process C++, at runtime, never a Python call.
 
 Real regression target: how much a given SUPI+ratingGroup will actually consume
 (`used_total_volume`, octets) in its next charging-request window, learned from real CDR history
-already written to Apache Doris (migrated off ClickHouse, ADR-0192; `nfs/chf/schema.doris.sql`).
+already written to Apache Doris (ADR-0192; `nfs/chf/schema.doris.sql`).
 It does **not** predict a "correct multiplier" -- no such label exists in this project's real
 data. CHF's own deterministic rule
 (`build_rating_grant`, `charging_engine.cpp`) turns a predicted usage figure into a bounded

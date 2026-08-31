@@ -70,7 +70,7 @@ reinterpreted):
 | RDBMS | **PostgreSQL** | subscriber, product catalogue, tariff, invoice |
 | In-memory | **Redis / Valkey** | live sessions, quota/reservation state, hot balance |
 | JSON store / NoSQL | (to be evaluated — see ADR) | flexible product definitions, mediation records |
-| TSDB | **Prometheus** (metrics), **Apache Doris** (CDR/usage analytics, migrated off ClickHouse ADR-0192) | metrics; CDR/usage analytics |
+| TSDB | **Prometheus** (metrics), **Apache Doris** (CDR/usage analytics, ADR-0192) | metrics; CDR/usage analytics |
 | Distributed FS / object store | (to be evaluated — see ADR) | CDR archive, long-term retention |
 
 This directly answers the user's earlier, separate question about product-catalog persistence
@@ -260,8 +260,8 @@ and must be sourced (vendored YAML if one exists, or asked-for spec text) before
 writes real encode/decode code, not assumed from this sketch. No NRM/IOC mapping (see top-level
 finding) — a CDR is a charging-domain record, not a network-configuration object.
 
-**Persistence**: **Apache Doris** (migrated off ClickHouse, ADR-0192: real ClickHouse open-core
-governance drift) — "CDR/usage analytics" per the polyglot table's TSDB row, directly. Raw CDR
+**Persistence**: **Apache Doris** (ADR-0192 records the migration and the full engine
+comparison) — "CDR/usage analytics" per the polyglot table's TSDB row, directly. Raw CDR
 archival (long-term, retention-driven per P14) additionally needs **distributed FS / object
 store** per the polyglot table's last line — Doris for query/analytics access, object storage for
 the immutable archival copy; both, not either/or, matching the table's own two separate rows.
@@ -269,8 +269,7 @@ the immutable archival copy; both, not either/or, matching the table's own two s
 **Consistency**: Duplicate detection and gap detection are explicit, named requirements — implies
 the `dedup_key` uniqueness constraint above must be enforced at write time (Doris's own Unique Key
 model with Merge-on-Write performs real, immediate dedup at insert time — a genuine improvement
-over ClickHouse's own `ReplacingMergeTree`, whose dedup only happens during background merges or
-under `FINAL`, see ADR-0192) and `sequence_number` continuity must be monitorable (a gap is itself
+over the previous engine's merge-time-only dedup, see ADR-0192 for the comparison) and `sequence_number` continuity must be monitorable (a gap is itself
 a P12 business-level alarm condition, not just a log line).
 
 ---
@@ -670,7 +669,7 @@ many subscribers against one shared `Balance` row) in the architecture ADR.
 | E1 Subscriber | TMF632 `Individual` | None found (TS 32.291 `SubscriberIdentifier` instead) | PostgreSQL | Strong (identity/account fields) |
 | E2 Catalog+Plans | TMF620 (`ProductOffering`/`Price`/`Specification`), TMF638/633 | None found; slice tie-in via E10 only | PostgreSQL (+jsonb) | Strong on publish |
 | E3 Session | (none — protocol state) | TS 32.291 directly; slice-charging tie via `nSM`/`nSPAChargingInformation` **[secondary]** | Redis/Valkey | Idempotent, partition-recoverable |
-| E4 Usage/CDR | TMF635 `ProductUsage`, TMF727 | TS 32.298 (not vendored — caveat) | Apache Doris (migrated off ClickHouse, ADR-0192) + object store | Dedup + gap detection |
+| E4 Usage/CDR | TMF635 `ProductUsage`, TMF727 | TS 32.298 (not vendored — caveat) | Apache Doris (ADR-0192) + object store | Dedup + gap detection |
 | E5 Rating | TMF678 `AppliedCustomerBillingRate` | None found (TS 32.290/291 instead) | PostgreSQL (+jsonb) | Strong + reproducible |
 | E6 Balance | TMF654 `Bucket`/`AccumulatedBalance`/`TopupBalance`/`AdjustBalance`/`TransferBalance`/`ReserveBalance` | None found (TS 29.594 instead) | Redis (hot) + PostgreSQL (ledger) | Strong, explicit requirement |
 | E7 Roaming/Interconnect | TMF651 `Agreement` | None found; GSMA codecs deferred | PostgreSQL + object store | Strong (agreement), eventual (CDR ingest) |

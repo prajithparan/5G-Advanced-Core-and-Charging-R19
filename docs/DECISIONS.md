@@ -17194,6 +17194,64 @@ live-exercised this pass -- they share the exact same `write_converged_charging_
 `cdr_writer.write()` code path already proven live via Create, so this is a real, disclosed scope
 narrowing, not an unverified claim.
 
+### Follow-up (2026-08-31): naming scrub finished, and one real stale-venv breakage found
+
+User-directed ("fix the chf clickhouse to doris completely"). Two prior passes had already
+removed the live operator-facing `"CDR write to ClickHouse failed"` log line and the two dead
+`chf_clickhouse_options` config-key citations (commit `6a6b763`); that commit deliberately KEPT
+five remaining ClickHouse mentions in `cdr.hpp`/`charging_engine.cpp`/`diameter_server.cpp` as
+"history, not drift". That judgement is now reversed by explicit user instruction: the predecessor
+engine is named nowhere outside this ADR and the traceability record, and each of those five sites
+cites ADR-0192 instead, so the *why* is still one hop away rather than deleted. Living design docs
+(`CLAUDE.md`, `PROMPT.md`, `CHARGING_PROMPT.md`, `docs/DATA_MODEL.md`) likewise now name Doris and
+defer the engine comparison to this ADR. Historical ADR text and `docs/TRACEABILITY.md`'s own
+per-ADR sections are deliberately NOT rewritten -- rewriting a record of what was true at the time
+would be falsifying history, not cleaning up drift.
+
+**One real, non-cosmetic finding, not assumed from the file contents**: `nfs/chf/training/.venv`
+(gitignored, but the real interpreter this project's own training sidecar runs under) still had
+`clickhouse-connect 1.7.1` installed and did NOT have `pymysql` at all -- `requirements.txt` was
+migrated in ADR-0192, but the already-materialised venv never was. `train_quota_sizing.py`'s
+`fetch_real_examples()` imports `pymysql` lazily (inside the function, not at module scope), so
+the breakage was invisible until the real Doris fetch path ran. Confirmed by direct import
+(`ModuleNotFoundError: No module named 'pymysql'`), then fixed in place: `clickhouse-connect`
+uninstalled, `pymysql` installed, both re-verified by import.
+
+**Also corrected in the same pass, unrelated to the datastore**: an in-flight uncommitted edit had
+deleted `CLAUDE.md`'s TMF633/638/639/651/654/688 extension rationale -- real, asked-and-approved
+content with nothing to do with this migration. Restored rather than committed as collateral.
+
+#### Live verification of the training sidecar's real fetch path (user-directed, not inferred)
+
+An import check proves `pymysql` is installed; it does NOT prove the query path works against a
+real Doris. Both branches were therefore exercised for real against a live
+`apache/doris:all-in-one-4.1.3` (`chf-test-doris`), not simulated:
+
+1. **Empty-table branch**: script run with the `cdr` table holding only ADR-0192's own `chg-21`
+   row (no usage-bearing rows) -- the real `pymysql` connect + SELECT executed and returned 0
+   usable examples, correctly falling back with `data_source=synthetic_bootstrap`, exactly as the
+   `MIN_REAL_EXAMPLES` guard documents.
+2. **Real-data branch**: real `nrf` + `chf` started (`chf: connected to Doris (CDF)`, real NRF
+   registration HTTP 201), then real `Nchf_ConvergedCharging` traffic over mTLS with the `smf`
+   client cert -- 3 Creates (`chg-22`/`chg-23`/`chg-24`) plus 27 Updates carrying real
+   `multipleUnitUsage[].usedUnitContainer[].totalVolume`, all HTTP 200, zero CDR-write failures in
+   CHF's own log. Doris then held 31 rows / 27 usage-bearing (confirmed by direct `mysql` query,
+   not through CHF). Re-run: `training on 24 REAL CDR-derived examples`,
+   `data_source=real_cdr, n_examples=24`, real ONNX artifact written, real MLflow run
+   `acb61ab7cabb4b95a18a6ab8ba139260`. The `pymysql` -> Doris fetch path is now proven end-to-end,
+   not asserted from a successful import. Both lab processes killed by explicit PID afterward.
+
+**Real pre-existing bug found by this verification, NOT introduced by the migration and NOT fixed
+here** (flagged rather than silently absorbed): `charging_engine.cpp`'s CDR population sets
+`cdr.invocation_time_stamp = system_clock::now()`, discarding the consumer-supplied TS 32.291
+`invocationTimeStamp` the request actually carried. Confirmed live: requests sent with
+`2026-08-31T14:MM:0NZ` landed in Doris as the wall-clock write time (`19:39:37`/`19:39:38`), many
+rows sharing one second. Two real consequences: the stored CDR misreports a real 3GPP field
+(`recorded_at` already exists for write time, so this is duplication, not a substitute), and
+`train_quota_sizing.py`'s own `inter_invocation_interval_sec` feature collapses to ~0 for rows
+written in the same second, degrading a real model input. Out of scope for a naming/migration
+cleanup -- needs its own change and its own ADR.
+
 ## ADR-0194: NRF `Nnrf_Bootstrapping` -- first ADR-0193 gap-closure
 
 ### Context

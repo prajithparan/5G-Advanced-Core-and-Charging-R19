@@ -399,14 +399,14 @@ services:
       retries: 10
 
   # Real, self-hosted, open-source Apache Doris for CHF's CDR generation (ADR-0058, P4.4;
-  # migrated off ClickHouse, ADR-0192: real ClickHouse open-core governance drift -- see ADR-0192
-  # for the full comparison). `all-in-one` is a real, official apache/doris image (FE+BE in one
-  # container, confirmed via Docker Hub + the image's own real entrypoint.sh, not guessed) --
+  # ADR-0192 records the migration and the full engine comparison). `all-in-one` is a real,
+  # official apache/doris image (FE+BE in one container, confirmed via Docker Hub + the image's
+  # own real entrypoint.sh, not guessed) --
   # matches this project's own single-container-per-datastore convention (like postgres/redis
   # above) rather than the also-real, more-production-shaped separate FE+BE deployment. Real,
   # confirmed default credentials: root user, no password (lab-only, same disclosed shape as this
   # project's own CHF PostgreSQL trust-auth precedent, ADR-0060) -- FE's own real MySQL-protocol
-  # query port is 9030, not a ClickHouse-style HTTP data port.
+  # query port is 9030, not an HTTP data port.
   doris:
     image: apache/doris:all-in-one-4.1.3
     ports:
@@ -420,7 +420,7 @@ services:
       retries: 20
 
   # Doris's own official image has no `/docker-entrypoint-initdb.d/`-style auto-init convention
-  # the way postgres/the old ClickHouse image did (real, confirmed absence, not assumed) -- schema
+  # the way postgres/the pre-migration image did (real, confirmed absence, not assumed) -- schema
   # apply is a real, explicit one-shot step instead, same "dependency completes, then CHF starts"
   # shape as this file's own pre-existing `pki-init` service. `mariadb:11` is a real, standard,
   # lightweight image that bundles the real `mysql` CLI client Doris's own MySQL-protocol FE

@@ -367,8 +367,8 @@ int main() {
 
     // P4.4/ADR-0058: real CDF (CDR generation, TS 32.240/32.296) -- see cdr.hpp's own header for
     // the full disclosure of what this real CDR record is (and is not: not a conformant TS 32.298
-    // CDR, that spec isn't vendored -- schema.doris.sql explains why). ADR-0192: migrated off
-    // ClickHouse to Apache Doris.
+    // CDR, that spec isn't vendored -- schema.doris.sql explains why). ADR-0192: CDR storage is
+    // Apache Doris.
     chf::CdrWriter cdr_writer(chf_doris_options());
     if (cdr_writer.is_connected()) {
         spdlog::info("chf: connected to Doris (CDF)");

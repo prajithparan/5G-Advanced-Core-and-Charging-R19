@@ -4,8 +4,8 @@
 # docs/DECISIONS.md for the ADR this session added.
 find_package(redis++ CONFIG REQUIRED)
 
-# libmariadb (ADR-0192: real CDF/CDR generation, migrated off ClickHouse to Apache Doris -- Doris
-# speaks the real MySQL wire protocol). Deliberately the plain C client library, NOT
+# libmariadb (ADR-0192: real CDF/CDR generation on Apache Doris -- Doris speaks the real MySQL
+# wire protocol). Deliberately the plain C client library, NOT
 # mariadb-connector-cpp: that C++ wrapper's own API surface (sql::Driver/Connection/
 # PreparedStatement/ResultSet/DriverManager::getConnection) mirrors JDBC's class-naming
 # convention, which is a standing, explicit project instruction to avoid regardless of the
