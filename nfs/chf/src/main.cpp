@@ -671,7 +671,8 @@ int main() {
                         body->invocationSequenceNumber,
                         usage,
                         &ai_quota_sizer,
-                        &quota_feature_store);
+                        &quota_feature_store,
+                        sbi_core::parse_rfc3339_to_time_t(body->invocationTimeStamp));
                     if (charged.reserved && charged.rating.grant.has_value()) {
                         info.grantedUnit = charged.rating.grant;
                         // ADR-0072 (gap-closure: real N40 product-configurability): real
@@ -785,7 +786,8 @@ int main() {
                         body->invocationSequenceNumber,
                         usage,
                         &ai_quota_sizer,
-                        &quota_feature_store);
+                        &quota_feature_store,
+                        sbi_core::parse_rfc3339_to_time_t(body->invocationTimeStamp));
                     if (charged.reserved && charged.rating.grant.has_value()) {
                         info.grantedUnit = charged.rating.grant;
                         // ADR-0072 (gap-closure: real N40 product-configurability): real
@@ -891,8 +893,13 @@ int main() {
                 if (reserved_total > 0.0) {
                     cdr.reserved_cost = reserved_total;
                 }
+                // Real TS 32.291 `invocationTimeStamp` from the Release request itself, falling
+                // back to write time only if the peer sent something unparseable (see
+                // write_converged_charging_cdr's own header for why this is not now()).
                 cdr.invocation_time_stamp =
-                    std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                    sbi_core::parse_rfc3339_to_time_t(body->invocationTimeStamp)
+                        .value_or(
+                            std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
                 cdr_writer.write(cdr);
             } catch (const std::exception& e) {
                 spdlog::warn(

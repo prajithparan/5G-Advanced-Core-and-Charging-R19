@@ -1266,6 +1266,11 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
             if (reserved_total > 0.0) {
                 cdr.reserved_cost = reserved_total;
             }
+            // Real, disclosed fallback (not the HTTP path's behavior): RFC 4006 carries an
+            // Event-Timestamp AVP, but this build's CCR decoding does not extract one, so there
+            // is no consumer-supplied event time to record here and write time is used instead.
+            // The SBI path records the real TS 32.291 invocationTimeStamp -- see
+            // write_converged_charging_cdr's own header comment.
             cdr.invocation_time_stamp =
                 std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
             cdr_writer_.write(cdr);

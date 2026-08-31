@@ -19,6 +19,7 @@
 #include "sbi_core/metrics.hpp"
 
 #include <cstdint>
+#include <ctime>
 #include <optional>
 #include <string>
 
@@ -155,6 +156,13 @@ void finalize_subscriber_balance(sbi_core::http2::Client& balance_client,
 // entry -- every field here is either a real TS 32.291 value already flowing through the caller,
 // or a real ADR-0057 rating-engine output (grant/cost), not fabricated. Shared between every
 // caller of charge_one_usage below.
+//
+// `invocation_time_stamp` is the real TS 32.291 `invocationTimeStamp` the consumer actually sent,
+// already parsed to a time_t (sbi_core::parse_rfc3339_to_time_t). Pass std::nullopt when the
+// caller genuinely has no consumer-supplied event time -- the Diameter Gy and CAP paths do, since
+// neither RFC 4006 CCR handling nor cap_server.cpp decodes an event timestamp in this build --
+// and the CDR falls back to write time, which is what every caller did unconditionally before.
+// That fallback is a real, disclosed approximation, not a claim the consumer sent this value.
 void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
                                   const std::string& ref,
                                   const std::string& operation,
@@ -164,7 +172,8 @@ void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
                                   std::int64_t invocation_sequence_number,
                                   const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
                                   const RatingResult& rating,
-                                  bool reserved);
+                                  bool reserved,
+                                  std::optional<std::time_t> invocation_time_stamp = std::nullopt);
 
 // P4.5/ADR-0060 (E5): writes one real RatingDecision audit row per MultipleUnitUsage entry that
 // was actually rated (rating.tariffId has a value) -- an unmatched offering/price is not a
@@ -206,7 +215,8 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
                  std::int64_t invocation_sequence_number,
                  const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
                  chf::AiQuotaSizer* ai_quota_sizer = nullptr,
-                 chf::QuotaFeatureStore* quota_feature_store = nullptr);
+                 chf::QuotaFeatureStore* quota_feature_store = nullptr,
+                 std::optional<std::time_t> invocation_time_stamp = std::nullopt);
 
 // P4.2/ADR-0055, TS 29.594 (Nchf_SpendingLimitControl): builds the real SpendingLimitStatus both
 // Subscribe/Update return, per the real confirmed schema. Extracted from main.cpp (was anonymous-

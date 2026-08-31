@@ -4757,3 +4757,17 @@ because SIGTERM-on-destruct would have destroyed the very exit status it asserts
 removed: `test_udr_ondatachange_webhook.cpp` still carried its own duplicate `SpawnedProcess` class,
 the original this wrapper was generalised from. See ADR-0242 (with addendum) in
 `docs/DECISIONS.md`.
+
+## ADR-0243 -- CHF records the real TS 32.291 `invocationTimeStamp`, not its own write time
+
+| Requirement | Test |
+|---|---|
+| Real RFC 3339 parsing per TS29571_CommonData.yaml's `DateTime` | 8 `Rfc3339DateTime.*` conformance tests: basic UTC, epoch, fractional truncation (incl. sub-ms), `+05:30`/`-08:00` offsets and `+00:00`==`Z`, lowercase `t`/`z`, round trip vs `format_rfc3339`, leap-second clamp, 14 malformed inputs each rejected |
+| CDR carries the consumer-supplied event time, not CHF's write time | `write_converged_charging_cdr`/`charge_one_usage` take the parsed value; SBI Create/Update/Release pass `body->invocationTimeStamp` (`nfs/chf/src/main.cpp`) |
+| The encoded TS 32.298 CDR is corrected too | `cdr_asn1.cpp` reads `record.invocation_time_stamp` for its own timestamp -- same field, so the BER-encoded record follows the fix |
+| Diameter Gy / CAP fallback disclosed, not silent | Explicit call-site comments: no Event-Timestamp AVP is decoded in this build, so write time is used and said to be used |
+
+Found by live verification, not code reading: requests sent with `2026-08-31T14:MM:0NZ` landed in
+Doris as `19:39:37`/`19:39:38`. See ADR-0243 in `docs/DECISIONS.md` for full disclosure, including
+what is deliberately not changed (QuotaFeatureStore's own observation timestamp, no backfill of
+existing rows).

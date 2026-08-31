@@ -364,7 +364,8 @@ void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
                                   std::int64_t invocation_sequence_number,
                                   const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
                                   const RatingResult& rating,
-                                  bool reserved) {
+                                  bool reserved,
+                                  std::optional<std::time_t> invocation_time_stamp) {
     chf::CdrRecord cdr{};
     cdr.charging_data_ref = ref;
     cdr.invocation_sequence_number = invocation_sequence_number;
@@ -385,8 +386,14 @@ void write_converged_charging_cdr(chf::CdrWriter& cdr_writer,
         cdr.reserved_cost = rating.cost->value;
         cdr.reserved_cost_currency = rating.cost->unit;
     }
-    cdr.invocation_time_stamp =
-        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    // Real TS 32.291 `invocationTimeStamp` the consumer actually sent, when the caller has it.
+    // This used to be unconditionally system_clock::now(), which silently overwrote a real 3GPP
+    // field with CHF's own write time -- a genuine defect: `recorded_at` (schema.doris.sql) is
+    // already the write-time column, so the two were duplicating each other while the real event
+    // time was lost. The now() path survives only as the disclosed fallback for callers with no
+    // consumer-supplied event time (Diameter Gy, CAP -- see this function's header comment).
+    cdr.invocation_time_stamp = invocation_time_stamp.value_or(
+        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
     // Real, disclosed gap: a Doris write failure does not block or fail the real charging
     // response CHF already committed to (the balance reservation above already happened) -- CDR
     // generation is best-effort in this build, matching this project's existing "no real
@@ -447,7 +454,8 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
                  std::int64_t invocation_sequence_number,
                  const sbi_gen::MultipleUnitUsage_Nchf_ConvergedCharging& usage,
                  chf::AiQuotaSizer* ai_quota_sizer,
-                 chf::QuotaFeatureStore* quota_feature_store) {
+                 chf::QuotaFeatureStore* quota_feature_store,
+                 std::optional<std::time_t> invocation_time_stamp) {
     ChargeUsageResult result;
     result.rating = build_rating_grant(catalog_client,
                                        static_cast<std::int64_t>(usage.ratingGroup),
@@ -480,7 +488,8 @@ charge_one_usage(sbi_core::http2::Client& catalog_client,
                                  invocation_sequence_number,
                                  usage,
                                  result.rating,
-                                 result.reserved);
+                                 result.reserved,
+                                 invocation_time_stamp);
     write_rating_decision(rating_decision_store, ref, usage, result.rating, result.reserved);
 
     // P4.8 (ADR-0074): record this request's own real reported usage as history for the NEXT
