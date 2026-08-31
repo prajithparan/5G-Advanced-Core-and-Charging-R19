@@ -127,7 +127,7 @@
 // docs/DECISIONS.md ADR-0077 -- no hardcoded DB URL/deployment literal in source. This turn only
 // retrofits port/metrics_bind_address/nrf_base_url/rating_database_url (the field confirmed
 // actively broken this session, see ADR-0084's own disclosure) -- chf_redis_conninfo/
-// chf_clickhouse_options/CHF_AI_QUOTA_SIZING_ENABLED/CHF_QUOTA_MODEL_PATH are already
+// chf_doris_options/CHF_AI_QUOTA_SIZING_ENABLED/CHF_QUOTA_MODEL_PATH are already
 // getenv-overridable but still deferred to a later, CHF-focused sub-turn of task #109 (a real,
 // disclosed, deliberately narrower scope than AMF/UDR's own full retrofit -- CHF's own config
 // surface is large enough to be its own increment).
@@ -390,7 +390,7 @@ int main() {
     // predictive quota sizing. Real kill switch (CHF_AI_QUOTA_SIZING_ENABLED, default OFF until
     // proven -- see this project's own procedure-list approval) and real model path
     // (CHF_QUOTA_MODEL_PATH, produced by nfs/chf/training/train_quota_sizing.py) -- both getenv-
-    // based, same never-hardcode-config precedent as chf_redis_conninfo/chf_clickhouse_options
+    // based, same never-hardcode-config precedent as chf_redis_conninfo/chf_doris_options
     // above. Only main.cpp's real HTTP Nchf_ConvergedCharging Create/Update handlers below use
     // this -- Diameter Gy and CAP gsmSCF stay deterministic-only (charging_engine.hpp's own
     // header comment explains why).
@@ -895,9 +895,8 @@ int main() {
                     std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
                 cdr_writer.write(cdr);
             } catch (const std::exception& e) {
-                spdlog::warn("chf: CDR write to ClickHouse failed for ChargingDataRef={}: {}",
-                             ref,
-                             e.what());
+                spdlog::warn(
+                    "chf: CDR write to Doris failed for ChargingDataRef={}: {}", ref, e.what());
             }
 
             release_counter->Add(1);
