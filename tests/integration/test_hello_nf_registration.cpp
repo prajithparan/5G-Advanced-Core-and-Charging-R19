@@ -13,37 +13,26 @@
 
 #include <gtest/gtest.h>
 
-namespace {
-
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
-} // namespace
-
 TEST(HelloNfIntegration, RegistersHeartbeatsAndDeregistersAgainstRealNrf) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
 
     // Belt-and-suspenders: hello-nf itself retries on connection failure, but give nrf a moment to
     // finish process startup before we even try.
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t hello_pid = spawn(HELLO_NF_PATH);
-    ASSERT_GT(hello_pid, 0) << "failed to fork hello-nf";
+    nf_test::SpawnedProcess hello(HELLO_NF_PATH);
+    ASSERT_GT(hello.pid(), 0) << "failed to fork hello-nf";
 
-    int status = 0;
-    const pid_t waited = waitpid(hello_pid, &status, 0);
-    ASSERT_EQ(waited, hello_pid);
+    // hello-nf is the one child in this suite that is expected to RUN TO COMPLETION rather than be
+    // terminated -- the whole point of the test is its exit status. wait_for_exit() waits for it
+    // and then drops ownership, so the destructor does not SIGTERM an already-exited,
+    // already-reaped pid. (A failed wait leaves status 0, which WIFEXITED rejects below, so the old
+    // explicit `ASSERT_EQ(waited, hello_pid)` check is still covered.)
+    const int status = hello.wait_for_exit();
     ASSERT_TRUE(WIFEXITED(status)) << "hello-nf did not exit normally";
     EXPECT_EQ(WEXITSTATUS(status), 0) << "hello-nf lifecycle failed; see its stderr output above";
 
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
+    // nrf needs no manual teardown: its SpawnedProcess destructor reaps it on every exit path,
+    // including the ASSERT_* early returns above (ADR-0242).
 }

@@ -35,38 +35,9 @@ namespace {
 
 using nlohmann::json;
 
-// RAII wrapper for a forked NF process -- guarantees SIGTERM+waitpid runs even if a GoogleTest
-// ASSERT_* macro triggers an early return from the middle of the test body (real bug found and
-// fixed while writing this test: an early-returning ASSERT previously skipped the manual
-// kill/waitpid cleanup at the end of the test, orphaning the spawned nrf/udr processes).
-class SpawnedProcess {
-public:
-    explicit SpawnedProcess(const char* path) {
-        pid_ = fork();
-        if (pid_ == 0) {
-            nf_test::arm_parent_death_signal();
-            execl(path, path, static_cast<char*>(nullptr));
-            _exit(127); // only reached if execl fails
-        }
-    }
-    ~SpawnedProcess() {
-        if (pid_ > 0) {
-            kill(pid_, SIGTERM);
-            waitpid(pid_, nullptr, 0);
-        }
-    }
-    SpawnedProcess(const SpawnedProcess&) = delete;
-    SpawnedProcess& operator=(const SpawnedProcess&) = delete;
-
-    pid_t pid() const { return pid_; }
-
-private:
-    pid_t pid_ = -1;
-};
-
 // RAII wrapper for the in-process receiver's io_context thread -- same early-return hazard as
-// SpawnedProcess above: a still-joinable std::thread destructing without join() calls
-// std::terminate(), which is exactly what happened before this wrapper existed.
+// nf_test::SpawnedProcess (spawn_guard.hpp): a still-joinable std::thread destructing without
+// join() calls std::terminate(), which is exactly what happened before this wrapper existed.
 class IoContextThread {
 public:
     explicit IoContextThread(boost::asio::io_context& ioc) : ioc_(ioc) {
@@ -149,11 +120,11 @@ TEST(UdrIntegration, OnDataChangeWebhookDeliveredOnPutPatchDelete) {
     receiver.start();
     IoContextThread receiver_thread(receiver_ioc);
 
-    SpawnedProcess nrf(NRF_PATH);
+    nf_test::SpawnedProcess nrf(NRF_PATH);
     ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    SpawnedProcess udr(UDR_PATH);
+    nf_test::SpawnedProcess udr(UDR_PATH);
     ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
 
     auto client = make_client();

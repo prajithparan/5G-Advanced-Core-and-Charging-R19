@@ -17,6 +17,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 #include "TS26510_CommonData_grp.hpp"
 #include "TS29509_Nausf_UEAuthentication.hpp"
@@ -40,16 +41,6 @@ aka_crypto::Key128 test_k() {
 aka_crypto::Key128 test_opc() {
     const auto op = *aka_crypto::from_hex<16>("cdc202d5123e20f62b6d676ac72cb318");
     return aka_crypto::derive_opc(test_k(), op);
-}
-
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127);
-    }
-    return pid;
 }
 
 sbi_core::http2::Client make_client() {
@@ -89,27 +80,17 @@ std::string fetch_token(sbi_core::http2::Client& client, const std::string& scop
 }
 
 struct Trio {
-    pid_t nrf_pid;
-    pid_t udm_pid;
-    pid_t ausf_pid;
+    nf_test::SpawnedProcess nrf;
+    nf_test::SpawnedProcess udm;
+    nf_test::SpawnedProcess ausf;
 };
 
 Trio spawn_all() {
-    Trio t;
-    t.nrf_pid = spawn(NRF_PATH);
+    nf_test::SpawnedProcess nrf(NRF_PATH);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    t.udm_pid = spawn(UDM_PATH);
-    t.ausf_pid = spawn(AUSF_PATH);
-    return t;
-}
-
-void reap_all(const Trio& t) {
-    kill(t.ausf_pid, SIGTERM);
-    waitpid(t.ausf_pid, nullptr, 0);
-    kill(t.udm_pid, SIGTERM);
-    waitpid(t.udm_pid, nullptr, 0);
-    kill(t.nrf_pid, SIGTERM);
-    waitpid(t.nrf_pid, nullptr, 0);
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    nf_test::SpawnedProcess ausf(AUSF_PATH);
+    return Trio{std::move(nrf), std::move(udm), std::move(ausf)};
 }
 
 struct UeComputation {
@@ -265,6 +246,4 @@ TEST(AusfUpuProtectionIntegration, RealUpuFlowHonestlyReports404Then400Then501) 
         EXPECT_EQ(resp->status, 501)
             << "real KAUSF on record but no NAS encoder available should be a real, disclosed 501";
     }
-
-    reap_all(t);
 }

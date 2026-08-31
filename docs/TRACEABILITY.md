@@ -4727,3 +4727,26 @@ passing tests still pass. Disclosed and deliberately NOT done here: the other ~4
 still use raw `pid_t` + trailing `kill`/`waitpid` and keep the same early-return exposure (they do
 retain ADR-0240's kernel guard against binary death); and task #166's separate timing half is
 untouched. See ADR-0242 in `docs/DECISIONS.md`.
+
+## ADR-0242 addendum -- SpawnedProcess conversion completed across all spawning tests (task #172)
+
+| Requirement | Test |
+|---|---|
+| Simple-local-shape tests reap their NFs on an early `ASSERT_*` return | Failure injection in `UdrIntegration.SmfRegistrationLifecycle`: test failed early as intended, `pgrep` found zero surviving `nrf`/`udr` |
+| Holder-struct-shape tests (moved-into `Duo`/`Trio`) reap EXACTLY once on an early return | Failure injection in `UdmUecmGapClosureIntegration.PeiUpdateMergesIntoExistingAmfRegistration` -- the shape where a move-ownership bug shows as either a leak (moved-from still owning) or a double-reap: test failed early, zero surviving `nrf`/`udm` |
+| `hello-nf`, which must RUN TO COMPLETION rather than be terminated, still has its exit status asserted | `HelloNfIntegration.RegistersHeartbeatsAndDeregistersAgainstRealNrf` via the new `wait_for_exit()`; `WIFEXITED`/`WEXITSTATUS` assertions unchanged |
+| Exactly one `SpawnedProcess` definition exists repo-wide | `grep` verification: 0 local `class SpawnedProcess` definitions in any `.cpp`; 42 test files use the one in `spawn_guard.hpp` |
+| No regression | Full regular-build `ctest` with the standard `-E "UdrIntegration.AmfContextLifecycle"` exclusion |
+| Style | `clang-format-18 --dry-run --Werror` clean on every touched file |
+
+Completes what ADR-0242 originally disclosed as deliberately-deferred follow-up, and corrects that
+ADR's now-stale "only one file is converted" statement in place rather than leaving it to rot. The
+task assumed a uniform sed sweep; three real shapes existed. The holder-struct shape (23 files)
+could not compile against the original wrapper at all -- `spawn_all()`-style helpers return the
+struct by value and the class was non-copyable AND non-movable -- so it required a real API
+addition (move constructor + move assignment, moved-from dropping ownership via `pid_ = -1`, plus a
+shared private `reap()`), not an edit. `test_hello_nf_registration.cpp` needed `wait_for_exit()`
+because SIGTERM-on-destruct would have destroyed the very exit status it asserts on. Drift also
+removed: `test_udr_ondatachange_webhook.cpp` still carried its own duplicate `SpawnedProcess` class,
+the original this wrapper was generalised from. See ADR-0242 (with addendum) in
+`docs/DECISIONS.md`.

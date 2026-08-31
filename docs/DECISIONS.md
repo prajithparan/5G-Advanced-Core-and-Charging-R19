@@ -20965,10 +20965,39 @@ mid-flight by the environment, and a subsequent scan found zero orphaned NF proc
 
 ### What this does NOT cover -- disclosed
 
-- **Only `test_udm_uecm_sdm.cpp` is converted.** The other ~40 spawning integration tests still use
-  raw `pid_t` + trailing `kill`/`waitpid` and remain exposed to the same early-return leak. They
-  are protected by ADR-0240's PDEATHSIG guard against binary death, but not against their own
-  early returns. Converting them is mechanical now that the shared wrapper exists, and is
-  deliberately left as follow-up rather than bundled into this change.
 - **The timing half of task #166** (UDR-dependent readiness waits in this file) is untouched here;
   this ADR closes only the cleanup-on-failure half that task named.
+- **Scope at the time this ADR was written: only `test_udm_uecm_sdm.cpp`.** SUPERSEDED -- see the
+  addendum below; every spawning integration test has since been converted.
+
+### Addendum (task #172): conversion completed across all spawning tests
+
+This ADR originally disclosed that only one file was converted and that the other ~40 spawning
+tests kept the same early-return exposure. That is no longer true, and the disclosure above is
+struck rather than left to rot. All 41 remaining files were converted in two passes, and the work
+was NOT the uniform sed sweep the task assumed -- three genuinely different shapes existed, found
+by inspection rather than presumed:
+
+1. **17 files, simple locals** -- direct replacement of `const pid_t x_pid = spawn(X_PATH)` with a
+   `SpawnedProcess` local and deletion of the trailing `kill`/`waitpid` blocks.
+2. **23 files, holder-struct shape** -- a `Solo`/`Duo`/`Trio` struct of `pid_t` members built by a
+   `spawn_all()`-style helper returning it BY VALUE, with a matching `reap()`/`reap_all()` free
+   function. These could not compile against the original class: it was non-copyable AND
+   non-movable, so `return t;` had no viable constructor. Required a real API addition, not an
+   edit -- a move constructor and move assignment on `SpawnedProcess`, with the moved-from object
+   dropping ownership (`pid_ = -1`) so exactly one destructor ever reaps a pid, plus a private
+   `reap()` so the destructor and move-assignment share a single teardown path. The structs now
+   hold `SpawnedProcess` members and the `reap*()` free functions are deleted outright.
+3. **1 file, `test_hello_nf_registration.cpp`** -- a genuine special case: `hello-nf` is expected to
+   RUN TO COMPLETION and the test asserts on `WIFEXITED`/`WEXITSTATUS`. A plain SIGTERM-on-destruct
+   wrapper would have broken it. Handled by a new `wait_for_exit()` that waits, returns the raw
+   status, and drops ownership so the destructor does not signal an already-reaped pid.
+
+Also removed real drift found during the sweep: `test_udr_ondatachange_webhook.cpp` still carried
+its OWN local `SpawnedProcess` class -- the original this shared wrapper was generalised from --
+leaving two definitions in the tree. Exactly one now exists, in `spawn_guard.hpp`, used by 42 test
+files.
+
+The struct-shape conversion was done with a parser-driven transform that extracts each file's own
+struct/member/helper names rather than matching a fixed pattern, and refuses any file it cannot
+fully understand instead of guessing; it converted 23/23 with zero skips.

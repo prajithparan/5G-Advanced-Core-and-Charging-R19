@@ -13,6 +13,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 #include "spawn_guard.hpp"
 
@@ -21,16 +22,6 @@
 namespace {
 
 using nlohmann::json;
-
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
 
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
@@ -69,23 +60,15 @@ std::string fetch_token(sbi_core::http2::Client& client, const std::string& scop
 }
 
 struct Duo {
-    pid_t nrf_pid;
-    pid_t nef_pid;
+    nf_test::SpawnedProcess nrf;
+    nf_test::SpawnedProcess nef;
 };
 
 Duo spawn_all() {
-    Duo d;
-    d.nrf_pid = spawn(NRF_PATH);
+    nf_test::SpawnedProcess nrf(NRF_PATH);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    d.nef_pid = spawn(NEF_PATH);
-    return d;
-}
-
-void reap_all(const Duo& d) {
-    kill(d.nef_pid, SIGTERM);
-    waitpid(d.nef_pid, nullptr, 0);
-    kill(d.nrf_pid, SIGTERM);
-    waitpid(d.nrf_pid, nullptr, 0);
+    nf_test::SpawnedProcess nef(NEF_PATH);
+    return Duo{std::move(nrf), std::move(nef)};
 }
 
 } // namespace
@@ -127,8 +110,6 @@ TEST(NefSMServiceIntegration, SendSMSReturnsRealMultipartDeliveryReport) {
         const auto delivery = json::parse((*parts)[0].body);
         EXPECT_EQ(delivery.at("smsPayload").at("contentId"), "smsPayload");
     }
-
-    reap_all(d);
 }
 
 TEST(NefUEIdIntegration, FetchAndMappingBothReturnRealHonestNoContent) {
@@ -161,8 +142,6 @@ TEST(NefUEIdIntegration, FetchAndMappingBothReturnRealHonestNoContent) {
     auto mapping_resp = client.send(mapping_req);
     ASSERT_TRUE(mapping_resp.has_value());
     EXPECT_EQ(mapping_resp->status, 204);
-
-    reap_all(d);
 }
 
 TEST(NefDNAIMappingIntegration, CreateReadDeleteLifecycle) {
@@ -221,8 +200,6 @@ TEST(NefDNAIMappingIntegration, CreateReadDeleteLifecycle) {
     auto delete_again_resp = client.send(delete_req);
     ASSERT_TRUE(delete_again_resp.has_value());
     EXPECT_EQ(delete_again_resp->status, 404);
-
-    reap_all(d);
 }
 
 TEST(NefDNAIMappingIntegration, CreateWithMissingRequiredFieldIs400) {
@@ -246,8 +223,6 @@ TEST(NefDNAIMappingIntegration, CreateWithMissingRequiredFieldIs400) {
     auto bad_resp = client.send(bad_req);
     ASSERT_TRUE(bad_resp.has_value());
     EXPECT_EQ(bad_resp->status, 400);
-
-    reap_all(d);
 }
 
 TEST(NefEASDeploymentIntegration, CreateReadDeleteLifecycle) {
@@ -306,8 +281,6 @@ TEST(NefEASDeploymentIntegration, CreateReadDeleteLifecycle) {
     auto delete_again_resp = client.send(delete_req);
     ASSERT_TRUE(delete_again_resp.has_value());
     EXPECT_EQ(delete_again_resp->status, 404);
-
-    reap_all(d);
 }
 
 TEST(NefEASDeploymentIntegration, CreateWithMissingRequiredFieldIs400) {
@@ -332,6 +305,4 @@ TEST(NefEASDeploymentIntegration, CreateWithMissingRequiredFieldIs400) {
     auto bad_resp = client.send(bad_req);
     ASSERT_TRUE(bad_resp.has_value());
     EXPECT_EQ(bad_resp->status, 400);
-
-    reap_all(d);
 }

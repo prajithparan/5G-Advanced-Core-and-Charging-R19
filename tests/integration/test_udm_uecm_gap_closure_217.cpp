@@ -13,6 +13,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 #include "TS26510_CommonData_grp.hpp"
 #include "spawn_guard.hpp"
@@ -22,16 +23,6 @@
 namespace {
 
 using nlohmann::json;
-
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
 
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
@@ -70,23 +61,15 @@ std::string fetch_token(sbi_core::http2::Client& client, const std::string& scop
 }
 
 struct Duo {
-    pid_t nrf_pid;
-    pid_t udm_pid;
+    nf_test::SpawnedProcess nrf;
+    nf_test::SpawnedProcess udm;
 };
 
 Duo spawn_nrf_udm() {
-    Duo d;
-    d.nrf_pid = spawn(NRF_PATH);
+    nf_test::SpawnedProcess nrf(NRF_PATH);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    d.udm_pid = spawn(UDM_PATH);
-    return d;
-}
-
-void reap(const Duo& d) {
-    kill(d.udm_pid, SIGTERM);
-    waitpid(d.udm_pid, nullptr, 0);
-    kill(d.nrf_pid, SIGTERM);
-    waitpid(d.nrf_pid, nullptr, 0);
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    return Duo{std::move(nrf), std::move(udm)};
 }
 
 // Exercises one SMSF registration resource end-to-end (PUT create, PUT update, GET, PATCH, DELETE,
@@ -186,6 +169,4 @@ TEST(UdmSmsfGapClosureIntegration, Smsf3GppAndNon3GppRegistrationGroupsFullLifec
 
     exercise_smsf_group(client, token, "imsi-999700000000001", "smsf-3gpp-access");
     exercise_smsf_group(client, token, "imsi-999700000000002", "smsf-non-3gpp-access");
-
-    reap(d);
 }

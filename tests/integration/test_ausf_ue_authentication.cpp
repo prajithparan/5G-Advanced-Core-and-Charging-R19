@@ -17,6 +17,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 #include "TS29509_Nausf_UEAuthentication.hpp"
 #include "aka_crypto/eap_aka_prime.hpp"
@@ -41,16 +42,6 @@ aka_crypto::Key128 test_k() {
 aka_crypto::Key128 test_opc() {
     const auto op = *aka_crypto::from_hex<16>("cdc202d5123e20f62b6d676ac72cb318");
     return aka_crypto::derive_opc(test_k(), op);
-}
-
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
 }
 
 sbi_core::http2::Client make_client() {
@@ -90,27 +81,17 @@ std::string fetch_token(sbi_core::http2::Client& client, const std::string& scop
 }
 
 struct Trio {
-    pid_t nrf_pid;
-    pid_t udm_pid;
-    pid_t ausf_pid;
+    nf_test::SpawnedProcess nrf;
+    nf_test::SpawnedProcess udm;
+    nf_test::SpawnedProcess ausf;
 };
 
 Trio spawn_all() {
-    Trio t;
-    t.nrf_pid = spawn(NRF_PATH);
+    nf_test::SpawnedProcess nrf(NRF_PATH);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    t.udm_pid = spawn(UDM_PATH);
-    t.ausf_pid = spawn(AUSF_PATH);
-    return t;
-}
-
-void reap_all(const Trio& t) {
-    kill(t.ausf_pid, SIGTERM);
-    waitpid(t.ausf_pid, nullptr, 0);
-    kill(t.udm_pid, SIGTERM);
-    waitpid(t.udm_pid, nullptr, 0);
-    kill(t.nrf_pid, SIGTERM);
-    waitpid(t.nrf_pid, nullptr, 0);
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    nf_test::SpawnedProcess ausf(AUSF_PATH);
+    return Trio{std::move(nrf), std::move(udm), std::move(ausf)};
 }
 
 // The UE/USIM side of MILENAGE: given RAND (from ausf) and AUTN (from ausf, which embeds SQN xor
@@ -229,8 +210,6 @@ TEST(AusfIntegration, FiveGAkaSuccessfulAuthenticationCrossChecksHxresAndKseaf) 
     auto delete_again = client.send(delete_req);
     ASSERT_TRUE(delete_again.has_value());
     EXPECT_EQ(delete_again->status, 404);
-
-    reap_all(t);
 }
 
 TEST(AusfIntegration, FiveGAkaWrongResStarIsAuthenticationFailure) {
@@ -280,8 +259,6 @@ TEST(AusfIntegration, FiveGAkaWrongResStarIsAuthenticationFailure) {
     EXPECT_EQ(confirmed.authResult.value,
               sbi_gen::AuthResult_Nausf_UEAuthentication::AUTHENTICATION_FAILURE);
     EXPECT_FALSE(confirmed.kseaf.has_value());
-
-    reap_all(t);
 }
 
 TEST(AusfIntegration, EapAkaPrimeSuccessfulAuthenticationCrossChecksMacKseafAndMsk) {
@@ -386,8 +363,6 @@ TEST(AusfIntegration, EapAkaPrimeSuccessfulAuthenticationCrossChecksMacKseafAndM
     auto delete_resp = client.send(delete_req);
     ASSERT_TRUE(delete_resp.has_value());
     EXPECT_EQ(delete_resp->status, 204);
-
-    reap_all(t);
 }
 
 TEST(AusfIntegration, EapAkaPrimeWrongResIsAuthenticationFailure) {
@@ -462,8 +437,6 @@ TEST(AusfIntegration, EapAkaPrimeWrongResIsAuthenticationFailure) {
     ASSERT_TRUE(failure_packet.has_value());
     ASSERT_EQ(failure_packet->size(), 4U);
     EXPECT_EQ((*failure_packet)[0], static_cast<uint8_t>(aka_crypto::eap::Code::kFailure));
-
-    reap_all(t);
 }
 
 TEST(AusfIntegration, DeregisterRemovesContextThenSecondDeregisterIs404) {
@@ -511,8 +484,6 @@ TEST(AusfIntegration, DeregisterRemovesContextThenSecondDeregisterIs404) {
     auto dereg_again = client.send(dereg_req);
     ASSERT_TRUE(dereg_again.has_value());
     EXPECT_EQ(dereg_again->status, 404);
-
-    reap_all(t);
 }
 
 TEST(AusfIntegration, UnknownSupiIs404AndTamperedTokenIs401) {
@@ -548,6 +519,4 @@ TEST(AusfIntegration, UnknownSupiIs404AndTamperedTokenIs401) {
     auto tampered_resp = client.send(tampered_req);
     ASSERT_TRUE(tampered_resp.has_value());
     EXPECT_EQ(tampered_resp->status, 401);
-
-    reap_all(t);
 }

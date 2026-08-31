@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 #include "spawn_guard.hpp"
 
@@ -23,16 +24,6 @@
 namespace {
 
 using nlohmann::json;
-
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
 
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
@@ -71,23 +62,15 @@ std::string fetch_token(sbi_core::http2::Client& client) {
 }
 
 struct Duo {
-    pid_t nrf_pid;
-    pid_t udr_pid;
+    nf_test::SpawnedProcess nrf;
+    nf_test::SpawnedProcess udr;
 };
 
 Duo spawn_nrf_udr() {
-    Duo d;
-    d.nrf_pid = spawn(NRF_PATH);
+    nf_test::SpawnedProcess nrf(NRF_PATH);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    d.udr_pid = spawn(UDR_PATH);
-    return d;
-}
-
-void reap(const Duo& d) {
-    kill(d.udr_pid, SIGTERM);
-    waitpid(d.udr_pid, nullptr, 0);
-    kill(d.nrf_pid, SIGTERM);
-    waitpid(d.nrf_pid, nullptr, 0);
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    return Duo{std::move(nrf), std::move(udr)};
 }
 
 } // namespace
@@ -144,8 +127,6 @@ TEST(UdrPolicyDataGapClosureIntegration, UsageMonitoringResourceLifecycle) {
     auto get_after_delete_resp = client.send(get_req);
     ASSERT_TRUE(get_after_delete_resp.has_value());
     EXPECT_EQ(get_after_delete_resp->status, 404);
-
-    reap(d);
 }
 
 TEST(UdrPolicyDataGapClosureIntegration, ReadPolicyDataComposesSeededSubResources) {
@@ -243,8 +224,6 @@ TEST(UdrPolicyDataGapClosureIntegration, ReadPolicyDataComposesSeededSubResource
     if (empty_resp->status == 200) {
         EXPECT_TRUE(json::parse(empty_resp->body).empty());
     }
-
-    reap(d);
 }
 
 TEST(UdrPolicyDataGapClosureIntegration, ReadBdtDataListsSeededDataAndHonorsFilter) {
@@ -303,8 +282,6 @@ TEST(UdrPolicyDataGapClosureIntegration, ReadBdtDataListsSeededDataAndHonorsFilt
     if (filtered_resp->status == 200) {
         EXPECT_TRUE(json::parse(filtered_resp->body).empty());
     }
-
-    reap(d);
 }
 
 TEST(UdrPolicyDataGapClosureIntegration, PolicyDataSubsToNotifyLifecycle) {
@@ -392,6 +369,4 @@ TEST(UdrPolicyDataGapClosureIntegration, PolicyDataSubsToNotifyLifecycle) {
     auto get_after_delete_resp = client.send(get_req);
     ASSERT_TRUE(get_after_delete_resp.has_value());
     EXPECT_EQ(get_after_delete_resp->status, 404);
-
-    reap(d);
 }

@@ -77,19 +77,48 @@ public:
         }
     }
 
-    ~SpawnedProcess() {
-        if (pid_ > 0) {
-            kill(pid_, SIGTERM);
-            waitpid(pid_, nullptr, 0);
-        }
-    }
+    ~SpawnedProcess() { reap(); }
 
     SpawnedProcess(const SpawnedProcess&) = delete;
     SpawnedProcess& operator=(const SpawnedProcess&) = delete;
 
+    // Movable (but not copyable): several tests group their NFs in a small holder struct returned
+    // by value from a spawn_all()-style helper, which needs an accessible move constructor. The
+    // moved-from object gives up ownership (pid_ = -1) so only one destructor ever reaps a pid.
+    SpawnedProcess(SpawnedProcess&& other) noexcept : pid_(other.pid_) { other.pid_ = -1; }
+
+    SpawnedProcess& operator=(SpawnedProcess&& other) noexcept {
+        if (this != &other) {
+            reap();
+            pid_ = other.pid_;
+            other.pid_ = -1;
+        }
+        return *this;
+    }
+
     pid_t pid() const { return pid_; }
 
+    // For a child expected to run to completion rather than be terminated (e.g. hello-nf, whose
+    // test asserts on WIFEXITED/WEXITSTATUS): waits for it and returns the raw wait status, then
+    // drops ownership so the destructor does not SIGTERM an already-exited, already-reaped pid.
+    int wait_for_exit() {
+        int status = 0;
+        if (pid_ > 0) {
+            waitpid(pid_, &status, 0);
+            pid_ = -1;
+        }
+        return status;
+    }
+
 private:
+    void reap() {
+        if (pid_ > 0) {
+            kill(pid_, SIGTERM);
+            waitpid(pid_, nullptr, 0);
+        }
+        pid_ = -1;
+    }
+
     pid_t pid_ = -1;
 };
 

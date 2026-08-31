@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 #include "spawn_guard.hpp"
 
@@ -27,16 +28,6 @@ using nlohmann::json;
 // NRF's own real, fixed nfInstanceId (nfs/nrf/src/main.cpp's own kNrfInstanceId) -- see
 // docs/DECISIONS.md ADR-0018 for why it's fixed rather than randomly generated per run.
 constexpr const char* kNrfInstanceId = "5ba9a927-1d31-4c8e-8a10-000000000001";
-
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
 
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
@@ -89,18 +80,12 @@ std::string expected_raw_pub_key() {
 }
 
 struct Solo {
-    pid_t nrf_pid;
+    nf_test::SpawnedProcess nrf;
 };
 
 Solo spawn_nrf() {
-    Solo s;
-    s.nrf_pid = spawn(NRF_PATH);
-    return s;
-}
-
-void reap(const Solo& s) {
-    kill(s.nrf_pid, SIGTERM);
-    waitpid(s.nrf_pid, nullptr, 0);
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    return Solo{std::move(nrf)};
 }
 
 } // namespace
@@ -124,8 +109,6 @@ TEST(NrfGapClosureIntegration, OptionsNFInstancesReturnsRealAcceptEncoding) {
     EXPECT_EQ(resp->status, 200);
     auto it = resp->headers.find("accept-encoding");
     EXPECT_NE(it, resp->headers.end());
-
-    reap(s);
 }
 
 TEST(NrfGapClosureIntegration, RetrieveKeyRequestForOwnIssuerReturnsRealPublicKey) {
@@ -158,8 +141,6 @@ TEST(NrfGapClosureIntegration, RetrieveKeyRequestForOwnIssuerReturnsRealPublicKe
         // running with, not a placeholder value.
         EXPECT_EQ(rsp.at("rawPubKey").get<std::string>(), expected_raw_pub_key());
     }
-
-    reap(s);
 }
 
 TEST(NrfGapClosureIntegration, RetrieveKeyRequestForUnknownIssuerIs404) {
@@ -185,8 +166,6 @@ TEST(NrfGapClosureIntegration, RetrieveKeyRequestForUnknownIssuerIs404) {
     auto resp = client.send(req);
     ASSERT_TRUE(resp.has_value());
     EXPECT_EQ(resp->status, 404);
-
-    reap(s);
 }
 
 TEST(NrfGapClosureIntegration, RetrieveStoredSearchAndCompleteSearchReturnCachedResult) {
@@ -262,6 +241,4 @@ TEST(NrfGapClosureIntegration, RetrieveStoredSearchAndCompleteSearchReturnCached
     auto bad_resp = client.send(bad_req);
     ASSERT_TRUE(bad_resp.has_value());
     EXPECT_EQ(bad_resp->status, 404);
-
-    reap(s);
 }
