@@ -20912,3 +20912,63 @@ another thread was inside `send()` was already a use-after-free); pooling gives 
 process lifetime, which is why this has never bitten. Written into the header rather than
 engineered around, since making the destructor safe against concurrent use would mean either a
 lock the hot path does not need or a shutdown protocol no caller currently wants.
+
+## ADR-0242: RAII teardown for test-spawned NFs (task #166, the other half of ADR-0240)
+
+### Context
+
+ADR-0240 made the kernel reap a test's NF processes when the test BINARY dies (`PR_SET_PDEATHSIG`),
+which is the only thing that works against `ctest --timeout`'s uncatchable SIGKILL. It explicitly
+disclosed what it did NOT cover: a test that returns early while the binary keeps running.
+
+That gap is not hypothetical. A GoogleTest `ASSERT_*` is a `return` from the middle of the test
+body. `tests/integration/test_udm_uecm_sdm.cpp` had **44 `ASSERT_*` macros across 4 tests**, each
+test spawning 2-3 real NFs (`nrf`, `udr`, `udm`) and tearing them down with `kill`/`waitpid` at the
+END of the body. Any one of those 44 assertions firing skipped the teardown entirely, orphaning
+every NF that test had started and leaving them holding their listen ports for the remainder of the
+run -- which then makes unrelated later tests fail with "Address already in use", pointing at the
+wrong change.
+
+### Implementation
+
+`nf_test::SpawnedProcess` added to the shared `tests/integration/spawn_guard.hpp` (already the home
+of ADR-0240's child-side guard, so both halves of the orphan problem now live in one reviewable
+place). It forks + `arm_parent_death_signal()` + `execl`s in the constructor, and `kill(SIGTERM)` +
+`waitpid()` in the destructor -- so teardown runs on every exit path out of a test body, including
+early `ASSERT_*` returns and stack unwinding.
+
+`test_udm_uecm_sdm.cpp` converted: its local `spawn()` helper and all 9 raw `pid_t` locals replaced
+by `SpawnedProcess` locals, and all 4 blocks of trailing manual `kill`/`waitpid` deleted.
+Destruction runs in reverse declaration order (`nrf`, `udr`, `udm` declared -> `udm`, `udr`, `nrf`
+destroyed), which matches the manual teardown order those blocks used, so shutdown sequencing is
+unchanged.
+
+This generalises an existing, real precedent rather than inventing one: the same RAII wrapper was
+introduced locally in `test_udr_ondatachange_webhook.cpp` after an early-returning `ASSERT` there
+orphaned `nrf`/`udr` during development (ADR-0171 series). Moving it to the shared header makes it
+available to the other ~40 spawning tests without another repo-wide sweep.
+
+### Live verification (the failure path, not the happy path)
+
+A passing test proves nothing here -- the whole defect lives on the early-return path. So that path
+was exercised directly: a deliberate `ASSERT_TRUE(false)` was injected immediately after both
+`SpawnedProcess` constructions in `AmfRegistrationLifecycle`, the single TU rebuilt, and the test
+run standalone.
+
+Result: the test failed early as intended (`[  FAILED  ] 1 test`), and `pgrep` immediately after
+found **no surviving `nrf` or `udm`** -- the destructors ran during unwinding. Before this change
+that early return would have leaked both. The injection was then reverted and the file rebuilt
+(verified: zero injection remnants remain in the committed source).
+
+Incidental corroboration of ADR-0240 from the same session: a full `ctest` run was SIGKILLed
+mid-flight by the environment, and a subsequent scan found zero orphaned NF processes.
+
+### What this does NOT cover -- disclosed
+
+- **Only `test_udm_uecm_sdm.cpp` is converted.** The other ~40 spawning integration tests still use
+  raw `pid_t` + trailing `kill`/`waitpid` and remain exposed to the same early-return leak. They
+  are protected by ADR-0240's PDEATHSIG guard against binary death, but not against their own
+  early returns. Converting them is mechanical now that the shared wrapper exists, and is
+  deliberately left as follow-up rather than bundled into this change.
+- **The timing half of task #166** (UDR-dependent readiness waits in this file) is untouched here;
+  this ADR closes only the cleanup-on-failure half that task named.

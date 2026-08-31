@@ -4706,3 +4706,24 @@ handle's live connection, TLS session and DNS caches, which is what makes pooled
 keepalive. Disclosed in the ADR rather than fixed: the pre-existing lifetime contract that a
 `Client` must outlive its in-flight `send()` calls (already undefined with the single-handle
 design, since the destructor never took the mutex either). See ADR-0241 in `docs/DECISIONS.md`.
+
+## ADR-0242 -- RAII teardown for test-spawned NFs (task #166, other half of ADR-0240)
+
+| Requirement | Test |
+|---|---|
+| A test that returns early from a failing `ASSERT_*` must still reap the NFs it spawned | Live failure-path injection: a deliberate `ASSERT_TRUE(false)` placed right after both `SpawnedProcess` constructions in `UdmIntegration.AmfRegistrationLifecycle`; test failed early as intended and `pgrep` found zero surviving `nrf`/`udm`. Injection reverted, source verified clean |
+| Normal (passing) teardown behaviour and shutdown ordering unchanged | All 8 `UdmIntegration` tests pass; destruction runs in reverse declaration order (`udm`, `udr`, `nrf`), matching the manual `kill`/`waitpid` order it replaced |
+| No regression across the suite | Full regular-build `ctest` with the standard `-E "UdrIntegration.AmfContextLifecycle"` exclusion |
+| Style | `clang-format-18 --dry-run --Werror` clean on `spawn_guard.hpp` and `test_udm_uecm_sdm.cpp` |
+
+ADR-0240 closed the case where the test BINARY is SIGKILLed; this closes the case where a test CASE
+returns early. `test_udm_uecm_sdm.cpp` carried 44 `ASSERT_*` macros across 4 tests, each spawning
+2-3 real NFs with teardown only at the end of the body -- so any failing assertion orphaned every NF
+that test started, and the resulting "Address already in use" failures then blamed unrelated later
+tests. Fixed with `nf_test::SpawnedProcess` in the shared `tests/integration/spawn_guard.hpp`
+(SIGTERM+waitpid in the destructor), generalising the wrapper `test_udr_ondatachange_webhook.cpp`
+already proved locally. Verified on the failure path by real injection, not by observing that
+passing tests still pass. Disclosed and deliberately NOT done here: the other ~40 spawning tests
+still use raw `pid_t` + trailing `kill`/`waitpid` and keep the same early-return exposure (they do
+retain ADR-0240's kernel guard against binary death); and task #166's separate timing half is
+untouched. See ADR-0242 in `docs/DECISIONS.md`.
