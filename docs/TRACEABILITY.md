@@ -4662,3 +4662,25 @@ design allows genuine concurrent read+write per connection and discloses/suppres
 functionally-benign OpenSSL/boost::asio-internal TSan findings rather than reintroducing the
 deadlock. See ADR-0239 in `docs/DECISIONS.md` for the full account, including the reverted
 attempt.
+
+## ADR-0240 -- Kernel-enforced reaping of test-spawned NF processes (task #170)
+
+| Requirement | Test |
+|---|---|
+| A test-spawned NF must not survive its test binary being SIGKILLed, which is exactly how `ctest --timeout` kills it | Live orphan repro: launch `integration_tests --gtest_filter=NrfGapClosureIntegration.*` directly, wait for it to fork the real `build/nfs/nrf/nrf`, `kill -9` the test binary, then check the child -- reaped by the kernel, zero survivors |
+| The existing per-test SIGTERM/waitpid teardown still works on the normal (non-killed) path | Full regular-build `ctest` suite with the standard `-E "UdrIntegration.AmfContextLifecycle"` exclusion: 461/461 passed, 6 legitimately skipped, 92.4s |
+| The guard is present at every spawn site, not just the ones that were convenient | `grep` verification: 43/43 spawning test files carry both `#include "spawn_guard.hpp"` and the `nf_test::arm_parent_death_signal();` call, and the total call-site count equals the total `execl` call-site count (43 == 43) |
+| No style regression across 44 touched files | `clang-format-18 --dry-run --Werror` clean on the new header and all 43 modified tests |
+
+Real, long-standing test-harness defect closed: `ctest --timeout` kills the test binary with
+SIGKILL, which no `atexit`/RAII/signal handler in that process can intercept, so every NF it had
+forked was orphaned and left squatting its listen port -- making every subsequent run fail with
+"Address already in use" for reasons unrelated to the change under test. Fixed at the only layer
+that can observe an uncatchable parent death: `PR_SET_PDEATHSIG` set in the child between `fork()`
+and `execl()` (cleared across fork, survives execve for ordinary binaries), via the new shared
+`tests/integration/spawn_guard.hpp`. Verified by a real orphan repro that SIGKILLs the parent and
+looks for survivors, not by a self-consistency assertion. Deliberately NOT closed here and
+disclosed in the ADR: this binds NF lifetime to the test BINARY, not the individual test case, so
+an early-returning `ASSERT_*` still leaks until the binary exits (task #166 remains open), and a
+microsecond-wide fork/prctl race remains whose failure mode is exactly the pre-existing behaviour.
+See ADR-0240 in `docs/DECISIONS.md` for full disclosure.

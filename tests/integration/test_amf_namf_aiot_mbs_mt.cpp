@@ -26,6 +26,7 @@
 #include "TS29518_Namf_MBSBroadcast.hpp"
 #include "TS29518_Namf_MBSCommunication.hpp"
 #include "TS29518_Namf_MT.hpp"
+#include "spawn_guard.hpp"
 
 #include <gtest/gtest.h>
 
@@ -36,6 +37,7 @@ using nlohmann::json;
 pid_t spawn(const char* path) {
     const pid_t pid = fork();
     if (pid == 0) {
+        nf_test::arm_parent_death_signal();
         execl(path, path, static_cast<char*>(nullptr));
         _exit(127); // only reached if execl fails
     }
