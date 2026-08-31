@@ -4800,3 +4800,16 @@ Task #109 closed for CHF -- the last service ADR-0085/ADR-0089/ADR-0192 each dis
 deferred. See ADR-0245 in `docs/DECISIONS.md`, including two deliberate behaviour changes (a
 malformed enable flag now fails fast rather than silently disabling AI; `kDefaultAiQuotaLatencyBudget`
 stays a library default but is no longer the binary's deployment default).
+
+## ADR-0246 -- `sbi-loadgen` open-loop mode (closes ADR-0244's disclosed gap)
+
+| Requirement | Test |
+|---|---|
+| Fixed-arrival-rate (open-loop) load, not just fixed concurrency | `--rate`; slot *i* due at `start + i/rate` from a shared atomic cursor |
+| Coordinated-omission correction | Latency measured from the slot's scheduled due time, not from when a worker became free |
+| Achievable rate is tracked accurately | Target 500 req/s -> 499.62 achieved, 5000 responses, 100% HTTP 200, 1 slot late, p50 0.972 ms |
+| Overload is surfaced, not hidden | Target 12000 req/s, pool 8 -> 7508.24 achieved, 144000 slots late, p50 3404.830 ms, p99 5937.259 ms, 100% HTTP 200 -- against closed-loop's p50 ~0.5 ms / 8387 req/s (ADR-0244) on the same server and pool |
+| Unachievable target is visible | "slots issued late" counter reported in both text and JSON output |
+
+See ADR-0246 in `docs/DECISIONS.md`. No performance claim and no free5GC comparison is made;
+ADR-0238 step (1) stays blocked on unvendored TS 28.552/28.554.

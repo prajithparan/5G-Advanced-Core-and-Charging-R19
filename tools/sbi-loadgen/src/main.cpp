@@ -10,14 +10,20 @@
 // What this measures, precisely (stated up front because a benchmark that hides its own method is
 // worth nothing):
 //
-//   * CLOSED-LOOP load. Each worker thread sends one request, waits for the response, then sends
-//     the next. Offered load is therefore `concurrency` outstanding requests, NOT a fixed arrival
-//     rate. This measures latency-under-a-given-concurrency and the throughput that results.
-//   * It is consequently subject to COORDINATED OMISSION: when the server stalls, workers stall
-//     with it and simply stop issuing requests, so the recorded latencies under-represent what a
-//     fixed-rate (open-loop) client would have observed. This is a real, well-known limitation of
-//     this load model, disclosed rather than papered over. An open-loop mode is a genuine, named
-//     gap for a future turn, not something this build quietly approximates.
+//   * CLOSED-LOOP by default. Each worker thread sends one request, waits for the response, then
+//     sends the next. Offered load is therefore `concurrency` outstanding requests, NOT a fixed
+//     arrival rate. This measures latency-under-a-given-concurrency and the throughput that
+//     results, and it is consequently subject to COORDINATED OMISSION: when the server stalls,
+//     workers stall with it and simply stop issuing requests, so recorded latencies
+//     under-represent what a fixed-rate client would have seen.
+//   * OPEN-LOOP with `--rate` (ADR-0246). Request i is due at start + i/rate regardless of
+//     whether earlier responses have returned, and latency is measured from that INTENDED due
+//     time rather than from the moment a worker actually became free -- which is precisely the
+//     coordinated-omission correction: queueing delay caused by a busy pool lands inside the
+//     reported latency instead of vanishing because no request was issued. `--concurrency` then
+//     sizes the worker pool servicing the schedule, not the offered load, and the count of
+//     slots issued late is reported so an unachievable target rate is visible rather than
+//     silently reinterpreted as a lower one.
 //   * Latency is measured around `Client::send()` -- the exact production client path every NF
 //     uses for outbound SBI calls, including ADR-0241's handle pool, real TLS 1.3 + mTLS, and
 //     real HTTP/2. It is NOT a synthetic socket benchmark.
@@ -64,6 +70,7 @@ struct Options {
     int duration_sec = 10;
     std::int64_t max_requests = 0; // 0 = unbounded, bounded by duration instead
     int warmup_sec = 0;
+    double rate_rps = 0.0; // > 0 selects OPEN-LOOP mode; 0 keeps the closed-loop default
     std::string json_out;
 };
 
@@ -94,11 +101,16 @@ Optional:
   --duration <sec>           Measurement window after warmup (default 10)
   --requests <n>             Stop after n completed requests instead of on duration
   --warmup <sec>             Discard results for this long before measuring (default 0)
+  --rate <req/s>             OPEN-LOOP mode: issue on a fixed schedule at this arrival rate
   --json <path>              Also write the summary as JSON
   -h, --help                 This text
 
-Method note: load is CLOSED-LOOP, so this reports latency at a fixed concurrency, not at a fixed
-arrival rate, and is subject to coordinated omission. See this file's own header comment.
+Load model: without --rate, load is CLOSED-LOOP -- `concurrency` outstanding requests, reporting
+latency at that concurrency rather than at a fixed arrival rate, and subject to coordinated
+omission. With --rate, load is OPEN-LOOP: request i is due at start + i/rate regardless of whether
+earlier responses have returned, and latency is measured from that INTENDED time, which is the
+standard coordinated-omission correction. In open-loop mode --concurrency is the size of the
+worker pool servicing the schedule, not the offered load.
 )";
 }
 
@@ -137,6 +149,8 @@ bool parse_args(int argc, char** argv, Options& opts, std::string& error) {
             opts.max_requests = std::atoll(next("--requests").c_str());
         } else if (arg == "--warmup") {
             opts.warmup_sec = std::atoi(next("--warmup").c_str());
+        } else if (arg == "--rate") {
+            opts.rate_rps = std::atof(next("--rate").c_str());
         } else if (arg == "--json") {
             opts.json_out = next("--json");
         } else if (arg == "--header") {
@@ -166,6 +180,10 @@ bool parse_args(int argc, char** argv, Options& opts, std::string& error) {
     }
     if (opts.concurrency < 1) {
         error = "--concurrency must be >= 1";
+        return false;
+    }
+    if (opts.rate_rps < 0.0) {
+        error = "--rate must be > 0 (omit it for closed-loop mode)";
         return false;
     }
     if (opts.duration_sec < 1 && opts.max_requests <= 0) {
@@ -236,6 +254,10 @@ int main(int argc, char** argv) {
     const auto measure_end = warmup_end + std::chrono::seconds(opts.duration_sec);
 
     std::atomic<std::int64_t> completed{0}; // measured requests only, for the --requests bound
+    // Open-loop schedule cursor: every worker draws the next slot, so request i is due at
+    // measure-start + i/rate no matter how slow earlier responses were.
+    std::atomic<std::int64_t> next_slot{0};
+    std::atomic<std::int64_t> slots_late{0}; // slots already overdue when a worker picked them up
     std::vector<WorkerResult> results(static_cast<std::size_t>(opts.concurrency));
     std::vector<std::thread> workers;
     workers.reserve(static_cast<std::size_t>(opts.concurrency));
@@ -255,21 +277,46 @@ int main(int argc, char** argv) {
     for (int w = 0; w < opts.concurrency; ++w) {
         workers.emplace_back([&, w]() {
             WorkerResult& out = results[static_cast<std::size_t>(w)];
+            const bool open_loop = opts.rate_rps > 0.0;
             for (;;) {
+                // In OPEN-LOOP mode the reference instant is the slot's scheduled due time, not
+                // the moment a worker happened to become free. Measuring from `due` is exactly
+                // the coordinated-omission correction: if every worker is busy when a slot comes
+                // due, that queueing delay lands in the recorded latency instead of vanishing
+                // because no request was issued.
+                std::chrono::steady_clock::time_point due{};
+                if (open_loop) {
+                    const std::int64_t slot = next_slot.fetch_add(1, std::memory_order_relaxed);
+                    const double offset_sec = static_cast<double>(slot) / opts.rate_rps;
+                    due = start_wall +
+                          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                              std::chrono::duration<double>(offset_sec));
+                    if (due >= measure_end) {
+                        return;
+                    }
+                    const auto now_before = std::chrono::steady_clock::now();
+                    if (now_before < due) {
+                        std::this_thread::sleep_until(due);
+                    } else if (now_before > due) {
+                        slots_late.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+
                 const auto now = std::chrono::steady_clock::now();
-                const bool measuring = now >= warmup_end;
+                const bool measuring = open_loop ? due >= warmup_end : now >= warmup_end;
                 if (opts.max_requests > 0) {
                     if (completed.load(std::memory_order_relaxed) >= opts.max_requests) {
                         return;
                     }
-                } else if (now >= measure_end) {
+                } else if (!open_loop && now >= measure_end) {
                     return;
                 }
 
                 const auto sent_at = std::chrono::steady_clock::now();
+                const auto reference = open_loop ? due : sent_at;
                 const auto response = client.send(request);
                 const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                                         std::chrono::steady_clock::now() - sent_at)
+                                         std::chrono::steady_clock::now() - reference)
                                          .count();
 
                 if (!measuring) {
@@ -320,7 +367,14 @@ int main(int argc, char** argv) {
 
     std::cout << "\n=== sbi-loadgen results ===\n";
     std::cout << "target            : " << opts.method << " " << opts.url << "\n";
-    std::cout << "concurrency       : " << opts.concurrency << " (closed-loop; see --help)\n";
+    if (opts.rate_rps > 0.0) {
+        std::cout << "load model        : open-loop, target " << opts.rate_rps
+                  << " req/s (latency measured from each slot's scheduled time)\n";
+        std::cout << "worker pool       : " << opts.concurrency << "\n";
+    } else {
+        std::cout << "load model        : closed-loop (subject to coordinated omission)\n";
+        std::cout << "concurrency       : " << opts.concurrency << "\n";
+    }
     std::cout.setf(std::ios::fixed);
     std::cout.precision(2);
     std::cout << "measured window   : " << seconds << " s\n";
@@ -331,6 +385,17 @@ int main(int argc, char** argv) {
     }
     std::cout << "\n";
     std::cout << "throughput        : " << throughput << " req/s\n";
+    if (opts.rate_rps > 0.0) {
+        const std::int64_t late = slots_late.load();
+        std::cout << "slots issued late : " << late;
+        if (late > 0) {
+            // Not a tool bug: it means the target rate exceeded what the pool could service, and
+            // the resulting queueing delay is already inside the latencies above.
+            std::cout << " (pool could not keep up with the target rate -- the delay is included"
+                         " in the latencies above, not hidden)";
+        }
+        std::cout << "\n";
+    }
     if (!all.empty()) {
         std::cout << "latency min       : " << format_us(all.front()) << "\n";
         std::cout << "latency mean      : " << format_us(mean_us) << "\n";
@@ -355,7 +420,12 @@ int main(int argc, char** argv) {
         }
         json << "{\n";
         json << "  \"target\": \"" << opts.method << " " << opts.url << "\",\n";
-        json << "  \"load_model\": \"closed-loop\",\n";
+        json << "  \"load_model\": \"" << (opts.rate_rps > 0.0 ? "open-loop" : "closed-loop")
+             << "\",\n";
+        if (opts.rate_rps > 0.0) {
+            json << "  \"target_rate_rps\": " << opts.rate_rps << ",\n";
+            json << "  \"slots_issued_late\": " << slots_late.load() << ",\n";
+        }
         json << "  \"concurrency\": " << opts.concurrency << ",\n";
         json << "  \"measured_seconds\": " << seconds << ",\n";
         json << "  \"responses\": " << responses << ",\n";

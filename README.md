@@ -207,6 +207,18 @@ NF's shared `Client` — replaced by a pool of libcurl easy handles, with the lo
 pool checkout/checkin and never across the network round-trip. True async I/O (Phase 3) remains
 open, deliberately deferred until real benchmark data shows Phase 1+2 concurrency is insufficient.
 
+A real load-generation harness now exists (`tools/sbi-loadgen`, ADR-0244) — ADR-0238's step (3),
+and the first benchmarking of any kind ever performed on this project. Its very first run found a
+real defect: `TCP_NODELAY` was set nowhere in `libs/sbi-core`, so every NF ran with Nagle's
+algorithm enabled on every accepted connection. Fixing it measured **8.36x throughput at
+concurrency 1** (152 → 1273 req/s), 3.73x at 4, 2.53x at 8, and — as the control that confirms the
+diagnosis rather than fitting a story to a speedup — no change at concurrency 32, where Nagle
+never waits. The harness supports both closed-loop and open-loop (`--rate`) load, the latter with
+proper coordinated-omission correction (ADR-0246). **No comparison against free5GC is claimed**:
+ADR-0238's step (1), mapping measurement points onto TS 28.552 counter families, is blocked
+because neither TS 28.552 nor TS 28.554 is vendored in `specs/`, and step (4) needs step (1)
+first.
+
 ## Repository layout
 
 ```
@@ -230,7 +242,8 @@ libs/ss7-core/, libs/tcap-core/, libs/map-core/, libs/cap-core/, libs/diameter-c
 libs/tap3-core/    Real, hand-rolled GSMA TAP3 (TD.57) roaming-CDR BER codec, all 9 real
                    CallEventDetail variants.
 libs/tbcd-core/    TBCD-STRING codec (TS 23.003), shared by the legacy-interconnect libs above.
-tools/             Build-time tooling, including the OpenAPI-to-C++ codegen spine.
+tools/             Build-time tooling (the OpenAPI-to-C++ codegen spine) plus sbi-loadgen, the
+                   load-generation harness used for real performance measurement (ADR-0244/0246).
 specs/             Vendored 3GPP/ETSI source material: R19 OpenAPI YAML (SBI API shapes), NGAP
                    ASN.1 (specs/NGAP), and spec PDFs for protocols with no YAML (PFCP, TS 33.501,
                    and several legacy TCAP/MAP/CAP TS documents). GSMA-member-confidential material
