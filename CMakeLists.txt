@@ -93,6 +93,7 @@ add_subdirectory(bss/product-catalog)
 add_subdirectory(bss/balance-management)
 add_subdirectory(bss/subscriber-management)
 add_subdirectory(bss/roaming-interconnect)
+add_subdirectory(tools/sbi-loadgen)
 
 if(5GC_BUILD_TESTS AND BUILD_TESTING)
     add_subdirectory(tests/integration)

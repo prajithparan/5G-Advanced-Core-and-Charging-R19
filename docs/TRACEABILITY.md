@@ -4771,3 +4771,18 @@ Found by live verification, not code reading: requests sent with `2026-08-31T14:
 Doris as `19:39:37`/`19:39:38`. See ADR-0243 in `docs/DECISIONS.md` for full disclosure, including
 what is deliberately not changed (QuotaFeatureStore's own observation timestamp, no backfill of
 existing rows).
+
+## ADR-0244 -- `sbi-loadgen` harness + TCP_NODELAY defect it found
+
+| Requirement | Test |
+|---|---|
+| Real load generator driving the production client path | `tools/sbi-loadgen` links `sbi_core`, issues load via `Client::send()` (ADR-0241 handle pool, real TLS 1.3 + mTLS, real HTTP/2); live run against a real `nrf`: 33,212 responses, 100% HTTP 200, 0 transport errors |
+| Latency distribution, not just an average | min/mean/p50/p90/p95/p99/p99.9/max, nearest-rank (no interpolation), per-worker vectors merged only at the end |
+| Real defect found and fixed: Nagle on every NF socket | `TCP_NODELAY` set nowhere in `libs/sbi-core` (confirmed by grep; Boost.Asio does not default it) -> `no_delay(true)` on each accepted socket in `http2_server.cpp` |
+| Fix measured, not projected | Same host/`nrf`/endpoint, 2s warmup + 10s measure: c=1 152->1273 req/s (8.36x), c=4 1384->5156 (3.73x), c=8 3309->8387 (2.53x), c=32 15400->15473 (unchanged control) |
+| Diagnosis confirmed rather than fitted to a speedup | The concurrency-32 row is the control: Nagle should make no difference where data is always queued, and it doesn't |
+
+ADR-0238 step (3) delivered. Step (1) (TS 28.552/28.554 counter-family mapping) is **blocked**:
+neither spec is vendored in `specs/`, and inventing counter names is forbidden by CLAUDE.md.
+Step (4) (free5GC comparison) needs step (1) first. No superiority claim is made. See ADR-0244
+in `docs/DECISIONS.md`.

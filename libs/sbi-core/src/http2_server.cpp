@@ -615,6 +615,24 @@ private:
         acceptor_.async_accept(
             [this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
                 if (!ec) {
+                    // TCP_NODELAY (ADR-0244). Boost.Asio does NOT set this by default, so every
+                    // accepted connection had Nagle's algorithm enabled: a small response whose
+                    // final segment is under the MSS sits in the kernel waiting either for more
+                    // data or for the peer's ACK, which the peer's own delayed-ACK timer holds
+                    // back. Measured with tools/sbi-loadgen against a real nrf before this line
+                    // existed: p99 ~50ms against a p50 of 0.3-0.7ms at low concurrency, with the
+                    // stall vanishing at concurrency 32 (where there is always more data queued,
+                    // so Nagle never waits) -- the classic signature, and confirmed by the
+                    // before/after numbers in ADR-0244 rather than assumed from the shape.
+                    // SBI responses are exactly the small-message pattern Nagle penalises, and
+                    // every NF is both a server and a client of other NFs, so this compounds
+                    // across a call chain.
+                    boost::system::error_code nodelay_ec;
+                    socket.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+                    if (nodelay_ec) {
+                        // Non-fatal: a connection with Nagle still on is slow, not broken.
+                        spdlog::warn("sbi: could not set TCP_NODELAY: {}", nodelay_ec.message());
+                    }
                     auto conn =
                         std::make_shared<Connection>(ioc_, std::move(socket), ssl_ctx_, routes_);
                     conn->start();
