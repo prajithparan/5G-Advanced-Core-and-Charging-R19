@@ -27,16 +27,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -89,12 +79,12 @@ json make_subscription_body(const std::string& correlation_id) {
 } // namespace
 
 TEST(UpfEventExposureIntegration, CreateModifyDeleteLifecycle) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t upf_pid = spawn(UPF_PATH);
-    ASSERT_GT(upf_pid, 0) << "failed to fork upf";
+    nf_test::SpawnedProcess upf(UPF_PATH);
+    ASSERT_GT(upf.pid(), 0) << "failed to fork upf";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -160,20 +150,15 @@ TEST(UpfEventExposureIntegration, CreateModifyDeleteLifecycle) {
     auto delete_again_resp = client.send(delete_req);
     ASSERT_TRUE(delete_again_resp.has_value());
     EXPECT_EQ(delete_again_resp->status, 404);
-
-    kill(upf_pid, SIGTERM);
-    waitpid(upf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UpfEventExposureIntegration, CreateWithMissingRequiredFieldIs400) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t upf_pid = spawn(UPF_PATH);
-    ASSERT_GT(upf_pid, 0) << "failed to fork upf";
+    nf_test::SpawnedProcess upf(UPF_PATH);
+    ASSERT_GT(upf.pid(), 0) << "failed to fork upf";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -196,20 +181,15 @@ TEST(UpfEventExposureIntegration, CreateWithMissingRequiredFieldIs400) {
     auto bad_resp = client.send(bad_req);
     ASSERT_TRUE(bad_resp.has_value());
     EXPECT_EQ(bad_resp->status, 400);
-
-    kill(upf_pid, SIGTERM);
-    waitpid(upf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UpfGetUeIpInfoIntegration, SearchUeIpInfoReturnsHonestlyEmptyResult) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t upf_pid = spawn(UPF_PATH);
-    ASSERT_GT(upf_pid, 0) << "failed to fork upf";
+    nf_test::SpawnedProcess upf(UPF_PATH);
+    ASSERT_GT(upf.pid(), 0) << "failed to fork upf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -239,9 +219,4 @@ TEST(UpfGetUeIpInfoIntegration, SearchUeIpInfoReturnsHonestlyEmptyResult) {
     // established check_bearer pattern (see this file's own comment on it, mirrored from
     // nfs/smf, nfs/amf, nfs/nrf) -- it's a real bootstrap-security alternative
     // (`security: [{}, oAuth2ClientCredentials:[...]]`), not tested again per-NF here.
-
-    kill(upf_pid, SIGTERM);
-    waitpid(upf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }

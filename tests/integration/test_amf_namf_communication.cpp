@@ -32,16 +32,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -102,12 +92,12 @@ std::string fetch_token(sbi_core::http2::Client& client) {
 } // namespace
 
 TEST(AmfIntegration, N1N2SubscribeAndUnsubscribe) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -151,20 +141,15 @@ TEST(AmfIntegration, N1N2SubscribeAndUnsubscribe) {
     auto unsub_again = client.send(unsub_req);
     ASSERT_TRUE(unsub_again.has_value());
     EXPECT_EQ(unsub_again->status, 404);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfIntegration, AmfStatusChangeSubscribeAndNonUeN2Transfer) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -199,20 +184,15 @@ TEST(AmfIntegration, AmfStatusChangeSubscribeAndNonUeN2Transfer) {
     const auto result = json::parse(n2_resp->body).get<sbi_gen::N2InformationTransferRspData>();
     EXPECT_EQ(result.result.value,
               sbi_gen::N2InformationTransferResult::N2_INFO_TRANSFER_INITIATED);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfIntegration, MissingUeContextIs404AndTamperedTokenIs401) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -242,20 +222,15 @@ TEST(AmfIntegration, MissingUeContextIs404AndTamperedTokenIs401) {
     auto tampered_resp = client.send(tampered_req);
     ASSERT_TRUE(tampered_resp.has_value());
     EXPECT_EQ(tampered_resp->status, 401);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfIntegration, CreateUEContextOverMultipartThenEBIAssignmentAndRelease) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -313,20 +288,15 @@ TEST(AmfIntegration, CreateUEContextOverMultipartThenEBIAssignmentAndRelease) {
     auto release_again = client.send(release_req);
     ASSERT_TRUE(release_again.has_value());
     EXPECT_EQ(release_again->status, 404);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfIntegration, RelocateAndCancelRelocateUEContextOverMultipart) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -390,9 +360,4 @@ TEST(AmfIntegration, RelocateAndCancelRelocateUEContextOverMultipart) {
     auto wrong_content_type_resp = client.send(wrong_content_type_req);
     ASSERT_TRUE(wrong_content_type_resp.has_value());
     EXPECT_EQ(wrong_content_type_resp->status, 400);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }

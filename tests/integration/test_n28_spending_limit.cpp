@@ -31,16 +31,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -186,12 +176,12 @@ bool wait_metric_at_least(
 } // namespace
 
 TEST(UdrSmPolicyDataIntegration, PatchCreatesAndMergesRealNestedDocument) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udr_pid = spawn(UDR_PATH);
-    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
 
     auto client = make_client();
     const std::string supi = unique_test_supi(1);
@@ -264,23 +254,18 @@ TEST(UdrSmPolicyDataIntegration, PatchCreatesAndMergesRealNestedDocument) {
     // Real merge, not replace: the earlier fields are still there.
     EXPECT_TRUE(dnn_data["subscSpendingLimits"].get<bool>());
     EXPECT_EQ(dnn_data["dnn"].get<std::string>(), "internet");
-
-    kill(udr_pid, SIGTERM);
-    waitpid(udr_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(PcfN28Integration, CreateSmPolicyFailsOpenWhenChfUnreachable) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udr_pid = spawn(UDR_PATH);
-    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
 
-    const pid_t pcf_pid = spawn(PCF_PATH);
-    ASSERT_GT(pcf_pid, 0) << "failed to fork pcf";
+    nf_test::SpawnedProcess pcf(PCF_PATH);
+    ASSERT_GT(pcf.pid(), 0) << "failed to fork pcf";
 
     auto client = make_client();
     const std::string supi = unique_test_supi(2);
@@ -342,13 +327,6 @@ TEST(PcfN28Integration, CreateSmPolicyFailsOpenWhenChfUnreachable) {
     EXPECT_EQ(create_resp->status, 201);
     auto decision = json::parse(create_resp->body);
     EXPECT_TRUE(decision.contains("sessRules"));
-
-    kill(pcf_pid, SIGTERM);
-    waitpid(pcf_pid, nullptr, 0);
-    kill(udr_pid, SIGTERM);
-    waitpid(udr_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 // ADR-0073: real CHF-in-CI closes the gap ADR-0072 disclosed as manual-only -- the full real
@@ -357,16 +335,16 @@ TEST(PcfN28Integration, CreateSmPolicyFailsOpenWhenChfUnreachable) {
 // since PCF's real REST surface deliberately carries no fabricated field revealing its internal
 // spending-limit tracking state (see nfs/pcf/src/main.cpp's own file header on why).
 TEST(PcfChfN28Integration, FullLoopSubscribeStatusChangeNotifyUnsubscribe) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udr_pid = spawn(UDR_PATH);
-    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
-    const pid_t pcf_pid = spawn(PCF_PATH);
-    ASSERT_GT(pcf_pid, 0) << "failed to fork pcf";
-    const pid_t chf_pid = spawn(CHF_PATH);
-    ASSERT_GT(chf_pid, 0) << "failed to fork chf";
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
+    nf_test::SpawnedProcess pcf(PCF_PATH);
+    ASSERT_GT(pcf.pid(), 0) << "failed to fork pcf";
+    nf_test::SpawnedProcess chf(CHF_PATH);
+    ASSERT_GT(chf.pid(), 0) << "failed to fork chf";
 
     auto client = make_client();
     const std::string supi = unique_test_supi(3);
@@ -472,13 +450,4 @@ TEST(PcfChfN28Integration, FullLoopSubscribeStatusChangeNotifyUnsubscribe) {
     auto delete_resp = client.send(delete_req);
     ASSERT_TRUE(delete_resp.has_value());
     EXPECT_EQ(delete_resp->status, 204);
-
-    kill(chf_pid, SIGTERM);
-    waitpid(chf_pid, nullptr, 0);
-    kill(pcf_pid, SIGTERM);
-    waitpid(pcf_pid, nullptr, 0);
-    kill(udr_pid, SIGTERM);
-    waitpid(udr_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }

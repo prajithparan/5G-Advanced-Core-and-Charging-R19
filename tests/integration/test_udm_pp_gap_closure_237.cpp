@@ -25,16 +25,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -74,20 +64,20 @@ std::string fetch_token(sbi_core::http2::Client& client, const std::string& scop
 } // namespace
 
 TEST(UdmPpGapClosure237Integration, PpDataEntryFullLifecycle) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udr_pid = spawn(UDR_PATH);
-    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
         client, "https://127.0.0.1:7781/nudr-dr/v2/subscription-data/nonexistent", 50))
         << "udr never became reachable";
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
     ASSERT_TRUE(wait_reachable(
         client,
         "https://127.0.0.1:7780/nudm-uecm/v1/nonexistent/registrations/amf-3gpp-access",
@@ -176,13 +166,6 @@ TEST(UdmPpGapClosure237Integration, PpDataEntryFullLifecycle) {
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp->status, 404) << resp->body;
     }
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(udr_pid, SIGTERM);
-    waitpid(udr_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 // Real schemas confirmed by direct read of TS26510_CommonData_grp.hpp's generated structs and
@@ -304,20 +287,20 @@ void run_group_lifecycle(sbi_core::http2::Client& client,
 }
 
 TEST(UdmPpGapClosure237Integration, FiveGVnGroupAndFiveGMbsGroupFullLifecycle) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udr_pid = spawn(UDR_PATH);
-    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
         client, "https://127.0.0.1:7781/nudr-dr/v2/subscription-data/nonexistent", 50))
         << "udr never became reachable";
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
     ASSERT_TRUE(wait_reachable(
         client,
         "https://127.0.0.1:7780/nudm-uecm/v1/nonexistent/registrations/amf-3gpp-access",
@@ -337,11 +320,4 @@ TEST(UdmPpGapClosure237Integration, FiveGVnGroupAndFiveGMbsGroupFullLifecycle) {
     // MulticastMbsGroupMemb: multicastGroupMemb (real Gpsi array) is the real required field.
     const json mbs_group_body = {{"multicastGroupMemb", json::array({"msisdn-9997000098"})}};
     run_group_lifecycle(client, token, "mbs-group-membership", mbs_group_body);
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(udr_pid, SIGTERM);
-    waitpid(udr_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }

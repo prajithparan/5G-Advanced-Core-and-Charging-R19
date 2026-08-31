@@ -23,16 +23,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -72,12 +62,12 @@ std::string fetch_token(sbi_core::http2::Client& client, const std::string& scop
 } // namespace
 
 TEST(UdmIntegration, GenerateAuthDataFor5GAkaSubscriberProducesDistinctVectors) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -127,20 +117,15 @@ TEST(UdmIntegration, GenerateAuthDataFor5GAkaSubscriberProducesDistinctVectors) 
     EXPECT_NE(av1.rand, av2.rand);
     EXPECT_NE(av1.autn, av2.autn);
     EXPECT_NE(av1.kausf, av2.kausf);
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UdmIntegration, GenerateAuthDataForEapAkaPrimeSubscriberReturnsEapAkaPrimeVector) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -177,20 +162,15 @@ TEST(UdmIntegration, GenerateAuthDataForEapAkaPrimeSubscriberReturnsEapAkaPrimeV
     EXPECT_EQ(av.xres.size(), 16U);    // RES (not RES*): 8 bytes, hex-encoded
     EXPECT_EQ(av.ckPrime.size(), 32U); // 16 bytes, hex-encoded
     EXPECT_EQ(av.ikPrime.size(), 32U); // 16 bytes, hex-encoded
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UdmIntegration, ConfirmAuthThenDeleteAuthLifecycle) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -248,20 +228,15 @@ TEST(UdmIntegration, ConfirmAuthThenDeleteAuthLifecycle) {
     auto delete_again = client.send(delete_req);
     ASSERT_TRUE(delete_again.has_value());
     EXPECT_EQ(delete_again->status, 404);
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UdmIntegration, GenerateAuthDataUnknownSupiIs404AndTamperedTokenIs401) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -295,9 +270,4 @@ TEST(UdmIntegration, GenerateAuthDataUnknownSupiIs404AndTamperedTokenIs401) {
     auto tampered_resp = client.send(tampered_req);
     ASSERT_TRUE(tampered_resp.has_value());
     EXPECT_EQ(tampered_resp->status, 401);
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }

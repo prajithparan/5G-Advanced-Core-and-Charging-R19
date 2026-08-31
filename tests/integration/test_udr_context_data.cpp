@@ -25,16 +25,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -74,12 +64,12 @@ std::string fetch_token(sbi_core::http2::Client& client) {
 } // namespace
 
 TEST(UdrIntegration, AmfContextLifecycle) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udr_pid = spawn(UDR_PATH);
-    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
 
     auto client = make_client();
     const std::string base_url =
@@ -147,20 +137,15 @@ TEST(UdrIntegration, AmfContextLifecycle) {
     // JSON Patch only touched /guami/amfId -- everything else survives.
     EXPECT_EQ(patched.amfInstanceId, create_data.amfInstanceId);
     EXPECT_EQ(patched.deregCallbackUri, create_data.deregCallbackUri);
-
-    kill(udr_pid, SIGTERM);
-    waitpid(udr_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UdrIntegration, SmfRegistrationLifecycle) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udr_pid = spawn(UDR_PATH);
-    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
 
     auto client = make_client();
     const std::string base_url =
@@ -242,20 +227,15 @@ TEST(UdrIntegration, SmfRegistrationLifecycle) {
     auto del_again = client.send(del_req);
     ASSERT_TRUE(del_again.has_value());
     EXPECT_EQ(del_again->status, 404);
-
-    kill(udr_pid, SIGTERM);
-    waitpid(udr_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UdrIntegration, MissingResourceIs404AndTamperedTokenIs401) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udr_pid = spawn(UDR_PATH);
-    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
 
     auto client = make_client();
     const std::string base_url =
@@ -281,9 +261,4 @@ TEST(UdrIntegration, MissingResourceIs404AndTamperedTokenIs401) {
     auto tampered_resp = client.send(tampered_req);
     ASSERT_TRUE(tampered_resp.has_value());
     EXPECT_EQ(tampered_resp->status, 401);
-
-    kill(udr_pid, SIGTERM);
-    waitpid(udr_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }

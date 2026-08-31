@@ -21,16 +21,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -70,12 +60,12 @@ std::string fetch_token(sbi_core::http2::Client& client, const std::string& scop
 } // namespace
 
 TEST(UdmSdmGapClosure232Integration, ModifyMergePatchesExistingSubscription) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -148,9 +138,4 @@ TEST(UdmSdmGapClosure232Integration, ModifyMergePatchesExistingSubscription) {
     auto unknown_resp = client.send(unknown_req);
     ASSERT_TRUE(unknown_resp.has_value());
     EXPECT_EQ(unknown_resp->status, 404) << unknown_resp->body;
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }

@@ -34,16 +34,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -105,12 +95,12 @@ json make_ran_node_id() {
 } // namespace
 
 TEST(AmfAiotIntegration, MessageDeliveryJsonAndMultipartAnd400) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7778/namf-aiot/v1/transfer", 50))
@@ -156,20 +146,15 @@ TEST(AmfAiotIntegration, MessageDeliveryJsonAndMultipartAnd400) {
     auto bad_resp = client.send(bad_req);
     ASSERT_TRUE(bad_resp.has_value());
     EXPECT_EQ(bad_resp->status, 400);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfMbsCommunicationIntegration, N2MessageTransferReturnsInitiated) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -195,20 +180,15 @@ TEST(AmfMbsCommunicationIntegration, N2MessageTransferReturnsInitiated) {
     const auto result = json::parse(resp->body).get<sbi_gen::MbsN2MessageTransferRspData>();
     EXPECT_EQ(result.result.value,
               sbi_gen::N2InformationTransferResult::N2_INFO_TRANSFER_INITIATED);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfMbsBroadcastIntegration, ContextCreateUpdateDeleteLifecycle) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -272,20 +252,15 @@ TEST(AmfMbsBroadcastIntegration, ContextCreateUpdateDeleteLifecycle) {
     auto delete_again_resp = client.send(delete_req);
     ASSERT_TRUE(delete_again_resp.has_value());
     EXPECT_EQ(delete_again_resp->status, 404);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfMtIntegration, ProvideDomainSelectionInfo404ThenHonestlyEmpty200) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -321,20 +296,15 @@ TEST(AmfMtIntegration, ProvideDomainSelectionInfo404ThenHonestlyEmpty200) {
     const auto ctx_info = json::parse(found_resp->body).get<sbi_gen::UeContextInfo>();
     EXPECT_FALSE(ctx_info.ratType.has_value());
     EXPECT_FALSE(ctx_info.supportVoPS.has_value());
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfMtIntegration, EnableUeReachability404ThenRealAck) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -372,20 +342,15 @@ TEST(AmfMtIntegration, EnableUeReachability404ThenRealAck) {
     ASSERT_EQ(found_resp->status, 200);
     const auto ack = json::parse(found_resp->body).get<sbi_gen::EnableUeReachabilityRspData>();
     EXPECT_EQ(ack.reachability.value, "REACHABLE");
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfMtIntegration, EnableGroupReachabilityReturnsHonestlyEmptyList) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -424,9 +389,4 @@ TEST(AmfMtIntegration, EnableGroupReachabilityReturnsHonestlyEmptyList) {
     auto bad_resp = client.send(bad_req);
     ASSERT_TRUE(bad_resp.has_value());
     EXPECT_EQ(bad_resp->status, 400);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }

@@ -33,16 +33,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -105,12 +95,12 @@ constexpr const char* kTamperedSuciProfileA =
 } // namespace
 
 TEST(UdmMtIntegration, QueryUeInfo404ThenHonestlyEmpty200) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udr_pid = spawn(UDR_PATH);
-    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
 
     auto client = make_client();
     // Real dependency ordering: MT's own existence check calls out to udr synchronously (same
@@ -125,8 +115,8 @@ TEST(UdmMtIntegration, QueryUeInfo404ThenHonestlyEmpty200) {
         50))
         << "udr never became reachable";
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     ASSERT_TRUE(wait_reachable(
         client, "https://127.0.0.1:7780/nudm-mt/v1/nonexistent?fields=tadsInfo", "GET", 50))
@@ -149,30 +139,26 @@ TEST(UdmMtIntegration, QueryUeInfo404ThenHonestlyEmpty200) {
     found_req.headers.emplace("authorization", "Bearer " + token);
     auto found_resp = client.send(found_req);
     ASSERT_TRUE(found_resp.has_value());
-    // EXPECT (not ASSERT): a real cross-process UDM->UDR call is on this path -- a failure here
-    // must not skip the kill()/waitpid() cleanup below, or the spawned nrf/udr/udm processes leak
-    // and hang the test harness (they keep the captured stdout pipe open indefinitely).
+    // EXPECT (not ASSERT): a real cross-process UDM->UDR call is on this path, and the rest of the
+    // checks below are still worth running if it fails. The leak this originally guarded against
+    // (an early ASSERT return skipping the manual kill()/waitpid() cleanup, leaving nrf/udr/udm
+    // holding their stdout pipes open and hanging the harness) is now handled structurally by
+    // nf_test::SpawnedProcess's destructor -- see ADR-0242 -- so EXPECT here is a readability
+    // choice, no longer load-bearing.
     EXPECT_EQ(found_resp->status, 200);
     if (found_resp->status == 200) {
         const auto info = json::parse(found_resp->body).get<sbi_gen::UeInfo_Nudm_MT>();
         EXPECT_FALSE(info.tadsInfo.has_value());
     }
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(udr_pid, SIGTERM);
-    waitpid(udr_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UdmMtIntegration, ProvideLocationInfoReturnsHonestlyEmptyResult) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udr_pid = spawn(UDR_PATH);
-    ASSERT_GT(udr_pid, 0) << "failed to fork udr";
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0) << "failed to fork udr";
 
     auto client = make_client();
     // Same real udr-readiness reasoning as QueryUeInfo404ThenHonestlyEmpty200 above.
@@ -183,8 +169,8 @@ TEST(UdmMtIntegration, ProvideLocationInfoReturnsHonestlyEmptyResult) {
         50))
         << "udr never became reachable";
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     ASSERT_TRUE(wait_reachable(
         client, "https://127.0.0.1:7780/nudm-mt/v1/nonexistent?fields=tadsInfo", "GET", 50))
@@ -208,22 +194,15 @@ TEST(UdmMtIntegration, ProvideLocationInfoReturnsHonestlyEmptyResult) {
         EXPECT_FALSE(result.currentLoc.has_value());
         EXPECT_FALSE(result.ratType.has_value());
     }
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(udr_pid, SIGTERM);
-    waitpid(udr_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UdmNiddauIntegration, AuthorizeNiddDataIs501) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -259,20 +238,15 @@ TEST(UdmNiddauIntegration, AuthorizeNiddDataIs501) {
     auto bad_resp = client.send(bad_req);
     ASSERT_TRUE(bad_resp.has_value());
     EXPECT_EQ(bad_resp->status, 400);
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UdmRsdsIntegration, ReportSMDeliveryStatusIs204) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -291,20 +265,15 @@ TEST(UdmRsdsIntegration, ReportSMDeliveryStatusIs204) {
     auto resp = client.send(req);
     ASSERT_TRUE(resp.has_value());
     EXPECT_EQ(resp->status, 204);
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UdmSsauIntegration, AuthorizeIs501AndRemovalIs404) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -345,20 +314,15 @@ TEST(UdmSsauIntegration, AuthorizeIs501AndRemovalIs404) {
     auto bad_remove_resp = client.send(bad_remove_req);
     ASSERT_TRUE(bad_remove_resp.has_value());
     EXPECT_EQ(bad_remove_resp->status, 400);
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(UdmUeidIntegration, DeconcealRealSuciWorksAndTamperedMacIs400) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t udm_pid = spawn(UDM_PATH);
-    ASSERT_GT(udm_pid, 0) << "failed to fork udm";
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7780/nudm-ueid/v1/deconceal", "POST", 50))
@@ -375,8 +339,9 @@ TEST(UdmUeidIntegration, DeconcealRealSuciWorksAndTamperedMacIs400) {
     req.body = json{{"suci", kRealSuciProfileA}}.dump();
     auto resp = client.send(req);
     ASSERT_TRUE(resp.has_value());
-    // EXPECT (not ASSERT): guarantees the kill()/waitpid() cleanup below always runs, even if
-    // this ever regresses -- same defensive reasoning as the other tests in this file.
+    // EXPECT (not ASSERT): lets the remaining checks run if this regresses. The cleanup it
+    // originally protected is now guaranteed by nf_test::SpawnedProcess's destructor (ADR-0242),
+    // so this is a readability choice rather than a leak guard -- same as the other tests here.
     EXPECT_EQ(resp->status, 200) << resp->body;
     if (resp->status == 200) {
         const auto result = json::parse(resp->body).get<sbi_gen::DeconcealRspData>();
@@ -392,9 +357,4 @@ TEST(UdmUeidIntegration, DeconcealRealSuciWorksAndTamperedMacIs400) {
     auto tampered_resp = client.send(tampered_req);
     ASSERT_TRUE(tampered_resp.has_value());
     EXPECT_EQ(tampered_resp->status, 400);
-
-    kill(udm_pid, SIGTERM);
-    waitpid(udm_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }

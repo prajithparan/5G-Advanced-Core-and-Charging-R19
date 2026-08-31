@@ -29,16 +29,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -107,12 +97,12 @@ sbi_gen::AmfCreateEventSubscription make_create_subscription(const std::string& 
 } // namespace
 
 TEST(AmfLocationIntegration, ProvidePositioningInfoIs501) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -143,20 +133,15 @@ TEST(AmfLocationIntegration, ProvidePositioningInfoIs501) {
     auto bad_resp = client.send(bad_req);
     ASSERT_TRUE(bad_resp.has_value());
     EXPECT_EQ(bad_resp->status, 400);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfLocationIntegration, ProvideLocationInfo404ThenHonestlyEmpty200) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -196,20 +181,15 @@ TEST(AmfLocationIntegration, ProvideLocationInfo404ThenHonestlyEmpty200) {
     const auto loc_info = json::parse(found_resp->body).get<sbi_gen::ProvideLocInfo>();
     EXPECT_FALSE(loc_info.ratType.has_value());
     EXPECT_FALSE(loc_info.location.has_value());
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfLocationIntegration, CancelLocationIs404) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -232,20 +212,15 @@ TEST(AmfLocationIntegration, CancelLocationIs404) {
     auto resp = client.send(req);
     ASSERT_TRUE(resp.has_value());
     EXPECT_EQ(resp->status, 404);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfEventExposureIntegration, IndividualSubscriptionCreateModifyDelete) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -306,20 +281,15 @@ TEST(AmfEventExposureIntegration, IndividualSubscriptionCreateModifyDelete) {
     auto delete_again_resp = client.send(delete_req);
     ASSERT_TRUE(delete_again_resp.has_value());
     EXPECT_EQ(delete_again_resp->status, 404);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(AmfEventExposureIntegration, AmfSetLevelBulkSubscriptionCreateModifyDelete) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t amf_pid = spawn(AMF_PATH);
-    ASSERT_GT(amf_pid, 0) << "failed to fork amf";
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -380,9 +350,4 @@ TEST(AmfEventExposureIntegration, AmfSetLevelBulkSubscriptionCreateModifyDelete)
     auto delete_resp = client.send(delete_req);
     ASSERT_TRUE(delete_resp.has_value());
     EXPECT_EQ(delete_resp->status, 204);
-
-    kill(amf_pid, SIGTERM);
-    waitpid(amf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }

@@ -29,16 +29,6 @@ namespace {
 
 using nlohmann::json;
 
-pid_t spawn(const char* path) {
-    const pid_t pid = fork();
-    if (pid == 0) {
-        nf_test::arm_parent_death_signal();
-        execl(path, path, static_cast<char*>(nullptr));
-        _exit(127); // only reached if execl fails
-    }
-    return pid;
-}
-
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
         .cert_path = CERTS_DIR "/hello-nf/cert.pem",
@@ -100,12 +90,12 @@ sbi_core::multipart::Encoded encode_create_sm_context_body(const std::string& su
 } // namespace
 
 TEST(SmfEventExposureIntegration, CreateGetReplaceDeleteLifecycle) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t smf_pid = spawn(SMF_PATH);
-    ASSERT_GT(smf_pid, 0) << "failed to fork smf";
+    nf_test::SpawnedProcess smf(SMF_PATH);
+    ASSERT_GT(smf.pid(), 0) << "failed to fork smf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -182,20 +172,15 @@ TEST(SmfEventExposureIntegration, CreateGetReplaceDeleteLifecycle) {
     auto delete_again_resp = client.send(delete_req);
     ASSERT_TRUE(delete_again_resp.has_value());
     EXPECT_EQ(delete_again_resp->status, 404);
-
-    kill(smf_pid, SIGTERM);
-    waitpid(smf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(SmfEventExposureIntegration, CreateWithMissingRequiredFieldIs400) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t smf_pid = spawn(SMF_PATH);
-    ASSERT_GT(smf_pid, 0) << "failed to fork smf";
+    nf_test::SpawnedProcess smf(SMF_PATH);
+    ASSERT_GT(smf.pid(), 0) << "failed to fork smf";
 
     auto client = make_client();
     ASSERT_TRUE(
@@ -220,23 +205,18 @@ TEST(SmfEventExposureIntegration, CreateWithMissingRequiredFieldIs400) {
     auto bad_resp = client.send(bad_req);
     ASSERT_TRUE(bad_resp.has_value());
     EXPECT_EQ(bad_resp->status, 400);
-
-    kill(smf_pid, SIGTERM);
-    waitpid(smf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
 
 TEST(SmfNiddIntegration, DeliverMissingContextIs404ThenRealContextIs204) {
-    const pid_t nrf_pid = spawn(NRF_PATH);
-    ASSERT_GT(nrf_pid, 0) << "failed to fork nrf";
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0) << "failed to fork nrf";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    const pid_t smf_pid = spawn(SMF_PATH);
-    ASSERT_GT(smf_pid, 0) << "failed to fork smf";
+    nf_test::SpawnedProcess smf(SMF_PATH);
+    ASSERT_GT(smf.pid(), 0) << "failed to fork smf";
 
-    const pid_t pcf_pid = spawn(PCF_PATH);
-    ASSERT_GT(pcf_pid, 0) << "failed to fork pcf";
+    nf_test::SpawnedProcess pcf(PCF_PATH);
+    ASSERT_GT(pcf.pid(), 0) << "failed to fork pcf";
 
     auto client = make_client();
     ASSERT_TRUE(wait_reachable(
@@ -290,11 +270,4 @@ TEST(SmfNiddIntegration, DeliverMissingContextIs404ThenRealContextIs204) {
     auto deliver_resp = client.send(deliver_req);
     ASSERT_TRUE(deliver_resp.has_value());
     EXPECT_EQ(deliver_resp->status, 204);
-
-    kill(pcf_pid, SIGTERM);
-    waitpid(pcf_pid, nullptr, 0);
-    kill(smf_pid, SIGTERM);
-    waitpid(smf_pid, nullptr, 0);
-    kill(nrf_pid, SIGTERM);
-    waitpid(nrf_pid, nullptr, 0);
 }
