@@ -200,8 +200,12 @@ candidates once investigation found those target the NFV-MANO orchestration laye
 doesn't have. First concrete step against the synchronous-HTTP-client debt item now closed
 (ADR-0239, Phase 1 of 3): every NF's server was found to be fully single-threaded (zero request
 concurrency at all, worse than just "the client blocks") — now driven by a real worker-thread
-pool, live-verified (6 concurrent requests complete in ~320ms, not ~1800ms). Client-instance
-pooling (Phase 2) and true async I/O (Phase 3) remain open.
+pool, live-verified (6 concurrent requests complete in ~320ms, not ~1800ms). Phase 2 now closed
+too (ADR-0241): `Client::send` used to hold one mutex across the whole blocking
+`curl_easy_perform`, so every outbound call to a given peer queued behind every other one on that
+NF's shared `Client` — replaced by a pool of libcurl easy handles, with the lock now held only for
+pool checkout/checkin and never across the network round-trip. True async I/O (Phase 3) remains
+open, deliberately deferred until real benchmark data shows Phase 1+2 concurrency is insufficient.
 
 ## Repository layout
 

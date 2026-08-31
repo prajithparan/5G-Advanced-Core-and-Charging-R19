@@ -4,11 +4,9 @@
 // deliberately slow handler, driven by sbi_core::run_multi_threaded on its own io_context instead
 // of a bare single-threaded ioc.run(). N concurrent client threads, each with its OWN Client
 // instance (its own independent TCP/TLS connection -- this project's Client is synchronous and
-// one-request-at-a-time per instance, so this test proves the "different connections handled in
-// parallel" dimension of Phase 1; it cannot exercise the "off-strand dispatch also helps
-// multiplexed streams on ONE shared connection" dimension, since no caller in this codebase can
-// yet have two requests in flight on the same Client instance -- a real, disclosed limitation, see
-// docs/DECISIONS.md ADR-0239), each hitting the same slow route. If real concurrency is happening,
+// one-request-at-a-time per instance at the time Phase 1 landed, so this test proves the
+// "different connections handled in parallel" dimension of Phase 1), each hitting the same slow
+// route. If real concurrency is happening,
 // N concurrent slow requests complete in roughly one request's worth of wall-clock time, not N
 // times that (which is what the old single-threaded server would have produced).
 
@@ -115,6 +113,72 @@ TEST(SbiCoreConcurrencyIntegration, ConcurrentRequestsOnDifferentConnectionsRunI
     const auto fully_serial_bound = kHandlerDelay * kConcurrentRequests;
     EXPECT_LT(elapsed, fully_serial_bound * 7 / 10)
         << "requests did not run concurrently (took "
+        << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << "ms for "
+        << kConcurrentRequests << " x " << kHandlerDelay.count() << "ms requests)";
+}
+
+// ADR-0241 (Phase 2): the same slow route, but every thread shares ONE Client instance -- exactly
+// the shape every NF actually uses (one shared Client per downstream peer, e.g. UDM's udr_client).
+// Before the handle pool this could not run in parallel at all: Client::send held one mutex across
+// the whole blocking curl_easy_perform, so N concurrent callers on a shared Client serialized
+// completely, landing at or above the fully-serial bound no matter how concurrent the server was.
+TEST(SbiCoreConcurrencyIntegration, ConcurrentRequestsThroughOneSharedClientRunInParallel) {
+    boost::asio::io_context ioc;
+    sbi_core::http2::TlsConfig server_tls{
+        .cert_path = CERTS_DIR "/hello-nf/cert.pem",
+        .key_path = CERTS_DIR "/hello-nf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Server server(ioc, "127.0.0.1", 0, server_tls);
+    server.add_route("GET", "/slow", [](const sbi_core::http2::Request&) {
+        std::this_thread::sleep_for(kHandlerDelay);
+        return sbi_core::http2::Response::json(200, R"({"ok":true})");
+    });
+    server.start();
+    const auto port = server.local_port();
+
+    MultiThreadedIoContextRunner runner(ioc);
+
+    sbi_core::http2::TlsConfig client_tls{
+        .cert_path = CERTS_DIR "/hello-nf/cert.pem",
+        .key_path = CERTS_DIR "/hello-nf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    // ONE Client, shared by every thread below -- that sharing is the whole point of this test.
+    sbi_core::http2::Client shared_client(std::move(client_tls));
+
+    std::vector<std::thread> callers;
+    std::vector<char> ok(static_cast<std::size_t>(kConcurrentRequests), 0);
+    // Captured separately from the status check so a corrupted/interleaved response body fails the
+    // test too -- pooling bugs show up as wrong or empty bodies, not only as slowness.
+    std::vector<std::string> bodies(static_cast<std::size_t>(kConcurrentRequests));
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < kConcurrentRequests; ++i) {
+        callers.emplace_back([i, port, &shared_client, &ok, &bodies] {
+            sbi_core::http2::ClientRequest req;
+            req.method = "GET";
+            req.url = "https://127.0.0.1:" + std::to_string(port) + "/slow";
+            auto resp = shared_client.send(req);
+            if (resp.has_value()) {
+                ok[static_cast<std::size_t>(i)] = (resp->status == 200) ? 1 : 0;
+                bodies[static_cast<std::size_t>(i)] = resp->body;
+            }
+        });
+    }
+    for (auto& t : callers) {
+        t.join();
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+
+    for (int i = 0; i < kConcurrentRequests; ++i) {
+        EXPECT_TRUE(ok[static_cast<std::size_t>(i)] != 0) << "request " << i << " did not return 200";
+        EXPECT_EQ(bodies[static_cast<std::size_t>(i)], R"({"ok":true})")
+            << "request " << i << " got a wrong/corrupted body";
+    }
+
+    const auto fully_serial_bound = kHandlerDelay * kConcurrentRequests;
+    EXPECT_LT(elapsed, fully_serial_bound * 7 / 10)
+        << "shared-Client requests did not run concurrently (took "
         << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << "ms for "
         << kConcurrentRequests << " x " << kHandlerDelay.count() << "ms requests)";
 }

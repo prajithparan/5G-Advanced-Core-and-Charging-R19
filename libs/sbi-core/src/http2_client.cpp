@@ -8,6 +8,11 @@ namespace sbi_core::http2 {
 
 namespace {
 
+// Upper bound on IDLE handles retained between calls. Concurrency above this still works (checkout
+// creates on demand); it just stops the pool retaining more than this many afterwards, so a single
+// burst can't leave hundreds of connections parked open for the process's lifetime.
+constexpr std::size_t kMaxIdleHandles = 64;
+
 void ensure_curl_global_init() {
     static std::once_flag once;
     std::call_once(once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
@@ -43,21 +48,59 @@ std::size_t write_header_callback(char* ptr, std::size_t size, std::size_t nmemb
 
 Client::Client(TlsConfig tls) : tls_(std::move(tls)) {
     ensure_curl_global_init();
-    curl_ = curl_easy_init();
 }
 
 Client::~Client() {
-    if (curl_ != nullptr) {
-        curl_easy_cleanup(static_cast<CURL*>(curl_));
+    // No lock: per the lifetime contract in the header, a Client must outlive every in-flight
+    // send() on it, so by here no other thread can be touching idle_.
+    for (void* handle : idle_) {
+        curl_easy_cleanup(static_cast<CURL*>(handle));
     }
 }
 
+Client::HandleLease::~HandleLease() {
+    if (handle_ != nullptr) {
+        owner_.checkin(handle_);
+    }
+}
+
+void* Client::checkout() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!idle_.empty()) {
+            void* handle = idle_.back();
+            idle_.pop_back();
+            return handle;
+        }
+    }
+    // Pool empty -- create outside the lock; curl_easy_init can fail (allocation), so the caller
+    // still has to handle nullptr rather than assume a handle exists.
+    return curl_easy_init();
+}
+
+void Client::checkin(void* handle) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (idle_.size() < kMaxIdleHandles) {
+            idle_.push_back(handle);
+            return;
+        }
+    }
+    // Pool at capacity: destroy rather than grow without bound. Only reachable if concurrency
+    // genuinely exceeded kMaxIdleHandles, in which case losing this handle's keepalive state is
+    // the cheaper outcome.
+    curl_easy_cleanup(static_cast<CURL*>(handle));
+}
+
 tl::expected<ClientResponse, std::string> Client::send(const ClientRequest& request) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (curl_ == nullptr) {
+    HandleLease lease(*this, checkout());
+    if (lease.get() == nullptr) {
         return tl::unexpected("curl handle not initialized");
     }
-    auto* curl = static_cast<CURL*>(curl_);
+    auto* curl = static_cast<CURL*>(lease.get());
+    // Deliberate: curl_easy_reset clears the per-request options but PRESERVES this handle's live
+    // connection, TLS session cache and DNS cache -- that preservation is what makes pooled reuse
+    // real HTTP/2 keepalive rather than a fresh connection per call.
     curl_easy_reset(curl);
 
     curl_easy_setopt(curl, CURLOPT_URL, request.url.c_str());

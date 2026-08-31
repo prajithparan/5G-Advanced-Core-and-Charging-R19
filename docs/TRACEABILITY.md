@@ -4684,3 +4684,25 @@ disclosed in the ADR: this binds NF lifetime to the test BINARY, not the individ
 an early-returning `ASSERT_*` still leaks until the binary exits (task #166 remains open), and a
 microsecond-wide fork/prctl race remains whose failure mode is exactly the pre-existing behaviour.
 See ADR-0240 in `docs/DECISIONS.md` for full disclosure.
+
+## ADR-0241 -- Client handle pooling (Phase 2 of the synchronous-HTTP debt, ADR-0009)
+
+| Requirement | Test |
+|---|---|
+| Concurrent callers sharing ONE `Client` -- the shape every NF actually uses -- must run in parallel, not serialize on a mutex held across the network round-trip | `SbiCoreConcurrencyIntegration.ConcurrentRequestsThroughOneSharedClientRunInParallel`: 6 concurrent 300ms-handler requests through a single shared `Client` complete in ~320ms, not the ~1800ms the pre-pool mutex produced |
+| Pooling must not corrupt or interleave responses between concurrent callers | Same test asserts every response is a real 200 AND that each body is exactly `{"ok":true}` -- a handle-reuse bug shows up as a wrong/empty body, not only as slowness |
+| Phase 1's separate-connection concurrency still holds | `SbiCoreConcurrencyIntegration.ConcurrentRequestsOnDifferentConnectionsRunInParallel` (unchanged, still ~320ms) |
+| No regression across every NF (all of them use this client for outbound SBI) | Full regular-build `ctest` suite with the standard `-E "UdrIntegration.AmfContextLifecycle"` exclusion |
+
+`Client::send()` previously took a `std::mutex` as its first statement and held it across the whole
+blocking `curl_easy_perform`, so every outbound call to a given peer queued behind every other one
+on that NF's shared `Client` -- the bottleneck ADR-0239 explicitly predicted Phase 1 would expose.
+Replaced with a pool of libcurl easy handles: checkout/checkin under the lock (microseconds),
+`curl_easy_perform` with no lock held, an RAII `HandleLease` guaranteeing return on every exit path
+including error returns, and `kMaxIdleHandles` bounding retained (not concurrent) handles. The
+public `Client::send` signature is unchanged, so no NF or call site was modified. `curl_easy_reset`
+on checkout is preserved deliberately -- it clears per-request options while preserving the
+handle's live connection, TLS session and DNS caches, which is what makes pooled reuse real
+keepalive. Disclosed in the ADR rather than fixed: the pre-existing lifetime contract that a
+`Client` must outlive its in-flight `send()` calls (already undefined with the single-handle
+design, since the destructor never took the mutex either). See ADR-0241 in `docs/DECISIONS.md`.
