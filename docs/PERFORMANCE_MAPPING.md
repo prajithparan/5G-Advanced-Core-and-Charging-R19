@@ -139,10 +139,10 @@ specs (already vendored as R19 YAML).
 
 | Spec | Needed for | Priority |
 |---|---|---|
-| TS 28.622 (Generic NRM) + TS 28.541 (5G NRM) | The measured-object classes measurements attach to (`AMFFunction`, `NRFFunction`, ...). Required to model MOIs properly. | Only if exposing measurements per spec structure |
-| TS 28.532 (Performance-data reporting MnS) | The actual reporting interface/file format a real OSS would consume | Only if building a PM reporting interface |
-| TS 32.401 (PM concepts) | Formal PM vocabulary | Optional |
-| **TS 32.4xx charging-performance series** | **Measuring CHF at all** -- 28.552 does not cover it | **High, given ADR-0049's commercial mandate** |
+| TS 28.622 (Generic NRM) + TS 28.541 (5G NRM) | The measured-object classes measurements attach to (`AMFFunction`, `NRFFunction`, ...). Required to model MOIs properly. | **Now vendored** (v19.6.0 / v19.6.0) |
+| TS 28.532 (Performance-data reporting MnS) | The actual reporting interface/file format a real OSS would consume | **Now vendored** (v19.3.0) |
+| TS 32.401 (PM concepts) | Formal PM vocabulary | **Now vendored** (v19.0.0) |
+| ~~TS 32.4xx charging-performance series~~ | **CORRECTED (ADR-0248)**: no such measurement spec exists. TS 32.240 v19.4.0 defines no CHF counters (its one "performance measurement" mention is RAN-sharing, pointing at TS 32.130/28.201); TS 32.401 v19.0.0 is a PM *framework* that defers counter definitions elsewhere; 32.290/32.291 are functionality specs. **CHF appears to have no 3GPP-defined performance measurements at all** -- it needs this project's own counters following 28.552's request/success/failure *pattern*, with no conformance claim to measurements that do not exist. | Resolved -- specs downloaded and read |
 
 ## What this document does NOT do
 

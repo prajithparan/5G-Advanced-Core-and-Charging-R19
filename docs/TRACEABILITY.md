@@ -4826,3 +4826,18 @@ ADR-0238 step (1) stays blocked on unvendored TS 28.552/28.554.
 | Highest-leverage instrumentation finding | 28.552 splits every operation into request/success/per-cause-failure; every 5GC-reachable 28.554 KPI is a ratio of those, so the split is the prerequisite for step (4) |
 
 See ADR-0247 and `docs/PERFORMANCE_MAPPING.md`. No conformance or free5GC claim is made.
+
+## ADR-0248 -- SMF `HANDOVER_REQ_ACK`, Rel-19 spec acquisition, ADR-0247 correction
+
+| Requirement | Evidence |
+|---|---|
+| Real N2SmInfoType enum, read not assumed | `TS29502_Nsmf_PDUSession.yaml`: **26** values; this project implemented 2 |
+| `HANDOVER_REQ_ACK` real datapath handling | Decodes `HandoverRequestAcknowledgeTransfer`, extracts `dL_NGU_UP_TNLInformation`, drives the same proven PFCP Session Modification DL-FAR path as ADR-0092 |
+| Field equivalence verified, not assumed from names | Both generated ASN.1 structs read directly; both carry `dL_NGU_UP_TNLInformation` |
+| Correct, distinct N2 response | `HandoverCommandTransfer` + `n2SmInfoType=HANDOVER_CMD` (vs PathSwitchRequestAcknowledgeTransfer + PATH_SWITCH_REQ_ACK) |
+| Build + regression | SMF builds clean, conformance 333/333 |
+| **NOT live-verified** | Needs AMF->SMF handover relay (still open) plus gNB-side handover simulation; neither exists |
+| Specs vendored, all Release 19 | TS 28.622 v19.6.0, TS 28.532 v19.3.0, TS 28.541 v19.6.0, TS 32.401 v19.0.0, TS 32.240 v19.4.0, TS 32.290 v19.4.0, TS 32.291 v19.4.0 -- versions read from each document |
+| ADR-0247 correction | No charging-performance-measurement spec exists; CHF has no 3GPP-defined measurements |
+
+See ADR-0248 in `docs/DECISIONS.md`.

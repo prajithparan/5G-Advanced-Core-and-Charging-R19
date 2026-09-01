@@ -150,6 +150,8 @@
 // legitimate shared-library dependency (ngap_generated), not an NF-private-header violation.
 extern "C" {
 #include <GTPTunnel.h>
+#include <HandoverCommandTransfer.h>
+#include <HandoverRequestAcknowledgeTransfer.h>
 #include <PathSwitchRequestAcknowledgeTransfer.h>
 #include <PathSwitchRequestTransfer.h>
 #include <QosFlowAcceptedItem.h>
@@ -1947,42 +1949,90 @@ int main() {
             // PATH_SWITCH_REQ handling -- the one N2SmInfoType this project closes real, live
             // datapath behavior for (see this handler's own real, disclosed scope in the file
             // header: the other 20 real N2SmInfoType values remain a real, open gap).
-            if (body->n2SmInfoType.has_value() &&
-                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::PATH_SWITCH_REQ &&
-                has_n2_sm_info_bytes) {
-                auto* transfer = static_cast<PathSwitchRequestTransfer_t*>(
-                    ngap_per_decode(&asn_DEF_PathSwitchRequestTransfer, n2_sm_info_bytes));
-                if (transfer == nullptr) {
-                    return sbi_core::http2::problem_response(
-                        400, "Bad Request", "n2SmInfo is not a valid PathSwitchRequestTransfer");
-                }
-                if (transfer->dL_NGU_UP_TNLInformation.present !=
-                        UPTransportLayerInformation_PR_gTPTunnel ||
-                    transfer->dL_NGU_UP_TNLInformation.choice.gTPTunnel == nullptr) {
-                    ASN_STRUCT_FREE(asn_DEF_PathSwitchRequestTransfer, transfer);
-                    return sbi_core::http2::problem_response(
-                        400,
-                        "Bad Request",
-                        "PathSwitchRequestTransfer has no real GTP-U dL-NGU-UP-TNLInformation");
-                }
-                const auto* gtp_tunnel = transfer->dL_NGU_UP_TNLInformation.choice.gTPTunnel;
-                if (gtp_tunnel->transportLayerAddress.size != 4 || gtp_tunnel->gTP_TEID.size != 4) {
-                    ASN_STRUCT_FREE(asn_DEF_PathSwitchRequestTransfer, transfer);
-                    return sbi_core::http2::problem_response(
-                        400,
-                        "Bad Request",
-                        "PathSwitchRequestTransfer's GTPTunnel is not a real IPv4 4-octet TEID");
-                }
+            // Gap-closure (ADR-0248): the same real downlink-path switch is driven by TWO real
+            // N2SmInfoType values, not one. PATH_SWITCH_REQ is Xn-based mobility (TS 23.502
+            // §4.9.1.2); HANDOVER_REQ_ACK is the N2-based handover's own Handover Resource
+            // Allocation step (§4.9.1.3), where the TARGET gNB's accepted downlink tunnel comes
+            // back to SMF. Both transfers carry the same real `dL-NGU-UP-TNLInformation` field
+            // (confirmed by reading both generated ASN.1 structs, not assumed from the names), so
+            // the real UPF consequence -- repoint the downlink FAR at the new gNB -- is
+            // identical. Only the decode type and the N2 response type differ.
+            const bool is_path_switch =
+                body->n2SmInfoType.has_value() &&
+                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::PATH_SWITCH_REQ;
+            const bool is_ho_req_ack =
+                body->n2SmInfoType.has_value() &&
+                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::HANDOVER_REQ_ACK;
+            if ((is_path_switch || is_ho_req_ack) && has_n2_sm_info_bytes) {
                 std::array<std::uint8_t, 4> gnb_ipv4{};
-                std::copy(gtp_tunnel->transportLayerAddress.buf,
-                          gtp_tunnel->transportLayerAddress.buf + 4,
-                          gnb_ipv4.begin());
-                const std::uint32_t gnb_teid =
-                    (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[0]) << 24) |
-                    (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[1]) << 16) |
-                    (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[2]) << 8) |
-                    static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[3]);
-                ASN_STRUCT_FREE(asn_DEF_PathSwitchRequestTransfer, transfer);
+                std::uint32_t gnb_teid = 0;
+                {
+                    // Decode whichever real transfer this N2SmInfoType actually declares, pull the
+                    // DL GTP-U tunnel out of it, and free it before going anywhere near the
+                    // network -- the two types have different ASN.1 descriptors, so the free must
+                    // be paired with the matching one.
+                    const UPTransportLayerInformation_t* dl_tnl = nullptr;
+                    PathSwitchRequestTransfer_t* ps_transfer = nullptr;
+                    HandoverRequestAcknowledgeTransfer_t* ho_transfer = nullptr;
+                    if (is_path_switch) {
+                        ps_transfer = static_cast<PathSwitchRequestTransfer_t*>(
+                            ngap_per_decode(&asn_DEF_PathSwitchRequestTransfer, n2_sm_info_bytes));
+                        if (ps_transfer != nullptr) {
+                            dl_tnl = &ps_transfer->dL_NGU_UP_TNLInformation;
+                        }
+                    } else {
+                        ho_transfer =
+                            static_cast<HandoverRequestAcknowledgeTransfer_t*>(ngap_per_decode(
+                                &asn_DEF_HandoverRequestAcknowledgeTransfer, n2_sm_info_bytes));
+                        if (ho_transfer != nullptr) {
+                            dl_tnl = &ho_transfer->dL_NGU_UP_TNLInformation;
+                        }
+                    }
+                    const char* type_name = is_path_switch ? "PathSwitchRequestTransfer"
+                                                           : "HandoverRequestAcknowledgeTransfer";
+                    auto free_transfer = [&]() {
+                        if (ps_transfer != nullptr) {
+                            ASN_STRUCT_FREE(asn_DEF_PathSwitchRequestTransfer, ps_transfer);
+                        }
+                        if (ho_transfer != nullptr) {
+                            ASN_STRUCT_FREE(asn_DEF_HandoverRequestAcknowledgeTransfer,
+                                            ho_transfer);
+                        }
+                    };
+                    if (dl_tnl == nullptr) {
+                        free_transfer();
+                        return sbi_core::http2::problem_response(
+                            400,
+                            "Bad Request",
+                            std::string("n2SmInfo is not a valid ") + type_name);
+                    }
+                    if (dl_tnl->present != UPTransportLayerInformation_PR_gTPTunnel ||
+                        dl_tnl->choice.gTPTunnel == nullptr) {
+                        free_transfer();
+                        return sbi_core::http2::problem_response(
+                            400,
+                            "Bad Request",
+                            std::string(type_name) + " has no real GTP-U dL-NGU-UP-TNLInformation");
+                    }
+                    const auto* gtp_tunnel = dl_tnl->choice.gTPTunnel;
+                    if (gtp_tunnel->transportLayerAddress.size != 4 ||
+                        gtp_tunnel->gTP_TEID.size != 4) {
+                        free_transfer();
+                        return sbi_core::http2::problem_response(
+                            400,
+                            "Bad Request",
+                            std::string(type_name) +
+                                "'s GTPTunnel is not a real IPv4 4-octet TEID");
+                    }
+                    std::copy(gtp_tunnel->transportLayerAddress.buf,
+                              gtp_tunnel->transportLayerAddress.buf + 4,
+                              gnb_ipv4.begin());
+                    gnb_teid = (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[0]) << 24) |
+                               (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[1]) << 16) |
+                               (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[2]) << 8) |
+                               static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[3]);
+                    free_transfer();
+                }
 
                 if (!stored_ctx->contains("upSeid") || !stored_ctx->contains("upfIp")) {
                     return sbi_core::http2::problem_response(
@@ -2067,7 +2117,8 @@ int main() {
                     mod_pdu,
                     pfcp_core::MessageType::SessionModificationResponse,
                     mod_header.sequence_number,
-                    "Session Modification (PATH_SWITCH_REQ real DL FAR)");
+                    is_path_switch ? "Session Modification (PATH_SWITCH_REQ real DL FAR)"
+                                   : "Session Modification (HANDOVER_REQ_ACK real DL FAR)");
                 const auto decoded_mod_resp_ies =
                     mod_resp_ies.has_value() ? pfcp_core::decode_ies(*mod_resp_ies) : std::nullopt;
                 const auto* mod_cause_ie =
@@ -2082,13 +2133,14 @@ int main() {
                     return sbi_core::http2::problem_response(
                         500,
                         "Internal Server Error",
-                        "UPF rejected the real PFCP Session Modification for PATH_SWITCH_REQ's "
-                        "new downlink FAR (UP F-SEID=" +
-                            std::to_string(up_seid) + ")");
+                        std::string("UPF rejected the real PFCP Session Modification for ") +
+                            (is_path_switch ? "PATH_SWITCH_REQ" : "HANDOVER_REQ_ACK") +
+                            "'s new downlink FAR (UP F-SEID=" + std::to_string(up_seid) + ")");
                 }
                 spdlog::info(
-                    "smf: PATH_SWITCH_REQ real N4 Session Modification succeeded (UP F-SEID={:#x},"
+                    "smf: {} real N4 Session Modification succeeded (UP F-SEID={:#x},"
                     " new gNB TEID={:#x}) -- real downlink GTP-U tunnel now points at the new gNB",
+                    is_path_switch ? "PATH_SWITCH_REQ" : "HANDOVER_REQ_ACK",
                     up_seid,
                     gnb_teid);
 
@@ -2097,7 +2149,8 @@ int main() {
                 // Establishment, ADR-0092) -- not the all-OPTIONAL-fields-empty placeholder
                 // ADR-0090 disclosed as this project's own real, previously-open gap.
                 PathSwitchRequestAcknowledgeTransfer_t ack_transfer{};
-                if (stored_ctx->contains("ulTeid") && stored_ctx->contains("ulIpv4")) {
+                if (is_path_switch && stored_ctx->contains("ulTeid") &&
+                    stored_ctx->contains("ulIpv4")) {
                     auto* ul_gtp_tunnel =
                         static_cast<GTPTunnel_t*>(std::calloc(1, sizeof(GTPTunnel_t)));
                     const auto ul_teid = stored_ctx->at("ulTeid").get<std::uint32_t>();
@@ -2121,7 +2174,7 @@ int main() {
                     ack_transfer.uL_NGU_UP_TNLInformation->present =
                         UPTransportLayerInformation_PR_gTPTunnel;
                     ack_transfer.uL_NGU_UP_TNLInformation->choice.gTPTunnel = ul_gtp_tunnel;
-                } else {
+                } else if (is_path_switch) {
                     spdlog::warn(
                         "smf: no real UPF N3 uplink F-TEID on record for UP F-SEID={:#x} -- "
                         "PathSwitchRequestAcknowledgeTransfer sent with uL-NGU-UP-TNLInformation "
@@ -2129,20 +2182,43 @@ int main() {
                         " history, not new scope)",
                         up_seid);
                 }
-                const auto ack_bytes =
-                    ngap_per_encode(&asn_DEF_PathSwitchRequestAcknowledgeTransfer, &ack_transfer);
-                ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PathSwitchRequestAcknowledgeTransfer,
-                                              &ack_transfer);
+
+                // ADR-0248: the two N2SmInfoTypes answer with DIFFERENT real transfers. Xn-based
+                // PATH_SWITCH_REQ is acknowledged with PathSwitchRequestAcknowledgeTransfer
+                // (§9.3.4.10); N2-based HANDOVER_REQ_ACK is answered with HandoverCommandTransfer
+                // (§9.3.4.2), which AMF relays to the SOURCE gNB as the Handover Command. Real,
+                // disclosed scope: every field of HandoverCommandTransfer is OPTIONAL in the real
+                // ASN.1, and this project sets none of them -- specifically NO
+                // dLForwardingUP_TNLInformation, because indirect data forwarding (a real
+                // TS 23.502 §4.9.1.3 option requiring a second forwarding UPF tunnel) is NOT
+                // implemented here. An empty HandoverCommandTransfer is spec-legal and means
+                // exactly "handover accepted, no data forwarding" -- it is not a placeholder
+                // standing in for a value we failed to compute.
+                std::vector<std::uint8_t> ack_bytes;
+                if (is_path_switch) {
+                    ack_bytes = ngap_per_encode(&asn_DEF_PathSwitchRequestAcknowledgeTransfer,
+                                                &ack_transfer);
+                    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PathSwitchRequestAcknowledgeTransfer,
+                                                  &ack_transfer);
+                } else {
+                    HandoverCommandTransfer_t ho_cmd{};
+                    ack_bytes = ngap_per_encode(&asn_DEF_HandoverCommandTransfer, &ho_cmd);
+                    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_HandoverCommandTransfer, &ho_cmd);
+                }
                 if (ack_bytes.empty()) {
                     return sbi_core::http2::problem_response(
                         500,
                         "Internal Server Error",
-                        "Failed to PER-encode a real PathSwitchRequestAcknowledgeTransfer");
+                        std::string("Failed to PER-encode a real ") +
+                            (is_path_switch ? "PathSwitchRequestAcknowledgeTransfer"
+                                            : "HandoverCommandTransfer"));
                 }
 
                 sbi_gen::SmContextUpdatedData resp_data{};
                 resp_data.n2SmInfoType = sbi_gen::N2SmInfoType{};
-                resp_data.n2SmInfoType->value = sbi_gen::N2SmInfoType::PATH_SWITCH_REQ_ACK;
+                resp_data.n2SmInfoType->value = is_path_switch
+                                                    ? sbi_gen::N2SmInfoType::PATH_SWITCH_REQ_ACK
+                                                    : sbi_gen::N2SmInfoType::HANDOVER_CMD;
                 sbi_gen::RefToBinaryData n2_info_ref{};
                 n2_info_ref.contentId = "n2SmInfo";
                 resp_data.n2SmInfo = n2_info_ref;
