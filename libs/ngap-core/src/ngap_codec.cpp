@@ -1,4 +1,4 @@
-#include "ngap_codec.hpp"
+#include "ngap_core/ngap_codec.hpp"
 
 #include <cstdlib>
 #include <cstring>

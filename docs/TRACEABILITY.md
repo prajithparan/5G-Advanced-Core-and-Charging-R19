@@ -4841,3 +4841,16 @@ See ADR-0247 and `docs/PERFORMANCE_MAPPING.md`. No conformance or free5GC claim 
 | ADR-0247 correction | No charging-performance-measurement spec exists; CHF has no 3GPP-defined measurements |
 
 See ADR-0248 in `docs/DECISIONS.md`.
+
+## ADR-0249 -- SMF `HANDOVER_REQUIRED`, shared `ngap_codec`, AMF SM context ref capture
+
+| Requirement | Evidence |
+|---|---|
+| SMF answers the N2 handover preparation step with a real tunnel | `HANDOVER_REQUIRED` -> real `PDUSessionResourceSetupRequestTransfer` with UPF's real N3 uplink F-TEID (`ulTeid`/`ulIpv4`, persisted since ADR-0092), `n2SmInfoType=PDU_RES_SETUP_REQ` |
+| N2SmInfoType coverage raised | 4 of 26 implemented (was 2): PATH_SWITCH_REQ/_ACK, HANDOVER_REQ_ACK, HANDOVER_REQUIRED |
+| Shared codec, no cross-NF private include | `ngap_codec` moved `nfs/amf/src/` -> `libs/ngap-core/`; AMF call sites unchanged, only its include line |
+| AMF can now address a later UpdateSMContext at all | `Location` header parsed on CreateSMContext 201, ref stored as `smContextRefs[pduSessionId]` under the SUPI-keyed UE context; missing-Location logged with its consequence |
+| **Still open** | AMF does not yet make the relay call -- `build_placeholder_ho_request_transfer()` is still what goes on the wire; needs NGAP-UE-ID -> SUPI mapping in the handover path |
+| No regression | conformance 333/333, `ctest` 469/469 |
+
+See ADR-0249 in `docs/DECISIONS.md`.

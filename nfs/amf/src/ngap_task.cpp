@@ -21,7 +21,7 @@
 #include "amf_ue_id_index_store.hpp"
 #include "gnb_association_registry.hpp"
 #include "nas_codec.hpp"
-#include "ngap_codec.hpp"
+#include "ngap_core/ngap_codec.hpp"
 #include "ngap_core/sctp_socket.hpp"
 #include "ngap_handover.hpp"
 
@@ -1516,6 +1516,7 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
                                                            sbi_core::OAuth2Client& smf_oauth,
                                                            const std::string& amf_instance_id,
                                                            UeAuthState& auth_state,
+                                                           UeContextStore& ue_contexts,
                                                            const InitiatingMessage_t& msg) {
     const auto nas_pdu_bytes_opt = extract_uplink_nas_pdu(msg);
     if (!nas_pdu_bytes_opt.has_value()) {
@@ -1629,11 +1630,48 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
         return;
     }
 
-    spdlog::info("amf-ngap: SM context established with SMF for SUPI {}, pduSessionId={} -- SMF "
-                 "will deliver the PDU Session Establishment Accept via a separate "
-                 "N1N2MessageTransfer call (ADR-0038)",
+    // ADR-0249: capture the real SM context reference SMF just created. Until now AMF read the
+    // 201 and threw the `Location` header away, which is the REAL reason "AMF doesn't call SMF
+    // during handover" was an open gap -- it was not that the call was skipped, it is that AMF
+    // structurally held no handle to make any subsequent Nsmf_PDUSession_UpdateSMContext call
+    // with. TS 29.502 returns the created resource's URI in `Location`; the ref is its last path
+    // segment. Stored per PDU session id under the UE's own SUPI-keyed context, alongside the
+    // association data ue_contexts already holds.
+    std::string sm_context_ref;
+    for (const auto& [name, value] : resp->headers) {
+        std::string lower_name;
+        lower_name.reserve(name.size());
+        for (const char c : name) {
+            lower_name.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        if (lower_name == "location") {
+            const auto slash = value.find_last_of('/');
+            sm_context_ref = slash == std::string::npos ? value : value.substr(slash + 1);
+            break;
+        }
+    }
+    if (sm_context_ref.empty()) {
+        // Real, disclosed: SMF's own 201 is required by TS 29.502 to carry Location. If it did
+        // not, say so rather than silently continuing with no ref -- a later handover would then
+        // fail with a confusing lookup miss instead of pointing at this.
+        spdlog::warn("amf-ngap: SMF CreateSMContext 201 carried no Location header -- no SM "
+                     "context ref stored for SUPI {}, pduSessionId={}; any later "
+                     "UpdateSMContext (e.g. N2 handover) for this session cannot be made",
+                     auth_state.supi,
+                     outcome->pdu_session_id);
+    } else {
+        auto ue_ctx = ue_contexts.get(auth_state.supi);
+        nlohmann::json ctx = ue_ctx.has_value() ? *ue_ctx : nlohmann::json::object();
+        ctx["smContextRefs"][std::to_string(outcome->pdu_session_id)] = sm_context_ref;
+        ue_contexts.put(auth_state.supi, ctx);
+    }
+
+    spdlog::info("amf-ngap: SM context established with SMF for SUPI {}, pduSessionId={} "
+                 "(smContextRef={}) -- SMF will deliver the PDU Session Establishment Accept via "
+                 "a separate N1N2MessageTransfer call (ADR-0038)",
                  auth_state.supi,
-                 outcome->pdu_session_id);
+                 outcome->pdu_session_id,
+                 sm_context_ref.empty() ? "<none>" : sm_context_ref);
 }
 
 void handle_association(ngap_core::SctpSocket assoc,
@@ -1774,6 +1812,7 @@ void handle_association(ngap_core::SctpSocket assoc,
                         smf_oauth,
                         amf_instance_id,
                         auth_state,
+                        ue_contexts,
                         *pdu->choice.initiatingMessage);
                     break;
                 case UeAuthState::Phase::Done:

@@ -8,7 +8,7 @@
 #include <optional>
 
 #include "aka_crypto/kdf.hpp"
-#include "ngap_codec.hpp"
+#include "ngap_core/ngap_codec.hpp"
 
 extern "C" {
 #include <AMF-UE-NGAP-ID.h>

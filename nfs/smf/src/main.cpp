@@ -99,6 +99,7 @@
 //   pipeline exists to actually push the MT data to a UE, same class of gap as every other
 //   NAS-adjacent simplification in this file.
 
+#include "ngap_core/ngap_codec.hpp"
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -152,6 +153,11 @@ extern "C" {
 #include <GTPTunnel.h>
 #include <HandoverCommandTransfer.h>
 #include <HandoverRequestAcknowledgeTransfer.h>
+#include <QosFlowSetupRequestItem.h>
+#include <NonDynamic5QIDescriptor.h>
+#include <PDUSessionResourceSetupRequestTransfer.h>
+#include <PDUSessionType.h>
+#include <QosFlowSetupRequestList.h>
 #include <PathSwitchRequestAcknowledgeTransfer.h>
 #include <PathSwitchRequestTransfer.h>
 #include <QosFlowAcceptedItem.h>
@@ -1949,6 +1955,135 @@ int main() {
             // PATH_SWITCH_REQ handling -- the one N2SmInfoType this project closes real, live
             // datapath behavior for (see this handler's own real, disclosed scope in the file
             // header: the other 20 real N2SmInfoType values remain a real, open gap).
+            // Gap-closure (ADR-0249): HANDOVER_REQUIRED -- the N2-handover PREPARATION step
+            // (TS 23.502 §4.9.1.3, step 3). AMF relays the source gNB's Handover Required to SMF,
+            // and SMF answers with the N2 SM info the TARGET gNB needs to set the session up:
+            // a real PDUSessionResourceSetupRequestTransfer carrying UPF's own REAL N3 uplink
+            // F-TEID. This is what removes nfs/amf's long-disclosed placeholder
+            // (TEID=0 / 0.0.0.0) -- AMF was fabricating that tunnel precisely because it had
+            // never asked SMF for the real one. The F-TEID here is not new state: it is the same
+            // ulTeid/ulIpv4 UPF allocated at Session Establishment and SMF has persisted since
+            // ADR-0092.
+            if (body->n2SmInfoType.has_value() &&
+                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::HANDOVER_REQUIRED) {
+                if (!stored_ctx->contains("ulTeid") || !stored_ctx->contains("ulIpv4")) {
+                    return sbi_core::http2::problem_response(
+                        500,
+                        "Internal Server Error",
+                        "No real UPF N3 uplink F-TEID on record for this SM context -- cannot "
+                        "build a real PDUSessionResourceSetupRequestTransfer for handover");
+                }
+                const auto ul_teid = stored_ctx->at("ulTeid").get<std::uint32_t>();
+                const auto ul_ipv4 = stored_ctx->at("ulIpv4").get<std::vector<std::uint8_t>>();
+                if (ul_ipv4.size() != 4) {
+                    return sbi_core::http2::problem_response(
+                        500,
+                        "Internal Server Error",
+                        "Stored UPF N3 address is not a real 4-octet IPv4 address");
+                }
+
+                PDUSessionResourceSetupRequestTransfer_t transfer{};
+
+                UPTransportLayerInformation_t ul_info{};
+                ul_info.present = UPTransportLayerInformation_PR_gTPTunnel;
+                auto* gtp_tunnel = static_cast<GTPTunnel_t*>(std::calloc(1, sizeof(GTPTunnel_t)));
+                const std::uint8_t teid_bytes[4] = {
+                    static_cast<std::uint8_t>((ul_teid >> 24) & 0xFF),
+                    static_cast<std::uint8_t>((ul_teid >> 16) & 0xFF),
+                    static_cast<std::uint8_t>((ul_teid >> 8) & 0xFF),
+                    static_cast<std::uint8_t>(ul_teid & 0xFF)};
+                gtp_tunnel->gTP_TEID.buf = static_cast<std::uint8_t*>(std::malloc(4));
+                std::memcpy(gtp_tunnel->gTP_TEID.buf, teid_bytes, 4);
+                gtp_tunnel->gTP_TEID.size = 4;
+                gtp_tunnel->transportLayerAddress.buf =
+                    static_cast<std::uint8_t*>(std::malloc(4));
+                std::memcpy(gtp_tunnel->transportLayerAddress.buf, ul_ipv4.data(), 4);
+                gtp_tunnel->transportLayerAddress.size = 4;
+                gtp_tunnel->transportLayerAddress.bits_unused = 0;
+                ul_info.choice.gTPTunnel = gtp_tunnel;
+                ::ngap::add_ie(transfer.protocolIEs,
+                               ::ngap::make_ie(139 /* id-UL-NGU-UP-TNLInformation */,
+                                               Criticality_reject,
+                                               &asn_DEF_UPTransportLayerInformation,
+                                               &ul_info));
+                ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_UPTransportLayerInformation, &ul_info);
+
+                PDUSessionType_t pdu_type = PDUSessionType_ipv4;
+                ::ngap::add_ie(transfer.protocolIEs,
+                               ::ngap::make_ie(134 /* id-PDUSessionType */,
+                                               Criticality_reject,
+                                               &asn_DEF_PDUSessionType,
+                                               &pdu_type));
+
+                // Same real QoS flow this project already uses on its establishment path: QFI=1,
+                // non-dynamic 5QI=9 (the real 3GPP non-GBR default, TS 23.501 Table 5.7.4-1),
+                // ARP 8 / shall-not-trigger-pre-emption / not-pre-emptable. Real, disclosed
+                // simplification carried over unchanged, not new scope: this project has no real
+                // per-subscriber QoS profile source to derive a different flow from.
+                QosFlowSetupRequestList_t qos_list{};
+                auto* qos_item = static_cast<QosFlowSetupRequestItem_t*>(
+                    std::calloc(1, sizeof(QosFlowSetupRequestItem_t)));
+                qos_item->qosFlowIdentifier = 1;
+                qos_item->qosFlowLevelQosParameters.qosCharacteristics.present =
+                    QosCharacteristics_PR_nonDynamic5QI;
+                auto* non_dynamic = static_cast<NonDynamic5QIDescriptor_t*>(
+                    std::calloc(1, sizeof(NonDynamic5QIDescriptor_t)));
+                non_dynamic->fiveQI = 9;
+                qos_item->qosFlowLevelQosParameters.qosCharacteristics.choice.nonDynamic5QI =
+                    non_dynamic;
+                qos_item->qosFlowLevelQosParameters.allocationAndRetentionPriority
+                    .priorityLevelARP = 8;
+                qos_item->qosFlowLevelQosParameters.allocationAndRetentionPriority
+                    .pre_emptionCapability =
+                    Pre_emptionCapability_shall_not_trigger_pre_emption;
+                qos_item->qosFlowLevelQosParameters.allocationAndRetentionPriority
+                    .pre_emptionVulnerability = Pre_emptionVulnerability_not_pre_emptable;
+                ASN_SEQUENCE_ADD(&qos_list.list, qos_item);
+                ::ngap::add_ie(transfer.protocolIEs,
+                               ::ngap::make_ie(136 /* id-QosFlowSetupRequestList */,
+                                               Criticality_reject,
+                                               &asn_DEF_QosFlowSetupRequestList,
+                                               &qos_list));
+                ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_QosFlowSetupRequestList, &qos_list);
+
+                const auto setup_bytes = ::ngap::encode_value(
+                    &asn_DEF_PDUSessionResourceSetupRequestTransfer, &transfer);
+                ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PDUSessionResourceSetupRequestTransfer,
+                                              &transfer);
+                if (setup_bytes.empty()) {
+                    return sbi_core::http2::problem_response(
+                        500,
+                        "Internal Server Error",
+                        "Failed to PER-encode a real PDUSessionResourceSetupRequestTransfer");
+                }
+                spdlog::info(
+                    "smf: HANDOVER_REQUIRED answered with a real PDUSessionResourceSetupRequest"
+                    "Transfer (real UPF N3 uplink TEID={:#x}) -- no placeholder tunnel",
+                    ul_teid);
+
+                sbi_gen::SmContextUpdatedData resp_data{};
+                resp_data.n2SmInfoType = sbi_gen::N2SmInfoType{};
+                resp_data.n2SmInfoType->value = sbi_gen::N2SmInfoType::PDU_RES_SETUP_REQ;
+                sbi_gen::RefToBinaryData n2_info_ref{};
+                n2_info_ref.contentId = "n2SmInfo";
+                resp_data.n2SmInfo = n2_info_ref;
+
+                sbi_core::multipart::Part json_part;
+                json_part.content_type = "application/json";
+                json_part.body = json(resp_data).dump();
+                sbi_core::multipart::Part bin_part;
+                bin_part.content_type = "application/vnd.3gpp.ngap";
+                bin_part.content_id = "n2SmInfo";
+                bin_part.body.assign(setup_bytes.begin(), setup_bytes.end());
+                const auto encoded = sbi_core::multipart::encode({json_part, bin_part});
+
+                sbi_core::http2::Response resp;
+                resp.status = 200;
+                resp.headers.emplace("content-type", encoded.content_type_header);
+                resp.body = encoded.body;
+                return resp;
+            }
+
             // Gap-closure (ADR-0248): the same real downlink-path switch is driven by TWO real
             // N2SmInfoType values, not one. PATH_SWITCH_REQ is Xn-based mobility (TS 23.502
             // §4.9.1.2); HANDOVER_REQ_ACK is the N2-based handover's own Handover Resource
