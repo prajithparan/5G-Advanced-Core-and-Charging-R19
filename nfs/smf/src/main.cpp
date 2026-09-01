@@ -99,7 +99,6 @@
 //   pipeline exists to actually push the MT data to a UE, same class of gap as every other
 //   NAS-adjacent simplification in this file.
 
-#include "ngap_core/ngap_codec.hpp"
 #include "sbi_core/datetime.hpp"
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/http2_server.hpp"
@@ -135,6 +134,7 @@
 #include "TS29542_Nsmf_NIDD.hpp"
 #include "event_subscription_store.hpp"
 #include "nas_5gsm_codec.hpp"
+#include "ngap_core/ngap_codec.hpp"
 #include "pfcp_core/common_ies.hpp"
 #include "pfcp_core/header.hpp"
 #include "pfcp_core/ie.hpp"
@@ -153,15 +153,15 @@ extern "C" {
 #include <GTPTunnel.h>
 #include <HandoverCommandTransfer.h>
 #include <HandoverRequestAcknowledgeTransfer.h>
-#include <QosFlowSetupRequestItem.h>
 #include <NonDynamic5QIDescriptor.h>
 #include <PDUSessionResourceSetupRequestTransfer.h>
 #include <PDUSessionType.h>
-#include <QosFlowSetupRequestList.h>
 #include <PathSwitchRequestAcknowledgeTransfer.h>
 #include <PathSwitchRequestTransfer.h>
 #include <QosFlowAcceptedItem.h>
 #include <QosFlowAcceptedList.h>
+#include <QosFlowSetupRequestItem.h>
+#include <QosFlowSetupRequestList.h>
 #include <UPTransportLayerInformation.h>
 #include <asn_application.h>
 #include <per_decoder.h>
@@ -1995,8 +1995,7 @@ int main() {
                 gtp_tunnel->gTP_TEID.buf = static_cast<std::uint8_t*>(std::malloc(4));
                 std::memcpy(gtp_tunnel->gTP_TEID.buf, teid_bytes, 4);
                 gtp_tunnel->gTP_TEID.size = 4;
-                gtp_tunnel->transportLayerAddress.buf =
-                    static_cast<std::uint8_t*>(std::malloc(4));
+                gtp_tunnel->transportLayerAddress.buf = static_cast<std::uint8_t*>(std::malloc(4));
                 std::memcpy(gtp_tunnel->transportLayerAddress.buf, ul_ipv4.data(), 4);
                 gtp_tunnel->transportLayerAddress.size = 4;
                 gtp_tunnel->transportLayerAddress.bits_unused = 0;
@@ -2034,8 +2033,7 @@ int main() {
                 qos_item->qosFlowLevelQosParameters.allocationAndRetentionPriority
                     .priorityLevelARP = 8;
                 qos_item->qosFlowLevelQosParameters.allocationAndRetentionPriority
-                    .pre_emptionCapability =
-                    Pre_emptionCapability_shall_not_trigger_pre_emption;
+                    .pre_emptionCapability = Pre_emptionCapability_shall_not_trigger_pre_emption;
                 qos_item->qosFlowLevelQosParameters.allocationAndRetentionPriority
                     .pre_emptionVulnerability = Pre_emptionVulnerability_not_pre_emptable;
                 ASN_SEQUENCE_ADD(&qos_list.list, qos_item);
