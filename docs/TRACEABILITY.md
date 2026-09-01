@@ -4896,3 +4896,18 @@ See ADR-0251 in `docs/DECISIONS.md`.
 | Largest real gap | UDR: 23 paths across `/application-data/*` (12), `/exposure-data/*` (4), `/aiot-data/*` (3) + 4 singles -- previously undisclosed |
 
 See `docs/NF_API_COVERAGE_AUDIT.md` and ADR-0252.
+
+## ADR-0253 -- UDR application-data traffic-influence family
+
+| Requirement | Evidence |
+|---|---|
+| 4 paths / 9 operations implemented | GET collection; PUT/PATCH/DELETE item; GET/POST subs; GET/PUT/DELETE individual sub -- paths from `TS29504_Nudr_DR.yaml` via its `$ref` into `TS29519_Application_Data.yaml` |
+| Patch semantics read from YAML, not sibling resources | RFC 7396 `application/merge-patch+json` (some other UDR resources are RFC 6902); PATCH on missing resource = 404, not upsert |
+| Distinct stores for distinct resources | `TrafficInfluenceDataStore` + `TrafficInfluenceSubStore`, two Postgres tables |
+| Query-param scope disclosed | 8 params defined, only `influence-Ids` honoured; unhonoured filters return the unfiltered set, not a fake filtered one |
+| Verified by exact-literal match, not the heuristic | 4 paths confirmed ROUTED, 5 siblings confirmed absent |
+| Audit heuristic flaw found | tier-2 weakens as coverage grows (shared prefixes accumulate); 23->11 was not real progress, real figure is 23->19 |
+| No regression | conformance 333/333, ctest 469/469 |
+| Not yet live-verified | `schema.postgres.sql` gained 2 tables; an existing DB needs re-apply first |
+
+See ADR-0253 in `docs/DECISIONS.md`.

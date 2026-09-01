@@ -2972,3 +2972,132 @@ bool PolicyDataSubsToNotifyStore::remove(const std::string& subs_id) {
 }
 
 } // namespace udr
+
+namespace udr {
+
+// --- ADR-0253: application-data traffic-influence family ---
+
+TrafficInfluenceDataStore::TrafficInfluenceDataStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+std::vector<nlohmann::json> TrafficInfluenceDataStore::list() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_traffic_influence_data ORDER BY "
+                                 "influence_id");
+    std::vector<nlohmann::json> out;
+    out.reserve(result.size());
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
+std::optional<nlohmann::json> TrafficInfluenceDataStore::get(const std::string& influence_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_traffic_influence_data WHERE "
+                                 "influence_id = $1",
+                                 pqxx::params{influence_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+bool TrafficInfluenceDataStore::put(const std::string& influence_id, const nlohmann::json& data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto existing = txn.exec("SELECT 1 FROM udr_traffic_influence_data WHERE "
+                                   "influence_id = $1",
+                                   pqxx::params{influence_id});
+    const bool is_new = existing.empty();
+    txn.exec("INSERT INTO udr_traffic_influence_data (influence_id, data) VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (influence_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{influence_id, data.dump()});
+    txn.commit();
+    return is_new;
+}
+
+std::optional<nlohmann::json>
+TrafficInfluenceDataStore::merge_patch(const std::string& influence_id,
+                                       const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_traffic_influence_data WHERE "
+                                 "influence_id = $1",
+                                 pqxx::params{influence_id});
+    // Unlike udr_am_policy_data's own upsert-capable patch, the real spec here defines PATCH only
+    // on an existing resource (404 is a documented response), so a missing row is NOT created.
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto doc = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    doc.merge_patch(patch);
+    txn.exec("UPDATE udr_traffic_influence_data SET data = $2::jsonb WHERE influence_id = $1",
+             pqxx::params{influence_id, doc.dump()});
+    txn.commit();
+    return std::make_optional(doc);
+}
+
+bool TrafficInfluenceDataStore::remove(const std::string& influence_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_traffic_influence_data WHERE influence_id = $1",
+                                 pqxx::params{influence_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
+TrafficInfluenceSubStore::TrafficInfluenceSubStore(const std::string& conninfo) : conn_(conninfo) {}
+
+std::vector<nlohmann::json> TrafficInfluenceSubStore::list() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_traffic_influence_sub ORDER BY "
+                                 "subscription_id");
+    std::vector<nlohmann::json> out;
+    out.reserve(result.size());
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
+std::optional<nlohmann::json> TrafficInfluenceSubStore::get(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_traffic_influence_sub WHERE "
+                                 "subscription_id = $1",
+                                 pqxx::params{subscription_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+bool TrafficInfluenceSubStore::put(const std::string& subscription_id, const nlohmann::json& data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto existing = txn.exec("SELECT 1 FROM udr_traffic_influence_sub WHERE "
+                                   "subscription_id = $1",
+                                   pqxx::params{subscription_id});
+    const bool is_new = existing.empty();
+    txn.exec("INSERT INTO udr_traffic_influence_sub (subscription_id, data) VALUES "
+             "($1, $2::jsonb) ON CONFLICT (subscription_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{subscription_id, data.dump()});
+    txn.commit();
+    return is_new;
+}
+
+bool TrafficInfluenceSubStore::remove(const std::string& subscription_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_traffic_influence_sub WHERE "
+                                 "subscription_id = $1",
+                                 pqxx::params{subscription_id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
+} // namespace udr

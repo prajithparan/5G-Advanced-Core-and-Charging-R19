@@ -1024,6 +1024,10 @@ int main() {
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0212).
     udr::IndividualAuthenticationStatusStore individual_auth_status(conninfo);
     udr::AmPolicyDataStore am_policy_data(conninfo);
+    // ADR-0253 (from ADR-0252's full-coverage audit): real application-data traffic-influence
+    // family -- the one unrouted resource a real NEF/AF path depends on.
+    udr::TrafficInfluenceDataStore traffic_influence_data(conninfo);
+    udr::TrafficInfluenceSubStore traffic_influence_subs(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0097).
     udr::SmsfContext3gppStore smsf_3gpp_context(conninfo);
     udr::SmsfNon3GppContextStore smsf_non3gpp_context(conninfo);
@@ -8928,6 +8932,240 @@ int main() {
         });
 
     std::thread(run_nrf_lifecycle, udr_instance_id, nrf_base_url).detach();
+
+    // --- ADR-0253: Nudr_DataRepository `application-data` traffic-influence family ---
+    // Paths taken from TS29504_Nudr_DR.yaml (which $refs TS29519_Application_Data.yaml, where the
+    // real operations live). Methods and status codes read from that YAML directly, not inferred.
+    const std::string influence_collection_path =
+        std::string(kApiRoot) + "/application-data/influenceData";
+    const std::string influence_item_path =
+        std::string(kApiRoot) + "/application-data/influenceData/{influenceId}";
+    const std::string influence_subs_collection_path =
+        std::string(kApiRoot) + "/application-data/influenceData/subs-to-notify";
+    const std::string influence_subs_item_path =
+        std::string(kApiRoot) + "/application-data/influenceData/subs-to-notify/{subscriptionId}";
+
+    // GET collection. Real, disclosed scope: the YAML defines 8 query parameters
+    // (influence-Ids, dnns, snssais, internal-Group-Ids, internal-group-ids-Add,
+    // subscriber-categories, supis, supp-feat). Only `influence-Ids` is honoured here -- it is the
+    // one that filters on a field this store actually keys on. The others filter on fields inside
+    // the stored TrafficInfluData document that this build does not index; applying them by
+    // scanning would be possible but is NOT done, and an unhonoured filter returns the unfiltered
+    // set rather than silently pretending to have filtered. Stated here rather than discovered.
+    server.add_route(
+        "GET",
+        influence_collection_path,
+        [&verifier, &traffic_influence_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            auto all = traffic_influence_data.list();
+            const auto it = req.query_params.find("influence-Ids");
+            if (it != req.query_params.end() && !it->second.empty()) {
+                std::vector<std::string> wanted;
+                std::string cur;
+                for (const char c : it->second) {
+                    if (c == ',') {
+                        if (!cur.empty())
+                            wanted.push_back(cur);
+                        cur.clear();
+                    } else {
+                        cur.push_back(c);
+                    }
+                }
+                if (!cur.empty())
+                    wanted.push_back(cur);
+                std::vector<nlohmann::json> filtered;
+                for (const auto& doc : all) {
+                    for (const auto& w : wanted) {
+                        if (doc.contains("influenceId") && doc["influenceId"] == w) {
+                            filtered.push_back(doc);
+                            break;
+                        }
+                    }
+                }
+                all = filtered;
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = nlohmann::json(all).dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PUT",
+        influence_item_path,
+        [&verifier, &traffic_influence_data, influence_item_path](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::TrafficInfluData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto influence_id = req.path_params.at("influenceId");
+            nlohmann::json j = *body;
+            const bool is_new = traffic_influence_data.put(influence_id, j);
+            sbi_core::http2::Response resp;
+            resp.status = is_new ? 201 : 200; // real spec draws both, see the YAML
+            resp.headers.emplace("content-type", "application/json");
+            if (is_new) {
+                resp.headers.emplace("location",
+                                     resolved_location(influence_item_path, req.path_params));
+            }
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PATCH",
+        influence_item_path,
+        [&verifier, &traffic_influence_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            // Real RFC 7396 merge patch -- the YAML's request content type here is
+            // application/merge-patch+json, confirmed directly rather than assumed from other
+            // UDR resources (some of which are RFC 6902 instead).
+            nlohmann::json patch;
+            try {
+                patch = nlohmann::json::parse(req.body);
+            } catch (const std::exception& e) {
+                return sbi_core::http2::problem_response(400, "Bad Request", e.what());
+            }
+            const auto influence_id = req.path_params.at("influenceId");
+            auto updated = traffic_influence_data.merge_patch(influence_id, patch);
+            if (!updated.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No influenceData with id " + influence_id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = updated->dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        influence_item_path,
+        [&verifier, &traffic_influence_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto influence_id = req.path_params.at("influenceId");
+            if (!traffic_influence_data.remove(influence_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No influenceData with id " + influence_id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        influence_subs_collection_path,
+        [&verifier, &traffic_influence_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = nlohmann::json(traffic_influence_subs.list()).dump();
+            return resp;
+        });
+
+    // POST creates a subscription. Real, disclosed: the spec's own resource id is server-assigned
+    // and this build derives it from a UUID, the same convention this file's other
+    // server-assigned-id resources already use.
+    server.add_route(
+        "POST",
+        influence_subs_collection_path,
+        [&verifier, &traffic_influence_subs, influence_subs_item_path](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::TrafficInfluSub>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const std::string subscription_id = sbi_core::generate_uuid_v4();
+            nlohmann::json j = *body;
+            traffic_influence_subs.put(subscription_id, j);
+            std::map<std::string, std::string> params{{"subscriptionId", subscription_id}};
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", resolved_location(influence_subs_item_path, params));
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        influence_subs_item_path,
+        [&verifier, &traffic_influence_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            auto doc = traffic_influence_subs.get(subscription_id);
+            if (!doc.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No subscription with id " + subscription_id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = doc->dump();
+            return resp;
+        });
+
+    server.add_route(
+        "PUT",
+        influence_subs_item_path,
+        [&verifier, &traffic_influence_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::TrafficInfluSub>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            nlohmann::json j = *body;
+            traffic_influence_subs.put(subscription_id, j);
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        influence_subs_item_path,
+        [&verifier, &traffic_influence_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto subscription_id = req.path_params.at("subscriptionId");
+            if (!traffic_influence_subs.remove(subscription_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No subscription with id " + subscription_id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
 
     server.start();
     spdlog::info("udr: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);

@@ -29,7 +29,7 @@ operation name produced a false negative earlier and is not done anywhere in thi
 | udm | 1 | `/{supi}/am-data/update-sor` -- genuinely absent |
 | smf | 2 | `transfer-mo-data`, `send-mo-data` -- genuinely absent |
 | nrf | 5 | `/shared-data*`, `/scp-domain-routing-info*` -- disclosed deferred |
-| udr | 23 | largest real gap -- see below |
+| udr | 19 (was 23) | largest real gap -- 4 closed by ADR-0253, see below |
 
 **Total: 32 unrouted paths of 328.**
 
@@ -102,3 +102,20 @@ than scattered -- three whole resource families:
 
 This matters against the free5GC/open5GS parity mandate: `/application-data/influenceData` is the
 traffic-influence store a real NEF/AF path depends on, and NEF is built here (all 14 YAML files).
+
+## Update (ADR-0253): influenceData family closed, and a flaw in this audit's own heuristic
+
+UDR's `/application-data/influenceData` family is now implemented -- **4 paths, 9 operations**.
+Remaining UDR gap: **19 paths**.
+
+**A flaw in the tier-2 heuristic, found while verifying that number and stated rather than left to
+mislead.** After the family landed, the script reported UDR's unrouted count dropping 23 -> 11 and
+its "likely-dynamic" count rising 8 -> 16. That improvement is **not real**: the literal
+`application-data` now exists in the binary, so still-unimplemented siblings
+(`/application-data/pfds`, `bdtPolicyData`, `iptvConfigData`, `serviceParamData`,
+`subs-to-notify`) started matching the all-segments-present test and were reclassified as
+"probably routed dynamically".
+
+The heuristic gets **weaker as coverage grows**, because shared path prefixes accumulate in the
+binary. The reliable check is a full-literal `grep -F` for the exact path, which was run for each
+of the nine paths above and is the basis for the 4/19 figures. Treat tier-2 counts as a hint only.

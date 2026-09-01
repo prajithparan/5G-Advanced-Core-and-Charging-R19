@@ -229,6 +229,47 @@ private:
 // UpdateAccessAndMobilityPolicyData -- real GET + RFC 7396 merge-patch, the real UDR-side backing
 // for PCF's own Npcf_AMPolicyControl). Same real upsert-on-PATCH shape as SmPolicyDataStore
 // above.
+// Gap-closure (ADR-0253, from ADR-0252's audit). Real Nudr_DataRepository `application-data`
+// traffic-influence family (TS29519_Application_Data.yaml, $ref'd from TS29504_Nudr_DR.yaml).
+// `list()` returns every stored document -- the real GET collection defines 8 query parameters
+// (influence-Ids, dnns, snssais, internal-Group-Ids, internal-group-ids-Add,
+// subscriber-categories, supis, supp-feat); which of those this build actually honours is
+// documented at the route itself, not silently implied here.
+class TrafficInfluenceDataStore {
+public:
+    explicit TrafficInfluenceDataStore(const std::string& conninfo);
+
+    std::vector<nlohmann::json> list();
+    std::optional<nlohmann::json> get(const std::string& influence_id);
+    // Returns true when the row did not exist (real 201 vs 200 distinction the spec draws).
+    bool put(const std::string& influence_id, const nlohmann::json& data);
+    // RFC 7396 JSON Merge Patch -- confirmed from the YAML's own
+    // `application/merge-patch+json` request content type, not assumed from other UDR resources.
+    std::optional<nlohmann::json> merge_patch(const std::string& influence_id,
+                                              const nlohmann::json& patch);
+    bool remove(const std::string& influence_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
+// The change-subscription resource over the above. A genuinely separate real resource with its
+// own schema (TrafficInfluSub), not a view of the same table.
+class TrafficInfluenceSubStore {
+public:
+    explicit TrafficInfluenceSubStore(const std::string& conninfo);
+
+    std::vector<nlohmann::json> list();
+    std::optional<nlohmann::json> get(const std::string& subscription_id);
+    bool put(const std::string& subscription_id, const nlohmann::json& data);
+    bool remove(const std::string& subscription_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 class AmPolicyDataStore {
 public:
     explicit AmPolicyDataStore(const std::string& conninfo);

@@ -1221,3 +1221,24 @@ CREATE TABLE IF NOT EXISTS udr_policy_data_subs_to_notify (
     ue_id    TEXT,
     data     JSONB NOT NULL
 );
+
+-- Gap-closure (ADR-0253, from ADR-0252's full-coverage audit). Real Nudr_DataRepository
+-- `application-data` group -- TS29504_Nudr_DR.yaml $refs these paths into
+-- TS29519_Application_Data.yaml, which is where the real operations live. This first slice is the
+-- traffic-influence family, chosen because ADR-0252 identified it as the one unrouted resource a
+-- real NEF/AF path depends on (this project has all 14 Nnef YAML files built).
+--
+-- Two genuinely distinct real resources, not one table with a discriminator: the influence data
+-- itself (`/application-data/influenceData/{influenceId}`, schema TrafficInfluData) and the
+-- change subscriptions over it (`/application-data/influenceData/subs-to-notify/{subscriptionId}`,
+-- schema TrafficInfluSub) -- same "real, distinct resource, not a rename" reasoning
+-- udr_amf_non3gpp_context's own comment already established.
+CREATE TABLE IF NOT EXISTS udr_traffic_influence_data (
+    influence_id TEXT PRIMARY KEY,
+    data         JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS udr_traffic_influence_sub (
+    subscription_id TEXT PRIMARY KEY,
+    data            JSONB NOT NULL
+);
