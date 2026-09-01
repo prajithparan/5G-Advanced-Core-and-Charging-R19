@@ -18,13 +18,20 @@
 // same EAP-AKA' Milenage path as GenerateAuthData's own EAP-AKA' branch (real, deliberate code
 // reuse, not a parallel implementation).
 //
-// Deliberately deferred, not dropped: Nudm_EE, Nudm_MT, Nudm_NIDDAU, Nudm_PP, Nudm_RSDS,
-// Nudm_SSAU, Nudm_UEID (separate Nudm services); UECM's non-3GPP-AMF, SMSF (3GPP and non-3GPP),
-// IP-SM-GW, and NWDAF registration groups; SDM's remaining ~25 GET operations (GetNSSAI,
-// GetEcrData, GetUeCtxInAmfData, GetUeCtxInSmfData, LCS/V2X/ProSe/MBS/UC data, shared-data
-// operations, GetSupiOrGpsi, Sor/Upu Ack, GetGroupIdentifiers, ...); UEAU's GetRgAuthData,
-// GenerateAv (EPS/IMS/HSS), GenerateGbaAv -- out of this build's Tier-1 5G-AKA scope (5G-RG,
-// EPS/IMS-AKA interworking, GBA are separate concerns).
+// STALE-COMMENT CORRECTION (ADR-0251). This header used to read "Deliberately deferred, not
+// dropped: Nudm_EE, Nudm_MT, Nudm_NIDDAU, Nudm_PP, Nudm_RSDS, Nudm_SSAU, Nudm_UEID ...; SDM's
+// remaining ~25 GET operations (... GetSupiOrGpsi, Sor/Upu Ack ...)". Every one of those was
+// subsequently implemented -- and this file's own sections below already document them, so the
+// comment contradicted the code beneath it. Closed by ADR-0082 (Nudm_EE), ADR-0230/0232/0233
+// (SDM groups C1/C2 + Modify), ADR-0234 (SOR/UPU acks), ADR-0235 (shared-data family), ADR-0236
+// (GetSupiOrGpsi/GetMultipleIdentifiers, at the real YAML paths /{ueId}/id-translation-result and
+// /multiple-identifiers -- NOT paths guessed from the operation names), and ADR-0237 (Nudm_PP's
+// 11 ops). Nudm_MT/Nudm_NIDDAU/Nudm_RSDS/Nudm_SSAU/Nudm_UEID are documented as real below.
+//
+// Genuinely still deferred, verified against the YAML rather than carried over on faith: UECM's
+// non-3GPP-AMF, SMSF (3GPP and non-3GPP), IP-SM-GW and NWDAF registration groups; UEAU's
+// GetRgAuthData, GenerateAv (EPS/IMS/HSS) and GenerateGbaAv -- out of this build's Tier-1 5G-AKA
+// scope (5G-RG, EPS/IMS-AKA interworking and GBA are separate concerns).
 //
 // UPDATE (ADR-0069, gap-closure Tier 1b): GetAmData/GetSmfSelData/GetSmData now make real
 // Nudr_DataRepository GET calls against UDR's own real provisioned-data group (added the same

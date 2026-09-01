@@ -4866,3 +4866,20 @@ See ADR-0249 in `docs/DECISIONS.md`.
 | Opportunity found | `TS28532_PerfMnS.yaml`, `TS28532_FileDataReportingMnS.yaml`, `TS28532_StreamingDataMnS.yaml` already vendored -- a real PM reporting interface is reachable, not hypothetical |
 
 See ADR-0250 in `docs/DECISIONS.md`.
+
+## ADR-0251 -- all-NF YAML/TS cross-check; 6 historical staleness errors fixed
+
+| Finding | Evidence |
+|---|---|
+| Precedence rule recorded | YAML is prime for API shape; TS is reference for behaviour |
+| Methodology error caught live | Greps for `supi-or-gpsi`/`sor-ack` (guessed from operationIds) returned 0; YAML shows real paths `/{ueId}/id-translation-result`, `/{supi}/am-data/sor-ack`, `/multiple-identifiers` -- all implemented. operationId is not a path |
+| NRF row stale | `validate_nf_profile` real and called on register; heartbeat sweep ADR-0079 |
+| AUSF row stale | `Nausf_SoRProtection` + ProSe auth implemented (ADR-0091) |
+| PCF row stale | `Npcf_PolicyAuthorization` closed by ADR-0080 -- nearly reimplemented this session |
+| UDM row stale | `Nudm_EE` (ADR-0082), `Nudm_PP` 11 ops (ADR-0237) |
+| SMF count stale | 22 of 26 N2SmInfoType remain, not 20 |
+| UDM source comment self-contradictory | Header listed 7 APIs as "deferred" that the same file documents as implemented 40 lines below |
+| Genuinely open, verified | AMF `HandoverCancel`; AMF->SMF handover relay |
+| Audit limit disclosed | Full route-vs-YAML reconciliation abandoned as unreliable (regex extractor under-counted UDR badly); needs build-time route extraction |
+
+See ADR-0251 in `docs/DECISIONS.md`.
