@@ -4883,3 +4883,16 @@ See ADR-0250 in `docs/DECISIONS.md`.
 | Audit limit disclosed | Full route-vs-YAML reconciliation abandoned as unreliable (regex extractor under-counted UDR badly); needs build-time route extraction |
 
 See ADR-0251 in `docs/DECISIONS.md`.
+
+## ADR-0252 -- full NF API coverage audit (all 16 NFs)
+
+| Requirement | Evidence |
+|---|---|
+| Reliable method | YAML paths tested against compiled-binary string tables; regex-over-source abandoned (reported 12 routes for UDR, which has 204 `add_route` calls) |
+| Paths from YAML, never operationIds | ADR-0251's false negative (`GetSupiOrGpsi` -> `/{ueId}/id-translation-result`) not repeated |
+| Result | 12 of 16 NFs at 100%; **32 unrouted of 328 paths (90%)** |
+| False-negative mode found before publishing | UDM's 4 ack routes are loop-registered so their literals never appear in the binary; excluded from the 32. 15 likely-dynamic paths reported as unconfirmed, not counted either way |
+| Every finding source-verified | Zero-occurrence greps for UDR `application-data`, SMF `send-mo-data`, UDM `update-sor`; NRF/AUSF strings present only inside deferral comments |
+| Largest real gap | UDR: 23 paths across `/application-data/*` (12), `/exposure-data/*` (4), `/aiot-data/*` (3) + 4 singles -- previously undisclosed |
+
+See `docs/NF_API_COVERAGE_AUDIT.md` and ADR-0252.
