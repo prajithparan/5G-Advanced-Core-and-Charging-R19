@@ -4813,3 +4813,16 @@ stays a library default but is no longer the binary's deployment default).
 
 See ADR-0246 in `docs/DECISIONS.md`. No performance claim and no free5GC comparison is made;
 ADR-0238 step (1) stays blocked on unvendored TS 28.552/28.554.
+
+## ADR-0247 -- TS 28.552/28.554 measurement mapping (ADR-0238 step (1))
+
+| Requirement | Evidence |
+|---|---|
+| Real, current spec material | TS 28.552 **v19.8.0 (2026-08)**, TS 28.554 **v19.7.0 (2026-04)**, both Release 19, vendored in `specs/` |
+| Reviewable mapping deliverable | `docs/PERFORMANCE_MAPPING.md` -- 663 measurement names across 13 clause families, applicability triage per family |
+| One NF mapped exhaustively, not sampled | NRF clause 5.10 `NFS.*`, all 13 measurements: **0 conformant, 2 partial** (`nrf_registrations_total` conflates `NFS.RegReq` with `NFS.RegSucc`) |
+| Framework gap found: CHF uncovered | No "Performance measurements for CHF" clause exists in TS 28.552; nor AUSF/BSF/SCP/5G-EIR/GMLC/SEPP. Charging performance is TS 32.4xx |
+| Framework gap found: 5.7 needs a VNFM | 5.7.1 VR.* measurements are sourced from ETSI GS IFA 027 "from VNFM" -- the NFV-MANO layer ADR-0238 established this project lacks. Only 5.7.2 is implementable |
+| Highest-leverage instrumentation finding | 28.552 splits every operation into request/success/per-cause-failure; every 5GC-reachable 28.554 KPI is a ratio of those, so the split is the prerequisite for step (4) |
+
+See ADR-0247 and `docs/PERFORMANCE_MAPPING.md`. No conformance or free5GC claim is made.
