@@ -37,23 +37,32 @@ the spec's own `e)` measurement-name fields, not estimated).
 | 5.16 | LMF | **Yes** | `nfs/lmf` exists |
 | 5.18 | NWDAF | **Yes (future)** | Tier-2, not yet built |
 
-### Clause 5.7 "Common performance measurements for NFs" is mostly NOT usable here
+### Clause 5.7 "Common performance measurements for NFs" is entirely NOT usable here
 
-Read directly rather than assumed from the title: 5.7.1 (`VR.VCpuUsageMean`,
-`VR.VMemoryUsageMean`, `VR.VDiskUsageMean`) is sourced, in the spec's own words, from the
-`VcpuUsageMeanVnf.vComputeId` measurements "(see ETSI GS IFA 027)... **from VNFM**". That is the
-ETSI NFV-MANO layer **ADR-0238 already established this project does not have and was never
-scoped to build**. Same reason NFV-TST/NFV-REL were rejected there; it applies again here, and is
-recorded rather than quietly skipped.
+**CORRECTED (ADR-0250)** -- an earlier revision of this document claimed only 5.7.1 needed a VNFM
+and that 5.7.2 was implementable. That was wrong, and a YAML/TS cross-check caught it.
 
-Only **5.7.2** (`Connection data volumes of NF`: incoming/outgoing bytes and packets) is
-implementable without a VNFM.
+- **5.7.1** (`VR.VCpuUsageMean`, `VR.VMemoryUsageMean`, `VR.VDiskUsageMean`) is sourced, in the
+  spec's own words, from `VcpuUsageMeanVnf.vComputeId` "(see ETSI GS IFA 027)... **from VNFM**".
+- **5.7.2** (`DataVolum.InBytes`, `.OutBytes`, `.InPackets`, `.OutPackets`) is sourced the same
+  way -- all four `c)` fields read "receives the `ByteIncomingVnfExtCp` / `ByteOutgoingVnfExtCp` /
+  `PacketIncomingVnfExtCp` / `PacketOutgoingVnfExtCp` measurement(s)", which are VNF measurements
+  from the same VNFM. Verified by reading each of the four `c)` fields individually.
+
+So **the whole of clause 5.7 depends on the ETSI NFV-MANO layer ADR-0238 established this project
+does not have.** Nothing in it is implementable here.
 
 ## What TS 28.552 does NOT cover -- and it includes this project's commercial core
 
-**There is no CHF clause in TS 28.552.** Confirmed by direct search: no `Performance measurements
-for CHF` heading exists. Neither do **AUSF, BSF, SCP, 5G-EIR, GMLC, or SEPP** -- all of which this
-project has built.
+**TS 28.552 v19.8.0 contains ZERO occurrences of "CHF" anywhere in its full text** (literal count,
+not a heading search). Neither does it define measurements for **AUSF, BSF, SCP, 5G-EIR, GMLC, or
+SEPP** -- all of which this project has built.
+
+**Important refinement from the YAML cross-check (ADR-0250)**: CHF *is* a real, 3GPP-defined
+**managed object** -- `ChfFunction` exists in `specs/5G_APIs-REL-19/TS28541_5GcNrm.yaml`. So CHF is
+modellable and manageable under the 5GC NRM; what does not exist is any *performance measurement*
+defined against it. An earlier revision of this document risked reading as "CHF is absent from
+3GPP management entirely", which would have been wrong.
 
 This matters directly to ADR-0049's mandate: CHF is the commercial centre of this project, and
 the framework selected in ADR-0238 does not measure it. Charging-domain performance lives in the

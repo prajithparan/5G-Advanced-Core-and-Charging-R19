@@ -4854,3 +4854,15 @@ See ADR-0248 in `docs/DECISIONS.md`.
 | No regression | conformance 333/333, `ctest` 469/469 |
 
 See ADR-0249 in `docs/DECISIONS.md`.
+
+## ADR-0250 -- YAML/TS cross-check made standard; two committed errors corrected
+
+| Finding | Evidence |
+|---|---|
+| **Error corrected**: clause 5.7.2 is NOT implementable | All four measurements' `c)` fields read `ByteIncomingVnfExtCp`/`ByteOutgoingVnfExtCp`/`PacketIncomingVnfExtCp`/`PacketOutgoingVnfExtCp` -- VNF measurements from a VNFM, same as 5.7.1. The whole of 5.7 is MANO-dependent |
+| **Error refined**: CHF is a real managed object | `ChfFunction` exists in `TS28541_5GcNrm.yaml`; TS 28.552 v19.8.0 has **zero** literal "CHF" occurrences. CHF is manageable under the NRM but has no defined measurements |
+| Confirmed: NRF `NFS.*` mapping holds | `RegisterNFInstance`/`UpdateNFInstance`/`SearchNFInstances` in `TS29510_Nnrf_NFManagement.yaml`/`_NFDiscovery.yaml` |
+| Confirmed: 26 `N2SmInfoType` values | `TS29502_Nsmf_PDUSession.yaml` enum (stage-3 definition); SMF implements 4 |
+| Opportunity found | `TS28532_PerfMnS.yaml`, `TS28532_FileDataReportingMnS.yaml`, `TS28532_StreamingDataMnS.yaml` already vendored -- a real PM reporting interface is reachable, not hypothetical |
+
+See ADR-0250 in `docs/DECISIONS.md`.
