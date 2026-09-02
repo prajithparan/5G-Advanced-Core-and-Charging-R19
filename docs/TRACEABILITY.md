@@ -4911,3 +4911,18 @@ See `docs/NF_API_COVERAGE_AUDIT.md` and ADR-0252.
 | Not yet live-verified | `schema.postgres.sql` gained 2 tables; an existing DB needs re-apply first |
 
 See ADR-0253 in `docs/DECISIONS.md`.
+
+## ADR-0254 -- UDR application-data group completed
+
+| Requirement | Evidence |
+|---|---|
+| 10 paths / 22 operations | pfds, bdtPolicyData, iptvConfigData, serviceParamData, subs-to-notify -- collection + item each |
+| Per-path YAML reading, not generalisation | `pfds` has no PATCH while the other three do -- the spec's asymmetry, taken per path |
+| Generated-type collision handled up front | `BdtPolicyData_Application_Data` (plain name collides with Npcf_BDTPolicyControl's) -- checked before writing, not at link failure |
+| Distinct tables, shared store class | 5 tables; one `ApplicationDataDocStore` parameterised by table/id column; identifiers are fixed literals, values always bound |
+| Verified by exact-literal match | All 10 ROUTED in the binary; heuristic deliberately not used |
+| Coverage | UDR 23 -> 9 unrouted; all 14 application-data paths done |
+| No regression | conformance 333/333, ctest 469/469 |
+| Not live-verified | 5 new tables need schema re-apply on an existing DB |
+
+See ADR-0254 in `docs/DECISIONS.md`.

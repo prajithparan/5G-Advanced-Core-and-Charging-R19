@@ -29,7 +29,7 @@ operation name produced a false negative earlier and is not done anywhere in thi
 | udm | 1 | `/{supi}/am-data/update-sor` -- genuinely absent |
 | smf | 2 | `transfer-mo-data`, `send-mo-data` -- genuinely absent |
 | nrf | 5 | `/shared-data*`, `/scp-domain-routing-info*` -- disclosed deferred |
-| udr | 19 (was 23) | largest real gap -- 4 closed by ADR-0253, see below |
+| udr | 9 (was 23) | 4 closed by ADR-0253, 10 more by ADR-0254; remaining: `/exposure-data/*` (4), `/aiot-data/*` (3), 2 singles |
 
 **Total: 32 unrouted paths of 328.**
 
@@ -119,3 +119,12 @@ its "likely-dynamic" count rising 8 -> 16. That improvement is **not real**: the
 The heuristic gets **weaker as coverage grows**, because shared path prefixes accumulate in the
 binary. The reliable check is a full-literal `grep -F` for the exact path, which was run for each
 of the nine paths above and is the basis for the 4/19 figures. Treat tier-2 counts as a hint only.
+
+## Update (ADR-0254): `/application-data/*` complete
+
+All 14 `application-data` paths are now routed, verified by exact-literal match against the
+binary (not the tier-2 heuristic, which ADR-0253 showed is unreliable once prefixes accumulate).
+
+**UDR: 23 -> 9 unrouted.** What remains: `/exposure-data/*` (4), `/aiot-data/*` (3, R19 Ambient
+IoT), `/data-restoration-events`, and
+`/subscription-data/{ueId}/service-specific-authorization-data/{serviceType}`.

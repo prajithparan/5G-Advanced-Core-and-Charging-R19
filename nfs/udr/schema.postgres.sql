@@ -1242,3 +1242,34 @@ CREATE TABLE IF NOT EXISTS udr_traffic_influence_sub (
     subscription_id TEXT PRIMARY KEY,
     data            JSONB NOT NULL
 );
+
+-- ADR-0254: the rest of the real Nudr_DataRepository `application-data` group (TS29504_Nudr_DR.yaml
+-- $ref'ing TS29519_Application_Data.yaml). Five genuinely distinct real resources, therefore five
+-- tables -- NOT one table with a type discriminator, same reasoning udr_amf_non3gpp_context's own
+-- comment established. They do all share an identical CRUD shape (opaque JSON document keyed by a
+-- single id), so they are served by ONE generic store class over five tables rather than five
+-- near-identical classes; distinctness lives in the schema, not in duplicated C++.
+CREATE TABLE IF NOT EXISTS udr_pfd_data (
+    app_id TEXT PRIMARY KEY,
+    data   JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS udr_bdt_policy_data (
+    bdt_policy_id TEXT PRIMARY KEY,
+    data          JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS udr_iptv_config_data (
+    configuration_id TEXT PRIMARY KEY,
+    data             JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS udr_service_param_data (
+    service_param_id TEXT PRIMARY KEY,
+    data             JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS udr_application_data_subs (
+    subs_id TEXT PRIMARY KEY,
+    data    JSONB NOT NULL
+);

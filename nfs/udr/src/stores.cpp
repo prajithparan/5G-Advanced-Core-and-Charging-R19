@@ -3100,4 +3100,76 @@ bool TrafficInfluenceSubStore::remove(const std::string& subscription_id) {
     return result.affected_rows() > 0;
 }
 
+// --- ADR-0254: generic application-data document store ---
+// table_/id_column_ are NOT request-derived -- they are fixed literals chosen at construction in
+// main.cpp, so interpolating them into the SQL below cannot be influenced by a peer. Values are
+// still bound as parameters, never interpolated.
+ApplicationDataDocStore::ApplicationDataDocStore(const std::string& conninfo,
+                                                 std::string table,
+                                                 std::string id_column)
+    : conn_(conninfo), table_(std::move(table)), id_column_(std::move(id_column)) {}
+
+std::vector<nlohmann::json> ApplicationDataDocStore::list() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM " + table_ + " ORDER BY " + id_column_);
+    std::vector<nlohmann::json> out;
+    out.reserve(result.size());
+    for (const auto& row : result) {
+        out.push_back(nlohmann::json::parse(row["data"].as<std::string>()));
+    }
+    return out;
+}
+
+std::optional<nlohmann::json> ApplicationDataDocStore::get(const std::string& id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM " + table_ + " WHERE " + id_column_ + " = $1", pqxx::params{id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+bool ApplicationDataDocStore::put(const std::string& id, const nlohmann::json& data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto existing =
+        txn.exec("SELECT 1 FROM " + table_ + " WHERE " + id_column_ + " = $1", pqxx::params{id});
+    const bool is_new = existing.empty();
+    txn.exec("INSERT INTO " + table_ + " (" + id_column_ +
+                 ", data) VALUES ($1, $2::jsonb) ON CONFLICT (" + id_column_ +
+                 ") DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{id, data.dump()});
+    txn.commit();
+    return is_new;
+}
+
+std::optional<nlohmann::json> ApplicationDataDocStore::merge_patch(const std::string& id,
+                                                                   const nlohmann::json& patch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM " + table_ + " WHERE " + id_column_ + " = $1", pqxx::params{id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto doc = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    doc.merge_patch(patch);
+    txn.exec("UPDATE " + table_ + " SET data = $2::jsonb WHERE " + id_column_ + " = $1",
+             pqxx::params{id, doc.dump()});
+    txn.commit();
+    return std::make_optional(doc);
+}
+
+bool ApplicationDataDocStore::remove(const std::string& id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("DELETE FROM " + table_ + " WHERE " + id_column_ + " = $1", pqxx::params{id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
 } // namespace udr

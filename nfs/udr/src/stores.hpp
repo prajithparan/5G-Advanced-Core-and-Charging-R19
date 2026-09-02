@@ -235,6 +235,32 @@ private:
 // (influence-Ids, dnns, snssais, internal-Group-Ids, internal-group-ids-Add,
 // subscriber-categories, supis, supp-feat); which of those this build actually honours is
 // documented at the route itself, not silently implied here.
+// ADR-0254: the remaining real `application-data` resources (pfds, bdtPolicyData,
+// iptvConfigData, serviceParamData, subs-to-notify). Each is a genuinely distinct real resource
+// with its own table -- but all five share an identical CRUD shape over an opaque JSON document
+// keyed by one id, so they share ONE store class parameterised by table and id column rather than
+// five near-identical copies. Distinctness is enforced by the schema, not by duplicated C++; this
+// is deliberately NOT the "one table with a discriminator" shape the project has rejected before.
+class ApplicationDataDocStore {
+public:
+    ApplicationDataDocStore(const std::string& conninfo, std::string table, std::string id_column);
+
+    std::vector<nlohmann::json> list();
+    std::optional<nlohmann::json> get(const std::string& id);
+    // true when the row did not previously exist (the real 201-vs-200/204 distinction).
+    bool put(const std::string& id, const nlohmann::json& data);
+    // RFC 7396 merge patch. std::nullopt when the resource does not exist -- the real spec
+    // documents 404 for PATCH here, so this deliberately does NOT upsert.
+    std::optional<nlohmann::json> merge_patch(const std::string& id, const nlohmann::json& patch);
+    bool remove(const std::string& id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+    std::string table_;
+    std::string id_column_;
+};
+
 class TrafficInfluenceDataStore {
 public:
     explicit TrafficInfluenceDataStore(const std::string& conninfo);
