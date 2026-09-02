@@ -1450,16 +1450,23 @@ int main() {
     // project's own lab choices, in the same style as the existing lab SUPIs.
     {
         json profile;
-        profile["aiotDevPermId"] = "aiot-dev-000000000000001";
+        // AiotDevPermId is `Bytes` (`format: byte`) in TS29571_CommonData.yaml, i.e. base64 --
+        // NOT a free-form label. The codegen emits it as an opaque nlohmann::json fallback, so
+        // nothing would have rejected a plain string; this value is base64 ("aiot-dev-1") because
+        // the YAML says so, not because a compiler complained.
+        profile["aiotDevPermId"] = "YWlvdC1kZXYtMQ==";
         // `lastKnownAiotfInfoInd` is LastKnownAiotfInfo's ONLY required field (a boolean) --
         // checked against TS29369_Nadm_DM.yaml, not guessed. An earlier draft of this seed
         // invented an `aiotfInstanceId` field here; the generated from_json rejected it, which is
         // exactly what generated DTOs are for.
         profile["lastKnownAiotfInfo"] = json{{"lastKnownAiotfInfoInd", true}};
-        aiot_device_profile_data.seed("aiot-dev-000000000000001", profile);
+        aiot_device_profile_data.seed("YWlvdC1kZXYtMQ==", profile);
 
         json af_auth;
-        af_auth["afAuthData"] = json{{"af-app-1", json::object()}};
+        // `afId` is IndividualAfAuthorizationData's ONLY required field. An empty object here
+        // would be a stored document that violates its own schema -- and the GET route returns
+        // this map opaquely, so no round-trip would have caught it.
+        af_auth["afAuthData"] = json{{"af-app-1", json{{"afId", "af-app-1"}}}};
         aiot_af_authorization_data.seed(af_auth);
     }
 
@@ -10193,6 +10200,27 @@ int main() {
             if (!doc.has_value()) {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No AF authorization data");
+            }
+            // Same lesson as the bundled GET one route above: a stored row that does not match
+            // its schema must be ANSWERED, not thrown out of the handler. `afAuthData` generates
+            // as an opaque map, so its entries are validated explicitly here -- a round-trip
+            // through AfAuthorizationData alone would not check them.
+            if (!doc->contains("afAuthData") || !doc->at("afAuthData").is_object()) {
+                return sbi_core::http2::problem_response(
+                    500, "Internal Server Error", "stored AF authorization data has no afAuthData");
+            }
+            try {
+                for (const auto& [af_id, entry] : doc->at("afAuthData").items()) {
+                    (void)af_id;
+                    (void)entry.get<sbi_gen::IndividualAfAuthorizationData>();
+                }
+            } catch (const nlohmann::json::exception& e) {
+                return sbi_core::http2::problem_response(
+                    500,
+                    "Internal Server Error",
+                    std::string("stored AF authorization data is not valid "
+                                "IndividualAfAuthorizationData: ") +
+                        e.what());
             }
             const auto af_id_it = req.query_params.find("af-id");
             if (af_id_it == req.query_params.end()) {

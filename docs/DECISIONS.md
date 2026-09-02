@@ -22084,10 +22084,39 @@ draft**, neither of which inspection had found:
    `ProblemDetails`. The handler now catches `nlohmann::json::exception` and answers 500. Any
    stored row that fails to satisfy its schema is now answered, not silently dropped.
 
-**On the `ctest` total**: 478 here, of which 4 are new. That implies 474 before this commit, and
-471 before ADR-0255's 3 -- while ADR-0253 and ADR-0254 both recorded 469. The 469 figure appears to
-have been carried forward stale rather than re-measured; the discrepancy is stated rather than
-propagated, and was not chased to root cause (doing so needs a full rebuild at those commits).
+**On the `ctest` total -- resolved, not left open**: 478 here, of which 4 are new; 474 before this
+commit, 471 before ADR-0255's 3. ADR-0253 and ADR-0254 both recorded **469**. Checked rather than
+guessed: `tests/integration/CMakeLists.txt` listed 47 `.cpp` files at ADR-0254 (`40709b3`) and
+lists 49 now, and `git diff 40709b3 -- tests/` shows those two files are the only test-registration
+change in between. So nothing untracked added tests: **469 was carried forward stale rather than
+re-measured, and the real figure at ADR-0254 was 471.** Corrected here rather than propagated
+again.
+
+### Follow-up audit within this ADR: three more of the same defect class
+
+After the two defects above were found by test, the rest of the seed block was re-read against the
+YAML rather than assumed correct -- on the reasoning that `aiotfInstanceId` was caught only because
+it sat on a *required* field, and the rest of that block was written the same way. Three more real
+problems, all in this ADR's own work, all fixed here:
+
+1. **`afAuthData: {"af-app-1": {}}` violated its own schema.** `IndividualAfAuthorizationData`
+   requires `afId`. Nothing caught it because the `af-authorization-data` route returns the map
+   opaquely and `afAuthData` generates as an opaque `nlohmann::json`, so no round-trip validates
+   the entries. Seed corrected; the route now validates each entry through the generated type and
+   answers **500** rather than serving a document that violates the spec.
+2. **`aiotDevPermId` was a free-form label, not `Bytes`.** `AiotDevPermId` resolves to `Bytes`
+   (`format: byte`) in `TS29571_CommonData.yaml` -- base64. The codegen emits it as an opaque
+   fallback, so `"aiot-dev-000000000000001"` was accepted by everything and is still wrong. Now
+   `"YWlvdC1kZXYtMQ=="`.
+3. **The same dropped-connection bug, one route over.** `af-authorization-data` did an unguarded
+   `doc->at("afAuthData")`; a row without that key would have thrown out of the handler and closed
+   the stream with no response -- identical to the bundled-GET defect fixed above. Guarded.
+
+The generalisable lesson, worth more than the three fixes: **an opaque generated fallback type
+silently disables the safety net this project relies on.** `AiotDevPermId` and `afAuthData` both
+generate as `nlohmann::json`, so the "generated DTOs catch invented fields" argument -- which is
+exactly what caught defect 1 in the previous section -- does not hold for them. Fields behind an
+opaque fallback have to be checked by reading the YAML, because nothing else will.
 
 ### Open questions for the user
 

@@ -89,7 +89,10 @@ authed(const std::string& method, const std::string& url, const std::string& tok
 // The seeded lab device (see nfs/udr/src/main.cpp). The resource has no create operation in the
 // spec, so seeding is the only way a row can exist -- and every udr start re-seeds it, which makes
 // this test idempotent against a persistent database.
-constexpr const char* kSeededDevice = "aiot-dev-000000000000001";
+// Base64 ("aiot-dev-1"): AiotDevPermId is `Bytes`/`format: byte`, not a free-form
+// label. The generated type is an opaque fallback and would accept anything, so this
+// is pinned to what the YAML actually specifies.
+constexpr const char* kSeededDevice = "YWlvdC1kZXYtMQ==";
 
 const std::string kProfileColl = "https://127.0.0.1:7781/nudr-dr/v2/aiot-data/"
                                  "aiot-device-profile-data";
@@ -234,7 +237,10 @@ TEST(UdrAiotDataIntegration, AfAuthorizationDataReadAndFilter) {
     ASSERT_EQ(all->status, 200) << all->body;
     const auto doc = json::parse(all->body);
     ASSERT_TRUE(doc.contains("afAuthData"));
-    EXPECT_TRUE(doc.at("afAuthData").contains("af-app-1"));
+    ASSERT_TRUE(doc.at("afAuthData").contains("af-app-1"));
+    // afId is IndividualAfAuthorizationData's required field. Asserted because this route returns
+    // the map opaquely -- nothing else would notice a stored entry that violates its own schema.
+    EXPECT_EQ(doc.at("afAuthData").at("af-app-1").at("afId").get<std::string>(), "af-app-1");
 
     // af-id is an optional filter and IS honoured -- it keys the map this document is built on.
     // The envelope is kept rather than returning a bare entry.
