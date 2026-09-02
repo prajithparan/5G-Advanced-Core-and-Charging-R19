@@ -26,12 +26,12 @@ operation name produced a false negative earlier and is not done anywhere in thi
 | scp | 0 | **complete** |
 | smsf | 0 | **complete** |
 | ausf | 1 | `/rg-authentications` -- disclosed deferred (5G-RG, out of Tier-1 5G-AKA scope) |
-| udm | 1 | `/{supi}/am-data/update-sor` -- genuinely absent |
-| smf | 2 | `transfer-mo-data`, `send-mo-data` -- genuinely absent |
+| udm | 1 | `/{supi}/am-data/update-sor` -- **disclosed deferred** (ADR-0257): needs the TS 24.501 9.11.3.51 SOR header encoding; that spec is not in `specs/` |
+| smf | 0 | **complete** -- both closed by ADR-0257 |
 | nrf | 5 | `/shared-data*`, `/scp-domain-routing-info*` -- disclosed deferred |
 | udr | 1 (was 23) | 4 closed by ADR-0253, 10 by ADR-0254, 4 by ADR-0255, 4 by ADR-0256; remaining: `service-specific-authorization-data` -- **disclosed deferred**, not a gap (ADR-0160, user-confirmed twice) |
 
-**Total: 24 unrouted paths of 328** -- and every one of the 24 is now a disclosed deferral or a genuinely-absent operation, not an undisclosed gap.
+**Total: 22 unrouted paths of 328 -- and every single one is now an explicit, reasoned deferral. Zero undisclosed gaps, and zero "genuinely absent" paths.** (NRF 5, AUSF 1, UDR 1, UDM 1 across 8 distinct resources; SMF's 2 closed by ADR-0257.)
 
 ## The 32, verbatim
 
@@ -168,3 +168,18 @@ stale half is corrected in `nfs/udr/src/main.cpp` and `nfs/udr/schema.postgres.s
 stays deferred on ADR-0160's still-valid schema/write-path grounds.
 
 **UDR's real remaining count is therefore 1 deferred path and 0 undisclosed gaps.**
+
+## Update (ADR-0257): the audit is discharged
+
+`SendMoData`/`TransferMoData` are routed. **SMF: 2 -> 0.**
+
+`/{supi}/am-data/update-sor` was re-examined rather than implemented on ADR-0234's stated
+reasoning, and both of that ADR's blockers turned out to be wrong: the `CounterSoR` state machine
+does exist (in AUSF, `kausf_store.use_counter()`, with real TS 33.501 6.14.2.3 wrap-around), and
+the missing steering-list content is not blocking because `steeringContainer` is optional
+everywhere it appears. The real blocker is that a UDM->AUSF relay needs a `sorHeader`, whose
+construction is TS 24.501 9.11.3.51 -- **a spec not present in `specs/`**. Re-deferred with that
+accurate reason.
+
+**Every one of the 328 paths is now either implemented or an explicit, reasoned deferral. This
+audit has no open findings.**

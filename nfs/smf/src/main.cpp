@@ -1520,6 +1520,13 @@ int main() {
                                    "Total Nsmf_EventExposure DeleteIndividualSubcription calls");
     auto nidd_deliver_counter =
         meter->CreateUInt64Counter("smf_nidd_deliver_total", "Total Nsmf_NIDD Deliver calls");
+    // ADR-0257: the mobile-ORIGINATED half of small-data-over-NAS, mirroring Nsmf_NIDD's own
+    // mobile-terminated Deliver above.
+    auto send_mo_data_counter = meter->CreateUInt64Counter("smf_send_mo_data_total",
+                                                           "Total Nsmf_PDUSession SendMoData "
+                                                           "calls");
+    auto transfer_mo_data_counter = meter->CreateUInt64Counter(
+        "smf_transfer_mo_data_total", "Total Nsmf_PDUSession TransferMoData calls");
 
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
@@ -2589,6 +2596,73 @@ int main() {
             // Disclosed simplification: no real NAS/5G-SM NIDD delivery pipeline exists to
             // actually push the MT data to a UE, same class of gap as every other NAS-adjacent
             // simplification in this file.
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // ---- ADR-0257: SendMoData / TransferMoData (TS29502_Nsmf_PDUSession.yaml) ----
+    // The last two genuinely-absent paths in ADR-0252's whole-project audit. Deferred at SMF's
+    // first turn (ADR-0032) as "peripheral to Phase 2" -- a scoping call, not a spec blocker, and
+    // closed here.
+    //
+    // Both are the mobile-ORIGINATED mirror of Nsmf_NIDD's own mobile-terminated Deliver
+    // implemented just above, and are implemented the same way for the same reasons. Both are
+    // multipart/related-ONLY in the real spec (no application/json alternative exists for either),
+    // and both define exactly one success response: 204, no body.
+    //
+    // Real, disclosed simplification, identical in class to Deliver's own and to every other
+    // NAS-adjacent gap in this file: the binary `moData` part is parsed and its presence validated
+    // by the multipart codec, but there is no real onward path to a DN or to NEF's own
+    // Nnef_SMContext for it to be forwarded to. The operation accepts and validates; it does not
+    // pretend to deliver. `moExpDataCounter`/`ueLocation` are likewise accepted and not acted on.
+
+    server.add_route(
+        "POST",
+        std::string(kApiRoot) + "/sm-contexts/{smContextRef}/send-mo-data",
+        [&verifier, &sm_contexts, &send_mo_data_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_multipart_json_body<sbi_gen::SendMoDataReqData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto sm_context_ref = req.path_params.at("smContextRef");
+            if (!sm_contexts.get(sm_context_ref).has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No such SM context: " + sm_context_ref);
+            }
+            send_mo_data_counter->Add(1);
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "POST",
+        std::string(kApiRoot) + "/pdu-sessions/{pduSessionRef}/transfer-mo-data",
+        [&verifier, &sm_contexts, &transfer_mo_data_counter](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_multipart_json_body<sbi_gen::TransferMoDataReqData>(
+                req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            // Same disclosed identifier simplification Nsmf_NIDD's own Deliver makes: this build
+            // has no separate real `/pdu-sessions` resource, so pduSessionRef is resolved against
+            // the smContextRef id space. Stated here rather than inherited silently.
+            const auto pdu_session_ref = req.path_params.at("pduSessionRef");
+            if (!sm_contexts.get(pdu_session_ref).has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No such PDU session: " + pdu_session_ref);
+            }
+            transfer_mo_data_counter->Add(1);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

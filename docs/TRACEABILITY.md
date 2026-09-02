@@ -4967,3 +4967,21 @@ See ADR-0255 in `docs/DECISIONS.md`.
 | Disclosed | no `DataRestorationNotification` delivery; no unsubscribe (no resource path exists to address one) |
 
 See ADR-0256 in `docs/DECISIONS.md`.
+
+## ADR-0257 -- SMF small-data MO ops; `Update SOR Info` re-deferred with a correct reason
+
+| Requirement | Evidence |
+|---|---|
+| 2 paths implemented | `POST /sm-contexts/{smContextRef}/send-mo-data`, `POST /pdu-sessions/{pduSessionRef}/transfer-mo-data` (`TS29502_Nsmf_PDUSession.yaml`) |
+| Read per path | both `multipart/related`-only (no JSON alternative exists), both exactly one success response: 204 no body |
+| Reuses the established mirror | same pattern as `Nsmf_NIDD` `Deliver` (ADR-0201), the mobile-terminated counterpart |
+| Prior deferral was scoping, not spec | ADR-0032 deferred them as "peripheral to Phase 2"; no spec blocker existed, so closing them needed no new decision |
+| Disclosed | binary `moData` validated as present, no onward DN/NEF path -- accepts and validates, does not pretend to deliver; `moExpDataCounter`/`ueLocation` accepted, not acted on; `pduSessionRef` resolves against the `smContextRef` id space |
+| ADR-0234's blocker #1 disproved | "no CounterSoR state machine anywhere in this build" -- it is in AUSF (`kausf_store.use_counter()`), with real TS 33.501 6.14.2.3 wrap-around suspension |
+| ADR-0234's blocker #2 disproved | "missing steering list content" is not blocking -- `steeringContainer` optional in `SorInfo` and in the `Nausf_SoRProtection` request; `SorInfo` requires only `ackInd`+`provisioningTime`; TS 33.501 A.17 makes the Steering Info List an optional P2 |
+| Real blocker identified | UDM->AUSF relay needs `sorHeader`; its construction is TS 24.501 9.11.3.51 (NAS bit encoding). TS 24.501 absent from `specs/`, no SOR transparent container in the NAS codec -- checked, not assumed |
+| Stale comment corrected, decision preserved | `nfs/udm/src/main.cpp` now records the accurate reason; the ack-relay half of that comment was deliberately left unchanged because it is still true |
+| Audit discharged | all 328 paths implemented or explicitly deferred; 22 deferred, 0 undisclosed gaps, 0 genuinely-absent |
+| Verified by exact-literal match | both new paths ROUTED in `build/nfs/smf/smf` |
+
+See ADR-0257 in `docs/DECISIONS.md`.

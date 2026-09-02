@@ -2300,13 +2300,28 @@ int main() {
     // SoR-Protection/UPU-Protection service exists in this build to actually consume these acks,
     // so this project accepts and validates (a real existence check against the same UDR am-data
     // probe `GetAmData`/`Nudm_MT`'s own `GetLocationInfo`-adjacent ops already use) without
-    // forwarding. `Update SOR Info` (the 5th op in this group) is deferred -- real, disclosed gap:
-    // unlike this project's own AUSF ProSe deferral (ADR-0104, blocked on missing KDF material),
-    // the real SoR-MAC-IAUSF KDF primitive already exists (`libs/aka-crypto`'s own
-    // `derive_sor_mac_iausf`, TS 33.501 Annex A.17) -- what's missing is a real per-UE CounterSoR
-    // state machine (TS 33.501 clause 6.14.2.3) and real steering-of-roaming list content, neither
-    // of which exists anywhere in this build; fabricating either would violate this project's own
-    // no-invention rule, so it is left open rather than stubbed.
+    // forwarding. That non-relay disclosure is still accurate: AUSF computes `sorXmacIue` but has
+    // no endpoint that consumes a UE ack, so there is genuinely nothing to forward these to.
+    //
+    // `Update SOR Info` (the 5th op in this group) remains deferred -- but ADR-0257 RE-EXAMINED
+    // ADR-0234's stated reasons and BOTH were wrong:
+    //   * "no real per-UE CounterSoR state machine (TS 33.501 6.14.2.3) exists anywhere in this
+    //     build" -- it does, in AUSF, which is where it architecturally belongs because AUSF owns
+    //     KAUSF: `kausf_store.use_counter()` in nfs/ausf/src/main.cpp, including real wrap-around
+    //     suspension per that exact clause.
+    //   * "real steering-of-roaming list content is missing" -- true, but not blocking:
+    //     `steeringContainer` is OPTIONAL in both `SorInfo` (TS29503_Nudm_SDM.yaml) and in AUSF's
+    //     own `Nausf_SoRProtection` request, and `SorInfo` requires only `ackInd` +
+    //     `provisioningTime`. TS 33.501 Annex A.17 explicitly makes the Steering Info List an
+    //     optional P2.
+    // The REAL blocker, which ADR-0234 did not identify: the relay UDM would have to make is
+    // `POST /{supi}/ue-sor` to AUSF, and AUSF (correctly, and already disclosed in its own file)
+    // REQUIRES a `sorHeader` because AUSF-side construction of it is out of scope. Building that
+    // header is TS 24.501 clause 9.11.3.51 -- a NAS-layer bit encoding. **TS 24.501 is not in
+    // `specs/`, and no SOR transparent container exists anywhere in this project's NAS codec.**
+    // Constructing it would be inventing a wire encoding, which is the one thing this project
+    // never does. Deferred on missing spec material, the same class as ADR-0104's AUSF ProSe
+    // deferral -- and now with an accurate reason instead of a stale one.
     for (const std::string segment : {"sor-ack", "upu-ack", "subscribed-snssais-ack", "cag-ack"}) {
         server.add_route(
             "PUT",
