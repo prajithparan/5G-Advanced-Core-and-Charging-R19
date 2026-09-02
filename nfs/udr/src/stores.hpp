@@ -286,6 +286,68 @@ private:
     pqxx::connection conn_;
 };
 
+// ADR-0256: AIoT device profile data (`/aiot-data/aiot-device-profile-data`,
+// TS29506_Aiot_Data.yaml; schemas from TS29369_Nadm_DM.yaml). Its own class rather than a
+// KeyedJsonDocStore because the bundled GET filters by an explicit list of ids, and PATCH here is
+// RFC 6902 JSON Patch, not the RFC 7396 merge-patch KeyedJsonDocStore offers.
+//
+// Real, disclosed: UDR's own spec gives this resource **only GET and PATCH** -- there is no
+// create/replace/delete operation anywhere in TS29506_Aiot_Data.yaml -- so there is no live
+// provisioning path and rows are seeded at startup. Same shape as the `provisioned-data` group
+// (ADR-0069) and RoutingIdStore/NfGroupIdStore, not an omission here.
+class AiotDeviceProfileDataStore {
+public:
+    explicit AiotDeviceProfileDataStore(const std::string& conninfo);
+
+    void seed(const std::string& aiot_dev_perm_id, nlohmann::json data);
+    std::optional<nlohmann::json> get(const std::string& aiot_dev_perm_id);
+    // Bundled read: returns only the requested ids, in the order asked for, skipping ids that
+    // have no row. The real GET makes `requester-aiot-devices-id` a REQUIRED query parameter, so
+    // there is deliberately no "list everything" entry point.
+    std::vector<nlohmann::json> get_many(const std::vector<std::string>& aiot_dev_perm_ids);
+    // Real RFC 6902 JSON Patch (already parsed) via nlohmann::json's built-in .patch(). Throws
+    // nlohmann::json::exception on an invalid patch -- the caller catches. std::nullopt when the
+    // row does not exist (the real spec documents 404 for this operation).
+    std::optional<nlohmann::json> patch(const std::string& aiot_dev_perm_id,
+                                        const nlohmann::json& patch_ops);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
+// ADR-0256: `/aiot-data/af-authorization-data`. A genuinely keyless singleton document
+// (`AfAuthorizationData` is one object whose `afAuthData` is a map keyed by AF id), backed by a
+// fixed single-row table -- the same shape as FiveGVnGroupPpProfileDataStore. GET is the only
+// operation the spec defines, so seed() + get() only.
+class AiotAfAuthorizationDataStore {
+public:
+    explicit AiotAfAuthorizationDataStore(const std::string& conninfo);
+
+    void seed(nlohmann::json data);
+    std::optional<nlohmann::json> get();
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
+// ADR-0256: `/data-restoration-events` (TS29504_Nudr_DR.yaml). The real request body schema is
+// literally `{}` -- the YAML defines no fields at all -- so the subscription is persisted opaquely
+// under a server-assigned id rather than validated against a shape that does not exist. There is
+// no individual-subscription resource path in the spec, so there is deliberately no get/remove
+// here: nothing in the API can address a stored row.
+class DataRestorationSubscriptionStore {
+public:
+    explicit DataRestorationSubscriptionStore(const std::string& conninfo);
+
+    void add(const std::string& subscription_id, const nlohmann::json& data);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
+};
+
 class TrafficInfluenceDataStore {
 public:
     explicit TrafficInfluenceDataStore(const std::string& conninfo);

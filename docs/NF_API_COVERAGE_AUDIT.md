@@ -29,9 +29,9 @@ operation name produced a false negative earlier and is not done anywhere in thi
 | udm | 1 | `/{supi}/am-data/update-sor` -- genuinely absent |
 | smf | 2 | `transfer-mo-data`, `send-mo-data` -- genuinely absent |
 | nrf | 5 | `/shared-data*`, `/scp-domain-routing-info*` -- disclosed deferred |
-| udr | 5 (was 23) | 4 closed by ADR-0253, 10 by ADR-0254, 4 by ADR-0255; remaining: `/aiot-data/*` (3), 2 singles |
+| udr | 1 (was 23) | 4 closed by ADR-0253, 10 by ADR-0254, 4 by ADR-0255, 4 by ADR-0256; remaining: `service-specific-authorization-data` -- **disclosed deferred**, not a gap (ADR-0160, user-confirmed twice) |
 
-**Total: 28 unrouted paths of 328.**
+**Total: 24 unrouted paths of 328** -- and every one of the 24 is now a disclosed deferral or a genuinely-absent operation, not an undisclosed gap.
 
 ## The 32, verbatim
 
@@ -146,3 +146,25 @@ therefore absent here.
 **UDR: 9 -> 5 unrouted.** What remains: `/aiot-data/*` (3, R19 Ambient IoT),
 `/data-restoration-events`, and
 `/subscription-data/{ueId}/service-specific-authorization-data/{serviceType}`.
+
+## Update (ADR-0256): AIoT data and data-restoration closed -- and a mis-categorisation in this audit corrected
+
+`/aiot-data/*` (3 paths) and `/data-restoration-events` (1) are now routed, verified by
+exact-literal match. **UDR: 5 -> 1 unrouted.**
+
+**This audit got one row wrong, and the error is worth naming rather than quietly fixing.**
+`/subscription-data/{ueId}/service-specific-authorization-data/{serviceType}` was listed above as
+part of UDR's "large, real, undisclosed coverage gap". It is not undisclosed and it is not a gap:
+**ADR-0160 investigated it in depth and the user explicitly chose to defer it -- twice**, once on
+which response schema to return and again, after a deeper finding, on whether to build it at all.
+It belongs in the same category as AUSF's `/rg-authentications` and NRF's `/shared-data` -- rows
+this audit correctly marked "disclosed deferred" -- and this audit failed to check the ADR history
+for it while doing so for the others.
+
+The live reason it stays deferred is ADR-0160's, and one of the two reasons recorded in the source
+comments had itself gone stale: those comments said it was blocked by a complex-object query
+parameter with no parsing precedent, which ADR-0165's `GetNiddAuData` has since established. The
+stale half is corrected in `nfs/udr/src/main.cpp` and `nfs/udr/schema.postgres.sql`; the resource
+stays deferred on ADR-0160's still-valid schema/write-path grounds.
+
+**UDR's real remaining count is therefore 1 deferred path and 0 undisclosed gaps.**

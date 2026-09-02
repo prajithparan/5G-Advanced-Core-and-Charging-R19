@@ -3223,4 +3223,108 @@ bool ExposureSessionManagementDataStore::remove(const std::string& ue_id,
     return result.affected_rows() > 0;
 }
 
+// --- ADR-0256: AIoT device profile data (TS29506_Aiot_Data.yaml paths, TS29369_Nadm_DM.yaml
+// schemas). GET + RFC 6902 PATCH only -- the spec defines no create/replace/delete, so seed() is
+// the only write path this build has. ---
+AiotDeviceProfileDataStore::AiotDeviceProfileDataStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+void AiotDeviceProfileDataStore::seed(const std::string& aiot_dev_perm_id, nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_aiot_device_profile_data (aiot_dev_perm_id, data) "
+             "VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (aiot_dev_perm_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{aiot_dev_perm_id, data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> AiotDeviceProfileDataStore::get(const std::string& aiot_dev_perm_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_aiot_device_profile_data WHERE aiot_dev_perm_id = $1",
+                 pqxx::params{aiot_dev_perm_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+std::vector<nlohmann::json>
+AiotDeviceProfileDataStore::get_many(const std::vector<std::string>& aiot_dev_perm_ids) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    std::vector<nlohmann::json> out;
+    out.reserve(aiot_dev_perm_ids.size());
+    // Queried one id at a time, deliberately: it preserves the caller's requested order (which a
+    // single WHERE ... IN (...) would not) and keeps every id a bound parameter.
+    for (const auto& id : aiot_dev_perm_ids) {
+        const auto result =
+            txn.exec("SELECT data FROM udr_aiot_device_profile_data WHERE aiot_dev_perm_id = $1",
+                     pqxx::params{id});
+        if (!result.empty()) {
+            out.push_back(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+        }
+    }
+    return out;
+}
+
+std::optional<nlohmann::json> AiotDeviceProfileDataStore::patch(const std::string& aiot_dev_perm_id,
+                                                                const nlohmann::json& patch_ops) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result =
+        txn.exec("SELECT data FROM udr_aiot_device_profile_data WHERE aiot_dev_perm_id = $1",
+                 pqxx::params{aiot_dev_perm_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    auto doc = nlohmann::json::parse(result.front()["data"].as<std::string>());
+    doc = doc.patch(patch_ops); // may throw nlohmann::json::exception -- caller catches
+    txn.exec("UPDATE udr_aiot_device_profile_data SET data = $2::jsonb "
+             "WHERE aiot_dev_perm_id = $1",
+             pqxx::params{aiot_dev_perm_id, doc.dump()});
+    txn.commit();
+    return std::make_optional(doc);
+}
+
+AiotAfAuthorizationDataStore::AiotAfAuthorizationDataStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+void AiotAfAuthorizationDataStore::seed(nlohmann::json data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_aiot_af_authorization_data (id, data) VALUES (1, $1::jsonb) "
+             "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{data.dump()});
+    txn.commit();
+}
+
+std::optional<nlohmann::json> AiotAfAuthorizationDataStore::get() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_aiot_af_authorization_data WHERE id = 1");
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+// --- ADR-0256: data restoration subscriptions. Opaque by necessity: the real request body schema
+// in TS29504_Nudr_DR.yaml is `{}`. ---
+DataRestorationSubscriptionStore::DataRestorationSubscriptionStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+void DataRestorationSubscriptionStore::add(const std::string& subscription_id,
+                                           const nlohmann::json& data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    txn.exec("INSERT INTO udr_data_restoration_subscriptions (subscription_id, data) "
+             "VALUES ($1, $2::jsonb) "
+             "ON CONFLICT (subscription_id) DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{subscription_id, data.dump()});
+    txn.commit();
+}
+
 } // namespace udr

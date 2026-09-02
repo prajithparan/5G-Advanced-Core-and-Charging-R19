@@ -285,9 +285,12 @@
 // own resource) is now implemented. Composite (ueId, serviceType) key, same precedent as
 // pp-data-store. Its real sibling GET-only resource at
 // /subscription-data/{ueId}/service-specific-authorization-data/{serviceType} was surveyed in
-// the same pass and confirmed genuinely blocked (not attempted): real required complex-object
-// query parameters this project has no parsing precedent for, same class of gap already
-// disclosed for nidd-authorization-data.
+// the same pass and left deferred.
+// CORRECTED (ADR-0256): the reason recorded here was "real required complex-object query
+// parameters this project has no parsing precedent for". That reason is now STALE -- ADR-0165's
+// GetNiddAuData established exactly that precedent (a `single-nssai` JSON-encoded query value,
+// decomposed to sst/sd). The resource remains deferred on ADR-0160's OTHER, still-valid
+// grounds, which are about schemas and not parsing: see the GetSSAuData paragraph below.
 //
 // UPDATE (ADR-0140, gap-closure task #106): the real Group Identifiers mapping resource (real
 // spec operationId `GetGroupIdentifiers`, schema `GroupIdentifiers` -- every field optional --
@@ -671,6 +674,11 @@
 // file -- TS29519_Exposure_Data.yaml is newly added to the codegen pilot list this turn, and it
 // $refs TS26510_CommonData_grp.hpp above for the common types it shares.
 #include "TS29519_Exposure_Data.hpp"
+// ADR-0256: AIoT data. The paths live in TS29506_Aiot_Data.yaml (TS 29.506 V19.2.0), which has
+// ZERO schemas of its own -- every DTO it references comes from TS29369_Nadm_DM.yaml (TS 29.369
+// V19.2.0). Only the schema file is in the codegen list; generating a schemaless paths-only file
+// would produce an empty header.
+#include "TS29369_Nadm_DM.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -1046,6 +1054,12 @@ int main() {
     udr::KeyedJsonDocStore exposure_am_data(conninfo, "udr_exposure_am_data", "ue_id");
     udr::KeyedJsonDocStore exposure_data_subs(conninfo, "udr_exposure_data_subs", "sub_id");
     udr::ExposureSessionManagementDataStore exposure_sm_data(conninfo);
+    // ADR-0256: the last of ADR-0252's UDR gap. AIoT data (both resources are seed-only for
+    // writes -- the spec defines no create/replace/delete), data-restoration subscriptions, and
+    // the service-specific authorization data document.
+    udr::AiotDeviceProfileDataStore aiot_device_profile_data(conninfo);
+    udr::AiotAfAuthorizationDataStore aiot_af_authorization_data(conninfo);
+    udr::DataRestorationSubscriptionStore data_restoration_subscriptions(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0097).
     udr::SmsfContext3gppStore smsf_3gpp_context(conninfo);
     udr::SmsfNon3GppContextStore smsf_non3gpp_context(conninfo);
@@ -1421,6 +1435,32 @@ int main() {
     {
         five_g_vn_group_pp_profile_data.seed(json::object());
         mbs_group_pp_profile_data.seed(json::object());
+    }
+
+    // Real seed data (ADR-0256) -- both AIoT resources are genuinely write-less in UDR's own
+    // spec: TS29506_Aiot_Data.yaml gives aiot-device-profile-data GET+PATCH and
+    // af-authorization-data GET only, with no create/replace/delete anywhere, so seeding is the
+    // only way a row can first exist. Same "no live provisioning path yet" reasoning as the
+    // provisioned-data group above.
+    //
+    // Every field below is a real required field from TS29369_Nadm_DM.yaml, not a placeholder:
+    // AiotDevProfileData requires `aiotDevPermId` and `lastKnownAiotfInfo`;
+    // IndividualAfAuthorizationData is keyed in `afAuthData` by the AF id, per that schema's own
+    // "the key of the map is the AF ID" description. The identifier values themselves are this
+    // project's own lab choices, in the same style as the existing lab SUPIs.
+    {
+        json profile;
+        profile["aiotDevPermId"] = "aiot-dev-000000000000001";
+        // `lastKnownAiotfInfoInd` is LastKnownAiotfInfo's ONLY required field (a boolean) --
+        // checked against TS29369_Nadm_DM.yaml, not guessed. An earlier draft of this seed
+        // invented an `aiotfInstanceId` field here; the generated from_json rejected it, which is
+        // exactly what generated DTOs are for.
+        profile["lastKnownAiotfInfo"] = json{{"lastKnownAiotfInfoInd", true}};
+        aiot_device_profile_data.seed("aiot-dev-000000000000001", profile);
+
+        json af_auth;
+        af_auth["afAuthData"] = json{{"af-app-1", json::object()}};
+        aiot_af_authorization_data.seed(af_auth);
     }
 
     // Real seed data (ADR-0123, gap-closure task #106) -- the real ODB Data resource is genuinely
@@ -5418,9 +5458,13 @@ int main() {
     // TS29505_Subscription_Data.yaml, real distinct 201-vs-204 PUT response codes (same shape as
     // nidd-authorizations's own resource), real RFC 6902 application/json-patch+json PATCH.
     // Composite (ueId, serviceType) key. Real, disclosed: the sibling GET-only resource at
-    // /subscription-data/{ueId}/service-specific-authorization-data/{serviceType} is genuinely
-    // blocked, not attempted -- real required complex-object query parameters this project has
-    // no parsing precedent for, same class of gap already disclosed for nidd-authorization-data.
+    // /subscription-data/{ueId}/service-specific-authorization-data/{serviceType} remains
+    // deliberately deferred per ADR-0160, which the user confirmed twice.
+    // CORRECTED (ADR-0256): the query-parameter reason recorded here is stale -- ADR-0165's
+    // GetNiddAuData established that parsing precedent. The live reason is ADR-0160's: the
+    // resource has no PUT counterpart, and the schema it would have to return does not
+    // structurally match what this CRUD sibling actually stores, so implementing it means either
+    // fabricating a field mapping or shipping a permanently-empty store. See this file's header.
     // ---
 
     const std::string service_specific_auth_path_pattern =
@@ -9960,6 +10004,244 @@ int main() {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No exposure data subscription: " + sub_id);
             }
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- ADR-0256: Nudr_DataRepository AIoT data (`/aiot-data/*`) ---
+    // Paths from TS29506_Aiot_Data.yaml (TS 29.506 V19.2.0); every schema from
+    // TS29369_Nadm_DM.yaml (TS 29.369 V19.2.0), because the paths file defines none of its own.
+    //
+    // The spec gives this group GET and PATCH only -- no create, replace or delete operation
+    // exists for either resource -- so rows are seeded at startup (see main() above), the same
+    // shape as the provisioned-data group (ADR-0069). That is the spec's, not an omission here.
+
+    const std::string aiot_profile_item_path =
+        std::string(kApiRoot) + "/aiot-data/aiot-device-profile-data/{aiotDevPermId}";
+    const std::string aiot_profile_coll_path =
+        std::string(kApiRoot) + "/aiot-data/aiot-device-profile-data";
+    const std::string aiot_af_auth_path =
+        std::string(kApiRoot) + "/aiot-data/af-authorization-data";
+
+    server.add_route(
+        "GET",
+        aiot_profile_item_path,
+        [&verifier, &aiot_device_profile_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto id = req.path_params.at("aiotDevPermId");
+            auto doc = aiot_device_profile_data.get(id);
+            if (!doc.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AIoT device profile data for aiotDevPermId " + id);
+            }
+            return sbi_core::http2::Response::json(200, doc->dump());
+        });
+
+    // RFC 6902 JSON Patch. Real, disclosed YAML defect: this operation's request body `$ref`s a
+    // BARE `PatchItem` under `application/json-patch+json`, but RFC 6902 bodies are arrays and
+    // every other RFC-6902 route in this file takes an array. The array reading is implemented --
+    // one contract, not a superset that accepts both.
+    //
+    // 204 rather than a 200 + `PatchResult` execution report: same deliberate choice this file
+    // already makes for AmfContext3gpp and UpdateSmfContext (see this file's header comment) --
+    // the spec permits either, and fabricating report items with no real per-op tracking behind
+    // them would be inventing content.
+    server.add_route(
+        "PATCH",
+        aiot_profile_item_path,
+        [&verifier, &aiot_device_profile_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            nlohmann::json patch_ops;
+            try {
+                patch_ops = nlohmann::json::parse(req.body);
+            } catch (const nlohmann::json::parse_error& e) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", std::string("malformed JSON Patch: ") + e.what());
+            }
+            if (!patch_ops.is_array()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "an RFC 6902 JSON Patch body must be an array");
+            }
+            const auto id = req.path_params.at("aiotDevPermId");
+            try {
+                if (!aiot_device_profile_data.patch(id, patch_ops).has_value()) {
+                    return sbi_core::http2::problem_response(
+                        404, "Not Found", "No AIoT device profile data for aiotDevPermId " + id);
+                }
+            } catch (const nlohmann::json::exception& e) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    std::string("JSON Patch could not be applied: ") + e.what());
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // `requester-aiot-devices-id` is a REQUIRED query parameter on this operation, so there is
+    // deliberately no unfiltered "list every profile" behaviour: its absence is a 400, not an
+    // empty or full list. Split with split_form_array (OpenAPI `style: form, explode: false`,
+    // ADR-0161) rather than an ad-hoc comma split.
+    server.add_route(
+        "GET",
+        aiot_profile_coll_path,
+        [&verifier, &aiot_device_profile_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ids_it = req.query_params.find("requester-aiot-devices-id");
+            if (ids_it == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "requester-aiot-devices-id is a required query parameter");
+            }
+            const auto ids = sbi_core::http2::split_form_array(ids_it->second);
+            if (ids.empty()) {
+                return sbi_core::http2::problem_response(
+                    400,
+                    "Bad Request",
+                    "requester-aiot-devices-id must carry at least one AIoT device id");
+            }
+            sbi_gen::AiotDevProfileDataList list;
+            try {
+                for (const auto& doc : aiot_device_profile_data.get_many(ids)) {
+                    list.aiotDevProfileDataList.push_back(doc.get<sbi_gen::AiotDevProfileData>());
+                }
+            } catch (const nlohmann::json::exception& e) {
+                // A stored row that does not satisfy AiotDevProfileData is a real server-side
+                // problem, and it must be ANSWERED. Without this catch the exception escapes the
+                // handler and the connection is dropped with no response at all -- which is what
+                // an earlier draft of this route did, found by the integration test rather than
+                // by inspection.
+                return sbi_core::http2::problem_response(
+                    500,
+                    "Internal Server Error",
+                    std::string("stored AIoT device profile data is not a valid "
+                                "AiotDevProfileData: ") +
+                        e.what());
+            }
+            if (list.aiotDevProfileDataList.empty()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AIoT device profile data for any requested device id");
+            }
+            return sbi_core::http2::Response::json(200, nlohmann::json(list).dump());
+        });
+
+    // Registered, and deliberately NOT implemented -- with the reason returned to the caller
+    // rather than buried in a comment.
+    //
+    // `UpdateBundledAiotDeviceProfileData` is a real operation in TS29506_Aiot_Data.yaml, but the
+    // YAML does not define what it operates on. Its sibling GET on this same path makes
+    // `requester-aiot-devices-id` REQUIRED to select which devices form the bundle; this PATCH
+    // has no device selector at all -- its only parameter is `supported-features`. Two independent
+    // consequences, both fatal to guessing a scope:
+    //   * the set of devices being modified is unbounded and undefined, and
+    //   * RFC 6902 paths into an `AiotDevProfileDataList` document are INDEX-based
+    //     (`/aiotDevProfileDataList/0/...`), so index 0 would name a different device depending on
+    //     row ordering.
+    // Applying the patch to every stored profile would be a mass-mutation endpoint invented here,
+    // not read from the spec, so it is not shipped. The body is still parsed and validated so a
+    // malformed request is answered as a malformed request. See ADR-0256; this is the one
+    // operation in UDR's whole API surface left deliberately unimplemented on spec-ambiguity
+    // grounds, and it is an open question for the user rather than a closed decision.
+    server.add_route(
+        "PATCH", aiot_profile_coll_path, [&verifier](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            nlohmann::json patch_ops;
+            try {
+                patch_ops = nlohmann::json::parse(req.body);
+            } catch (const nlohmann::json::parse_error& e) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", std::string("malformed JSON Patch: ") + e.what());
+            }
+            if (!patch_ops.is_array()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "an RFC 6902 JSON Patch body must be an array");
+            }
+            if (req.query_params.find("supported-features") == req.query_params.end()) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", "supported-features is a required query parameter");
+            }
+            return sbi_core::http2::problem_response(
+                501,
+                "Not Implemented",
+                "UpdateBundledAiotDeviceProfileData defines no device selector -- unlike the GET "
+                "on this resource, which requires requester-aiot-devices-id -- so the set of "
+                "devices the patch applies to is not determined by the spec. Deliberately not "
+                "implemented rather than guessing a scope. Use the per-device PATCH at "
+                "/aiot-data/aiot-device-profile-data/{aiotDevPermId}.");
+        });
+
+    // GET-only. `af-id` is an OPTIONAL filter and IS honoured here: it selects one entry from the
+    // `afAuthData` map, which is exactly the field this document is keyed on, and the response
+    // keeps the AfAuthorizationData envelope rather than returning a bare entry.
+    server.add_route(
+        "GET",
+        aiot_af_auth_path,
+        [&verifier, &aiot_af_authorization_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            auto doc = aiot_af_authorization_data.get();
+            if (!doc.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AF authorization data");
+            }
+            const auto af_id_it = req.query_params.find("af-id");
+            if (af_id_it == req.query_params.end()) {
+                return sbi_core::http2::Response::json(200, doc->dump());
+            }
+            const auto& all = doc->at("afAuthData");
+            if (!all.contains(af_id_it->second)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No AF authorization data for af-id " + af_id_it->second);
+            }
+            nlohmann::json filtered;
+            filtered["afAuthData"] = nlohmann::json{{af_id_it->second, all.at(af_id_it->second)}};
+            return sbi_core::http2::Response::json(200, filtered.dump());
+        });
+
+    // --- ADR-0256: `/data-restoration-events` (TS29504_Nudr_DR.yaml) ---
+    // Real, disclosed: this is the thinnest operation in UDR's whole API surface. The YAML gives
+    // it a request body whose schema is literally `{}` -- no fields at all -- and defines NO 2xx
+    // response, only `default` (ProblemDetails). So:
+    //   * the body is persisted opaquely under a server-assigned id, because there is no shape to
+    //     validate against and inventing one would violate this project's own first rule;
+    //   * the success code is 204, not 201. 201 is the HTTP/TS 29.500 convention for a creating
+    //     POST, but it obliges a `Location`, and the spec defines NO individual-subscription
+    //     resource path -- any Location emitted here would resolve to nothing. 204 claims less and
+    //     is the more honest of the two readings. Flagged for the user, not silently settled.
+    //   * there is consequently no unsubscribe: nothing in the API can address a stored row.
+    //   * the `restorationNotification` callback (`DataRestorationNotification`) is NOT delivered
+    //     -- same disclosed gap class as every other subscription resource in this file.
+    // Note the spec's own operationId typo, reproduced verbatim rather than tidied:
+    // `CreateIndividualSubcription`.
+
+    const std::string data_restoration_events_path =
+        std::string(kApiRoot) + "/data-restoration-events";
+
+    server.add_route(
+        "POST",
+        data_restoration_events_path,
+        [&verifier, &data_restoration_subscriptions](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            nlohmann::json body;
+            try {
+                body = nlohmann::json::parse(req.body);
+            } catch (const nlohmann::json::parse_error& e) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", std::string("malformed request body: ") + e.what());
+            }
+            data_restoration_subscriptions.add(sbi_core::generate_uuid_v4(), body);
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

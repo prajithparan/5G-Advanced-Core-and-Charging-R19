@@ -4947,3 +4947,23 @@ See ADR-0254 in `docs/DECISIONS.md`.
 | Noted: pre-existing unrelated test defect | `UdrIntegration.AmfContextLifecycle` passes only once per DB reset (resource has no DELETE in the spec, so it cannot clean up); unrelated to this change, left as-is |
 
 See ADR-0255 in `docs/DECISIONS.md`.
+
+## ADR-0256 -- UDR AIoT data + data-restoration; ADR-0252 audit row corrected
+
+| Requirement | Evidence |
+|---|---|
+| 4 paths implemented | `/aiot-data/aiot-device-profile-data/{aiotDevPermId}` (GET, RFC 6902 PATCH), `/aiot-data/aiot-device-profile-data` (GET bundled; PATCH = 501), `/aiot-data/af-authorization-data` (GET), `/data-restoration-events` (POST) |
+| Correct source files cited | paths `TS29506_Aiot_Data.yaml` (TS 29.506 V19.2.0); all schemas `TS29369_Nadm_DM.yaml` (TS 29.369 V19.2.0) -- the paths file defines none. Only the schema file added to codegen; Nadm_DM's own 5 service paths are a different NF and deliberately not implemented |
+| Seed-only writes, disclosed | spec defines no create/replace/delete for either AIoT resource -- same "no live provisioning path" shape as provisioned-data (ADR-0069); re-seeded every start, so tests are idempotent |
+| Bundled PATCH not guessed | 501 + ProblemDetails: no device selector exists on the operation (its own GET requires `requester-aiot-devices-id`), and RFC 6902 paths into the list are index-based, so scope is undefined. Body still parsed/validated |
+| YAML defects read as-is | item PATCH `$ref`s a bare `PatchItem` under json-patch+json (array reading implemented, one contract); bundled PATCH labelled merge-patch+json but carries a PatchItem array |
+| PATCH returns 204, no fabricated PatchResult | matches the file's existing AmfContext3gpp/UpdateSmfContext precedent |
+| data-restoration 204 not 201 | YAML defines no 2xx and no individual-subscription resource, so a 201's `Location` would resolve to nothing; asserted in test that no Location is sent |
+| **ADR-0252 audit row corrected** | `service-specific-authorization-data` was listed as an undisclosed gap; it is an ADR-0160 deferral the **user confirmed twice**. Implemented in the working tree, then **backed out** before commit -- what was written was exactly the option the user rejected |
+| Stale deferral reason fixed, deferral kept | 3 sites said "complex-object query parameter, no parsing precedent" -- stale since ADR-0165's GetNiddAuData; corrected to ADR-0160's still-valid schema/write-path reason |
+| Verified by exact-literal match | 4/4 new paths ROUTED; SSAu path confirmed ABSENT from the binary after back-out |
+| Tests caught 2 real defects in the first draft | an invented `aiotfInstanceId` field (generated `from_json` rejected it), and a handler that dropped the connection instead of answering -- now a 500 ProblemDetails |
+| No regression | conformance 333/333, `ctest` 478/478 (4 new) |
+| Disclosed | no `DataRestorationNotification` delivery; no unsubscribe (no resource path exists to address one) |
+
+See ADR-0256 in `docs/DECISIONS.md`.

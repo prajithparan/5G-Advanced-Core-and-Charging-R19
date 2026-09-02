@@ -35,6 +35,7 @@ add_executable(integration_tests
     test_udr_gap_closure_212.cpp
     test_udr_policy_data_gap_closure_213.cpp
     test_udr_exposure_data.cpp
+    test_udr_aiot_data.cpp
     test_ausf_ue_authentication.cpp
     test_ausf_upu_protection.cpp
     test_pcf_policy_control.cpp

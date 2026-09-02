@@ -668,9 +668,10 @@ CREATE TABLE IF NOT EXISTS udr_5mbs_data (
 -- matches PpDataEntryStore's own precedent (ADR-0109) -- serviceType is a real plain-string enum
 -- (TS29503_Nudm_SSAU.yaml), no path-segment encoding ambiguity. Real, disclosed: the sibling
 -- GET-only resource at /subscription-data/{ueId}/service-specific-authorization-data/{serviceType}
--- (GetSSAuData) is genuinely blocked, not attempted -- its spec requires a complex-object query
--- parameter (single-nssai via content: application/json) this project has no parsing precedent
--- for, same class of gap already disclosed for nidd-authorization-data.
+-- (GetSSAuData) remains deliberately deferred per ADR-0160 (user-confirmed twice).
+-- CORRECTED (ADR-0256): the reason recorded here -- "requires a complex-object query parameter
+-- this project has no parsing precedent for" -- is STALE. ADR-0165's GetNiddAuData established
+-- exactly that precedent. The live reason is ADR-0160's schema/write-path one, not parsing.
 CREATE TABLE IF NOT EXISTS udr_service_specific_auth_info (
     ue_id        TEXT NOT NULL,
     service_type TEXT NOT NULL,
@@ -1296,4 +1297,30 @@ CREATE TABLE IF NOT EXISTS udr_exposure_session_management_data (
 CREATE TABLE IF NOT EXISTS udr_exposure_data_subs (
     sub_id TEXT PRIMARY KEY,
     data   JSONB NOT NULL
+);
+
+-- ADR-0256: Nudr_DataRepository AIoT data (TS29506_Aiot_Data.yaml, schemas from
+-- TS29369_Nadm_DM.yaml). Both resources are GET-and-PATCH / GET-only in the spec -- no create,
+-- replace or delete operation exists -- so rows are seeded, the same "no live provisioning path"
+-- shape as the provisioned-data group (ADR-0069).
+
+CREATE TABLE IF NOT EXISTS udr_aiot_device_profile_data (
+    aiot_dev_perm_id TEXT PRIMARY KEY,
+    data             JSONB NOT NULL
+);
+
+-- Keyless singleton document (AfAuthorizationData is one object whose afAuthData is a map keyed
+-- by AF id), so the row id is pinned to 1 -- same shape as udr_5g_vn_group_pp_profile_data.
+CREATE TABLE IF NOT EXISTS udr_aiot_af_authorization_data (
+    id   INTEGER PRIMARY KEY,
+    data JSONB NOT NULL
+);
+
+-- ADR-0256: /data-restoration-events. The real request body schema in TS29504_Nudr_DR.yaml is
+-- literally `{}`, so the subscription is stored opaquely under a server-assigned id. No
+-- individual-subscription resource path exists in the spec, so nothing in the API can address a
+-- row here -- see ADR-0256 for the full disclosure.
+CREATE TABLE IF NOT EXISTS udr_data_restoration_subscriptions (
+    subscription_id TEXT PRIMARY KEY,
+    data            JSONB NOT NULL
 );
