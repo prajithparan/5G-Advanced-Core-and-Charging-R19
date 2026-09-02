@@ -37,6 +37,7 @@ add_executable(integration_tests
     test_udr_exposure_data.cpp
     test_udr_aiot_data.cpp
     test_smf_handover_n2sminfo.cpp
+    test_smf_n2sminfo_dispatch.cpp
     test_ausf_ue_authentication.cpp
     test_ausf_upu_protection.cpp
     test_pcf_policy_control.cpp
@@ -52,7 +53,11 @@ add_executable(integration_tests
     test_subscriber_management_postgres.cpp
     test_roaming_interconnect_postgres.cpp
 )
-target_link_libraries(integration_tests PRIVATE sbi_core sbi_generated aka_crypto product_catalog_store subscriber_management_store roaming_interconnect_store GTest::gtest GTest::gtest_main)
+# ngap_core/ngap_generated (ADR-0260): test_smf_n2sminfo_dispatch.cpp builds REAL PER-encoded
+# NGAP transfers to drive SMF's N2SmInfoType branches. Asserting on bytes SMF returns is not
+# enough for those -- the branches only run on a transfer that actually decodes, so the test
+# has to be able to encode one.
+target_link_libraries(integration_tests PRIVATE sbi_core sbi_generated aka_crypto product_catalog_store subscriber_management_store roaming_interconnect_store ngap_core ngap_generated GTest::gtest GTest::gtest_main)
 add_dependencies(integration_tests nrf amf smf udm udr ausf pcf chf hello-nf upf nef)
 target_compile_definitions(integration_tests PRIVATE
     NRF_PATH="$<TARGET_FILE:nrf>"

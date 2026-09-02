@@ -22292,3 +22292,116 @@ registration groups; UEAU `GetRgAuthData`/`GenerateAv`/`GenerateGbaAv`" as an op
 **It is not open.** UEAU's three ops closed in ADR-0214, and UECM's entire Tier-B backlog closed
 across ADR-0215/0216/0217/0218/0219/0220/0221/0227. Corrected here rather than carried forward, the
 same discipline ADR-0250/0251/0256/0257 applied to their own stale reasons.
+
+## ADR-0259: SMF's downlink-endpoint `N2SmInfoType` family -- three more real values
+
+### What was built
+
+Three more of the 22 `N2SmInfoType` values ADR-0251 counted as stubs. All three are the ones that
+hand SMF a **new NG-RAN downlink endpoint**, so all three have exactly the real UPF consequence
+ADR-0092 built for `PATH_SWITCH_REQ` -- repoint the downlink FAR's `OuterHeaderCreation`:
+
+| `n2SmInfoType` | Transfer (TS 38.413) | Where the tunnel sits | SMF's answer |
+|---|---|---|---|
+| `PDU_RES_SETUP_RSP` | `PDUSessionResourceSetupResponseTransfer` | `dLQosFlowPerTNLInformation` | 204 |
+| `PDU_RES_MOD_RSP` | `PDUSessionResourceModifyResponseTransfer` | `dL_NGU_UP_TNLInformation` (**OPTIONAL**) | 204 |
+| `PDU_RES_MOD_IND` | `PDUSessionResourceModifyIndicationTransfer` | `dLQosFlowPerTNLInformation` | 200 + `PDU_RES_MOD_CFM` |
+
+Every field's presence/optionality above was read from the generated ASN.1 struct, not inferred
+from the name.
+
+### The reuse this forced, and why it is the point
+
+`install_downlink_far()` and `read_gtp_tunnel()` are new file-scope helpers holding what ADR-0092
+had written inline. `PATH_SWITCH_REQ`/`HANDOVER_REQ_ACK` now call them too, so the real PFCP
+Session Modification exists **once** rather than five times. Behaviour is unchanged for the two
+pre-existing values -- this is a factoring, and the ADR-0092 disclosure it carries with it
+(downlink PDR matches on `SourceInterface=Core` only, no UE IP Address IE, because this project
+has never allocated a real UE IP anywhere) moves into the helper rather than being dropped.
+
+### An absent OPTIONAL field is an answer, not an error
+
+`PDU_RES_MOD_RSP`'s `dL_NGU_UP_TNLInformation` is `OPTIONAL` in the real ASN.1. Absent means the
+modification changed no downlink endpoint, which is legal. SMF therefore acknowledges without
+touching UPF, and logs that it did so. Present-but-malformed is still a 400. The distinction is
+deliberate: rejecting a spec-legal message would be a conformance defect, and silently treating a
+malformed one as "nothing to do" would hide a real peer bug.
+
+### `PDU_RES_MOD_CFM` is built from what NG-RAN said, not from what SMF assumes
+
+`PDUSessionResourceModifyConfirmTransfer` (§9.3.4.6) has two MANDATORY fields.
+`qosFlowModifyConfirmList` is populated by echoing the QFIs from the indication's own
+`associatedQosFlowList` -- SMF confirms the flows NG-RAN actually named and does not invent a set.
+`uLNGU_UP_TNLInformation` is UPF's own real N3 F-TEID, the same one `PATH_SWITCH_REQ_ACK` returns.
+If that F-TEID is not on record, SMF answers 500 rather than fabricating a tunnel -- the same
+refusal ADR-0249 already makes on the same missing state.
+
+### Coverage after this ADR
+
+7 of 26 `N2SmInfoType` values are now real (was 4): `PATH_SWITCH_REQ`, `PATH_SWITCH_REQ_ACK`,
+`HANDOVER_REQ_ACK`, `HANDOVER_REQUIRED`, plus the three above and the `PDU_RES_MOD_CFM` SMF now
+produces. ADR-0260 is scoped to take the remainder to full accounting.
+
+## ADR-0260: the rest of `N2SmInfoType` -- all 26 values accounted for
+
+### What was built
+
+ADR-0251 counted 22 of 26 `N2SmInfoType` values as stubs, all falling through to one blanket 204.
+ADR-0259 took three. This closes the accounting for the remaining nineteen, in two groups.
+
+**Ten more values SMF really receives.** Each decodes its own real transfer -- which is what makes
+a malformed peer message a 400 instead of a silently accepted 204 -- and three of them owe a real
+N2 answer:
+
+| `n2SmInfoType` | Transfer decoded | SMF's answer |
+|---|---|---|
+| `PDU_RES_SETUP_FAIL` | `PDUSessionResourceSetupUnsuccessfulTransfer` | 204 |
+| `PDU_RES_MOD_FAIL` | `PDUSessionResourceModifyUnsuccessfulTransfer` | 204 |
+| `PDU_RES_REL_RSP` | `PDUSessionResourceReleaseResponseTransfer` | 204 |
+| `PDU_RES_NTY` | `PDUSessionResourceNotifyTransfer` | 204 |
+| `PDU_RES_NTY_REL` | `PDUSessionResourceNotifyReleasedTransfer` | 204 |
+| `SECONDARY_RAT_USAGE` | `SecondaryRATDataUsageReportTransfer` | 204 |
+| `UE_CONTEXT_SUSPEND_REQ` | `UEContextSuspendRequestTransfer` | 204 |
+| `PATH_SWITCH_SETUP_FAIL` | `PathSwitchRequestSetupFailedTransfer` | 200 + `PATH_SWITCH_REQ_FAIL` |
+| `HANDOVER_RES_ALLOC_FAIL` | `HandoverResourceAllocationUnsuccessfulTransfer` | 200 + `HANDOVER_PREP_FAIL` |
+| `UE_CONTEXT_RESUME_REQ` | `UEContextResumeRequestTransfer` | 200 + `UE_CONTEXT_RESUME_RSP` |
+
+**Ten values are SMF-originated** and now get a 400 rather than a 204: `PDU_RES_SETUP_REQ`,
+`PDU_RES_REL_CMD`, `PDU_RES_MOD_REQ`, `PDU_RES_MOD_CFM`, `PDU_RES_MOD_IND_FAIL`,
+`PATH_SWITCH_REQ_ACK`, `PATH_SWITCH_REQ_FAIL`, `HANDOVER_CMD`, `HANDOVER_PREP_FAIL`,
+`UE_CONTEXT_RESUME_RSP`.
+
+### What is honestly claimed, and what is not
+
+**The direction split is a reading, not a quotation.** TS 29.502 does not tabulate a direction per
+`N2SmInfoType` value. The ten above are classified as SMF-originated because TS 38.413 defines
+those transfers as ones SMF builds and sends towards NG-RAN. Said plainly in the source comment
+too, rather than dressed up as a spec rule. A 400 is still strictly better than the blanket 204
+that stood there before, which acknowledged an impossible request as though it had been processed.
+
+**The seven 204s validate and record; they do not act.** Named individually rather than left for a
+reviewer to discover: there is no per-QoS-flow rule state for `PDU_RES_NTY`'s notify/released
+lists to modify, no charging path consuming `SECONDARY_RAT_USAGE`'s usage report, and no
+RRC-Inactive suspend state for `UE_CONTEXT_SUSPEND_REQ` to enter. Each is a real, separate gap.
+What changed is that a malformed transfer is now rejected instead of accepted.
+
+### The one case a cause cannot be echoed
+
+The two failure answers echo the cause NG-RAN reported instead of inventing one. `Cause` is an
+ASN.1 CHOICE whose five real arms are enumerated longs, so rebuilding one is a value copy. The
+sixth arm, `choice_Extensions`, is a pointer into the decoded structure: shallow-copying it would
+double-free, and this codec has no deep-copy helper. An extension-coded `Cause` therefore returns
+**500** saying exactly that, rather than being quietly replaced by a cause SMF made up.
+
+`UEContextResumeResponseTransfer`'s every field is OPTIONAL; an empty one is spec-legal and means
+"all flows resumed". It is not a placeholder for a value SMF failed to compute -- SMF has no
+per-flow resume state to report a failure from, which is why the list is omitted rather than
+guessed.
+
+### Coverage
+
+**26 of 26 `N2SmInfoType` values are now accounted for**: 16 decoded and handled inbound, 10
+rejected as SMF-originated. The `docs/CAPABILITY_GAP_ANALYSIS.md` row reading "22 of the 26 real
+N2SmInfoType values remain a stub" is closed by this ADR. Depth still varies by value, and the
+table above says which ones record rather than act -- coverage of the enum is not the same claim
+as behavioural parity, and this ADR does not make the second one.

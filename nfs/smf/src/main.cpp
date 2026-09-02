@@ -150,18 +150,40 @@
 // relays verbatim as n2SmInfo -- see nfs/smf/CMakeLists.txt's own comment for why this is a real,
 // legitimate shared-library dependency (ngap_generated), not an NF-private-header violation.
 extern "C" {
+#include <AssociatedQosFlowItem.h>
+#include <Cause.h>
 #include <GTPTunnel.h>
 #include <HandoverCommandTransfer.h>
+#include <HandoverPreparationUnsuccessfulTransfer.h>
 #include <HandoverRequestAcknowledgeTransfer.h>
+#include <HandoverResourceAllocationUnsuccessfulTransfer.h>
 #include <NonDynamic5QIDescriptor.h>
+#include <PDUSessionResourceModifyConfirmTransfer.h>
+#include <PDUSessionResourceModifyIndicationTransfer.h>
+#include <PDUSessionResourceModifyResponseTransfer.h>
+#include <PDUSessionResourceModifyUnsuccessfulTransfer.h>
+#include <PDUSessionResourceNotifyReleasedTransfer.h>
+#include <PDUSessionResourceNotifyTransfer.h>
+#include <PDUSessionResourceReleaseResponseTransfer.h>
 #include <PDUSessionResourceSetupRequestTransfer.h>
+#include <PDUSessionResourceSetupResponseTransfer.h>
+#include <PDUSessionResourceSetupUnsuccessfulTransfer.h>
 #include <PDUSessionType.h>
 #include <PathSwitchRequestAcknowledgeTransfer.h>
+#include <PathSwitchRequestSetupFailedTransfer.h>
 #include <PathSwitchRequestTransfer.h>
+#include <PathSwitchRequestUnsuccessfulTransfer.h>
 #include <QosFlowAcceptedItem.h>
 #include <QosFlowAcceptedList.h>
+#include <QosFlowListWithCause.h>
+#include <QosFlowModifyConfirmItem.h>
+#include <QosFlowModifyConfirmList.h>
 #include <QosFlowSetupRequestItem.h>
 #include <QosFlowSetupRequestList.h>
+#include <SecondaryRATDataUsageReportTransfer.h>
+#include <UEContextResumeRequestTransfer.h>
+#include <UEContextResumeResponseTransfer.h>
+#include <UEContextSuspendRequestTransfer.h>
 #include <UPTransportLayerInformation.h>
 #include <asn_application.h>
 #include <per_decoder.h>
@@ -597,6 +619,168 @@ struct N4EstablishmentResult {
     std::optional<std::uint32_t> ul_teid;
     std::optional<std::array<std::uint8_t, 4>> ul_ipv4;
 };
+
+// ADR-0260: rebuild a Cause for an outgoing transfer from a decoded incoming one, so SMF echoes
+// the cause NG-RAN actually reported instead of inventing one. The five real CHOICE arms are
+// enumerated longs, so this is a value copy. The sixth, `choice_Extensions`, is a pointer into
+// the decoded structure: shallow-copying it would double-free on the outgoing transfer's own
+// free, and this codec has no deep-copy helper. An extension-coded Cause therefore returns false
+// and the caller answers 500 rather than substituting a cause value SMF made up.
+bool copy_cause(const Cause_t& in, Cause_t& out) {
+    switch (in.present) {
+        case Cause_PR_radioNetwork:
+            out.choice.radioNetwork = in.choice.radioNetwork;
+            break;
+        case Cause_PR_transport:
+            out.choice.transport = in.choice.transport;
+            break;
+        case Cause_PR_nas:
+            out.choice.nas = in.choice.nas;
+            break;
+        case Cause_PR_protocol:
+            out.choice.protocol = in.choice.protocol;
+            break;
+        case Cause_PR_misc:
+            out.choice.misc = in.choice.misc;
+            break;
+        default:
+            return false;
+    }
+    out.present = in.present;
+    return true;
+}
+
+// ADR-0260: the N2SmInfoType values SMF really receives, validates by decoding, and acknowledges
+// with 204 because they carry no instruction SMF can act on beyond what it records. Decoding is
+// not ceremony: it is what makes a malformed transfer a 400 instead of a silently accepted 204.
+struct AckOnlyN2SmInfo {
+    const std::string* type_value;
+    asn_TYPE_descriptor_t* descriptor;
+    const char* transfer_name;
+};
+
+// ADR-0259: a real NG-RAN GTP-U endpoint, read out of an NGAP UPTransportLayerInformation.
+// Returns std::nullopt when the CHOICE is not a gTPTunnel or the address/TEID are not the real
+// 4-octet IPv4 shape -- callers answer 400 rather than guessing at a tunnel.
+struct GtpTunnelEndpoint {
+    std::array<std::uint8_t, 4> ipv4{};
+    std::uint32_t teid{};
+};
+
+std::optional<GtpTunnelEndpoint> read_gtp_tunnel(const UPTransportLayerInformation_t* tnl) {
+    if (tnl == nullptr || tnl->present != UPTransportLayerInformation_PR_gTPTunnel ||
+        tnl->choice.gTPTunnel == nullptr) {
+        return std::nullopt;
+    }
+    const auto* gtp_tunnel = tnl->choice.gTPTunnel;
+    if (gtp_tunnel->transportLayerAddress.size != 4 || gtp_tunnel->gTP_TEID.size != 4) {
+        return std::nullopt;
+    }
+    GtpTunnelEndpoint endpoint;
+    std::copy(gtp_tunnel->transportLayerAddress.buf,
+              gtp_tunnel->transportLayerAddress.buf + 4,
+              endpoint.ipv4.begin());
+    endpoint.teid = (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[0]) << 24) |
+                    (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[1]) << 16) |
+                    (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[2]) << 8) |
+                    static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[3]);
+    return endpoint;
+}
+
+// ADR-0259: every N2SmInfoType that hands SMF a new NG-RAN downlink endpoint needs exactly the
+// same real UPF consequence -- repoint the downlink FAR's OuterHeaderCreation at it. ADR-0092
+// built that inline for PATH_SWITCH_REQ; four more values need it verbatim, so it lives here once
+// rather than five times. Returns an error string on refusal, std::nullopt on success.
+//
+// Unchanged from ADR-0092 and still disclosed: the downlink PDR's match criteria is
+// SourceInterface=Core only, with no UE IP Address IE, because this project has never allocated
+// or tracked a real UE IP address anywhere.
+std::optional<std::string> install_downlink_far(smf::PfcpPeer& pfcp_peer,
+                                                std::uint64_t up_seid,
+                                                const std::string& upf_ip,
+                                                std::uint32_t gnb_teid,
+                                                const std::array<std::uint8_t, 4>& gnb_ipv4,
+                                                const char* label) {
+    std::vector<std::uint8_t> dl_pdi;
+    pfcp_core::encode_ie(dl_pdi,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface),
+                         pfcp_core::encode_source_interface(pfcp_core::InterfaceValue::Core));
+
+    std::vector<std::uint8_t> dl_create_pdr;
+    pfcp_core::encode_ie(dl_create_pdr,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
+                         pfcp_core::encode_pdr_id(2));
+    pfcp_core::encode_ie(dl_create_pdr,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::Precedence),
+                         pfcp_core::encode_precedence(100));
+    pfcp_core::encode_ie(dl_create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi), dl_pdi);
+    pfcp_core::encode_ie(dl_create_pdr,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
+                         pfcp_core::encode_far_id(2));
+
+    std::vector<std::uint8_t> dl_forwarding_parameters;
+    pfcp_core::encode_ie(
+        dl_forwarding_parameters,
+        static_cast<std::uint16_t>(pfcp_core::IeType::DestinationInterface),
+        pfcp_core::encode_destination_interface(pfcp_core::InterfaceValue::Access));
+    pfcp_core::encode_ie(dl_forwarding_parameters,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::OuterHeaderCreation),
+                         pfcp_core::encode_outer_header_creation_gtpu_ipv4(gnb_teid, gnb_ipv4));
+
+    std::vector<std::uint8_t> dl_create_far;
+    pfcp_core::encode_ie(dl_create_far,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
+                         pfcp_core::encode_far_id(2));
+    pfcp_core::encode_ie(dl_create_far,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::ApplyAction),
+                         pfcp_core::encode_apply_action_forward());
+    pfcp_core::encode_ie(dl_create_far,
+                         static_cast<std::uint16_t>(pfcp_core::IeType::ForwardingParameters),
+                         dl_forwarding_parameters);
+
+    std::vector<std::uint8_t> mod_ies;
+    pfcp_core::encode_ie(
+        mod_ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreatePdr), dl_create_pdr);
+    pfcp_core::encode_ie(
+        mod_ies, static_cast<std::uint16_t>(pfcp_core::IeType::CreateFar), dl_create_far);
+
+    pfcp_core::Header mod_header;
+    mod_header.has_seid = true;
+    mod_header.seid = up_seid;
+    mod_header.message_type = pfcp_core::MessageType::SessionModificationRequest;
+    mod_header.sequence_number = pfcp_peer.allocate_sequence_number();
+    auto mod_pdu = pfcp_core::encode_header(mod_header, static_cast<std::uint16_t>(mod_ies.size()));
+    mod_pdu.insert(mod_pdu.end(), mod_ies.begin(), mod_ies.end());
+
+    const boost::asio::ip::udp::endpoint upf_endpoint(boost::asio::ip::make_address(upf_ip),
+                                                      pfcp_core::kPfcpPort);
+    const std::string description = std::string("Session Modification (") + label + " real DL FAR)";
+    const auto mod_resp_ies = pfcp_peer.send_request_and_await_response(
+        upf_endpoint,
+        mod_pdu,
+        pfcp_core::MessageType::SessionModificationResponse,
+        mod_header.sequence_number,
+        description.c_str());
+    const auto decoded_mod_resp_ies =
+        mod_resp_ies.has_value() ? pfcp_core::decode_ies(*mod_resp_ies) : std::nullopt;
+    const auto* mod_cause_ie =
+        decoded_mod_resp_ies.has_value()
+            ? pfcp_core::find_ie(*decoded_mod_resp_ies,
+                                 static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
+            : nullptr;
+    const auto mod_cause =
+        mod_cause_ie != nullptr ? pfcp_core::decode_cause(mod_cause_ie->value) : std::nullopt;
+    if (!mod_cause.has_value() || *mod_cause != pfcp_core::Cause::RequestAccepted) {
+        return std::string("UPF rejected the real PFCP Session Modification for ") + label +
+               "'s new downlink FAR (UP F-SEID=" + std::to_string(up_seid) + ")";
+    }
+    spdlog::info("smf: {} real N4 Session Modification succeeded (UP F-SEID={:#x}, new gNB "
+                 "TEID={:#x}) -- real downlink GTP-U tunnel now points at the new gNB",
+                 label,
+                 up_seid,
+                 gnb_teid);
+    return std::nullopt;
+}
 
 std::optional<N4EstablishmentResult>
 perform_n4_session_establishment(smf::PfcpPeer& pfcp_peer,
@@ -2146,31 +2330,18 @@ int main() {
                             "Bad Request",
                             std::string("n2SmInfo is not a valid ") + type_name);
                     }
-                    if (dl_tnl->present != UPTransportLayerInformation_PR_gTPTunnel ||
-                        dl_tnl->choice.gTPTunnel == nullptr) {
-                        free_transfer();
-                        return sbi_core::http2::problem_response(
-                            400,
-                            "Bad Request",
-                            std::string(type_name) + " has no real GTP-U dL-NGU-UP-TNLInformation");
-                    }
-                    const auto* gtp_tunnel = dl_tnl->choice.gTPTunnel;
-                    if (gtp_tunnel->transportLayerAddress.size != 4 ||
-                        gtp_tunnel->gTP_TEID.size != 4) {
+                    // ADR-0259: the same read_gtp_tunnel the new N2SmInfoType branches use.
+                    const auto endpoint = read_gtp_tunnel(dl_tnl);
+                    if (!endpoint.has_value()) {
                         free_transfer();
                         return sbi_core::http2::problem_response(
                             400,
                             "Bad Request",
                             std::string(type_name) +
-                                "'s GTPTunnel is not a real IPv4 4-octet TEID");
+                                " has no real IPv4 GTP-U dL-NGU-UP-TNLInformation");
                     }
-                    std::copy(gtp_tunnel->transportLayerAddress.buf,
-                              gtp_tunnel->transportLayerAddress.buf + 4,
-                              gnb_ipv4.begin());
-                    gnb_teid = (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[0]) << 24) |
-                               (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[1]) << 16) |
-                               (static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[2]) << 8) |
-                               static_cast<std::uint32_t>(gtp_tunnel->gTP_TEID.buf[3]);
+                    gnb_ipv4 = endpoint->ipv4;
+                    gnb_teid = endpoint->teid;
                     free_transfer();
                 }
 
@@ -2184,105 +2355,20 @@ int main() {
                 const std::uint64_t up_seid = stored_ctx->at("upSeid").get<std::uint64_t>();
                 const std::string upf_ip = stored_ctx->at("upfIp").get<std::string>();
 
-                // Real PFCP Session Modification (TS 29.244 §7.5.4): this project's first-ever
-                // real DOWNLINK PDR/FAR pair (CreatePDR/CreateFAR are real, spec-legal inside a
-                // Session Modification Request, not just Establishment -- Table 7.5.4.1-1). Real,
-                // disclosed simplification: the PDR's own match criteria is SourceInterface=Core
-                // only, no UE IP Address IE -- this project has never allocated/tracked a real UE
-                // IP address anywhere (a real, deeper, separate gap found while scoping this ADR,
-                // not silently worked around), same simplification class as the existing uplink
-                // PDR's own no-real-subscriber-match-criteria scope.
-                std::vector<std::uint8_t> dl_pdi;
-                pfcp_core::encode_ie(
-                    dl_pdi,
-                    static_cast<std::uint16_t>(pfcp_core::IeType::SourceInterface),
-                    pfcp_core::encode_source_interface(pfcp_core::InterfaceValue::Core));
-
-                std::vector<std::uint8_t> dl_create_pdr;
-                pfcp_core::encode_ie(dl_create_pdr,
-                                     static_cast<std::uint16_t>(pfcp_core::IeType::PdrId),
-                                     pfcp_core::encode_pdr_id(2));
-                pfcp_core::encode_ie(dl_create_pdr,
-                                     static_cast<std::uint16_t>(pfcp_core::IeType::Precedence),
-                                     pfcp_core::encode_precedence(100));
-                pfcp_core::encode_ie(
-                    dl_create_pdr, static_cast<std::uint16_t>(pfcp_core::IeType::Pdi), dl_pdi);
-                pfcp_core::encode_ie(dl_create_pdr,
-                                     static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
-                                     pfcp_core::encode_far_id(2));
-
-                std::vector<std::uint8_t> dl_forwarding_parameters;
-                pfcp_core::encode_ie(
-                    dl_forwarding_parameters,
-                    static_cast<std::uint16_t>(pfcp_core::IeType::DestinationInterface),
-                    pfcp_core::encode_destination_interface(pfcp_core::InterfaceValue::Access));
-                pfcp_core::encode_ie(
-                    dl_forwarding_parameters,
-                    static_cast<std::uint16_t>(pfcp_core::IeType::OuterHeaderCreation),
-                    pfcp_core::encode_outer_header_creation_gtpu_ipv4(gnb_teid, gnb_ipv4));
-
-                std::vector<std::uint8_t> dl_create_far;
-                pfcp_core::encode_ie(dl_create_far,
-                                     static_cast<std::uint16_t>(pfcp_core::IeType::FarId),
-                                     pfcp_core::encode_far_id(2));
-                pfcp_core::encode_ie(dl_create_far,
-                                     static_cast<std::uint16_t>(pfcp_core::IeType::ApplyAction),
-                                     pfcp_core::encode_apply_action_forward());
-                pfcp_core::encode_ie(
-                    dl_create_far,
-                    static_cast<std::uint16_t>(pfcp_core::IeType::ForwardingParameters),
-                    dl_forwarding_parameters);
-
-                std::vector<std::uint8_t> mod_ies;
-                pfcp_core::encode_ie(mod_ies,
-                                     static_cast<std::uint16_t>(pfcp_core::IeType::CreatePdr),
-                                     dl_create_pdr);
-                pfcp_core::encode_ie(mod_ies,
-                                     static_cast<std::uint16_t>(pfcp_core::IeType::CreateFar),
-                                     dl_create_far);
-
-                pfcp_core::Header mod_header;
-                mod_header.has_seid = true;
-                mod_header.seid = up_seid;
-                mod_header.message_type = pfcp_core::MessageType::SessionModificationRequest;
-                mod_header.sequence_number = pfcp_peer.allocate_sequence_number();
-                auto mod_pdu = pfcp_core::encode_header(mod_header,
-                                                        static_cast<std::uint16_t>(mod_ies.size()));
-                mod_pdu.insert(mod_pdu.end(), mod_ies.begin(), mod_ies.end());
-
-                const boost::asio::ip::udp::endpoint upf_endpoint(
-                    boost::asio::ip::make_address(upf_ip), pfcp_core::kPfcpPort);
-                const auto mod_resp_ies = pfcp_peer.send_request_and_await_response(
-                    upf_endpoint,
-                    mod_pdu,
-                    pfcp_core::MessageType::SessionModificationResponse,
-                    mod_header.sequence_number,
-                    is_path_switch ? "Session Modification (PATH_SWITCH_REQ real DL FAR)"
-                                   : "Session Modification (HANDOVER_REQ_ACK real DL FAR)");
-                const auto decoded_mod_resp_ies =
-                    mod_resp_ies.has_value() ? pfcp_core::decode_ies(*mod_resp_ies) : std::nullopt;
-                const auto* mod_cause_ie =
-                    decoded_mod_resp_ies.has_value()
-                        ? pfcp_core::find_ie(*decoded_mod_resp_ies,
-                                             static_cast<std::uint16_t>(pfcp_core::IeType::Cause))
-                        : nullptr;
-                const auto mod_cause = mod_cause_ie != nullptr
-                                           ? pfcp_core::decode_cause(mod_cause_ie->value)
-                                           : std::nullopt;
-                if (!mod_cause.has_value() || *mod_cause != pfcp_core::Cause::RequestAccepted) {
+                // ADR-0259: the real PFCP Session Modification that repoints the downlink FAR
+                // now lives in install_downlink_far -- identical behaviour, one implementation
+                // shared with the N2SmInfoType values added below, rather than five copies.
+                const auto dl_far_error =
+                    install_downlink_far(pfcp_peer,
+                                         up_seid,
+                                         upf_ip,
+                                         gnb_teid,
+                                         gnb_ipv4,
+                                         is_path_switch ? "PATH_SWITCH_REQ" : "HANDOVER_REQ_ACK");
+                if (dl_far_error.has_value()) {
                     return sbi_core::http2::problem_response(
-                        500,
-                        "Internal Server Error",
-                        std::string("UPF rejected the real PFCP Session Modification for ") +
-                            (is_path_switch ? "PATH_SWITCH_REQ" : "HANDOVER_REQ_ACK") +
-                            "'s new downlink FAR (UP F-SEID=" + std::to_string(up_seid) + ")");
+                        500, "Internal Server Error", *dl_far_error);
                 }
-                spdlog::info(
-                    "smf: {} real N4 Session Modification succeeded (UP F-SEID={:#x},"
-                    " new gNB TEID={:#x}) -- real downlink GTP-U tunnel now points at the new gNB",
-                    is_path_switch ? "PATH_SWITCH_REQ" : "HANDOVER_REQ_ACK",
-                    up_seid,
-                    gnb_teid);
 
                 // Real PathSwitchRequestAcknowledgeTransfer (§9.3.4.9): uL-NGU-UP-TNLInformation
                 // is UPF's own real, previously-allocated N3 receive F-TEID (persisted at Session
@@ -2377,6 +2463,476 @@ int main() {
                 resp.headers.emplace("content-type", encoded.content_type_header);
                 resp.body = encoded.body;
                 return resp;
+            }
+
+            // ADR-0259: three more real N2SmInfoType values. All three hand SMF a new NG-RAN
+            // DOWNLINK endpoint, so all three have exactly the real UPF consequence ADR-0092
+            // built for PATH_SWITCH_REQ -- repoint the downlink FAR. That code is factored into
+            // install_downlink_far rather than copied three more times. What differs per value is
+            // the transfer it arrives in, where the tunnel sits inside it, and what SMF answers:
+            //
+            //   PDU_RES_SETUP_RSP  PDUSessionResourceSetupResponseTransfer    dLQosFlowPerTNL  204
+            //   PDU_RES_MOD_RSP    PDUSessionResourceModifyResponseTransfer   dL_NGU_UP_TNL*   204
+            //   PDU_RES_MOD_IND    PDUSessionResourceModifyIndicationTransfer dLQosFlowPerTNL  200
+            //
+            // (*) OPTIONAL in the real ASN.1 -- read from the generated struct, not assumed.
+            // Absent means the modification changed no downlink endpoint, which is a legal
+            // answer: SMF acknowledges without touching UPF rather than rejecting.
+            //
+            // PDU_RES_MOD_IND is the only one of the three that owes an N2 answer:
+            // PDUSessionResourceModifyConfirmTransfer (TS 38.413 §9.3.4.6), whose
+            // qosFlowModifyConfirmList and uLNGU-UP-TNLInformation are both MANDATORY -- the QFIs
+            // are echoed from the indication's own associatedQosFlowList (SMF confirms the flows
+            // NG-RAN actually named, it does not invent a set), and the uplink tunnel is UPF's
+            // own real N3 F-TEID, the same one PATH_SWITCH_REQ_ACK returns.
+            const bool is_setup_rsp =
+                body->n2SmInfoType.has_value() &&
+                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::PDU_RES_SETUP_RSP;
+            const bool is_mod_rsp =
+                body->n2SmInfoType.has_value() &&
+                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::PDU_RES_MOD_RSP;
+            const bool is_mod_ind =
+                body->n2SmInfoType.has_value() &&
+                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::PDU_RES_MOD_IND;
+            if ((is_setup_rsp || is_mod_rsp || is_mod_ind) && has_n2_sm_info_bytes) {
+                const char* type_name = is_setup_rsp ? "PDUSessionResourceSetupResponseTransfer"
+                                        : is_mod_rsp ? "PDUSessionResourceModifyResponseTransfer"
+                                                     : "PDUSessionResourceModifyIndicationTransfer";
+                std::optional<GtpTunnelEndpoint> dl_endpoint;
+                std::vector<long> confirmed_qfis;
+                {
+                    PDUSessionResourceSetupResponseTransfer_t* setup_rsp = nullptr;
+                    PDUSessionResourceModifyResponseTransfer_t* mod_rsp = nullptr;
+                    PDUSessionResourceModifyIndicationTransfer_t* mod_ind = nullptr;
+                    const QosFlowPerTNLInformation_t* per_tnl = nullptr;
+                    const UPTransportLayerInformation_t* bare_tnl = nullptr;
+                    bool decode_failed = false;
+                    if (is_setup_rsp) {
+                        setup_rsp = static_cast<PDUSessionResourceSetupResponseTransfer_t*>(
+                            ngap_per_decode(&asn_DEF_PDUSessionResourceSetupResponseTransfer,
+                                            n2_sm_info_bytes));
+                        decode_failed = setup_rsp == nullptr;
+                        if (setup_rsp != nullptr) {
+                            per_tnl = &setup_rsp->dLQosFlowPerTNLInformation;
+                        }
+                    } else if (is_mod_rsp) {
+                        mod_rsp = static_cast<PDUSessionResourceModifyResponseTransfer_t*>(
+                            ngap_per_decode(&asn_DEF_PDUSessionResourceModifyResponseTransfer,
+                                            n2_sm_info_bytes));
+                        decode_failed = mod_rsp == nullptr;
+                        if (mod_rsp != nullptr) {
+                            bare_tnl = mod_rsp->dL_NGU_UP_TNLInformation;
+                        }
+                    } else {
+                        mod_ind = static_cast<PDUSessionResourceModifyIndicationTransfer_t*>(
+                            ngap_per_decode(&asn_DEF_PDUSessionResourceModifyIndicationTransfer,
+                                            n2_sm_info_bytes));
+                        decode_failed = mod_ind == nullptr;
+                        if (mod_ind != nullptr) {
+                            per_tnl = &mod_ind->dLQosFlowPerTNLInformation;
+                        }
+                    }
+                    auto free_transfer = [&]() {
+                        if (setup_rsp != nullptr) {
+                            ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceSetupResponseTransfer,
+                                            setup_rsp);
+                        }
+                        if (mod_rsp != nullptr) {
+                            ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceModifyResponseTransfer,
+                                            mod_rsp);
+                        }
+                        if (mod_ind != nullptr) {
+                            ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceModifyIndicationTransfer,
+                                            mod_ind);
+                        }
+                    };
+                    if (decode_failed) {
+                        free_transfer();
+                        return sbi_core::http2::problem_response(
+                            400,
+                            "Bad Request",
+                            std::string("n2SmInfo is not a valid ") + type_name);
+                    }
+                    if (per_tnl != nullptr) {
+                        dl_endpoint = read_gtp_tunnel(&per_tnl->uPTransportLayerInformation);
+                        if (!dl_endpoint.has_value()) {
+                            free_transfer();
+                            return sbi_core::http2::problem_response(
+                                400,
+                                "Bad Request",
+                                std::string(type_name) +
+                                    "'s dLQosFlowPerTNLInformation carries no real IPv4 GTP-U "
+                                    "tunnel");
+                        }
+                        for (int i = 0; i < per_tnl->associatedQosFlowList.list.count; ++i) {
+                            const auto* item = per_tnl->associatedQosFlowList.list.array[i];
+                            if (item != nullptr) {
+                                confirmed_qfis.push_back(item->qosFlowIdentifier);
+                            }
+                        }
+                    } else if (bare_tnl != nullptr) {
+                        // Present-but-malformed is a real error; ABSENT is not (see above).
+                        dl_endpoint = read_gtp_tunnel(bare_tnl);
+                        if (!dl_endpoint.has_value()) {
+                            free_transfer();
+                            return sbi_core::http2::problem_response(
+                                400,
+                                "Bad Request",
+                                std::string(type_name) +
+                                    "'s dL-NGU-UP-TNLInformation is present but carries no real "
+                                    "IPv4 GTP-U tunnel");
+                        }
+                    }
+                    free_transfer();
+                }
+
+                if (dl_endpoint.has_value()) {
+                    if (!stored_ctx->contains("upSeid") || !stored_ctx->contains("upfIp")) {
+                        return sbi_core::http2::problem_response(
+                            500,
+                            "Internal Server Error",
+                            "No real N4 session on record for this SM context (established before "
+                            "UPF was reachable) -- cannot address a real PFCP Session "
+                            "Modification");
+                    }
+                    const auto error = install_downlink_far(
+                        pfcp_peer,
+                        stored_ctx->at("upSeid").get<std::uint64_t>(),
+                        stored_ctx->at("upfIp").get<std::string>(),
+                        dl_endpoint->teid,
+                        dl_endpoint->ipv4,
+                        is_setup_rsp ? "PDU_RES_SETUP_RSP"
+                                     : (is_mod_rsp ? "PDU_RES_MOD_RSP" : "PDU_RES_MOD_IND"));
+                    if (error.has_value()) {
+                        return sbi_core::http2::problem_response(
+                            500, "Internal Server Error", *error);
+                    }
+                } else {
+                    spdlog::info("smf: {} carried no downlink endpoint -- acknowledged with no "
+                                 "UPF change, which is what an absent OPTIONAL "
+                                 "dL-NGU-UP-TNLInformation means",
+                                 type_name);
+                }
+
+                if (!is_mod_ind) {
+                    sbi_core::http2::Response resp;
+                    resp.status = 204;
+                    return resp;
+                }
+
+                // PDU_RES_MOD_CFM: both of its fields are MANDATORY in the real ASN.1.
+                if (!stored_ctx->contains("ulTeid") || !stored_ctx->contains("ulIpv4")) {
+                    return sbi_core::http2::problem_response(
+                        500,
+                        "Internal Server Error",
+                        "No real UPF N3 uplink F-TEID on record for this SM context -- "
+                        "PDUSessionResourceModifyConfirmTransfer's uLNGU-UP-TNLInformation is "
+                        "mandatory and this build will not fabricate one");
+                }
+                const auto ul_teid = stored_ctx->at("ulTeid").get<std::uint32_t>();
+                const auto ul_ipv4 = stored_ctx->at("ulIpv4").get<std::vector<std::uint8_t>>();
+                if (ul_ipv4.size() != 4) {
+                    return sbi_core::http2::problem_response(
+                        500,
+                        "Internal Server Error",
+                        "Stored UPF N3 address is not a real 4-octet IPv4 address");
+                }
+
+                PDUSessionResourceModifyConfirmTransfer_t confirm{};
+                for (const auto qfi : confirmed_qfis) {
+                    auto* item = static_cast<QosFlowModifyConfirmItem_t*>(
+                        std::calloc(1, sizeof(QosFlowModifyConfirmItem_t)));
+                    item->qosFlowIdentifier = qfi;
+                    ASN_SEQUENCE_ADD(&confirm.qosFlowModifyConfirmList.list, item);
+                }
+                confirm.uLNGU_UP_TNLInformation.present = UPTransportLayerInformation_PR_gTPTunnel;
+                auto* ul_gtp_tunnel =
+                    static_cast<GTPTunnel_t*>(std::calloc(1, sizeof(GTPTunnel_t)));
+                const std::uint8_t ul_teid_bytes[4] = {
+                    static_cast<std::uint8_t>((ul_teid >> 24) & 0xFF),
+                    static_cast<std::uint8_t>((ul_teid >> 16) & 0xFF),
+                    static_cast<std::uint8_t>((ul_teid >> 8) & 0xFF),
+                    static_cast<std::uint8_t>(ul_teid & 0xFF)};
+                ul_gtp_tunnel->gTP_TEID.buf = static_cast<std::uint8_t*>(std::malloc(4));
+                std::memcpy(ul_gtp_tunnel->gTP_TEID.buf, ul_teid_bytes, 4);
+                ul_gtp_tunnel->gTP_TEID.size = 4;
+                ul_gtp_tunnel->transportLayerAddress.buf =
+                    static_cast<std::uint8_t*>(std::malloc(4));
+                std::memcpy(ul_gtp_tunnel->transportLayerAddress.buf, ul_ipv4.data(), 4);
+                ul_gtp_tunnel->transportLayerAddress.size = 4;
+                ul_gtp_tunnel->transportLayerAddress.bits_unused = 0;
+                confirm.uLNGU_UP_TNLInformation.choice.gTPTunnel = ul_gtp_tunnel;
+
+                const auto confirm_bytes =
+                    ngap_per_encode(&asn_DEF_PDUSessionResourceModifyConfirmTransfer, &confirm);
+                ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PDUSessionResourceModifyConfirmTransfer,
+                                              &confirm);
+                if (confirm_bytes.empty()) {
+                    return sbi_core::http2::problem_response(
+                        500,
+                        "Internal Server Error",
+                        "Failed to PER-encode a real PDUSessionResourceModifyConfirmTransfer");
+                }
+
+                sbi_gen::SmContextUpdatedData resp_data{};
+                resp_data.n2SmInfoType = sbi_gen::N2SmInfoType{};
+                resp_data.n2SmInfoType->value = sbi_gen::N2SmInfoType::PDU_RES_MOD_CFM;
+                sbi_gen::RefToBinaryData n2_info_ref{};
+                n2_info_ref.contentId = "n2SmInfo";
+                resp_data.n2SmInfo = n2_info_ref;
+
+                sbi_core::multipart::Part json_part;
+                json_part.content_type = "application/json";
+                json_part.body = json(resp_data).dump();
+                sbi_core::multipart::Part bin_part;
+                bin_part.content_type = "application/vnd.3gpp.ngap";
+                bin_part.content_id = "n2SmInfo";
+                bin_part.body.assign(confirm_bytes.begin(), confirm_bytes.end());
+                const auto encoded = sbi_core::multipart::encode({json_part, bin_part});
+
+                sbi_core::http2::Response resp;
+                resp.status = 200;
+                resp.headers.emplace("content-type", encoded.content_type_header);
+                resp.body = encoded.body;
+                return resp;
+            }
+
+            // ADR-0260: the remainder of TS 29.502's 26 N2SmInfoType values, so the enum is fully
+            // accounted for rather than falling through to a blanket 204 that acknowledged
+            // anything at all.
+            //
+            // Ten more values really arrive at SMF from AMF. Every one decodes its own real
+            // transfer -- which is what turns a malformed peer message into a 400 instead of a
+            // silently accepted 204 -- and three of them owe a real N2 answer back.
+            static const AckOnlyN2SmInfo kAckOnlyN2SmInfos[] = {
+                {&sbi_gen::N2SmInfoType::PDU_RES_SETUP_FAIL,
+                 &asn_DEF_PDUSessionResourceSetupUnsuccessfulTransfer,
+                 "PDUSessionResourceSetupUnsuccessfulTransfer"},
+                {&sbi_gen::N2SmInfoType::PDU_RES_MOD_FAIL,
+                 &asn_DEF_PDUSessionResourceModifyUnsuccessfulTransfer,
+                 "PDUSessionResourceModifyUnsuccessfulTransfer"},
+                {&sbi_gen::N2SmInfoType::PDU_RES_REL_RSP,
+                 &asn_DEF_PDUSessionResourceReleaseResponseTransfer,
+                 "PDUSessionResourceReleaseResponseTransfer"},
+                {&sbi_gen::N2SmInfoType::PDU_RES_NTY,
+                 &asn_DEF_PDUSessionResourceNotifyTransfer,
+                 "PDUSessionResourceNotifyTransfer"},
+                {&sbi_gen::N2SmInfoType::PDU_RES_NTY_REL,
+                 &asn_DEF_PDUSessionResourceNotifyReleasedTransfer,
+                 "PDUSessionResourceNotifyReleasedTransfer"},
+                {&sbi_gen::N2SmInfoType::SECONDARY_RAT_USAGE,
+                 &asn_DEF_SecondaryRATDataUsageReportTransfer,
+                 "SecondaryRATDataUsageReportTransfer"},
+                {&sbi_gen::N2SmInfoType::UE_CONTEXT_SUSPEND_REQ,
+                 &asn_DEF_UEContextSuspendRequestTransfer,
+                 "UEContextSuspendRequestTransfer"},
+            };
+            if (body->n2SmInfoType.has_value()) {
+                for (const auto& entry : kAckOnlyN2SmInfos) {
+                    if (body->n2SmInfoType->value != *entry.type_value) {
+                        continue;
+                    }
+                    if (has_n2_sm_info_bytes) {
+                        void* decoded = ngap_per_decode(entry.descriptor, n2_sm_info_bytes);
+                        if (decoded == nullptr) {
+                            return sbi_core::http2::problem_response(
+                                400,
+                                "Bad Request",
+                                std::string("n2SmInfo is not a valid ") + entry.transfer_name);
+                        }
+                        ASN_STRUCT_FREE(*entry.descriptor, decoded);
+                    }
+                    // Real, disclosed: SMF validates and records these, and does not act further
+                    // on them. There is no per-QoS-flow rule state in this build for PDU_RES_NTY's
+                    // notify/released lists to modify, no charging path consuming
+                    // SECONDARY_RAT_USAGE's usage report, and no RRC-Inactive suspend state for
+                    // UE_CONTEXT_SUSPEND_REQ to enter. Each is a real, separate gap, named here
+                    // rather than implied by a 204 that looks like success.
+                    spdlog::info("smf: {} ({}) accepted and validated for smContextRef {}",
+                                 body->n2SmInfoType->value,
+                                 entry.transfer_name,
+                                 sm_context_ref);
+                    sbi_core::http2::Response resp;
+                    resp.status = 204;
+                    return resp;
+                }
+            }
+
+            // The three that owe a real N2 answer. Each echoes the cause NG-RAN reported rather
+            // than inventing one -- see copy_cause for the single case that cannot be echoed.
+            //
+            //   PATH_SWITCH_SETUP_FAIL  -> PATH_SWITCH_REQ_FAIL
+            //   (PathSwitchRequestUnsuccessfulTransfer) HANDOVER_RES_ALLOC_FAIL ->
+            //   HANDOVER_PREP_FAIL    (HandoverPreparationUnsuccessfulTransfer)
+            //   UE_CONTEXT_RESUME_REQ   -> UE_CONTEXT_RESUME_RSP (UEContextResumeResponseTransfer)
+            const bool is_ps_setup_fail =
+                body->n2SmInfoType.has_value() &&
+                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::PATH_SWITCH_SETUP_FAIL;
+            const bool is_ho_alloc_fail =
+                body->n2SmInfoType.has_value() &&
+                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::HANDOVER_RES_ALLOC_FAIL;
+            const bool is_resume_req =
+                body->n2SmInfoType.has_value() &&
+                body->n2SmInfoType->value == sbi_gen::N2SmInfoType::UE_CONTEXT_RESUME_REQ;
+            if (is_ps_setup_fail || is_ho_alloc_fail || is_resume_req) {
+                if (!has_n2_sm_info_bytes) {
+                    return sbi_core::http2::problem_response(
+                        400,
+                        "Bad Request",
+                        body->n2SmInfoType->value +
+                            " requires an n2SmInfo binary part and none was sent");
+                }
+                std::vector<std::uint8_t> answer_bytes;
+                std::string answer_type;
+                if (is_resume_req) {
+                    auto* req_transfer = static_cast<UEContextResumeRequestTransfer_t*>(
+                        ngap_per_decode(&asn_DEF_UEContextResumeRequestTransfer, n2_sm_info_bytes));
+                    if (req_transfer == nullptr) {
+                        return sbi_core::http2::problem_response(
+                            400,
+                            "Bad Request",
+                            "n2SmInfo is not a valid UEContextResumeRequestTransfer");
+                    }
+                    const int failed_count =
+                        req_transfer->qosFlowFailedToResumeList != nullptr
+                            ? req_transfer->qosFlowFailedToResumeList->list.count
+                            : 0;
+                    ASN_STRUCT_FREE(asn_DEF_UEContextResumeRequestTransfer, req_transfer);
+                    // Every field of UEContextResumeResponseTransfer is OPTIONAL. An empty one is
+                    // spec-legal and means "all flows resumed" -- it is not a placeholder standing
+                    // in for a value SMF failed to compute. SMF has no per-flow resume state to
+                    // report a failure from, which is why the list is omitted rather than guessed.
+                    UEContextResumeResponseTransfer_t rsp_transfer{};
+                    answer_bytes =
+                        ngap_per_encode(&asn_DEF_UEContextResumeResponseTransfer, &rsp_transfer);
+                    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_UEContextResumeResponseTransfer,
+                                                  &rsp_transfer);
+                    answer_type = sbi_gen::N2SmInfoType::UE_CONTEXT_RESUME_RSP;
+                    spdlog::info(
+                        "smf: UE_CONTEXT_RESUME_REQ for smContextRef {} ({} flow(s) NG-RAN "
+                        "could not resume) -- answering UE_CONTEXT_RESUME_RSP",
+                        sm_context_ref,
+                        failed_count);
+                } else {
+                    Cause_t reported_cause{};
+                    bool cause_read = false;
+                    if (is_ps_setup_fail) {
+                        auto* fail =
+                            static_cast<PathSwitchRequestSetupFailedTransfer_t*>(ngap_per_decode(
+                                &asn_DEF_PathSwitchRequestSetupFailedTransfer, n2_sm_info_bytes));
+                        if (fail == nullptr) {
+                            return sbi_core::http2::problem_response(
+                                400,
+                                "Bad Request",
+                                "n2SmInfo is not a valid PathSwitchRequestSetupFailedTransfer");
+                        }
+                        cause_read = copy_cause(fail->cause, reported_cause);
+                        ASN_STRUCT_FREE(asn_DEF_PathSwitchRequestSetupFailedTransfer, fail);
+                    } else {
+                        auto* fail = static_cast<HandoverResourceAllocationUnsuccessfulTransfer_t*>(
+                            ngap_per_decode(&asn_DEF_HandoverResourceAllocationUnsuccessfulTransfer,
+                                            n2_sm_info_bytes));
+                        if (fail == nullptr) {
+                            return sbi_core::http2::problem_response(
+                                400,
+                                "Bad Request",
+                                "n2SmInfo is not a valid "
+                                "HandoverResourceAllocationUnsuccessfulTransfer");
+                        }
+                        cause_read = copy_cause(fail->cause, reported_cause);
+                        ASN_STRUCT_FREE(asn_DEF_HandoverResourceAllocationUnsuccessfulTransfer,
+                                        fail);
+                    }
+                    if (!cause_read) {
+                        return sbi_core::http2::problem_response(
+                            500,
+                            "Internal Server Error",
+                            "NG-RAN reported an extension-coded Cause, which this build will not "
+                            "echo (echoing it would require deep-copying an unbounded extension "
+                            "container) and will not replace with a cause of its own");
+                    }
+                    if (is_ps_setup_fail) {
+                        PathSwitchRequestUnsuccessfulTransfer_t unsucc{};
+                        unsucc.cause = reported_cause;
+                        answer_bytes = ngap_per_encode(
+                            &asn_DEF_PathSwitchRequestUnsuccessfulTransfer, &unsucc);
+                        answer_type = sbi_gen::N2SmInfoType::PATH_SWITCH_REQ_FAIL;
+                    } else {
+                        HandoverPreparationUnsuccessfulTransfer_t unsucc{};
+                        unsucc.cause = reported_cause;
+                        answer_bytes = ngap_per_encode(
+                            &asn_DEF_HandoverPreparationUnsuccessfulTransfer, &unsucc);
+                        answer_type = sbi_gen::N2SmInfoType::HANDOVER_PREP_FAIL;
+                    }
+                    // No ASN_STRUCT_FREE_CONTENTS_ONLY on the outgoing transfer: its only field is
+                    // the value-copied Cause above, which owns no heap memory (see copy_cause).
+                    spdlog::info("smf: {} for smContextRef {} -- answering {} with NG-RAN's own "
+                                 "reported cause (present={})",
+                                 body->n2SmInfoType->value,
+                                 sm_context_ref,
+                                 answer_type,
+                                 static_cast<int>(reported_cause.present));
+                }
+                if (answer_bytes.empty()) {
+                    return sbi_core::http2::problem_response(500,
+                                                             "Internal Server Error",
+                                                             "Failed to PER-encode a real " +
+                                                                 answer_type + " transfer");
+                }
+
+                sbi_gen::SmContextUpdatedData resp_data{};
+                resp_data.n2SmInfoType = sbi_gen::N2SmInfoType{};
+                resp_data.n2SmInfoType->value = answer_type;
+                sbi_gen::RefToBinaryData n2_info_ref{};
+                n2_info_ref.contentId = "n2SmInfo";
+                resp_data.n2SmInfo = n2_info_ref;
+
+                sbi_core::multipart::Part json_part;
+                json_part.content_type = "application/json";
+                json_part.body = json(resp_data).dump();
+                sbi_core::multipart::Part bin_part;
+                bin_part.content_type = "application/vnd.3gpp.ngap";
+                bin_part.content_id = "n2SmInfo";
+                bin_part.body.assign(answer_bytes.begin(), answer_bytes.end());
+                const auto encoded = sbi_core::multipart::encode({json_part, bin_part});
+
+                sbi_core::http2::Response resp;
+                resp.status = 200;
+                resp.headers.emplace("content-type", encoded.content_type_header);
+                resp.body = encoded.body;
+                return resp;
+            }
+
+            // The remaining ten values name transfers TS 38.413 defines as NG-RAN-bound -- ones
+            // SMF PRODUCES and sends towards the RAN, not ones it can be asked to process. Stated
+            // honestly: TS 29.502 does not itself tabulate a direction per N2SmInfoType value, so
+            // this is a reading of TS 38.413's own definition of who builds each transfer, not a
+            // quoted rule. A 400 is still strictly better than the blanket 204 that stood here
+            // before, which acknowledged an impossible request as though it had been processed.
+            static const std::string* const kSmfOriginatedN2SmInfos[] = {
+                &sbi_gen::N2SmInfoType::PDU_RES_SETUP_REQ,
+                &sbi_gen::N2SmInfoType::PDU_RES_REL_CMD,
+                &sbi_gen::N2SmInfoType::PDU_RES_MOD_REQ,
+                &sbi_gen::N2SmInfoType::PDU_RES_MOD_CFM,
+                &sbi_gen::N2SmInfoType::PDU_RES_MOD_IND_FAIL,
+                &sbi_gen::N2SmInfoType::PATH_SWITCH_REQ_ACK,
+                &sbi_gen::N2SmInfoType::PATH_SWITCH_REQ_FAIL,
+                &sbi_gen::N2SmInfoType::HANDOVER_CMD,
+                &sbi_gen::N2SmInfoType::HANDOVER_PREP_FAIL,
+                &sbi_gen::N2SmInfoType::UE_CONTEXT_RESUME_RSP,
+            };
+            if (body->n2SmInfoType.has_value()) {
+                for (const auto* originated : kSmfOriginatedN2SmInfos) {
+                    if (body->n2SmInfoType->value == *originated) {
+                        return sbi_core::http2::problem_response(
+                            400,
+                            "Bad Request",
+                            body->n2SmInfoType->value +
+                                " is an SMF-originated N2 SM information type (SMF builds this "
+                                "transfer and sends it towards NG-RAN); it is not something SMF "
+                                "can be asked to process in an UpdateSMContext request");
+                    }
+                }
             }
 
             // Disclosed simplification: acknowledges every other N2SmInfoType/plain update (204)

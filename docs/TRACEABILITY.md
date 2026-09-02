@@ -5000,3 +5000,33 @@ See ADR-0257 in `docs/DECISIONS.md`.
 | Stale row corrected | UDM UECM/UEAU were listed as open in the inherited plan; closed by ADR-0214 through ADR-0227 |
 
 See ADR-0258 in `docs/DECISIONS.md`.
+
+## ADR-0259 -- SMF downlink-endpoint `N2SmInfoType` family
+
+| Requirement | Evidence |
+|---|---|
+| `PDU_RES_SETUP_RSP` real | Decodes `PDUSessionResourceSetupResponseTransfer`, reads `dLQosFlowPerTNLInformation.uPTransportLayerInformation`, drives a real PFCP Session Modification DL FAR |
+| `PDU_RES_MOD_RSP` real, including its OPTIONAL field | `dL_NGU_UP_TNLInformation` is `OPTIONAL` in the generated ASN.1; absent -> 204 with no UPF change (legal), present-but-malformed -> 400 |
+| `PDU_RES_MOD_IND` real, with a real N2 answer | Decodes the indication, repoints the FAR, answers 200 + `PDU_RES_MOD_CFM` carrying `PDUSessionResourceModifyConfirmTransfer` |
+| Confirm transfer built from peer data, not assumptions | `qosFlowModifyConfirmList` echoes the indication's own `associatedQosFlowList` QFIs; `uLNGU_UP_TNLInformation` is UPF's real N3 F-TEID |
+| No fabrication on missing state | Missing `ulTeid`/`ulIpv4` -> 500, never a synthesised tunnel |
+| Reuse, not duplication | `install_downlink_far()` / `read_gtp_tunnel()` extracted; `PATH_SWITCH_REQ`/`HANDOVER_REQ_ACK` refactored onto them, behaviour unchanged |
+| Coverage | 7 of 26 `N2SmInfoType` values real (was 4) |
+
+See ADR-0259 in `docs/DECISIONS.md`.
+
+## ADR-0260 -- remaining `N2SmInfoType` values; all 26 accounted for
+
+| Requirement | Evidence |
+|---|---|
+| 10 further inbound values decoded and handled | `PDU_RES_SETUP_FAIL`, `PDU_RES_MOD_FAIL`, `PDU_RES_REL_RSP`, `PDU_RES_NTY`, `PDU_RES_NTY_REL`, `SECONDARY_RAT_USAGE`, `UE_CONTEXT_SUSPEND_REQ` (204); `PATH_SWITCH_SETUP_FAIL`, `HANDOVER_RES_ALLOC_FAIL`, `UE_CONTEXT_RESUME_REQ` (200 + real answer) |
+| Malformed transfer rejected, not acknowledged | Each branch PER-decodes its own transfer; failure -> 400. Pinned by `test_smf_n2sminfo_dispatch.cpp` |
+| Failure answers echo NG-RAN's cause | `copy_cause` value-copies the five enumerated `Cause` arms; `PATH_SWITCH_REQ_FAIL` / `HANDOVER_PREP_FAIL` carry the reported cause |
+| Extension-coded `Cause` refused, not substituted | `choice_Extensions` cannot be deep-copied by this codec -> 500 with that stated, rather than a made-up cause |
+| 10 SMF-originated values rejected | 400 + ProblemDetails naming them as SMF-built, NG-RAN-bound transfers |
+| **Direction split is a reading, not a quotation** | TS 29.502 tabulates no per-value direction; classification follows TS 38.413's definition of who builds each transfer. Stated in source and ADR |
+| Test builds real NGAP | `integration_tests` now links `ngap_core`/`ngap_generated`; the test PER-encodes real transfers and decodes SMF's `PDU_RES_MOD_CFM` to assert the echoed QFI and real uplink F-TEID |
+| Covers ADR-0259's refactor too | `PDU_RES_SETUP_RSP`/`PDU_RES_MOD_IND` drive `install_downlink_far`, which ADR-0092's PATH_SWITCH path now shares and which previously had no automated coverage |
+| Coverage | 26 of 26 values accounted for: 16 inbound handled, 10 rejected |
+
+See ADR-0260 in `docs/DECISIONS.md`.
