@@ -1,11 +1,16 @@
 #include "ngap_handover.hpp"
 
+#include "sbi_core/multipart.hpp"
+
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "aka_crypto/kdf.hpp"
 #include "ngap_core/ngap_codec.hpp"
@@ -66,6 +71,12 @@ namespace amf::ngap {
 
 namespace {
 
+// SMF's own address (nfs/smf/src/main.cpp's kPort=7779). Duplicated here rather than shared with
+// ngap_task.cpp deliberately: that file states the "locally-duplicated-constant convention" for
+// kAusfBase/kPcfBase/kSmfBase explicitly. The real fix for all of them is the config-file retrofit
+// tracked as gap-closure task #109 (ADR-0077), not a new one-off header.
+constexpr const char* kSmfBase = "https://127.0.0.1:7779";
+
 // This lab's fixed test PLMN/S-NSSAI, matching nfs/amf/src/ngap_task.cpp's own kMcc/kMnc/kSst/kSd
 // exactly -- deliberately duplicated here (not shared via a common header) since these handlers
 // live in a separate translation unit for real, disclosed CI-memory reasons (see this file's own
@@ -116,68 +127,127 @@ BIT_STRING_t make_bit_string_from_uint(unsigned long value, std::size_t bits) {
     return s;
 }
 
-// Real, structurally-valid, minimally-populated PDUSessionResourceSetupRequestTransfer (TS 38.413
-// §9.3.4.1, one real mandatory QoS flow: QFI=1, 5QI=9 non-dynamic -- the real, standard 3GPP
-// "non-GBR default" 5QI value, TS 23.501 Table 5.7.4-1, not invented; ARP priorityLevel=8/
-// shall-not-trigger-pre-emption/not-pre-emptable, this lab's own conservative fixed default).
-// Real, disclosed gap: UL-NGU-UP-TNLInformation is a PLACEHOLDER (TEID=0/IP=0.0.0.0) -- unlike
-// ADR-0092's own SMF-side PATH_SWITCH_REQ work, this pass does NOT build the real AMF->SMF
-// Nsmf_PDUSession_UpdateSMContext relay a real AMF would use to obtain UPF's own real N3 address
-// here (the same "AMF doesn't call SMF yet" gap ADR-0090/ADR-0092 already disclosed as open).
-std::vector<std::uint8_t> build_placeholder_ho_request_transfer() {
-    PDUSessionResourceSetupRequestTransfer_t transfer{};
+// ADR-0258: the real Handover Preparation relay -- TS 23.502 §4.9.1.3 step 3.
+//
+// AMF asks SMF, per PDU session, for the N2 SM info the TARGET gNB needs. SMF answers with a real
+// PDUSessionResourceSetupRequestTransfer carrying UPF's own real N3 uplink F-TEID (ADR-0249 built
+// exactly this answer, expressly to remove the placeholder below -- but nothing ever called it).
+//
+// Returns std::nullopt when this session cannot be handed over for real: no stored smContextRef
+// (the UE's session predates ADR-0249's Location capture, or SMF sent no Location), no token, a
+// non-200 from SMF, or a response carrying no usable binary part. Callers deliberately SKIP such a
+// session rather than substituting a fabricated tunnel -- a handover that silently carries a
+// TEID=0 transfer is worse than one that reports it could not prepare the session.
+std::optional<std::vector<std::uint8_t>>
+fetch_ho_request_transfer_from_smf(sbi_core::http2::Client& smf_client,
+                                   sbi_core::OAuth2Client& smf_oauth,
+                                   amf::UeContextStore& ue_contexts,
+                                   const std::string& supi,
+                                   long pdu_session_id) {
+    const auto ue_ctx = ue_contexts.get(supi);
+    if (!ue_ctx.has_value() || !ue_ctx->contains("smContextRefs")) {
+        spdlog::warn("amf-ngap: no SM context refs stored for SUPI {} -- cannot ask SMF for a real "
+                     "handover transfer (pduSessionId={})",
+                     supi,
+                     pdu_session_id);
+        return std::nullopt;
+    }
+    const auto key = std::to_string(pdu_session_id);
+    if (!ue_ctx->at("smContextRefs").contains(key)) {
+        spdlog::warn("amf-ngap: no SM context ref for SUPI {} pduSessionId={} -- cannot ask SMF "
+                     "for a real handover transfer",
+                     supi,
+                     pdu_session_id);
+        return std::nullopt;
+    }
+    const auto sm_context_ref = ue_ctx->at("smContextRefs").at(key).get<std::string>();
 
-    UPTransportLayerInformation_t ul_info{};
-    ul_info.present = UPTransportLayerInformation_PR_gTPTunnel;
-    auto* gtp_tunnel = static_cast<GTPTunnel_t*>(std::calloc(1, sizeof(GTPTunnel_t)));
-    const std::uint8_t zero_teid[4] = {0, 0, 0, 0};
-    gtp_tunnel->gTP_TEID = make_octet_string(zero_teid, 4);
-    gtp_tunnel->transportLayerAddress.buf = static_cast<std::uint8_t*>(std::malloc(4));
-    std::memcpy(gtp_tunnel->transportLayerAddress.buf, zero_teid, 4);
-    gtp_tunnel->transportLayerAddress.size = 4;
-    gtp_tunnel->transportLayerAddress.bits_unused = 0;
-    ul_info.choice.gTPTunnel = gtp_tunnel;
-    ::ngap::add_ie(transfer.protocolIEs,
-                   ::ngap::make_ie(139 /* id-UL-NGU-UP-TNLInformation */,
-                                   Criticality_reject,
-                                   &asn_DEF_UPTransportLayerInformation,
-                                   &ul_info));
-    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_UPTransportLayerInformation, &ul_info);
+    const auto token = smf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::error("amf-ngap: could not obtain an SMF token for handover preparation: {}",
+                      token.error());
+        return std::nullopt;
+    }
 
-    PDUSessionType_t pdu_type = PDUSessionType_ipv4;
-    ::ngap::add_ie(
-        transfer.protocolIEs,
-        ::ngap::make_ie(
-            134 /* id-PDUSessionType */, Criticality_reject, &asn_DEF_PDUSessionType, &pdu_type));
+    // Plain application/json: HANDOVER_REQUIRED carries no N2 SM info of its own from AMF -- SMF
+    // answers from the UPF N3 F-TEID it has held since session establishment. Read from SMF's own
+    // handler, which requires only n2SmInfoType for this branch.
+    nlohmann::json update_data;
+    update_data["n2SmInfoType"] = "HANDOVER_REQUIRED";
 
-    QosFlowSetupRequestList_t qos_list{};
-    auto* qos_item =
-        static_cast<QosFlowSetupRequestItem_t*>(std::calloc(1, sizeof(QosFlowSetupRequestItem_t)));
-    qos_item->qosFlowIdentifier = 1;
-    qos_item->qosFlowLevelQosParameters.qosCharacteristics.present =
-        QosCharacteristics_PR_nonDynamic5QI;
-    auto* non_dynamic =
-        static_cast<NonDynamic5QIDescriptor_t*>(std::calloc(1, sizeof(NonDynamic5QIDescriptor_t)));
-    non_dynamic->fiveQI = 9;
-    qos_item->qosFlowLevelQosParameters.qosCharacteristics.choice.nonDynamic5QI = non_dynamic;
-    qos_item->qosFlowLevelQosParameters.allocationAndRetentionPriority.priorityLevelARP = 8;
-    qos_item->qosFlowLevelQosParameters.allocationAndRetentionPriority.pre_emptionCapability =
-        Pre_emptionCapability_shall_not_trigger_pre_emption;
-    qos_item->qosFlowLevelQosParameters.allocationAndRetentionPriority.pre_emptionVulnerability =
-        Pre_emptionVulnerability_not_pre_emptable;
-    ASN_SEQUENCE_ADD(&qos_list.list, qos_item);
-    ::ngap::add_ie(transfer.protocolIEs,
-                   ::ngap::make_ie(136 /* id-QosFlowSetupRequestList */,
-                                   Criticality_reject,
-                                   &asn_DEF_QosFlowSetupRequestList,
-                                   &qos_list));
-    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_QosFlowSetupRequestList, &qos_list);
+    sbi_core::http2::ClientRequest http_req;
+    http_req.method = "POST";
+    http_req.url =
+        std::string(kSmfBase) + "/nsmf-pdusession/v1/sm-contexts/" + sm_context_ref + "/modify";
+    http_req.headers.emplace("content-type", "application/json");
+    http_req.headers.emplace("authorization", "Bearer " + *token);
+    http_req.body = update_data.dump();
 
-    const auto bytes =
-        ::ngap::encode_value(&asn_DEF_PDUSessionResourceSetupRequestTransfer, &transfer);
-    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PDUSessionResourceSetupRequestTransfer, &transfer);
-    return bytes;
+    auto resp = smf_client.send(http_req);
+    if (!resp.has_value()) {
+        spdlog::error("amf-ngap: SMF UpdateSMContext(HANDOVER_REQUIRED) failed for SUPI {} "
+                      "pduSessionId={}: {}",
+                      supi,
+                      pdu_session_id,
+                      resp.error());
+        return std::nullopt;
+    }
+    if (resp->status != 200) {
+        spdlog::error("amf-ngap: SMF UpdateSMContext(HANDOVER_REQUIRED) returned {} for SUPI {} "
+                      "pduSessionId={}",
+                      resp->status,
+                      supi,
+                      pdu_session_id);
+        return std::nullopt;
+    }
+
+    const auto content_type_it = resp->headers.find("content-type");
+    if (content_type_it == resp->headers.end() ||
+        !sbi_core::multipart::is_multipart_related(content_type_it->second)) {
+        spdlog::error("amf-ngap: SMF's HANDOVER_REQUIRED answer for SUPI {} pduSessionId={} was "
+                      "not multipart/related -- no N2 SM info to relay",
+                      supi,
+                      pdu_session_id);
+        return std::nullopt;
+    }
+    auto parts = sbi_core::multipart::parse(content_type_it->second, resp->body);
+    if (!parts.has_value() || parts->size() < 2) {
+        spdlog::error("amf-ngap: could not parse SMF's HANDOVER_REQUIRED answer for SUPI {} "
+                      "pduSessionId={}",
+                      supi,
+                      pdu_session_id);
+        return std::nullopt;
+    }
+    // The root part names the binary part by contentId; resolve by that rather than assuming
+    // ordering, matching how AMF already resolves SMF's N1/N2 parts elsewhere.
+    std::string wanted_content_id = "n2SmInfo";
+    try {
+        const auto root = nlohmann::json::parse((*parts)[0].body);
+        if (root.contains("n2SmInfo") && root.at("n2SmInfo").contains("contentId")) {
+            wanted_content_id = root.at("n2SmInfo").at("contentId").get<std::string>();
+        }
+    } catch (const nlohmann::json::exception&) {
+        // Fall through to the default contentId -- SMF's own root part is JSON by construction,
+        // and a malformed one is reported by the lookup below rather than throwing here.
+    }
+    for (const auto& part : *parts) {
+        if (part.content_id.has_value() && *part.content_id == wanted_content_id) {
+            return std::vector<std::uint8_t>(part.body.begin(), part.body.end());
+        }
+    }
+    spdlog::error("amf-ngap: SMF's HANDOVER_REQUIRED answer for SUPI {} pduSessionId={} carried no "
+                  "part with contentId '{}'",
+                  supi,
+                  pdu_session_id,
+                  wanted_content_id);
+    return std::nullopt;
 }
+
+// ADR-0258: build_placeholder_ho_request_transfer() lived here and is DELETED, not left
+// unused. It produced a structurally-valid PDUSessionResourceSetupRequestTransfer whose
+// UL-NGU-UP-TNLInformation was a fabricated TEID=0/0.0.0.0 tunnel, because AMF had no way to
+// ask SMF for the real one. It now does (fetch_ho_request_transfer_from_smf above), so the
+// fabrication has no remaining caller and no reason to stay reachable.
 
 // Real HandoverPreparationFailure (TS 38.413 §9.2.3.3, id-HandoverPreparation unsuccessfulOutcome)
 // -- the real reject path for HandoverRequired, used by every early-exit branch in
@@ -241,9 +311,9 @@ void send_handover_preparation_failure(ngap_core::SctpSocket& source_assoc,
 // derive_nh call (NCC=0, chain position 0) PathSwitchRequest already established (ADR-0090) for
 // the identical disclosed reason; UEAggregateMaximumBitRate is this lab's own fixed default (no
 // real per-subscriber AMBR tracked anywhere in this project); PDUSessionResourceSetupListHOReq's
-// own per-session transfer is real but uses build_placeholder_ho_request_transfer's own disclosed
-// placeholder N3 address. One real relay in flight per target gNB at a time
-// (GnbAssociationRegistry's own disclosed lab-scope simplification).
+// own per-session transfer is now the REAL one SMF returns (ADR-0258) -- the fabricated
+// TEID=0/0.0.0.0 tunnel this comment used to describe is gone. One real relay in flight per target
+// gNB at a time (GnbAssociationRegistry's own disclosed lab-scope simplification).
 //
 // Real, disclosed design choice (not just for testability): unlike this file's own
 // UplinkNASTransport-phase handlers (which legitimately depend on the single UE this specific
@@ -255,6 +325,9 @@ void send_handover_preparation_failure(ngap_core::SctpSocket& source_assoc,
 // authoritative source per spec, not implicit association state) -- auth_state is deliberately not
 // a parameter of this function.
 void handle_handover_required(ngap_core::SctpSocket& source_assoc,
+                              sbi_core::http2::Client& smf_client,
+                              sbi_core::OAuth2Client& smf_oauth,
+                              amf::UeContextStore& ue_contexts,
                               UeSecurityContextStore& ue_security_contexts,
                               amf::AmfUeIdIndexStore& amf_ue_id_index,
                               amf::ngap::GnbAssociationRegistry& gnb_associations,
@@ -443,16 +516,50 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
             93 /* id-SecurityContext */, Criticality_reject, &asn_DEF_SecurityContext, &sec_ctx));
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_SecurityContext, &sec_ctx);
 
+    // ADR-0258: ask SMF for each session's real transfer instead of fabricating one.
+    // TS 23.502 §4.9.1.3 step 3. A session SMF cannot answer for is SKIPPED, not filled with a
+    // placeholder tunnel -- see fetch_ho_request_transfer_from_smf's own comment.
     PDUSessionResourceSetupListHOReq_t setup_list{};
-    const auto placeholder_transfer_bytes = build_placeholder_ho_request_transfer();
+    int sessions_prepared = 0;
     for (int i = 0; i < pdu_list->list.count; ++i) {
+        const auto pdu_session_id = pdu_list->list.array[i]->pDUSessionID;
+        auto transfer_bytes = fetch_ho_request_transfer_from_smf(
+            smf_client, smf_oauth, ue_contexts, ctx->supi, pdu_session_id);
+        if (!transfer_bytes.has_value()) {
+            spdlog::warn("amf-ngap: skipping pduSessionId={} in HandoverRequest for SUPI {} -- SMF "
+                         "gave no real handover transfer, and this build will not substitute a "
+                         "fabricated one",
+                         pdu_session_id,
+                         ctx->supi);
+            continue;
+        }
         auto* item = static_cast<PDUSessionResourceSetupItemHOReq_t*>(
             std::calloc(1, sizeof(PDUSessionResourceSetupItemHOReq_t)));
-        item->pDUSessionID = pdu_list->list.array[i]->pDUSessionID;
+        item->pDUSessionID = pdu_session_id;
         item->s_NSSAI.sST = make_octet_string(&kSst, 1);
         item->handoverRequestTransfer =
-            make_octet_string(placeholder_transfer_bytes.data(), placeholder_transfer_bytes.size());
+            make_octet_string(transfer_bytes->data(), transfer_bytes->size());
         ASN_SEQUENCE_ADD(&setup_list.list, item);
+        ++sessions_prepared;
+    }
+    if (sessions_prepared == 0) {
+        spdlog::error("amf-ngap: no PDU session could be prepared for handover of SUPI {} -- "
+                      "answering the source gNB with HandoverPreparationFailure",
+                      ctx->supi);
+        Cause_t cause{};
+        cause.present = Cause_PR_radioNetwork;
+        cause.choice.radioNetwork =
+            CauseRadioNetwork_ho_failure_in_target_5GC_ngran_node_or_target_system;
+        send_handover_preparation_failure(
+            source_assoc, static_cast<unsigned long>(amf_ue_id_value), ran_ue_id_value, cause);
+        ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PDUSessionResourceSetupListHOReq, &setup_list);
+        ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_HandoverRequest, &req);
+        ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_ue_id);
+        ASN_STRUCT_FREE(asn_DEF_HandoverType, ho_type);
+        ASN_STRUCT_FREE(asn_DEF_TargetID, target_id);
+        ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceListHORqd, pdu_list);
+        ASN_STRUCT_FREE(asn_DEF_SourceToTarget_TransparentContainer, s2t);
+        return;
     }
     ::ngap::add_ie(req.protocolIEs,
                    ::ngap::make_ie(73 /* id-PDUSessionResourceSetupListHOReq */,

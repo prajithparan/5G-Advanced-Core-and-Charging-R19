@@ -1753,6 +1753,9 @@ void handle_association(ngap_core::SctpSocket assoc,
             // lookup via amf_ue_id_index (same as PathSwitchRequest), NOT this association's own
             // auth_state -- see handle_handover_required's own header comment for why.
             handle_handover_required(assoc,
+                                     smf_client,
+                                     smf_oauth,
+                                     ue_contexts,
                                      ue_security_contexts,
                                      amf_ue_id_index,
                                      gnb_associations,

@@ -4985,3 +4985,18 @@ See ADR-0256 in `docs/DECISIONS.md`.
 | Verified by exact-literal match | both new paths ROUTED in `build/nfs/smf/smf` |
 
 See ADR-0257 in `docs/DECISIONS.md`.
+
+## ADR-0258 -- AMF->SMF handover preparation relay; placeholder transfer deleted
+
+| Requirement | Evidence |
+|---|---|
+| TS 23.502 §4.9.1.3 step 3 implemented | `nfs/amf/src/ngap_handover.cpp` `fetch_ho_request_transfer_from_smf` -> `POST /nsmf-pdusession/v1/sm-contexts/{ref}/modify` with `n2SmInfoType=HANDOVER_REQUIRED` |
+| Fabricated N2 transfer removed, not orphaned | `build_placeholder_ho_request_transfer()` (TEID=0 / 0.0.0.0) deleted; a comment records what it was and why it is gone |
+| Seam verified on both sides, not assumed | key shape `smContextRefs[std::to_string(pduSessionId)]` written at `ngap_task.cpp:1665`, read identically in `ngap_handover.cpp`; `contentId="n2SmInfo"` set by `nfs/smf/src/main.cpp` on both the root ref and the binary part |
+| Contract pinned by test | `tests/integration/test_smf_handover_n2sminfo.cpp`: 200 + `multipart/related`, `n2SmInfoType=PDU_RES_SETUP_REQ`, binary part resolvable by `contentId`, payload not all-zero; unknown ref -> 404 |
+| Unpreparable session is skipped, never fabricated | `std::nullopt` -> session skipped; zero prepared sessions -> real `HandoverPreparationFailure`, `Cause` = `ho-failure-in-target-5GC-ngran-node-or-target-system` |
+| **Disclosed** | Blocking SBI round-trip per PDU session on the NGAP handler thread (ADR-0009 synchronous-client debt on a latency-sensitive path) |
+| **Still NOT live-verified end-to-end** | UERANSIM v3.3.0 (ADR-0016) drives real NGAP but implements no handover procedure in its gNB -- grep-confirmed: `HandoverRequired` occurs in `src/asn/ngap/` only, never in `src/gnb/`. The NGAP side of the chain (ADR-0095/0096/0248/0249/0258) therefore has no end-to-end test |
+| Stale row corrected | UDM UECM/UEAU were listed as open in the inherited plan; closed by ADR-0214 through ADR-0227 |
+
+See ADR-0258 in `docs/DECISIONS.md`.

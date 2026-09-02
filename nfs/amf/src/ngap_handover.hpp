@@ -2,10 +2,13 @@
 
 #include <cstdint>
 #include <ngap_core/sctp_socket.hpp>
+#include <sbi_core/http2_client.hpp>
+#include <sbi_core/oauth2_client.hpp>
 
 #include "amf_ue_id_index_store.hpp"
 #include "gnb_association_registry.hpp"
 #include "ngap_task.hpp"
+#include "ue_context_store.hpp"
 #include "ue_security_context_store.hpp"
 
 extern "C" {
@@ -29,7 +32,15 @@ namespace amf::ngap {
 // amf_ue_id_index/ue_security_contexts, not association-local state, see ngap_handover.cpp's own
 // header comment), relays a real HandoverRequest to the target gNB via gnb_associations, and
 // replies to source_assoc with HandoverCommand/HandoverPreparationFailure.
+//
+// ADR-0258: takes smf_client/smf_oauth/ue_contexts because Handover Preparation is not a purely
+// NGAP procedure -- TS 23.502 §4.9.1.3 step 3 requires AMF to ask SMF, per PDU session, for the
+// N2 SM info the target gNB needs. Before this, AMF fabricated that transfer locally; the SM
+// context refs ADR-0249 started persisting are what make the real call possible.
 void handle_handover_required(ngap_core::SctpSocket& source_assoc,
+                              sbi_core::http2::Client& smf_client,
+                              sbi_core::OAuth2Client& smf_oauth,
+                              amf::UeContextStore& ue_contexts,
                               UeSecurityContextStore& ue_security_contexts,
                               amf::AmfUeIdIndexStore& amf_ue_id_index,
                               amf::ngap::GnbAssociationRegistry& gnb_associations,
