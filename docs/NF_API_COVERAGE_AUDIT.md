@@ -29,11 +29,17 @@ operation name produced a false negative earlier and is not done anywhere in thi
 | udm | 1 | `/{supi}/am-data/update-sor` -- genuinely absent |
 | smf | 2 | `transfer-mo-data`, `send-mo-data` -- genuinely absent |
 | nrf | 5 | `/shared-data*`, `/scp-domain-routing-info*` -- disclosed deferred |
-| udr | 9 (was 23) | 4 closed by ADR-0253, 10 more by ADR-0254; remaining: `/exposure-data/*` (4), `/aiot-data/*` (3), 2 singles |
+| udr | 5 (was 23) | 4 closed by ADR-0253, 10 by ADR-0254, 4 by ADR-0255; remaining: `/aiot-data/*` (3), 2 singles |
 
-**Total: 32 unrouted paths of 328.**
+**Total: 28 unrouted paths of 328.**
 
 ## The 32, verbatim
+
+**This block is ADR-0252's original snapshot and is deliberately not
+edited as paths are closed** -- it is the audit's baseline evidence. The live remaining count is
+the table above (28 as of ADR-0255); the per-family "Update" sections at the end of this
+document record which of these 32 have since been closed and by which ADR.
+
 ```
 /rg-authentications
 /scp-domain-routing-info
@@ -127,4 +133,16 @@ binary (not the tier-2 heuristic, which ADR-0253 showed is unreliable once prefi
 
 **UDR: 23 -> 9 unrouted.** What remains: `/exposure-data/*` (4), `/aiot-data/*` (3, R19 Ambient
 IoT), `/data-restoration-events`, and
+`/subscription-data/{ueId}/service-specific-authorization-data/{serviceType}`.
+
+## Update (ADR-0255): `/exposure-data/*` complete
+
+All 4 `exposure-data` paths are now routed (10 operations), verified by exact-literal match
+against the binary. The family is NOT shaped like its `application-data` sibling and was read per
+path: `session-management-data` has no PATCH, the `subs-to-notify` collection has no GET list, and
+the individual subscription has no GET. Those three operations are absent from the spec and are
+therefore absent here.
+
+**UDR: 9 -> 5 unrouted.** What remains: `/aiot-data/*` (3, R19 Ambient IoT),
+`/data-restoration-events`, and
 `/subscription-data/{ueId}/service-specific-authorization-data/{serviceType}`.

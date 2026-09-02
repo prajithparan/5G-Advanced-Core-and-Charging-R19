@@ -1273,3 +1273,27 @@ CREATE TABLE IF NOT EXISTS udr_application_data_subs (
     subs_id TEXT PRIMARY KEY,
     data    JSONB NOT NULL
 );
+
+-- ADR-0255: Nudr_DataRepository structured data for exposure (TS29519_Exposure_Data.yaml,
+-- $ref'd from TS29504_Nudr_DR.yaml). Three distinct real resources, three tables.
+--   access-and-mobility-data  one document per UE
+--   session-management-data   one document per (UE, PDU session) -- composite key, which is why
+--                             it does not share the single-key KeyedJsonDocStore
+--   subs-to-notify            change subscriptions over the above
+
+CREATE TABLE IF NOT EXISTS udr_exposure_am_data (
+    ue_id TEXT PRIMARY KEY,
+    data  JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS udr_exposure_session_management_data (
+    ue_id          TEXT NOT NULL,
+    pdu_session_id TEXT NOT NULL,
+    data           JSONB NOT NULL,
+    PRIMARY KEY (ue_id, pdu_session_id)
+);
+
+CREATE TABLE IF NOT EXISTS udr_exposure_data_subs (
+    sub_id TEXT PRIMARY KEY,
+    data   JSONB NOT NULL
+);

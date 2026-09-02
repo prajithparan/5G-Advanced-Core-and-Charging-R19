@@ -90,6 +90,7 @@ set(SBI_CODEGEN_PILOT_FILES
     TS26512_EventExposure.yaml
     TS29591_Nnef_TrafficInfluenceData.yaml
     TS29519_Application_Data.yaml
+    TS29519_Exposure_Data.yaml
     TS29591_Nnef_Inference.yaml
     TS29530_Naf_Inference.yaml
     TS29520_Nnwdaf_EventsSubscription.yaml
@@ -174,6 +175,7 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS26512_EventExposure.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_TrafficInfluenceData.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29519_Application_Data.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29519_Exposure_Data.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_Inference.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29530_Naf_Inference.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29520_Nnwdaf_EventsSubscription.yaml

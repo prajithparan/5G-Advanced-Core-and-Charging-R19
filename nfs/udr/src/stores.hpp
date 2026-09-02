@@ -235,15 +235,20 @@ private:
 // (influence-Ids, dnns, snssais, internal-Group-Ids, internal-group-ids-Add,
 // subscriber-categories, supis, supp-feat); which of those this build actually honours is
 // documented at the route itself, not silently implied here.
-// ADR-0254: the remaining real `application-data` resources (pfds, bdtPolicyData,
-// iptvConfigData, serviceParamData, subs-to-notify). Each is a genuinely distinct real resource
-// with its own table -- but all five share an identical CRUD shape over an opaque JSON document
-// keyed by one id, so they share ONE store class parameterised by table and id column rather than
-// five near-identical copies. Distinctness is enforced by the schema, not by duplicated C++; this
-// is deliberately NOT the "one table with a discriminator" shape the project has rejected before.
-class ApplicationDataDocStore {
+// A CRUD store over an opaque JSON document keyed by one id column, parameterised by table.
+// Introduced by ADR-0254 for the remaining real `application-data` resources (pfds,
+// bdtPolicyData, iptvConfigData, serviceParamData, subs-to-notify) and reused by ADR-0255 for
+// `exposure-data`'s access-and-mobility-data and subs-to-notify. Each of those is a genuinely
+// distinct real resource with its OWN table -- distinctness is enforced by the schema, not by
+// duplicated C++; this is deliberately NOT the "one table with a discriminator" shape the project
+// has rejected before. Renamed from ApplicationDataDocStore by ADR-0255 because it is no longer
+// specific to the application-data family; behaviour is unchanged.
+//
+// `table_`/`id_column_` are interpolated into SQL. They are fixed literals chosen at construction
+// in main.cpp and are NEVER request-derived; values are always bound as parameters.
+class KeyedJsonDocStore {
 public:
-    ApplicationDataDocStore(const std::string& conninfo, std::string table, std::string id_column);
+    KeyedJsonDocStore(const std::string& conninfo, std::string table, std::string id_column);
 
     std::vector<nlohmann::json> list();
     std::optional<nlohmann::json> get(const std::string& id);
@@ -259,6 +264,26 @@ private:
     pqxx::connection conn_;
     std::string table_;
     std::string id_column_;
+};
+
+// ADR-0255: `/exposure-data/{ueId}/session-management-data/{pduSessionId}`
+// (TS29519_Exposure_Data.yaml). Its own class rather than a KeyedJsonDocStore because the
+// resource is keyed by TWO path parameters, not one -- a UE has one document per PDU session.
+// The real spec gives this resource PUT/GET/DELETE and NO PATCH (unlike its
+// access-and-mobility-data sibling), so no merge_patch() is offered here.
+class ExposureSessionManagementDataStore {
+public:
+    explicit ExposureSessionManagementDataStore(const std::string& conninfo);
+
+    std::optional<nlohmann::json> get(const std::string& ue_id, const std::string& pdu_session_id);
+    // true when the row did not previously exist (the real 201-vs-200 distinction).
+    bool
+    put(const std::string& ue_id, const std::string& pdu_session_id, const nlohmann::json& data);
+    bool remove(const std::string& ue_id, const std::string& pdu_session_id);
+
+private:
+    std::mutex mutex_;
+    pqxx::connection conn_;
 };
 
 class TrafficInfluenceDataStore {

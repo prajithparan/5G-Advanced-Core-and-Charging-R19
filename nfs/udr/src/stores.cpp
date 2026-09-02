@@ -3100,16 +3100,17 @@ bool TrafficInfluenceSubStore::remove(const std::string& subscription_id) {
     return result.affected_rows() > 0;
 }
 
-// --- ADR-0254: generic application-data document store ---
+// --- ADR-0254: generic single-key JSON document store (renamed by ADR-0255 when
+// exposure-data started sharing it; behaviour unchanged) ---
 // table_/id_column_ are NOT request-derived -- they are fixed literals chosen at construction in
 // main.cpp, so interpolating them into the SQL below cannot be influenced by a peer. Values are
 // still bound as parameters, never interpolated.
-ApplicationDataDocStore::ApplicationDataDocStore(const std::string& conninfo,
-                                                 std::string table,
-                                                 std::string id_column)
+KeyedJsonDocStore::KeyedJsonDocStore(const std::string& conninfo,
+                                     std::string table,
+                                     std::string id_column)
     : conn_(conninfo), table_(std::move(table)), id_column_(std::move(id_column)) {}
 
-std::vector<nlohmann::json> ApplicationDataDocStore::list() {
+std::vector<nlohmann::json> KeyedJsonDocStore::list() {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(conn_);
     const auto result = txn.exec("SELECT data FROM " + table_ + " ORDER BY " + id_column_);
@@ -3121,7 +3122,7 @@ std::vector<nlohmann::json> ApplicationDataDocStore::list() {
     return out;
 }
 
-std::optional<nlohmann::json> ApplicationDataDocStore::get(const std::string& id) {
+std::optional<nlohmann::json> KeyedJsonDocStore::get(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(conn_);
     const auto result =
@@ -3132,7 +3133,7 @@ std::optional<nlohmann::json> ApplicationDataDocStore::get(const std::string& id
     return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
 }
 
-bool ApplicationDataDocStore::put(const std::string& id, const nlohmann::json& data) {
+bool KeyedJsonDocStore::put(const std::string& id, const nlohmann::json& data) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(conn_);
     const auto existing =
@@ -3146,8 +3147,8 @@ bool ApplicationDataDocStore::put(const std::string& id, const nlohmann::json& d
     return is_new;
 }
 
-std::optional<nlohmann::json> ApplicationDataDocStore::merge_patch(const std::string& id,
-                                                                   const nlohmann::json& patch) {
+std::optional<nlohmann::json> KeyedJsonDocStore::merge_patch(const std::string& id,
+                                                             const nlohmann::json& patch) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(conn_);
     const auto result =
@@ -3163,11 +3164,61 @@ std::optional<nlohmann::json> ApplicationDataDocStore::merge_patch(const std::st
     return std::make_optional(doc);
 }
 
-bool ApplicationDataDocStore::remove(const std::string& id) {
+bool KeyedJsonDocStore::remove(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(conn_);
     const auto result =
         txn.exec("DELETE FROM " + table_ + " WHERE " + id_column_ + " = $1", pqxx::params{id});
+    txn.commit();
+    return result.affected_rows() > 0;
+}
+
+// --- ADR-0255: exposure-data session-management-data, keyed by (ueId, pduSessionId) ---
+// pduSessionId is stored as TEXT rather than an integer: it arrives as a path segment, and the
+// real PduSessionId schema is an integer, but keeping the raw segment avoids inventing a
+// normalisation the spec does not define (e.g. whether "07" and "7" are the same resource).
+// Disclosed rather than silently decided.
+ExposureSessionManagementDataStore::ExposureSessionManagementDataStore(const std::string& conninfo)
+    : conn_(conninfo) {}
+
+std::optional<nlohmann::json>
+ExposureSessionManagementDataStore::get(const std::string& ue_id,
+                                        const std::string& pdu_session_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("SELECT data FROM udr_exposure_session_management_data "
+                                 "WHERE ue_id = $1 AND pdu_session_id = $2",
+                                 pqxx::params{ue_id, pdu_session_id});
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return std::make_optional(nlohmann::json::parse(result.front()["data"].as<std::string>()));
+}
+
+bool ExposureSessionManagementDataStore::put(const std::string& ue_id,
+                                             const std::string& pdu_session_id,
+                                             const nlohmann::json& data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto existing = txn.exec("SELECT 1 FROM udr_exposure_session_management_data "
+                                   "WHERE ue_id = $1 AND pdu_session_id = $2",
+                                   pqxx::params{ue_id, pdu_session_id});
+    const bool is_new = existing.empty();
+    txn.exec("INSERT INTO udr_exposure_session_management_data (ue_id, pdu_session_id, data) "
+             "VALUES ($1, $2, $3::jsonb) ON CONFLICT (ue_id, pdu_session_id) "
+             "DO UPDATE SET data = EXCLUDED.data",
+             pqxx::params{ue_id, pdu_session_id, data.dump()});
+    txn.commit();
+    return is_new;
+}
+
+bool ExposureSessionManagementDataStore::remove(const std::string& ue_id,
+                                                const std::string& pdu_session_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(conn_);
+    const auto result = txn.exec("DELETE FROM udr_exposure_session_management_data "
+                                 "WHERE ue_id = $1 AND pdu_session_id = $2",
+                                 pqxx::params{ue_id, pdu_session_id});
     txn.commit();
     return result.affected_rows() > 0;
 }

@@ -4926,3 +4926,24 @@ See ADR-0253 in `docs/DECISIONS.md`.
 | Not live-verified | 5 new tables need schema re-apply on an existing DB |
 
 See ADR-0254 in `docs/DECISIONS.md`.
+
+## ADR-0255 -- UDR exposure-data (structured data for exposure)
+
+| Requirement | Evidence |
+|---|---|
+| 4 paths / 10 operations | access-and-mobility-data (PUT/GET/PATCH/DELETE), session-management-data (PUT/GET/DELETE), subs-to-notify (POST), subs-to-notify/{subId} (PUT/DELETE) -- `TS29519_Exposure_Data.yaml` via `TS29504_Nudr_DR.yaml`'s `$ref` |
+| DTOs generated, not hand-written | `TS29519_Exposure_Data.yaml` added to the codegen pilot list; `AccessAndMobilityData`, `PduSessionManagementData`, `ExposureDataSubscription` |
+| Per-path method sets, not generalised from the sibling family | session-management-data has no PATCH; subs-to-notify collection has no GET list; subs-to-notify item has no GET -- all three absent operations left unregistered |
+| PUT semantics read per path | data resources: 201 create vs 200 update; individual subscription: 200/204/404 with no 201, so no upsert -- deliberately unlike ADR-0254's application-data subs PUT |
+| PATCH semantics read from the path's own content type | RFC 7396 merge-patch, 204-only success, 404 rather than upsert |
+| Store reuse without collapsing distinct resources | `ApplicationDataDocStore` renamed `KeyedJsonDocStore` and reused for the two single-key resources; `ExposureSessionManagementDataStore` added for the composite (ueId, pduSessionId) key; 3 separate tables |
+| Verified by exact-literal match, not the heuristic | 4/4 ROUTED in `build/nfs/udr/udr` |
+| Coverage | UDR 9 -> 5 unrouted |
+| Behaviour tested, not just routing | `tests/integration/test_udr_exposure_data.cpp` -- 3 tests, real nrf+udr processes, TLS 1.3 + mTLS, signed OAuth2, real PostgreSQL: 201-vs-200 PUT, RFC 7396 merge preserves untouched fields, PATCH 204 and 404-not-upsert, two PDU sessions stay distinct, PATCH not routed on session-management-data, subscription PUT 404 on unknown subId |
+| Live-verification gap of ADR-0253/0254 closed (schema half) | `schema.postgres.sql` applied to the lab DB; all tables from ADR-0253/0254/0255 present; exposure-data routes exercised end to end. ADR-0253/0254's own routes still lack dedicated integration tests -- narrowed, not closed |
+| No regression | conformance 333/333, `ctest` 474/474 (3 new) |
+| Disclosed: no notification delivery | subscriptions stored/returned but no `ExposureDataChangeNotification` is pushed; same gap class as ADR-0253/0254 subscriptions |
+| Disclosed: Location is a path, not an absolute URI | pre-existing project-wide limitation (UDR has no configured external base URL); asserted in the test rather than worked around |
+| Noted: pre-existing unrelated test defect | `UdrIntegration.AmfContextLifecycle` passes only once per DB reset (resource has no DELETE in the spec, so it cannot clean up); unrelated to this change, left as-is |
+
+See ADR-0255 in `docs/DECISIONS.md`.

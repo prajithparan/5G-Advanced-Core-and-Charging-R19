@@ -667,6 +667,10 @@
 // per TS29505_Subscription_Data.yaml's own $ref -- ADR-0083, gap-closure task #106) lives in its
 // own generated group file, not TS26510_CommonData_grp.hpp.
 #include "TS29503_Nudm_UEAU_grp.hpp"
+// ADR-0255: structured data for exposure. Its own generated header rather than the merged group
+// file -- TS29519_Exposure_Data.yaml is newly added to the codegen pilot list this turn, and it
+// $refs TS26510_CommonData_grp.hpp above for the common types it shares.
+#include "TS29519_Exposure_Data.hpp"
 #include "stores.hpp"
 
 namespace {
@@ -1030,14 +1034,18 @@ int main() {
     udr::TrafficInfluenceSubStore traffic_influence_subs(conninfo);
     // ADR-0254: the remaining real application-data resources. Five distinct tables, one shared
     // store class -- see stores.hpp for why that is not the rejected discriminator shape.
-    udr::ApplicationDataDocStore pfd_data(conninfo, "udr_pfd_data", "app_id");
-    udr::ApplicationDataDocStore bdt_policy_data(conninfo, "udr_bdt_policy_data", "bdt_policy_id");
-    udr::ApplicationDataDocStore iptv_config_data(
-        conninfo, "udr_iptv_config_data", "configuration_id");
-    udr::ApplicationDataDocStore service_param_data(
+    udr::KeyedJsonDocStore pfd_data(conninfo, "udr_pfd_data", "app_id");
+    udr::KeyedJsonDocStore bdt_policy_data(conninfo, "udr_bdt_policy_data", "bdt_policy_id");
+    udr::KeyedJsonDocStore iptv_config_data(conninfo, "udr_iptv_config_data", "configuration_id");
+    udr::KeyedJsonDocStore service_param_data(
         conninfo, "udr_service_param_data", "service_param_id");
-    udr::ApplicationDataDocStore application_data_subs(
-        conninfo, "udr_application_data_subs", "subs_id");
+    udr::KeyedJsonDocStore application_data_subs(conninfo, "udr_application_data_subs", "subs_id");
+    // ADR-0255: structured data for exposure. access-and-mobility-data and subs-to-notify are
+    // single-key documents and reuse the same store class; session-management-data is keyed by
+    // (ueId, pduSessionId) and therefore has its own.
+    udr::KeyedJsonDocStore exposure_am_data(conninfo, "udr_exposure_am_data", "ue_id");
+    udr::KeyedJsonDocStore exposure_data_subs(conninfo, "udr_exposure_data_subs", "sub_id");
+    udr::ExposureSessionManagementDataStore exposure_sm_data(conninfo);
     // Gap-closure (docs/CAPABILITY_GAP_ANALYSIS.md task #106, ADR-0097).
     udr::SmsfContext3gppStore smsf_3gpp_context(conninfo);
     udr::SmsfNon3GppContextStore smsf_non3gpp_context(conninfo);
@@ -9684,6 +9692,273 @@ int main() {
             if (!application_data_subs.remove(id)) {
                 return sbi_core::http2::problem_response(
                     404, "Not Found", "No subscription: " + id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    // --- ADR-0255: Nudr_DataRepository structured data for exposure (`/exposure-data/*`) ---
+    // Paths from TS29504_Nudr_DR.yaml, which $refs TS29519_Exposure_Data.yaml where the real
+    // operations and schemas live -- the same $ref indirection ADR-0253 documented.
+    //
+    // Method sets read per-path from the YAML, NOT generalised across the family. Three real
+    // asymmetries this family has and which are reproduced here rather than smoothed over:
+    //   * access-and-mobility-data has PUT/GET/DELETE/PATCH; session-management-data has NO PATCH.
+    //   * subs-to-notify collection is POST-only -- there is no GET list operation, unlike
+    //     application-data's own subs-to-notify collection (ADR-0254), which has both.
+    //   * subs-to-notify item is PUT/DELETE only -- there is no GET on the individual
+    //     subscription, again unlike application-data's.
+    // PUT distinguishes 201 (created) from 200 (updated, body returned). The spec also documents
+    // 204 as an alternative success for an update; this build consistently returns 200 with the
+    // representation, the same choice ADR-0253/0254 made for their PUTs.
+
+    const std::string exposure_am_data_path =
+        std::string(kApiRoot) + "/exposure-data/{ueId}/access-and-mobility-data";
+
+    server.add_route(
+        "PUT",
+        exposure_am_data_path,
+        [&verifier, &exposure_am_data, exposure_am_data_path](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::AccessAndMobilityData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            nlohmann::json j = *body;
+            const bool is_new = exposure_am_data.put(ue_id, j);
+            sbi_core::http2::Response resp;
+            resp.status = is_new ? 201 : 200;
+            resp.headers.emplace("content-type", "application/json");
+            if (is_new) {
+                resp.headers.emplace("location",
+                                     resolved_location(exposure_am_data_path, req.path_params));
+            }
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        exposure_am_data_path,
+        [&verifier, &exposure_am_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            auto doc = exposure_am_data.get(ue_id);
+            if (!doc.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No access and mobility exposure data for ueId " + ue_id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = doc->dump();
+            return resp;
+        });
+
+    // PATCH here is RFC 7396 merge-patch, read from this path's own
+    // `application/merge-patch+json` request content type. The real spec documents ONLY 204 for
+    // success on this operation (no 200-with-body alternative), and documents 404, so this does
+    // not upsert.
+    server.add_route(
+        "PATCH",
+        exposure_am_data_path,
+        [&verifier, &exposure_am_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            nlohmann::json patch;
+            try {
+                patch = nlohmann::json::parse(req.body);
+            } catch (const nlohmann::json::parse_error& e) {
+                return sbi_core::http2::problem_response(
+                    400, "Bad Request", std::string("malformed merge patch: ") + e.what());
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!exposure_am_data.merge_patch(ue_id, patch).has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No access and mobility exposure data for ueId " + ue_id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        exposure_am_data_path,
+        [&verifier, &exposure_am_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            if (!exposure_am_data.remove(ue_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No access and mobility exposure data for ueId " + ue_id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    const std::string exposure_sm_data_path =
+        std::string(kApiRoot) + "/exposure-data/{ueId}/session-management-data/{pduSessionId}";
+
+    server.add_route(
+        "PUT",
+        exposure_sm_data_path,
+        [&verifier, &exposure_sm_data, exposure_sm_data_path](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::PduSessionManagementData>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto pdu_session_id = req.path_params.at("pduSessionId");
+            nlohmann::json j = *body;
+            const bool is_new = exposure_sm_data.put(ue_id, pdu_session_id, j);
+            sbi_core::http2::Response resp;
+            resp.status = is_new ? 201 : 200;
+            resp.headers.emplace("content-type", "application/json");
+            if (is_new) {
+                resp.headers.emplace("location",
+                                     resolved_location(exposure_sm_data_path, req.path_params));
+            }
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "GET",
+        exposure_sm_data_path,
+        [&verifier, &exposure_sm_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto pdu_session_id = req.path_params.at("pduSessionId");
+            auto doc = exposure_sm_data.get(ue_id, pdu_session_id);
+            if (!doc.has_value()) {
+                return sbi_core::http2::problem_response(404,
+                                                         "Not Found",
+                                                         "No session management exposure data for "
+                                                         "ueId " +
+                                                             ue_id + " pduSessionId " +
+                                                             pdu_session_id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = doc->dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        exposure_sm_data_path,
+        [&verifier, &exposure_sm_data](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto ue_id = req.path_params.at("ueId");
+            const auto pdu_session_id = req.path_params.at("pduSessionId");
+            if (!exposure_sm_data.remove(ue_id, pdu_session_id)) {
+                return sbi_core::http2::problem_response(404,
+                                                         "Not Found",
+                                                         "No session management exposure data for "
+                                                         "ueId " +
+                                                             ue_id + " pduSessionId " +
+                                                             pdu_session_id);
+            }
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+
+    const std::string exposure_subs_coll_path =
+        std::string(kApiRoot) + "/exposure-data/subs-to-notify";
+    const std::string exposure_subs_item_path =
+        std::string(kApiRoot) + "/exposure-data/subs-to-notify/{subId}";
+
+    // POST only -- the real spec defines no GET list on this collection.
+    server.add_route(
+        "POST",
+        exposure_subs_coll_path,
+        [&verifier, &exposure_data_subs, exposure_subs_item_path](
+            const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::ExposureDataSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const std::string sub_id = sbi_core::generate_uuid_v4();
+            nlohmann::json j = *body;
+            exposure_data_subs.put(sub_id, j);
+            std::map<std::string, std::string> params{{"subId", sub_id}};
+            sbi_core::http2::Response resp;
+            resp.status = 201;
+            resp.headers.emplace("content-type", "application/json");
+            resp.headers.emplace("location", resolved_location(exposure_subs_item_path, params));
+            resp.body = j.dump();
+            return resp;
+        });
+
+    // PUT is modify-only: the real spec documents 200/204 and 404 for this operation but no 201,
+    // so an unknown subId is a 404 rather than a create. That is deliberately different from
+    // ADR-0254's application-data subs-to-notify PUT, which upserts -- the difference is read
+    // from each path's own response set, not carried across.
+    server.add_route(
+        "PUT",
+        exposure_subs_item_path,
+        [&verifier, &exposure_data_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            sbi_core::http2::Response err;
+            auto body =
+                sbi_core::http2::parse_json_body<sbi_gen::ExposureDataSubscription>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+            const auto sub_id = req.path_params.at("subId");
+            if (!exposure_data_subs.get(sub_id).has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No exposure data subscription: " + sub_id);
+            }
+            nlohmann::json j = *body;
+            exposure_data_subs.put(sub_id, j);
+            sbi_core::http2::Response resp;
+            resp.status = 200;
+            resp.headers.emplace("content-type", "application/json");
+            resp.body = j.dump();
+            return resp;
+        });
+
+    server.add_route(
+        "DELETE",
+        exposure_subs_item_path,
+        [&verifier, &exposure_data_subs](const sbi_core::http2::Request& req) {
+            if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
+            }
+            const auto sub_id = req.path_params.at("subId");
+            if (!exposure_data_subs.remove(sub_id)) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No exposure data subscription: " + sub_id);
             }
             sbi_core::http2::Response resp;
             resp.status = 204;
