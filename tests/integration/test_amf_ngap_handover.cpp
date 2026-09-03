@@ -15,8 +15,13 @@
 // the last piece of UE state the relay depends on, since AMF asks SMF for each session's real N2
 // transfer and skips any session it has no smContextRef for.
 
+#include "sbi_core/http2_client.hpp"
+
+#include <chrono>
 #include <cstdint>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "ngap_test_gnb.hpp"
 #include "spawn_guard.hpp"
@@ -52,6 +57,58 @@ constexpr std::uint8_t kSst = 1;
 constexpr std::uint32_t kSd = 0x000001;
 
 constexpr const char* kServingNetworkName = "5G:mnc070.mcc999.3gppnetwork.org";
+
+// Each NF's own TLS listener, from config/*.json. Probed rather than assumed -- see
+// wait_for_sbi_peers.
+constexpr const char* kAusfProbe =
+    "https://127.0.0.1:7782/nausf-auth/v1/ue-authentications/nonexistent/eap-session";
+constexpr const char* kUdmProbe = "https://127.0.0.1:7780/nudm-ueau/v1/nonexistent/nonexistent";
+constexpr const char* kUdrProbe =
+    "https://127.0.0.1:7781/nudr-dr/v1/subscription-data/nonexistent/nonexistent";
+constexpr const char* kPcfProbe = "https://127.0.0.1:7783/npcf-am-policy-control/v1/policies/none";
+constexpr const char* kSmfProbe =
+    "https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts/nonexistent/retrieve";
+
+sbi_core::http2::Client make_client() {
+    sbi_core::http2::TlsConfig tls{
+        .cert_path = CERTS_DIR "/hello-nf/cert.pem",
+        .key_path = CERTS_DIR "/hello-nf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    return sbi_core::http2::Client(std::move(tls));
+}
+
+// Blocks until every NF this test's procedures traverse is answering on its own SBI port.
+//
+// This is load-bearing, not defensive boilerplate. `NgapTestGnb::connect` waits only for AMF's
+// NGAP listener, which is the FIRST thing ready -- AMF's SCTP listener was up 44 ms into one CI
+// run while AUSF took 440 ms to start. The gNB then sends its RegistrationRequest, AMF calls an
+// AUSF that is not listening yet, logs `AUSF call failed: Could not connect to server`, and
+// answers the UE nothing at all. There is no retry: the UE waits for a message that will never
+// come. On a fast local machine the NFs win the race and it passes; on a loaded CI runner it does
+// not. Probing here is the fix, since nothing in the NAS procedures themselves is retryable.
+//
+// Any completed HTTP response counts as ready -- a 404 from a real listener is exactly the proof
+// wanted. Only a connection failure means "not up yet".
+void wait_for_sbi_peers(const std::vector<const char*>& urls, int max_attempts = 200) {
+    auto client = make_client();
+    for (const char* url : urls) {
+        bool reachable = false;
+        for (int attempt = 0; attempt < max_attempts && !reachable; ++attempt) {
+            sbi_core::http2::ClientRequest req;
+            req.method = "GET";
+            req.url = url;
+            if (client.send(req).has_value()) {
+                reachable = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        ASSERT_TRUE(reachable) << "NF never became reachable, so a procedure that depends on it "
+                                  "would stall with no reply rather than fail: "
+                               << url;
+    }
+}
 
 // The whole registration procedure, from RegistrationRequest to the RegistrationAccept AMF sends
 // once it has installed a security context -- ADR-0265's authentication plus ADR-0266's security
@@ -226,6 +283,10 @@ TEST(AmfNgapTestGnb, RegistrationCompletesAndAmfInstallsASecurityContext) {
     nf_test::SpawnedProcess amf(AMF_PATH);
     ASSERT_GT(amf.pid(), 0);
 
+    // Authentication traverses AMF -> AUSF -> UDM -> UDR. AMF's NGAP listener is ready long
+    // before those are, and AMF does not retry a failed AUSF call -- see wait_for_sbi_peers.
+    ASSERT_NO_FATAL_FAILURE(wait_for_sbi_peers({kUdrProbe, kUdmProbe, kAusfProbe}));
+
     NgapTestGnb gnb;
     ASSERT_TRUE(gnb.connect(kAmfNgapAddress, kAmfNgapPort));
     ASSERT_TRUE(gnb.ng_setup(kSourceGnbId));
@@ -272,6 +333,13 @@ TEST(AmfNgapTestGnb, RegisteredUeEstablishesARealPduSession) {
     ASSERT_GT(smf.pid(), 0);
     nf_test::SpawnedProcess amf(AMF_PATH);
     ASSERT_GT(amf.pid(), 0);
+
+    // Every NF this test's two procedures traverse: AMF -> AUSF -> UDM -> UDR for authentication,
+    // AMF -> PCF for the AM policy association, AMF -> SMF -> PCF for the PDU session. None of
+    // those calls is retried, so a listener that is not up yet costs the test a reply that never
+    // arrives -- see wait_for_sbi_peers.
+    ASSERT_NO_FATAL_FAILURE(
+        wait_for_sbi_peers({kUdrProbe, kUdmProbe, kAusfProbe, kPcfProbe, kSmfProbe}));
 
     NgapTestGnb gnb;
     ASSERT_TRUE(gnb.connect(kAmfNgapAddress, kAmfNgapPort));

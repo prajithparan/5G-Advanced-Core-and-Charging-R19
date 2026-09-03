@@ -22934,6 +22934,39 @@ association and then deliberately sends nothing: `receive()` returned empty afte
 800 ms deadline, instead of blocking or throwing. (Throwaway program, not committed -- a
 committed test for this would have to spend its timeout in CI to prove anything.)
 
+### A latent race the bounded receive immediately caught
+
+The first CI run after the timeout went in failed `RegistrationCompletesAndAmfInstallsASecurity
+Context` -- the ADR-0266 test, unchanged in substance by this increment -- at exactly the 30 s
+deadline. The log gives the whole story:
+
+```
+17:16:29.417  amf-ngap: InitialUEMessage from RAN-UE-NGAP-ID=1, SUPI=imsi-999700000000001
+17:16:29.423  amf-ngap: AUSF call failed: Could not connect to server
+17:16:29.461  ausf: starting
+```
+
+`NgapTestGnb::connect` waits only for AMF's NGAP listener, which is the **first** thing ready --
+AMF's SCTP listener was up 44 ms in while AUSF took 440 ms to start. The UE then sent its
+RegistrationRequest, AMF called an AUSF that was not listening yet, and **AMF does not retry that
+call** (`kAusfBase` is addressed directly, no NRF discovery, no backoff) -- so it answered the UE
+nothing at all. The UE then waited for a message that was never coming.
+
+This is a pre-existing latent flake, not a regression: the same test passed on the ADR-0266 commit,
+which simply won the race. A fast local machine wins it; a loaded CI runner does not.
+
+The fix is `wait_for_sbi_peers`, which blocks until every NF a test's procedures traverse answers
+on its own SBI port before the gNB sends anything -- UDR/UDM/AUSF for registration, plus PCF and
+SMF for the PDU session. Any completed HTTP response counts as ready (a 404 from a real listener is
+exactly the proof wanted); only a connection failure means "not up yet". It measurably does
+something: the registration test went from 158 ms to 1236 ms locally, and that ~1 s is real waiting
+on listeners the test previously raced.
+
+Worth stating because it is the whole argument for the previous section: had the receive still been
+unbounded, this would have hung until the runner killed the job, which is indistinguishable from
+the free-tier runner deaths this project already sees. The bounded receive turned an
+undiagnosable hang into a failure that named its own cause on the first read.
+
 ### Next, with three traps recorded rather than rediscovered
 
 What remains for the full relay is a second `NgapTestGnb` as the target gNB, NGSetup'd before
