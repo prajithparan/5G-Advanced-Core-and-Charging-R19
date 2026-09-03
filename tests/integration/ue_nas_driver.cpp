@@ -5,6 +5,7 @@
 #include "aka_crypto/hex.hpp"
 #include "aka_crypto/kdf.hpp"
 #include "aka_crypto/milenage.hpp"
+#include "aka_crypto/nas_security.hpp"
 
 namespace nf_test {
 
@@ -20,6 +21,12 @@ constexpr std::uint8_t kMessageTypeAuthenticationResponse = 0x57;
 constexpr std::uint8_t kIeiUeSecurityCapability = 0x2E;
 constexpr std::uint8_t kIeiAuthResponseParameter = 0x2D;
 constexpr std::uint8_t kIeiRand = 0x21;
+constexpr std::uint8_t kMessageTypeSecurityModeComplete = 0x5E;
+constexpr std::uint8_t kShtIntegrityProtectedAndCipheredWithNewSecurityContext = 0x04;
+// TS 24.501 NAS security context: bearer id 1, direction 0 = uplink. Mirrors
+// nfs/amf/src/nas_codec.cpp's own kNasBearerId/kDirectionUplink.
+constexpr std::uint8_t kNasBearerId = 1;
+constexpr std::uint8_t kDirectionUplink = 0;
 constexpr std::uint8_t kIeiAutn = 0x20;
 
 // Same TS 35.207 Test Set 1 credentials nfs/udm seeds imsi-999700000000001 with (ADR-0026), and
@@ -172,6 +179,62 @@ build_authentication_response(const std::array<std::uint8_t, 16>& res_star) {
     out.push_back(kIeiAuthResponseParameter);
     out.push_back(static_cast<std::uint8_t>(res_star.size()));
     out.insert(out.end(), res_star.begin(), res_star.end());
+    return out;
+}
+
+NasKeys derive_nas_keys(const AuthChallenge& challenge,
+                        const std::string& supi,
+                        const std::string& serving_network_name) {
+    const auto k = test_k();
+    const auto opc = test_opc();
+    const auto out = aka_crypto::f2345(opc, k, challenge.rand);
+
+    // SQN xor AK is AUTN's own first six octets -- taken from the wire rather than recomputed, so
+    // this matches what the network actually sent.
+    aka_crypto::Ak48 sqn_xor_ak{};
+    std::memcpy(sqn_xor_ak.data(), challenge.autn.data(), sqn_xor_ak.size());
+
+    const auto kausf = aka_crypto::derive_kausf(out.ck, out.ik, serving_network_name, sqn_xor_ak);
+    const auto kseaf = aka_crypto::derive_kseaf(kausf, serving_network_name);
+    // KAMF is keyed on the SUPI without its "imsi-" prefix, and ABBA is the TS 33.501 Annex A.7.1
+    // default -- both matching nfs/amf/src/ngap_task.cpp's own derivation exactly, because a
+    // mismatch here produces a MAC AMF rejects.
+    const aka_crypto::Abba abba{0x00, 0x00};
+    const std::string bare_supi = supi.substr(std::strlen("imsi-"));
+    const auto kamf = aka_crypto::derive_kamf(kseaf, bare_supi, abba);
+
+    NasKeys keys;
+    keys.knas_int = aka_crypto::derive_knas_int(kamf, aka_crypto::kNia2AlgorithmIdentity);
+    keys.knas_enc = aka_crypto::derive_knas_enc(kamf, aka_crypto::kNea2AlgorithmIdentity);
+    return keys;
+}
+
+std::vector<std::uint8_t> build_security_mode_complete(const NasKeys& keys,
+                                                       std::uint32_t uplink_count) {
+    const std::vector<std::uint8_t> inner_plain{
+        kEpdMobilityManagement, kSecurityHeaderNotProtected, kMessageTypeSecurityModeComplete};
+    const auto ciphered = aka_crypto::nea2_apply(
+        keys.knas_enc, uplink_count, kNasBearerId, kDirectionUplink, inner_plain);
+
+    // The MAC covers the bytes as transmitted -- i.e. the CIPHERED inner, prefixed by the sequence
+    // number octet. Same convention nfs/amf/src/nas_codec.cpp documents and UERANSIM implements;
+    // MACing the plaintext instead is the classic way to get a silently-rejected message.
+    std::vector<std::uint8_t> mac_input;
+    mac_input.reserve(ciphered.size() + 1);
+    mac_input.push_back(static_cast<std::uint8_t>(uplink_count & 0xFF));
+    mac_input.insert(mac_input.end(), ciphered.begin(), ciphered.end());
+    const auto mac = aka_crypto::nia2_mac(
+        keys.knas_int, uplink_count, kNasBearerId, kDirectionUplink, mac_input);
+
+    std::vector<std::uint8_t> out;
+    out.push_back(kEpdMobilityManagement);
+    out.push_back(kShtIntegrityProtectedAndCipheredWithNewSecurityContext);
+    out.push_back(static_cast<std::uint8_t>((mac >> 24) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((mac >> 16) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((mac >> 8) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>(mac & 0xFF));
+    out.push_back(static_cast<std::uint8_t>(uplink_count & 0xFF));
+    out.insert(out.end(), ciphered.begin(), ciphered.end());
     return out;
 }
 

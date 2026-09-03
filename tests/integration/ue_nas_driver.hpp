@@ -58,4 +58,23 @@ compute_res_star(const AuthChallenge& challenge, const std::string& serving_netw
 std::vector<std::uint8_t>
 build_authentication_response(const std::array<std::uint8_t, 16>& res_star);
 
+// The NAS keys the UE derives independently of the network: CK/IK -> KAUSF -> KSEAF -> KAMF ->
+// KNASint/KNASenc (TS 33.501 Annex A). AMF reaches the same KAMF via AUSF, so a MAC AMF accepts is
+// proof both sides derived the same key material -- which is what makes SecurityModeComplete a
+// real assertion rather than a formatting exercise.
+struct NasKeys {
+    std::array<std::uint8_t, 16> knas_int{};
+    std::array<std::uint8_t, 16> knas_enc{};
+};
+
+NasKeys derive_nas_keys(const AuthChallenge& challenge,
+                        const std::string& supi,
+                        const std::string& serving_network_name);
+
+// SecurityModeComplete, integrity protected AND ciphered with the new security context
+// (TS 24.501 §8.2.26, security header type 0x04). `uplink_count` is 0 for this first secured
+// uplink message -- AMF verifies against exactly that.
+std::vector<std::uint8_t> build_security_mode_complete(const NasKeys& keys,
+                                                       std::uint32_t uplink_count);
+
 } // namespace nf_test

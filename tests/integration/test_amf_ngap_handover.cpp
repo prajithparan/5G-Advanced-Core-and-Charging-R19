@@ -115,7 +115,7 @@ TEST(AmfNgapTestGnb, HandoverCancelForUnknownUeIsStillAcknowledged) {
 // independently hold. Well-formed NAS framing does not get you past that -- only correct
 // cryptography does. The assertion is on AMF proceeding to SecurityModeCommand, which it does only
 // after AUSF confirms.
-TEST(AmfNgapTestGnb, RegistrationReachesAuthenticationAndSecurityModeCommand) {
+TEST(AmfNgapTestGnb, RegistrationCompletesAndAmfInstallsASecurityContext) {
     nf_test::SpawnedProcess nrf(NRF_PATH);
     ASSERT_GT(nrf.pid(), 0);
     nf_test::SpawnedProcess udr(UDR_PATH);
@@ -166,4 +166,28 @@ TEST(AmfNgapTestGnb, RegistrationReachesAuthenticationAndSecurityModeCommand) {
     EXPECT_NE(smc_nas.nas_pdu[1], 0x00) << "SecurityModeCommand must be security-protected";
     EXPECT_EQ(smc_nas.nas_pdu[9], 0x5D)
         << "expected the inner NAS message to be a SecurityModeCommand";
+
+    // ADR-0266: complete the security mode procedure. AMF verifies this message's MAC with keys it
+    // derived independently through AUSF -- so its acceptance is proof both sides reached the same
+    // KAMF, not proof this driver can round-trip its own bytes. On a wrong key AMF logs
+    // "SecurityModeComplete MAC verification FAILED" and answers nothing.
+    const auto keys = nf_test::derive_nas_keys(
+        *challenge, nf_test::kTestSupi, "5G:mnc070.mcc999.3gppnetwork.org");
+    gnb.send_raw(gnb.build_uplink_nas_transport(
+        challenge_nas.amf_ue_id,
+        kUeRanId,
+        nf_test::build_security_mode_complete(keys, /*uplink_count=*/0)));
+
+    const auto accept_pdu = gnb.receive_raw();
+    ASSERT_FALSE(accept_pdu.empty())
+        << "AMF answered nothing after SecurityModeComplete -- it rejected the MAC, which means "
+           "the UE and AMF did not derive the same KAMF";
+    NgapTestGnb::DownlinkNas accept_nas;
+    ASSERT_TRUE(NgapTestGnb::extract_downlink_nas(accept_pdu, accept_nas));
+    ASSERT_GE(accept_nas.nas_pdu.size(), 8u);
+    EXPECT_EQ(accept_nas.nas_pdu[0], 0x7E);
+    // RegistrationAccept is integrity protected AND ciphered (security header type 0x02), which is
+    // only reachable once AMF has installed the security context this whole exchange establishes.
+    EXPECT_EQ(accept_nas.nas_pdu[1], 0x02)
+        << "expected a ciphered, integrity-protected RegistrationAccept";
 }

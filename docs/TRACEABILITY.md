@@ -5106,3 +5106,17 @@ See ADR-0264 in `docs/DECISIONS.md`.
 | **Still missing for the full relay** | `SecurityModeComplete` (integrity-protected uplink), then a second `NgapTestGnb` as target gNB. `handle_handover_required` blocks the source association, so the target must be driven concurrently |
 
 See ADR-0265 in `docs/DECISIONS.md`.
+
+## ADR-0266 -- SecurityModeComplete; real security context installed
+
+| Requirement | Evidence |
+|---|---|
+| Full UE key chain | `derive_nas_keys`: CK/IK -> KAUSF -> KSEAF -> KAMF -> KNASint/KNASenc (TS 33.501 Annex A); SQN xor AK taken from AUTN's first six octets |
+| Matches AMF's derivation | SUPI without `imsi-` prefix, ABBA = {0x00,0x00} (Annex A.7.1 default) -- same as `ngap_task.cpp` |
+| MAC over transmitted bytes | Ciphered inner prefixed by the sequence-number octet, per `nas_codec.cpp`'s documented convention |
+| **Independently verified by AMF** | `amf-ngap: SecurityModeComplete verified OK for SUPI imsi-999700000000001 -- NAS security context active`; AMF's keys come via AUSF, never from the UE |
+| Security context installed | AMF answers `RegistrationAccept` (security header type 0x02), only reachable with the context active |
+| Handover prerequisite met | `ue_security_contexts` + `amf_ue_id_index` now hold a real entry the relay can resolve |
+| Test | `AmfNgapTestGnb.RegistrationCompletesAndAmfInstallsASecurityContext` |
+
+See ADR-0266 in `docs/DECISIONS.md`.
