@@ -2409,7 +2409,7 @@ PathSwitchRequestFailureIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 HandoverCancel ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ { HandoverCancelIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per HandoverCancelIEs below, ADR-0031/ADR-0261
 	...
 }
 
@@ -2427,7 +2427,7 @@ HandoverCancelIEs NGAP-PROTOCOL-IES ::= {
 -- **************************************************************
 
 HandoverCancelAcknowledge ::= SEQUENCE {
-	protocolIEs		ProtocolIE-Container		{ { HandoverCancelAcknowledgeIEs} },
+	protocolIEs		ConcreteProtocolIE-Container,	-- see ConcreteProtocolIE-Container's own comment; real IEs per HandoverCancelAcknowledgeIEs below, ADR-0031/ADR-0261
 	...
 }
 

@@ -30,6 +30,8 @@ extern "C" {
 #include <GUAMI.h>
 #include <GlobalGNB-ID.h>
 #include <GlobalRANNodeID.h>
+#include <HandoverCancel.h>
+#include <HandoverCancelAcknowledge.h>
 #include <HandoverCommand.h>
 #include <HandoverFailure.h>
 #include <HandoverNotify.h>
@@ -625,6 +627,17 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
         return;
     }
 
+    // ADR-0261: remember WHICH gNB this UE's handover was prepared towards. Without it a later
+    // HandoverCancel cannot address a UEContextRelease to the target, and the target would hold
+    // its reserved resources forever -- a real defect, not a scope choice. Stored alongside
+    // smContextRefs on the same SUPI-keyed UE context rather than in new per-UE state.
+    {
+        auto existing = ue_contexts.get(ctx->supi);
+        nlohmann::json ue_ctx_json = existing.has_value() ? *existing : nlohmann::json::object();
+        ue_ctx_json["handoverTargetGnbId"] = target_gnb_id_bytes;
+        ue_contexts.put(ctx->supi, ue_ctx_json);
+    }
+
     spdlog::info("amf-ngap: sending real HandoverRequest ({} bytes) to target gNB, awaiting reply "
                  "(HandoverRequestAcknowledge/HandoverFailure)",
                  req_bytes.size());
@@ -903,6 +916,216 @@ void handle_handover_notify(ngap_core::SctpSocket& target_assoc,
         "after HandoverNotify",
         ctx->supi,
         new_ran_ue_id_value);
+
+    ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_ue_id);
+    ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, ran_ue_id);
+}
+
+// ADR-0261: Handover Cancellation. TS 38.413 §8.4.5 (elementary procedure id-HandoverCancel = 10,
+// read from specs/NGAP/ngap-17.9.asn:11289, not assumed); TS 23.502 §4.9.1.3.3 for what AMF owes
+// the rest of the network when the source gNB abandons a handover it already prepared.
+//
+// HandoverCancel's three IEs are all MANDATORY per the ASN.1: id-AMF-UE-NGAP-ID(10),
+// id-RAN-UE-NGAP-ID(85), id-Cause(15). HandoverCancelAcknowledge echoes the two IDs;
+// id-CriticalityDiagnostics(87) is OPTIONAL and is omitted here, which is legal.
+//
+// Real, disclosed scope limit -- the honest one, stated rather than found in review. With
+// ADR-0258's synchronous relay, handle_handover_required BLOCKS the source association's own read
+// loop while awaiting the target gNB's reply. A HandoverCancel arriving *during* preparation
+// therefore cannot be read until preparation finishes. So this covers cancellation of an
+// already-PREPARED handover -- the source gNB changing its mind after receiving HandoverCommand,
+// which is the main real case -- and NOT a cancel racing an in-flight preparation. Same root
+// cause as ADR-0258's own per-session blocking disclosure: ADR-0009's synchronous client.
+void handle_handover_cancel(ngap_core::SctpSocket& source_assoc,
+                            sbi_core::http2::Client& smf_client,
+                            sbi_core::OAuth2Client& smf_oauth,
+                            amf::UeContextStore& ue_contexts,
+                            UeSecurityContextStore& ue_security_contexts,
+                            amf::AmfUeIdIndexStore& amf_ue_id_index,
+                            amf::ngap::GnbAssociationRegistry& gnb_associations,
+                            const InitiatingMessage_t& msg) {
+    const auto& container = msg.value.choice.HandoverCancel.protocolIEs;
+
+    const auto* amf_ue_id_ie = ::ngap::find_ie(container, 10 /* id-AMF-UE-NGAP-ID */);
+    const auto* ran_ue_id_ie = ::ngap::find_ie(container, 85 /* id-RAN-UE-NGAP-ID */);
+    const auto* cause_ie = ::ngap::find_ie(container, 15 /* id-Cause */);
+    if (amf_ue_id_ie == nullptr || ran_ue_id_ie == nullptr || cause_ie == nullptr) {
+        spdlog::warn("amf-ngap: HandoverCancel missing one or more mandatory IEs, ignoring");
+        return;
+    }
+
+    auto* amf_ue_id = static_cast<AMF_UE_NGAP_ID_t*>(
+        ::ngap::decode_ie_value(&asn_DEF_AMF_UE_NGAP_ID, *amf_ue_id_ie));
+    auto* ran_ue_id = static_cast<RAN_UE_NGAP_ID_t*>(
+        ::ngap::decode_ie_value(&asn_DEF_RAN_UE_NGAP_ID, *ran_ue_id_ie));
+    auto* cancel_cause = static_cast<Cause_t*>(::ngap::decode_ie_value(&asn_DEF_Cause, *cause_ie));
+    if (amf_ue_id == nullptr || ran_ue_id == nullptr || cancel_cause == nullptr) {
+        spdlog::warn("amf-ngap: HandoverCancel's mandatory IEs failed to PER-decode, ignoring");
+        if (amf_ue_id != nullptr)
+            ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_ue_id);
+        if (ran_ue_id != nullptr)
+            ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, ran_ue_id);
+        if (cancel_cause != nullptr)
+            ASN_STRUCT_FREE(asn_DEF_Cause, cancel_cause);
+        return;
+    }
+    long amf_ue_id_value = 0;
+    asn_INTEGER2long(amf_ue_id, &amf_ue_id_value);
+    const unsigned long ran_ue_id_value = *ran_ue_id;
+    spdlog::info("amf-ngap: real HandoverCancel received -- AMF-UE-NGAP-ID={}, RAN-UE-NGAP-ID={}, "
+                 "cause present={}",
+                 amf_ue_id_value,
+                 ran_ue_id_value,
+                 static_cast<int>(cancel_cause->present));
+    ASN_STRUCT_FREE(asn_DEF_Cause, cancel_cause);
+
+    // Cold lookup via amf_ue_id_index, exactly as handle_handover_required and
+    // handle_handover_notify do -- the AMF-UE-NGAP-ID is the authoritative identity here, not this
+    // association's own state.
+    const auto tmsi_opt = amf_ue_id_index.get(static_cast<unsigned long>(amf_ue_id_value));
+    std::optional<UeSecurityContext> ctx;
+    if (tmsi_opt.has_value()) {
+        ctx = ue_security_contexts.get(*tmsi_opt);
+    }
+
+    if (ctx.has_value() && !ctx->supi.empty()) {
+        const auto ue_ctx = ue_contexts.get(ctx->supi);
+
+        // TS 23.502 §4.9.1.3.3: tell SMF the handover is off, per PDU session. hoState=CANCELLED
+        // is a real field of SmContextUpdateData (TS29502_Nsmf_PDUSession.yaml), not an invented
+        // one. Sessions with no stored smContextRef are skipped with a warning -- the same policy
+        // ADR-0258 established rather than inventing a reference.
+        if (ue_ctx.has_value() && ue_ctx->contains("smContextRefs")) {
+            const auto token = smf_oauth.get_bearer_token();
+            if (!token.has_value()) {
+                spdlog::error("amf-ngap: could not obtain an SMF token to report handover "
+                              "cancellation for SUPI {}: {}",
+                              ctx->supi,
+                              token.error());
+            } else {
+                for (const auto& [pdu_session_id, ref] : ue_ctx->at("smContextRefs").items()) {
+                    nlohmann::json update_data;
+                    update_data["hoState"] = "CANCELLED";
+                    sbi_core::http2::ClientRequest http_req;
+                    http_req.method = "POST";
+                    http_req.url = std::string(kSmfBase) + "/nsmf-pdusession/v1/sm-contexts/" +
+                                   ref.get<std::string>() + "/modify";
+                    http_req.headers.emplace("content-type", "application/json");
+                    http_req.headers.emplace("authorization", "Bearer " + *token);
+                    http_req.body = update_data.dump();
+                    auto resp = smf_client.send(http_req);
+                    if (!resp.has_value()) {
+                        spdlog::error("amf-ngap: SMF UpdateSMContext(hoState=CANCELLED) failed for "
+                                      "SUPI {} pduSessionId={}: {}",
+                                      ctx->supi,
+                                      pdu_session_id,
+                                      resp.error());
+                    } else if (resp->status != 200 && resp->status != 204) {
+                        spdlog::error("amf-ngap: SMF UpdateSMContext(hoState=CANCELLED) returned "
+                                      "{} for SUPI {} pduSessionId={}",
+                                      resp->status,
+                                      ctx->supi,
+                                      pdu_session_id);
+                    } else {
+                        spdlog::info("amf-ngap: SMF acknowledged hoState=CANCELLED for SUPI {} "
+                                     "pduSessionId={}",
+                                     ctx->supi,
+                                     pdu_session_id);
+                    }
+                }
+            }
+        }
+
+        // Release what the TARGET reserved. Without the gNB id ADR-0261 persists at preparation
+        // time this is unaddressable and the target holds its resources forever.
+        if (ue_ctx.has_value() && ue_ctx->contains("handoverTargetGnbId")) {
+            const auto target_gnb_id =
+                ue_ctx->at("handoverTargetGnbId").get<std::vector<std::uint8_t>>();
+            UEContextReleaseCommand_t rel_cmd{};
+            UE_NGAP_IDs_t ue_ngap_ids{};
+            ue_ngap_ids.present = UE_NGAP_IDs_PR_aMF_UE_NGAP_ID;
+            asn_ulong2INTEGER(&ue_ngap_ids.choice.aMF_UE_NGAP_ID,
+                              static_cast<unsigned long>(amf_ue_id_value));
+            ::ngap::add_ie(rel_cmd.protocolIEs,
+                           ::ngap::make_ie(114 /* id-UE-NGAP-IDs */,
+                                           Criticality_reject,
+                                           &asn_DEF_UE_NGAP_IDs,
+                                           &ue_ngap_ids));
+            ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_UE_NGAP_IDs, &ue_ngap_ids);
+            // Cause=radioNetwork/handover-cancelled: the real, spec-defined value for exactly
+            // this situation, not a generic normal-release.
+            Cause_t rel_cause{};
+            rel_cause.present = Cause_PR_radioNetwork;
+            rel_cause.choice.radioNetwork = CauseRadioNetwork_handover_cancelled;
+            ::ngap::add_ie(
+                rel_cmd.protocolIEs,
+                ::ngap::make_ie(15 /* id-Cause */, Criticality_ignore, &asn_DEF_Cause, &rel_cause));
+
+            NGAP_PDU_t rel_pdu{};
+            rel_pdu.present = NGAP_PDU_PR_initiatingMessage;
+            rel_pdu.choice.initiatingMessage =
+                static_cast<InitiatingMessage_t*>(std::calloc(1, sizeof(InitiatingMessage_t)));
+            rel_pdu.choice.initiatingMessage->procedureCode = 41 /* id-UEContextRelease */;
+            rel_pdu.choice.initiatingMessage->criticality = Criticality_reject;
+            rel_pdu.choice.initiatingMessage->value.present =
+                InitiatingMessage__value_PR_UEContextReleaseCommand;
+            rel_pdu.choice.initiatingMessage->value.choice.UEContextReleaseCommand = rel_cmd;
+            const auto rel_bytes = ::ngap::encode_pdu(rel_pdu);
+            ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &rel_pdu);
+            if (!rel_bytes.empty()) {
+                const bool sent = gnb_associations.send(target_gnb_id, rel_bytes);
+                spdlog::info("amf-ngap: {} UEContextReleaseCommand (cause=handover-cancelled) to "
+                             "the handover TARGET gNB for SUPI {}",
+                             sent ? "sent" : "FAILED to send (target gNB not registered)",
+                             ctx->supi);
+            }
+        } else {
+            spdlog::warn("amf-ngap: no handover target gNB on record for SUPI {} -- cannot release "
+                         "the target's reserved resources (the handover this cancels was prepared "
+                         "before ADR-0261, or by a different AMF instance)",
+                         ctx->supi);
+        }
+    } else {
+        spdlog::warn("amf-ngap: HandoverCancel referenced an unrecognized AMF-UE-NGAP-ID={} -- no "
+                     "persisted UE security context, so neither SMF nor the target gNB can be "
+                     "told; still acknowledging to the source gNB",
+                     amf_ue_id_value);
+    }
+
+    // Real HandoverCancelAcknowledge (TS 38.413 §9.2.3.8). Both IEs are mandatory and echoed;
+    // CriticalityDiagnostics is OPTIONAL and omitted, which is legal -- not a placeholder.
+    HandoverCancelAcknowledge_t ack{};
+    AMF_UE_NGAP_ID_t ack_amf_id{};
+    asn_ulong2INTEGER(&ack_amf_id, static_cast<unsigned long>(amf_ue_id_value));
+    ::ngap::add_ie(
+        ack.protocolIEs,
+        ::ngap::make_ie(
+            10 /* id-AMF-UE-NGAP-ID */, Criticality_ignore, &asn_DEF_AMF_UE_NGAP_ID, &ack_amf_id));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_AMF_UE_NGAP_ID, &ack_amf_id);
+    RAN_UE_NGAP_ID_t ack_ran_id = static_cast<RAN_UE_NGAP_ID_t>(ran_ue_id_value);
+    ::ngap::add_ie(
+        ack.protocolIEs,
+        ::ngap::make_ie(
+            85 /* id-RAN-UE-NGAP-ID */, Criticality_ignore, &asn_DEF_RAN_UE_NGAP_ID, &ack_ran_id));
+
+    NGAP_PDU_t ack_pdu{};
+    ack_pdu.present = NGAP_PDU_PR_successfulOutcome;
+    ack_pdu.choice.successfulOutcome =
+        static_cast<SuccessfulOutcome_t*>(std::calloc(1, sizeof(SuccessfulOutcome_t)));
+    ack_pdu.choice.successfulOutcome->procedureCode = 10 /* id-HandoverCancel */;
+    ack_pdu.choice.successfulOutcome->criticality = Criticality_reject;
+    ack_pdu.choice.successfulOutcome->value.present =
+        SuccessfulOutcome__value_PR_HandoverCancelAcknowledge;
+    ack_pdu.choice.successfulOutcome->value.choice.HandoverCancelAcknowledge = ack;
+    const auto ack_bytes = ::ngap::encode_pdu(ack_pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &ack_pdu);
+    if (ack_bytes.empty()) {
+        spdlog::error("amf-ngap: failed to PER-encode HandoverCancelAcknowledge");
+    } else {
+        source_assoc.send(ack_bytes);
+        spdlog::info("amf-ngap: sent real HandoverCancelAcknowledge ({} bytes) to the source gNB",
+                     ack_bytes.size());
+    }
 
     ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_ue_id);
     ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, ran_ue_id);

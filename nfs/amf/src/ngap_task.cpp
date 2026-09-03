@@ -1764,6 +1764,19 @@ void handle_association(ngap_core::SctpSocket assoc,
                                      amf_pointer,
                                      *pdu->choice.initiatingMessage);
         } else if (pdu->present == NGAP_PDU_PR_initiatingMessage &&
+                   pdu->choice.initiatingMessage->procedureCode == 10 /* id-HandoverCancel */) {
+            // ADR-0261: the source gNB abandoning a handover it already prepared. Runs on the
+            // SOURCE association's own thread, same cold-lookup discipline as
+            // handle_handover_required.
+            handle_handover_cancel(assoc,
+                                   smf_client,
+                                   smf_oauth,
+                                   ue_contexts,
+                                   ue_security_contexts,
+                                   amf_ue_id_index,
+                                   gnb_associations,
+                                   *pdu->choice.initiatingMessage);
+        } else if (pdu->present == NGAP_PDU_PR_initiatingMessage &&
                    pdu->choice.initiatingMessage->procedureCode ==
                        11 /* id-HandoverNotification */) {
             // Real HandoverNotify -- arrives on the TARGET association's own thread. See

@@ -5030,3 +5030,20 @@ See ADR-0259 in `docs/DECISIONS.md`.
 | Coverage | 26 of 26 values accounted for: 16 inbound handled, 10 rejected |
 
 See ADR-0260 in `docs/DECISIONS.md`.
+
+## ADR-0261 -- Handover Cancellation (AMF + SMF)
+
+| Requirement | Evidence |
+|---|---|
+| Procedure code and IEs read, not assumed | `id-HandoverCancel ::= 10` at `specs/NGAP/ngap-17.9.asn:11289`; `HandoverCancelIEs` = AMF-UE-NGAP-ID(10)/RAN-UE-NGAP-ID(85)/Cause(15) all mandatory; ack's CriticalityDiagnostics(87) OPTIONAL and omitted |
+| AMF answers the source gNB | Real `HandoverCancelAcknowledge` (successfulOutcome, procedureCode 10) with both mandatory IEs echoed |
+| AMF tells SMF, using a real spec field | `hoState=CANCELLED` per stored `smContextRefs` entry -- `HoState` enum at `TS29502_Nsmf_PDUSession.yaml:4836`, field on `SmContextUpdateData` at :2221 |
+| AMF releases the target's resources | `handoverTargetGnbId` persisted at preparation time; `UEContextReleaseCommand` with `Cause = radioNetwork/handover-cancelled` sent to the target association |
+| SMF records the cancellation | `hoState` stored on the SM context; 200 + `SmContextUpdatedData{hoState: CANCELLED}` |
+| **Disclosed**: SMF releases nothing | ADR-0249's preparation answer allocates no new UPF resource (same N3 F-TEID as establishment), so no target reservation exists to tear down |
+| **Disclosed**: covers PREPARED, not in-flight | ADR-0258's synchronous relay blocks the source association's read loop during preparation, so a cancel racing preparation cannot be read until it finishes (ADR-0009 debt) |
+| ASN.1 patched on existing precedent | `HandoverCancel`/`HandoverCancelAcknowledge` given `ConcreteProtocolIE-Container` per ADR-0031's documented asn1c 0.9.29 workaround; no wire-encoding change (X.691 §10.9) |
+| SMF half tested | `test_smf_n2sminfo_dispatch.cpp` `SmfHandoverCancel.HoStateCancelledIsRecordedAndEchoed` |
+| **AMF half NOT tested end-to-end** | UERANSIM's gNB implements no handover procedure; weakest-verified item in the ADR-0258..0261 sequence, stated as such |
+
+See ADR-0261 in `docs/DECISIONS.md`.

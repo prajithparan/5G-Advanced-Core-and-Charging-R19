@@ -322,3 +322,50 @@ TEST(SmfN2SmInfoDispatch, RealTransfersDriveRealBehaviourAndBadOnesAreRejected) 
         EXPECT_EQ(resp->status, 400) << resp->body;
     }
 }
+
+// ADR-0261: handover cancellation reaches SMF as hoState=CANCELLED -- a real SmContextUpdateData
+// field, not an N2SmInfoType. AMF sends exactly this when a source gNB abandons a prepared
+// handover. The AMF side of that procedure cannot be driven here (UERANSIM's gNB implements no
+// handover procedure at all), so this pins the half that is reachable over real SBI.
+TEST(SmfHandoverCancel, HoStateCancelledIsRecordedAndEchoed) {
+    Lab lab;
+    ASSERT_GT(lab.nrf.pid(), 0);
+    ASSERT_GT(lab.smf.pid(), 0);
+
+    auto client = make_client();
+    ASSERT_TRUE(wait_reachable(
+        client, "https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts/nonexistent/retrieve", 80))
+        << "smf never became reachable";
+    const std::string token = fetch_token(client);
+    ASSERT_FALSE(token.empty());
+
+    const auto encoded = encode_create_sm_context_body("imsi-999700000000088", 61);
+    sbi_core::http2::ClientRequest create_req;
+    create_req.method = "POST";
+    create_req.url = "https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts";
+    create_req.headers.emplace("content-type", encoded.content_type_header);
+    create_req.headers.emplace("authorization", "Bearer " + token);
+    create_req.body = encoded.body;
+    auto create_resp = client.send(create_req);
+    ASSERT_TRUE(create_resp.has_value());
+    ASSERT_EQ(create_resp->status, 201) << create_resp->body;
+    const auto location_it = create_resp->headers.find("location");
+    ASSERT_NE(location_it, create_resp->headers.end());
+    const std::string ref = location_it->second.substr(location_it->second.rfind('/') + 1);
+
+    // No UPF is spawned in this test on purpose: cancelling a handover must not depend on an N4
+    // session, precisely because SMF releases nothing here (ADR-0261 -- the target-side
+    // reservation a production SMF would tear down does not exist in this build).
+    sbi_core::http2::ClientRequest cancel_req;
+    cancel_req.method = "POST";
+    cancel_req.url = "https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts/" + ref + "/modify";
+    cancel_req.headers.emplace("content-type", "application/json");
+    cancel_req.headers.emplace("authorization", "Bearer " + token);
+    cancel_req.body = json{{"hoState", "CANCELLED"}}.dump();
+    auto cancel_resp = client.send(cancel_req);
+    ASSERT_TRUE(cancel_resp.has_value());
+    ASSERT_EQ(cancel_resp->status, 200) << cancel_resp->body;
+    const auto answered = json::parse(cancel_resp->body);
+    ASSERT_TRUE(answered.contains("hoState"));
+    EXPECT_EQ(answered.at("hoState").get<std::string>(), "CANCELLED");
+}

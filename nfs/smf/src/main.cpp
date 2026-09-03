@@ -2697,6 +2697,34 @@ int main() {
                 return resp;
             }
 
+            // ADR-0261: handover cancellation reaches SMF as hoState=CANCELLED, a real field
+            // of SmContextUpdateData -- not an N2SmInfoType, which is why it is checked before the
+            // N2 dispatch below rather than inside it.
+            //
+            // Real, disclosed, and the reason matters: there is nothing in UPF to release here.
+            // ADR-0249's HANDOVER_REQUIRED answer allocates NO new UPF resource -- it returns the
+            // SAME N3 uplink F-TEID allocated at session establishment -- so the target-side
+            // reservation a production SMF would tear down at this point does not exist in this
+            // build. SMF therefore records the cancellation truthfully and answers, rather than
+            // performing a PFCP modification that would have nothing to undo.
+            if (body->hoState.has_value() && body->hoState->value == sbi_gen::HoState::CANCELLED) {
+                auto cancelled_ctx = *stored_ctx;
+                cancelled_ctx["hoState"] = sbi_gen::HoState::CANCELLED;
+                sm_contexts.update(sm_context_ref, cancelled_ctx);
+                spdlog::info("smf: handover CANCELLED for smContextRef {} -- recorded; no UPF "
+                             "resource was reserved for the target, so none is released",
+                             sm_context_ref);
+
+                sbi_gen::SmContextUpdatedData resp_data{};
+                resp_data.hoState = sbi_gen::HoState{};
+                resp_data.hoState->value = sbi_gen::HoState::CANCELLED;
+                sbi_core::http2::Response resp;
+                resp.status = 200;
+                resp.headers.emplace("content-type", "application/json");
+                resp.body = json(resp_data).dump();
+                return resp;
+            }
+
             // ADR-0260: the remainder of TS 29.502's 26 N2SmInfoType values, so the enum is fully
             // accounted for rather than falling through to a blanket 204 that acknowledged
             // anything at all.

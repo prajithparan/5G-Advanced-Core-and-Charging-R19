@@ -52,6 +52,20 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
 // Real Handover Notification (TS 38.413 §8.4.4) -- decodes HandoverNotify (arrives on the
 // TARGET association's own thread), sends a real AMF-initiated UEContextReleaseCommand to the
 // source, then re-points ue_ngap_registry's entry for this UE to target_assoc.
+// ADR-0261: Handover Cancellation (TS 38.413 §8.4.5, id-HandoverCancel = 10). Answers the source
+// gNB with HandoverCancelAcknowledge, tells SMF hoState=CANCELLED per PDU session, and releases
+// what the TARGET gNB reserved. See the implementation's own header comment for the real,
+// disclosed limit: with ADR-0258's synchronous relay this covers cancellation of an
+// already-PREPARED handover, not one racing an in-flight preparation.
+void handle_handover_cancel(ngap_core::SctpSocket& source_assoc,
+                            sbi_core::http2::Client& smf_client,
+                            sbi_core::OAuth2Client& smf_oauth,
+                            amf::UeContextStore& ue_contexts,
+                            UeSecurityContextStore& ue_security_contexts,
+                            amf::AmfUeIdIndexStore& amf_ue_id_index,
+                            amf::ngap::GnbAssociationRegistry& gnb_associations,
+                            const InitiatingMessage_t& msg);
+
 void handle_handover_notify(ngap_core::SctpSocket& target_assoc,
                             NgapUeRegistry& ue_ngap_registry,
                             UeSecurityContextStore& ue_security_contexts,
