@@ -5077,3 +5077,17 @@ See ADR-0262 in `docs/DECISIONS.md`.
 | **Still open** | Async HTTP/2 client (ADR-0009), HA/clustering, free5GC comparison |
 
 See ADR-0263 in `docs/DECISIONS.md`.
+
+## ADR-0264 -- NGAP test gNB; first end-to-end handover coverage
+
+| Requirement | Evidence |
+|---|---|
+| Real transport, real codec | `tests/integration/ngap_test_gnb.cpp`: `ngap_core::SctpSocket::connect()` to `127.0.0.5:38412`, PDUs via the same `ngap_core` codec AMF uses |
+| Identifiers read, not recalled | Procedure codes and mandatory IE sets for `HandoverRequired`/`HandoverCancel` from `specs/NGAP/ngap-17.9.asn` |
+| NGSetup verified | `AmfNgapTestGnb.NgSetupOverRealSctpSucceeds` |
+| `handle_handover_required` verified end-to-end | `HandoverRequiredForUnknownUeIsRejectedWithPreparationFailure` -- real decode, cold lookup miss, real `HandoverPreparationFailure` |
+| **ADR-0261's AMF half verified** | `HandoverCancelForUnknownUeIsStillAcknowledged` -- real `HandoverCancelAcknowledge` on the wire; ADR-0261 had recorded this as untested |
+| Why not UERANSIM | Its gNB implements no handover procedure: `HandoverRequired` in `src/asn/ngap/` only, never `src/gnb/` |
+| **Still NOT covered** | The full relay needs a registered UE (NAS registration from the driver); deliberately not faked by seeding AMF's stores |
+
+See ADR-0264 in `docs/DECISIONS.md`.

@@ -1,0 +1,318 @@
+#include "ngap_test_gnb.hpp"
+
+#include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <thread>
+
+#include "ngap_core/ngap_codec.hpp"
+#include "ngap_core/sctp_socket.hpp"
+
+extern "C" {
+#include <AMF-UE-NGAP-ID.h>
+#include <Cause.h>
+#include <GlobalGNB-ID.h>
+#include <GlobalRANNodeID.h>
+#include <HandoverCancel.h>
+#include <HandoverRequired.h>
+#include <HandoverType.h>
+#include <InitiatingMessage.h>
+#include <NGAP-PDU.h>
+#include <NGSetupRequest.h>
+#include <PDUSessionResourceItemHORqd.h>
+#include <PDUSessionResourceListHORqd.h>
+#include <PLMNIdentity.h>
+#include <RAN-UE-NGAP-ID.h>
+#include <SourceToTarget-TransparentContainer.h>
+#include <SuccessfulOutcome.h>
+#include <TargetID.h>
+#include <TargetRANNodeID.h>
+#include <UnsuccessfulOutcome.h>
+}
+
+namespace nf_test {
+
+namespace {
+
+// This lab's fixed test PLMN, matching nfs/amf/src/ngap_task.cpp's own kMcc/kMnc exactly. A gNB
+// whose PLMN did not match would still get an NGSetupResponse (AMF logs and continues), but its
+// GlobalGNB-ID key would differ from the one a HandoverRequired's TargetID resolves to, and the
+// relay would silently never find the target -- so this must agree, not merely be plausible.
+constexpr const char* kMcc = "999";
+constexpr const char* kMnc = "70";
+constexpr std::size_t kGnbIdBits = 32;
+
+OCTET_STRING_t make_octet_string(const std::uint8_t* data, std::size_t len) {
+    OCTET_STRING_t s{};
+    s.buf = static_cast<std::uint8_t*>(std::malloc(len));
+    s.size = static_cast<int>(len);
+    std::memcpy(s.buf, data, len);
+    return s;
+}
+
+// PLMN identity per TS 24.008/38.413 -- half-octet BCD, filler 0xF for a 2-digit MNC's third
+// digit. Mirrors AMF's own encode_plmn_identity; the two must produce identical bytes or the
+// GlobalGNB-ID registry key will not match.
+void encode_plmn_identity(const char* mcc, const char* mnc, std::uint8_t out[3]) {
+    const int mcc1 = mcc[0] - '0';
+    const int mcc2 = mcc[1] - '0';
+    const int mcc3 = mcc[2] - '0';
+    const bool mnc_is_3_digit = std::strlen(mnc) == 3;
+    const int mnc1 = mnc[0] - '0';
+    const int mnc2 = mnc[1] - '0';
+    const int mnc3 = mnc_is_3_digit ? (mnc[2] - '0') : 0xF;
+    out[0] = static_cast<std::uint8_t>((mcc2 << 4) | mcc1);
+    out[1] = static_cast<std::uint8_t>((mnc3 << 4) | mcc3);
+    out[2] = static_cast<std::uint8_t>((mnc2 << 4) | mnc1);
+}
+
+BIT_STRING_t make_bit_string_from_uint(unsigned long value, std::size_t bits) {
+    const std::size_t bytes = (bits + 7) / 8;
+    BIT_STRING_t s{};
+    s.buf = static_cast<std::uint8_t*>(std::calloc(bytes, 1));
+    s.size = static_cast<int>(bytes);
+    s.bits_unused = static_cast<int>(bytes * 8 - bits);
+    const unsigned long shifted = value << s.bits_unused;
+    for (std::size_t i = 0; i < bytes; ++i) {
+        s.buf[bytes - 1 - i] = static_cast<std::uint8_t>((shifted >> (8 * i)) & 0xFF);
+    }
+    return s;
+}
+
+// Fills a real GlobalGNB-ID (PLMNIdentity + gNB-ID bit string) -- the identity AMF re-encodes and
+// uses as its GnbAssociationRegistry key.
+void fill_global_gnb_id(GlobalGNB_ID_t& out, std::uint32_t gnb_id) {
+    std::uint8_t plmn[3];
+    encode_plmn_identity(kMcc, kMnc, plmn);
+    out.pLMNIdentity = make_octet_string(plmn, 3);
+    out.gNB_ID.present = GNB_ID_PR_gNB_ID;
+    out.gNB_ID.choice.gNB_ID = make_bit_string_from_uint(gnb_id, kGnbIdBits);
+}
+
+} // namespace
+
+struct NgapTestGnb::Impl {
+    ngap_core::SctpSocket socket;
+};
+
+NgapTestGnb::NgapTestGnb() : impl_(new Impl()) {}
+NgapTestGnb::~NgapTestGnb() {
+    delete impl_;
+}
+
+bool NgapTestGnb::connect(const std::string& address, std::uint16_t port, int max_attempts) {
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        try {
+            impl_->socket.connect(address, port);
+            return true;
+        } catch (const std::exception&) {
+            // AMF's NGAP listener starts on its own thread after the process does; retry.
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    return false;
+}
+
+bool NgapTestGnb::ng_setup(std::uint32_t gnb_id) {
+    NGSetupRequest_t request{};
+
+    GlobalRANNodeID_t ran_node_id{};
+    ran_node_id.present = GlobalRANNodeID_PR_globalGNB_ID;
+    ran_node_id.choice.globalGNB_ID =
+        static_cast<GlobalGNB_ID_t*>(std::calloc(1, sizeof(GlobalGNB_ID_t)));
+    fill_global_gnb_id(*ran_node_id.choice.globalGNB_ID, gnb_id);
+    ::ngap::add_ie(request.protocolIEs,
+                   ::ngap::make_ie(27 /* id-GlobalRANNodeID */,
+                                   Criticality_reject,
+                                   &asn_DEF_GlobalRANNodeID,
+                                   &ran_node_id));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_GlobalRANNodeID, &ran_node_id);
+
+    NGAP_PDU_t pdu{};
+    pdu.present = NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage =
+        static_cast<InitiatingMessage_t*>(std::calloc(1, sizeof(InitiatingMessage_t)));
+    pdu.choice.initiatingMessage->procedureCode = kProcNgSetup;
+    pdu.choice.initiatingMessage->criticality = Criticality_reject;
+    pdu.choice.initiatingMessage->value.present = InitiatingMessage__value_PR_NGSetupRequest;
+    pdu.choice.initiatingMessage->value.choice.NGSetupRequest = request;
+    const auto bytes = ::ngap::encode_pdu(pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
+    if (bytes.empty()) {
+        return false;
+    }
+
+    impl_->socket.send(bytes);
+    const auto reply = impl_->socket.receive();
+    const auto summary = summarize(reply);
+    return summary.outcome == Outcome::Successful && summary.procedure_code == kProcNgSetup;
+}
+
+void NgapTestGnb::send_raw(const std::vector<std::uint8_t>& pdu_bytes) {
+    impl_->socket.send(pdu_bytes);
+}
+
+std::vector<std::uint8_t> NgapTestGnb::receive_raw() {
+    return impl_->socket.receive();
+}
+
+std::vector<std::uint8_t> NgapTestGnb::build_handover_required(std::uint64_t amf_ue_id,
+                                                               std::uint32_t ran_ue_id,
+                                                               std::uint32_t target_gnb_id,
+                                                               std::uint8_t pdu_session_id) {
+    HandoverRequired_t required{};
+
+    AMF_UE_NGAP_ID_t amf_id{};
+    asn_ulong2INTEGER(&amf_id, static_cast<unsigned long>(amf_ue_id));
+    ::ngap::add_ie(
+        required.protocolIEs,
+        ::ngap::make_ie(
+            10 /* id-AMF-UE-NGAP-ID */, Criticality_reject, &asn_DEF_AMF_UE_NGAP_ID, &amf_id));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_AMF_UE_NGAP_ID, &amf_id);
+
+    RAN_UE_NGAP_ID_t ran_id = static_cast<RAN_UE_NGAP_ID_t>(ran_ue_id);
+    ::ngap::add_ie(
+        required.protocolIEs,
+        ::ngap::make_ie(
+            85 /* id-RAN-UE-NGAP-ID */, Criticality_reject, &asn_DEF_RAN_UE_NGAP_ID, &ran_id));
+
+    // intra5gs: a real 5GS-to-5GS N2 handover, which is the case this project implements.
+    HandoverType_t ho_type = HandoverType_intra5gs;
+    ::ngap::add_ie(
+        required.protocolIEs,
+        ::ngap::make_ie(
+            29 /* id-HandoverType */, Criticality_reject, &asn_DEF_HandoverType, &ho_type));
+
+    // handover-desirable-for-radio-reason: the real, standard cause a source gNB gives for a
+    // radio-triggered handover.
+    Cause_t cause{};
+    cause.present = Cause_PR_radioNetwork;
+    cause.choice.radioNetwork = CauseRadioNetwork_handover_desirable_for_radio_reason;
+    ::ngap::add_ie(required.protocolIEs,
+                   ::ngap::make_ie(15 /* id-Cause */, Criticality_ignore, &asn_DEF_Cause, &cause));
+
+    TargetID_t target_id{};
+    target_id.present = TargetID_PR_targetRANNodeID;
+    target_id.choice.targetRANNodeID =
+        static_cast<TargetRANNodeID_t*>(std::calloc(1, sizeof(TargetRANNodeID_t)));
+    auto& target_node = *target_id.choice.targetRANNodeID;
+    target_node.globalRANNodeID.present = GlobalRANNodeID_PR_globalGNB_ID;
+    target_node.globalRANNodeID.choice.globalGNB_ID =
+        static_cast<GlobalGNB_ID_t*>(std::calloc(1, sizeof(GlobalGNB_ID_t)));
+    fill_global_gnb_id(*target_node.globalRANNodeID.choice.globalGNB_ID, target_gnb_id);
+    std::uint8_t plmn[3];
+    encode_plmn_identity(kMcc, kMnc, plmn);
+    target_node.selectedTAI.pLMNIdentity = make_octet_string(plmn, 3);
+    const std::uint8_t tac[3] = {0x00, 0x00, 0x01};
+    target_node.selectedTAI.tAC = make_octet_string(tac, 3);
+    ::ngap::add_ie(
+        required.protocolIEs,
+        ::ngap::make_ie(105 /* id-TargetID */, Criticality_reject, &asn_DEF_TargetID, &target_id));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_TargetID, &target_id);
+
+    PDUSessionResourceListHORqd_t pdu_list{};
+    auto* item = static_cast<PDUSessionResourceItemHORqd_t*>(
+        std::calloc(1, sizeof(PDUSessionResourceItemHORqd_t)));
+    item->pDUSessionID = pdu_session_id;
+    // The transparent container is opaque to AMF -- it relays it to the target gNB verbatim. A
+    // short, non-empty marker is honest here: this driver is not a real RRC stack and does not
+    // pretend the bytes are a real HandoverPreparationInformation.
+    const std::uint8_t opaque[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    item->handoverRequiredTransfer = make_octet_string(opaque, 4);
+    ASN_SEQUENCE_ADD(&pdu_list.list, item);
+    ::ngap::add_ie(required.protocolIEs,
+                   ::ngap::make_ie(61 /* id-PDUSessionResourceListHORqd */,
+                                   Criticality_reject,
+                                   &asn_DEF_PDUSessionResourceListHORqd,
+                                   &pdu_list));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PDUSessionResourceListHORqd, &pdu_list);
+
+    SourceToTarget_TransparentContainer_t s2t = make_octet_string(opaque, 4);
+    ::ngap::add_ie(required.protocolIEs,
+                   ::ngap::make_ie(101 /* id-SourceToTarget-TransparentContainer */,
+                                   Criticality_reject,
+                                   &asn_DEF_SourceToTarget_TransparentContainer,
+                                   &s2t));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_SourceToTarget_TransparentContainer, &s2t);
+
+    NGAP_PDU_t pdu{};
+    pdu.present = NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage =
+        static_cast<InitiatingMessage_t*>(std::calloc(1, sizeof(InitiatingMessage_t)));
+    pdu.choice.initiatingMessage->procedureCode = kProcHandoverPreparation;
+    pdu.choice.initiatingMessage->criticality = Criticality_reject;
+    pdu.choice.initiatingMessage->value.present = InitiatingMessage__value_PR_HandoverRequired;
+    pdu.choice.initiatingMessage->value.choice.HandoverRequired = required;
+    const auto bytes = ::ngap::encode_pdu(pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
+    return bytes;
+}
+
+std::vector<std::uint8_t> NgapTestGnb::build_handover_cancel(std::uint64_t amf_ue_id,
+                                                             std::uint32_t ran_ue_id) {
+    HandoverCancel_t cancel{};
+
+    AMF_UE_NGAP_ID_t amf_id{};
+    asn_ulong2INTEGER(&amf_id, static_cast<unsigned long>(amf_ue_id));
+    ::ngap::add_ie(
+        cancel.protocolIEs,
+        ::ngap::make_ie(
+            10 /* id-AMF-UE-NGAP-ID */, Criticality_reject, &asn_DEF_AMF_UE_NGAP_ID, &amf_id));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_AMF_UE_NGAP_ID, &amf_id);
+
+    RAN_UE_NGAP_ID_t ran_id = static_cast<RAN_UE_NGAP_ID_t>(ran_ue_id);
+    ::ngap::add_ie(
+        cancel.protocolIEs,
+        ::ngap::make_ie(
+            85 /* id-RAN-UE-NGAP-ID */, Criticality_reject, &asn_DEF_RAN_UE_NGAP_ID, &ran_id));
+
+    // handover-cancelled: the real, spec-defined cause for a source gNB abandoning a handover.
+    Cause_t cause{};
+    cause.present = Cause_PR_radioNetwork;
+    cause.choice.radioNetwork = CauseRadioNetwork_handover_cancelled;
+    ::ngap::add_ie(cancel.protocolIEs,
+                   ::ngap::make_ie(15 /* id-Cause */, Criticality_ignore, &asn_DEF_Cause, &cause));
+
+    NGAP_PDU_t pdu{};
+    pdu.present = NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage =
+        static_cast<InitiatingMessage_t*>(std::calloc(1, sizeof(InitiatingMessage_t)));
+    pdu.choice.initiatingMessage->procedureCode = kProcHandoverCancel;
+    pdu.choice.initiatingMessage->criticality = Criticality_reject;
+    pdu.choice.initiatingMessage->value.present = InitiatingMessage__value_PR_HandoverCancel;
+    pdu.choice.initiatingMessage->value.choice.HandoverCancel = cancel;
+    const auto bytes = ::ngap::encode_pdu(pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
+    return bytes;
+}
+
+NgapTestGnb::PduSummary NgapTestGnb::summarize(const std::vector<std::uint8_t>& pdu_bytes) {
+    PduSummary summary;
+    if (pdu_bytes.empty()) {
+        return summary;
+    }
+    NGAP_PDU_t* pdu = ::ngap::decode_pdu(pdu_bytes);
+    if (pdu == nullptr) {
+        return summary;
+    }
+    switch (pdu->present) {
+        case NGAP_PDU_PR_initiatingMessage:
+            summary.outcome = Outcome::Initiating;
+            summary.procedure_code = pdu->choice.initiatingMessage->procedureCode;
+            break;
+        case NGAP_PDU_PR_successfulOutcome:
+            summary.outcome = Outcome::Successful;
+            summary.procedure_code = pdu->choice.successfulOutcome->procedureCode;
+            break;
+        case NGAP_PDU_PR_unsuccessfulOutcome:
+            summary.outcome = Outcome::Unsuccessful;
+            summary.procedure_code = pdu->choice.unsuccessfulOutcome->procedureCode;
+            break;
+        default:
+            break;
+    }
+    ASN_STRUCT_FREE(asn_DEF_NGAP_PDU, pdu);
+    return summary;
+}
+
+} // namespace nf_test

@@ -38,6 +38,8 @@ add_executable(integration_tests
     test_udr_aiot_data.cpp
     test_smf_handover_n2sminfo.cpp
     test_smf_n2sminfo_dispatch.cpp
+    test_amf_ngap_handover.cpp
+    ngap_test_gnb.cpp
     test_ausf_ue_authentication.cpp
     test_ausf_upu_protection.cpp
     test_pcf_policy_control.cpp
