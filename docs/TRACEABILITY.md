@@ -5120,3 +5120,23 @@ See ADR-0265 in `docs/DECISIONS.md`.
 | Test | `AmfNgapTestGnb.RegistrationCompletesAndAmfInstallsASecurityContext` |
 
 See ADR-0266 in `docs/DECISIONS.md`.
+
+## ADR-0267 -- RegistrationComplete, and a real PDU session over NAS
+
+| Requirement | Evidence |
+|---|---|
+| RegistrationComplete (TS 24.501 §8.2.5) | `build_registration_complete`, security header type 0x02 (context no longer new), `uplink_count=1`; `amf-ngap: RegistrationComplete verified OK for SUPI imsi-999700000000001` |
+| Registration procedure completes | `amf-ngap: AM Policy Association established with PCF ... UE registration procedure fully complete` -- AMF really calls PCF's Npcf_AMPolicyControl |
+| UlNasTransport (§8.2.10) + 5GSM Establishment Request (§8.3.1) | `build_pdu_session_establishment_request`: payloadContainerType=N1 SM, real 5GSM message (integrityProtectionMaximumDataRate, pduSessionType=IPv4, sscMode=1), pduSessionId/requestType/S-NSSAI/DNN transport IEs; `uplink_count=2` |
+| DNN encoding | TS 23.003 §9.1 label-length-prefixed form, the exact inverse of AMF's own decoder |
+| AMF accepts and calls SMF | `amf-ngap: PDU Session Establishment Request verified OK for SUPI imsi-999700000000001, pduSessionId=5, dnn=internet -- requesting SM context from SMF` (TS 23.502 §4.3.2.2.1) |
+| Accept delivered back through AMF | SMF's `Namf_Communication` N1N2MessageTransfer -> `DlNasTransport`, `downlink_count=2` |
+| **Downlink verified by the UE for real** | `open_secured_downlink` MAC-verifies and deciphers `RegistrationAccept` (count 1) and `DlNasTransport` (count 2) with keys AMF never saw; earlier tests only read the security-header byte |
+| **Content encoded by a separate process** | N1 SM container is SMF's own 5GSM Accept: EPD 0x2E, pduSessionId and PTI echoed back, message type 0xC2 (§8.3.5), built from PCF's real policy decision. AMF is opaque to it |
+| NF span | NRF, UDR, UDM, AUSF, AMF, PCF, SMF as real processes; NGAP/SCTP for N1/N2, TLS 1.3 + mTLS HTTP/2 for every SBI hop |
+| Handover prerequisite met | AMF now holds a real `smContextRef` for this UE -- the key `fetch_ho_request_transfer_from_smf` needs, without which every session is skipped and the relay ends in HandoverPreparationFailure |
+| **Disclosed gaps** | No UPF (SMF: `no UPF Sx Association established yet, skipping N4 Session Establishment`), so no real N3 F-TEID yet; no CHF; SQN freshness still unchecked (ADR-0265) |
+| Stale comments corrected | `nas_codec.hpp`: `decode_registration_complete` was not "unreachable" (ADR-0075's 5G-GUTI made it owed); `decode_ul_nas_transport`'s "callers pass 1" contradicted its only caller, which passes 2 |
+| Test | `AmfNgapTestGnb.RegisteredUeEstablishesARealPduSession` |
+
+See ADR-0267 in `docs/DECISIONS.md`.

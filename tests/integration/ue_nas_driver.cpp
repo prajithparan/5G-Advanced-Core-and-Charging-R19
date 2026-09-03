@@ -28,6 +28,63 @@ constexpr std::uint8_t kShtIntegrityProtectedAndCipheredWithNewSecurityContext =
 constexpr std::uint8_t kNasBearerId = 1;
 constexpr std::uint8_t kDirectionUplink = 0;
 constexpr std::uint8_t kIeiAutn = 0x20;
+constexpr std::uint8_t kShtIntegrityProtectedAndCiphered = 0x02;
+constexpr std::uint8_t kDirectionDownlink = 1;
+constexpr std::uint8_t kMessageTypeRegistrationComplete = 0x43;
+constexpr std::uint8_t kMessageTypeUlNasTransport = 0x67;
+constexpr std::uint8_t kMessageTypeDlNasTransport = 0x68;
+constexpr std::uint8_t kPayloadContainerTypeN1SmInformation = 0x01;
+// UlNasTransport's own optional IEIs, mirroring nfs/amf/src/nas_codec.cpp's named values.
+constexpr std::uint8_t kIeiUlNasPduSessionId = 0x12;
+constexpr std::uint8_t kIeiUlNasSNssai = 0x22;
+constexpr std::uint8_t kIeiUlNasDnn = 0x25;
+// Half-octet IEI 0x8 | ERequestType::INITIAL_REQUEST (0b001), TS 24.501 §9.11.3.47 -- the
+// (iei << 4) | value packing UERANSIM's NasMessageBuilder::optionalIE1 uses.
+constexpr std::uint8_t kUlNasRequestTypeInitial = 0x81;
+
+// TS 24.501 5GSM, SMF's side of which is nfs/smf/src/nas_5gsm_codec.cpp -- the same named values,
+// not re-derived.
+constexpr std::uint8_t kEpdSessionManagement = 0x2E;
+constexpr std::uint8_t kMessageTypeEstablishmentRequest = 0xC1;
+// Half-octet IEIs of the 5GSM Establishment Request's optional IEs, per UERANSIM's own
+// PduSessionEstablishmentRequest::onBuild: 0x9 pduSessionType, 0xA sscMode.
+constexpr std::uint8_t kIeiNibblePduSessionType = 0x9;
+constexpr std::uint8_t kIeiNibbleSscMode = 0xA;
+constexpr std::uint8_t kPduSessionTypeIpv4 = 0b001;
+constexpr std::uint8_t kSscMode1 = 0b001;
+// TS 24.501 §9.11.4.7 -- UERANSIM's EMaximumDataRatePerUeForUserPlaneIntegrityProtection*::
+// FULL_DATA_RATE, the value its own UE sends.
+constexpr std::uint8_t kIntegrityProtectionFullDataRate = 0xFF;
+
+// Every secured uplink message in this driver has the same envelope: cipher the inner plain
+// message, then MAC the bytes AS TRANSMITTED (the ciphered inner, prefixed by the sequence-number
+// octet -- see build_security_mode_complete's own note on why MACing the plaintext instead is the
+// classic silent-rejection bug).
+std::vector<std::uint8_t> seal_uplink(const NasKeys& keys,
+                                      std::uint32_t uplink_count,
+                                      std::uint8_t security_header_type,
+                                      const std::vector<std::uint8_t>& inner_plain) {
+    const auto ciphered = aka_crypto::nea2_apply(
+        keys.knas_enc, uplink_count, kNasBearerId, kDirectionUplink, inner_plain);
+
+    std::vector<std::uint8_t> mac_input;
+    mac_input.reserve(ciphered.size() + 1);
+    mac_input.push_back(static_cast<std::uint8_t>(uplink_count & 0xFF));
+    mac_input.insert(mac_input.end(), ciphered.begin(), ciphered.end());
+    const auto mac = aka_crypto::nia2_mac(
+        keys.knas_int, uplink_count, kNasBearerId, kDirectionUplink, mac_input);
+
+    std::vector<std::uint8_t> out;
+    out.push_back(kEpdMobilityManagement);
+    out.push_back(security_header_type);
+    out.push_back(static_cast<std::uint8_t>((mac >> 24) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((mac >> 16) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((mac >> 8) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>(mac & 0xFF));
+    out.push_back(static_cast<std::uint8_t>(uplink_count & 0xFF));
+    out.insert(out.end(), ciphered.begin(), ciphered.end());
+    return out;
+}
 
 // Same TS 35.207 Test Set 1 credentials nfs/udm seeds imsi-999700000000001 with (ADR-0026), and
 // that tests/integration/test_ausf_ue_authentication.cpp already proves work against this stack.
@@ -213,29 +270,141 @@ std::vector<std::uint8_t> build_security_mode_complete(const NasKeys& keys,
                                                        std::uint32_t uplink_count) {
     const std::vector<std::uint8_t> inner_plain{
         kEpdMobilityManagement, kSecurityHeaderNotProtected, kMessageTypeSecurityModeComplete};
-    const auto ciphered = aka_crypto::nea2_apply(
-        keys.knas_enc, uplink_count, kNasBearerId, kDirectionUplink, inner_plain);
+    // Security header type 0x04: this is the first message under a security context AMF has only
+    // just commanded, so it is the "with new security context" variant. Every later uplink message
+    // uses 0x02.
+    return seal_uplink(
+        keys, uplink_count, kShtIntegrityProtectedAndCipheredWithNewSecurityContext, inner_plain);
+}
 
-    // The MAC covers the bytes as transmitted -- i.e. the CIPHERED inner, prefixed by the sequence
-    // number octet. Same convention nfs/amf/src/nas_codec.cpp documents and UERANSIM implements;
-    // MACing the plaintext instead is the classic way to get a silently-rejected message.
+std::vector<std::uint8_t> build_registration_complete(const NasKeys& keys,
+                                                      std::uint32_t uplink_count) {
+    // TS 24.501 §8.2.5: header and message type only. The one optional IE
+    // (sorTransparentContainer) is never triggered here -- AMF's RegistrationAccept carries no SOR
+    // container.
+    const std::vector<std::uint8_t> inner_plain{
+        kEpdMobilityManagement, kSecurityHeaderNotProtected, kMessageTypeRegistrationComplete};
+    return seal_uplink(keys, uplink_count, kShtIntegrityProtectedAndCiphered, inner_plain);
+}
+
+std::vector<std::uint8_t> build_pdu_session_establishment_request(const NasKeys& keys,
+                                                                  std::uint32_t uplink_count,
+                                                                  std::uint8_t pdu_session_id,
+                                                                  std::uint8_t pti,
+                                                                  const std::string& dnn,
+                                                                  std::uint8_t sst,
+                                                                  std::uint32_t sd) {
+    // --- The 5GSM message itself (TS 24.501 §8.3.1). AMF never decodes this; it forwards the
+    // bytes to SMF as SmContextCreateData.n1SmMsg, and SMF's own nas_5gsm_codec.cpp decodes them.
+    std::vector<std::uint8_t> sm;
+    sm.push_back(kEpdSessionManagement);
+    sm.push_back(pdu_session_id);
+    sm.push_back(pti);
+    sm.push_back(kMessageTypeEstablishmentRequest);
+    // Mandatory integrityProtectionMaximumDataRate (TS 24.501 §9.11.4.7): uplink then downlink,
+    // Type-3, no IEI and no length -- matching UERANSIM's own
+    // IEIntegrityProtectionMaximumDataRate::Encode field order.
+    sm.push_back(kIntegrityProtectionFullDataRate);
+    sm.push_back(kIntegrityProtectionFullDataRate);
+    // Optional half-octet IEs, (iei << 4) | value. IPv4 / SSC mode 1 is the only combination SMF
+    // answers for (nfs/smf/src/nas_5gsm_codec.cpp's encode_establishment_accept), so asking for
+    // anything else would be asking for a rejection this test is not about.
+    sm.push_back(static_cast<std::uint8_t>((kIeiNibblePduSessionType << 4) | kPduSessionTypeIpv4));
+    sm.push_back(static_cast<std::uint8_t>((kIeiNibbleSscMode << 4) | kSscMode1));
+
+    // --- The 5GMM UlNasTransport that carries it (TS 24.501 §8.2.10).
+    std::vector<std::uint8_t> inner;
+    inner.push_back(kEpdMobilityManagement);
+    inner.push_back(kSecurityHeaderNotProtected);
+    inner.push_back(kMessageTypeUlNasTransport);
+    // payloadContainerType: a half-octet IE with no IEI of its own, so the high nibble is 0 --
+    // exactly what AMF's decode_ul_nas_transport reads as `inner[3] & 0x0F`.
+    inner.push_back(kPayloadContainerTypeN1SmInformation);
+    inner.push_back(static_cast<std::uint8_t>((sm.size() >> 8) & 0xFF));
+    inner.push_back(static_cast<std::uint8_t>(sm.size() & 0xFF));
+    inner.insert(inner.end(), sm.begin(), sm.end());
+
+    inner.push_back(kIeiUlNasPduSessionId);
+    inner.push_back(pdu_session_id);
+    inner.push_back(kUlNasRequestTypeInitial);
+
+    // S-NSSAI (TS 24.501 §9.11.2.8), SST+SD form -- the 4-octet length AMF's decoder recognises
+    // and the sst=1/sd=000001 this lab configures (simulators/ransim/config/ue.yaml).
+    inner.push_back(kIeiUlNasSNssai);
+    inner.push_back(0x04);
+    inner.push_back(sst);
+    inner.push_back(static_cast<std::uint8_t>((sd >> 16) & 0xFF));
+    inner.push_back(static_cast<std::uint8_t>((sd >> 8) & 0xFF));
+    inner.push_back(static_cast<std::uint8_t>(sd & 0xFF));
+
+    // DNN (TS 24.501 §9.11.2.1a) in TS 23.003 §9.1 label form: each dot-separated label prefixed
+    // by its own length octet. The inverse of AMF's own decoder, which rejoins the labels with
+    // dots.
+    std::vector<std::uint8_t> apn;
+    std::size_t start = 0;
+    while (start <= dnn.size()) {
+        const std::size_t dot = dnn.find('.', start);
+        const std::string label =
+            dnn.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
+        apn.push_back(static_cast<std::uint8_t>(label.size()));
+        apn.insert(apn.end(), label.begin(), label.end());
+        if (dot == std::string::npos) {
+            break;
+        }
+        start = dot + 1;
+    }
+    inner.push_back(kIeiUlNasDnn);
+    inner.push_back(static_cast<std::uint8_t>(apn.size()));
+    inner.insert(inner.end(), apn.begin(), apn.end());
+
+    return seal_uplink(keys, uplink_count, kShtIntegrityProtectedAndCiphered, inner);
+}
+
+std::optional<std::vector<std::uint8_t>> open_secured_downlink(
+    const NasKeys& keys, std::uint32_t downlink_count, const std::vector<std::uint8_t>& nas_pdu) {
+    // 0x7E | SHT | MAC(4) | SEQ(1) | ciphered inner.
+    if (nas_pdu.size() < 8 || nas_pdu[0] != kEpdMobilityManagement ||
+        nas_pdu[1] != kShtIntegrityProtectedAndCiphered) {
+        return std::nullopt;
+    }
+    const std::vector<std::uint8_t> ciphered(nas_pdu.begin() + 7, nas_pdu.end());
+
+    // The MAC covers the bytes as transmitted -- the ciphered inner prefixed by the sequence
+    // number octet, same convention as the uplink direction.
     std::vector<std::uint8_t> mac_input;
     mac_input.reserve(ciphered.size() + 1);
-    mac_input.push_back(static_cast<std::uint8_t>(uplink_count & 0xFF));
+    mac_input.push_back(nas_pdu[6]);
     mac_input.insert(mac_input.end(), ciphered.begin(), ciphered.end());
-    const auto mac = aka_crypto::nia2_mac(
-        keys.knas_int, uplink_count, kNasBearerId, kDirectionUplink, mac_input);
+    const auto expected = aka_crypto::nia2_mac(
+        keys.knas_int, downlink_count, kNasBearerId, kDirectionDownlink, mac_input);
+    const std::uint32_t carried = (static_cast<std::uint32_t>(nas_pdu[2]) << 24) |
+                                  (static_cast<std::uint32_t>(nas_pdu[3]) << 16) |
+                                  (static_cast<std::uint32_t>(nas_pdu[4]) << 8) |
+                                  static_cast<std::uint32_t>(nas_pdu[5]);
+    if (expected != carried) {
+        return std::nullopt;
+    }
 
-    std::vector<std::uint8_t> out;
-    out.push_back(kEpdMobilityManagement);
-    out.push_back(kShtIntegrityProtectedAndCipheredWithNewSecurityContext);
-    out.push_back(static_cast<std::uint8_t>((mac >> 24) & 0xFF));
-    out.push_back(static_cast<std::uint8_t>((mac >> 16) & 0xFF));
-    out.push_back(static_cast<std::uint8_t>((mac >> 8) & 0xFF));
-    out.push_back(static_cast<std::uint8_t>(mac & 0xFF));
-    out.push_back(static_cast<std::uint8_t>(uplink_count & 0xFF));
-    out.insert(out.end(), ciphered.begin(), ciphered.end());
-    return out;
+    return aka_crypto::nea2_apply(
+        keys.knas_enc, downlink_count, kNasBearerId, kDirectionDownlink, ciphered);
+}
+
+std::optional<std::vector<std::uint8_t>>
+extract_dl_nas_payload_container(const std::vector<std::uint8_t>& plain_inner) {
+    // header(3) + payloadContainerType(1) + 2-octet container length = 6 octets minimum, the same
+    // shape AMF's encode_dl_nas_transport writes.
+    if (plain_inner.size() < 6 || plain_inner[0] != kEpdMobilityManagement ||
+        plain_inner[2] != kMessageTypeDlNasTransport ||
+        (plain_inner[3] & 0x0F) != kPayloadContainerTypeN1SmInformation) {
+        return std::nullopt;
+    }
+    const std::size_t len =
+        (static_cast<std::size_t>(plain_inner[4]) << 8) | static_cast<std::size_t>(plain_inner[5]);
+    if (6 + len > plain_inner.size()) {
+        return std::nullopt;
+    }
+    return std::vector<std::uint8_t>(plain_inner.begin() + 6,
+                                     plain_inner.begin() + 6 + static_cast<std::ptrdiff_t>(len));
 }
 
 } // namespace nf_test

@@ -77,4 +77,50 @@ NasKeys derive_nas_keys(const AuthChallenge& challenge,
 std::vector<std::uint8_t> build_security_mode_complete(const NasKeys& keys,
                                                        std::uint32_t uplink_count);
 
+// ADR-0267: the rest of the registration procedure, and this project's only post-registration NAS
+// procedure -- PDU Session Establishment (TS 23.502 §4.3.2.2.1).
+//
+// AMF's own phase machine (nfs/amf/src/ngap_task.cpp's UeAuthState::Phase) fixes the NAS COUNT of
+// each of these exactly: SecurityModeComplete=0, RegistrationComplete=1, UlNasTransport=2. They
+// are parameters rather than constants for the same reason AMF's own encoders keep them explicit,
+// but a caller that passes anything else gets a MAC AMF rejects.
+
+// RegistrationComplete (TS 24.501 §8.2.5) -- no mandatory IEs, integrity protected AND ciphered
+// with the context SecurityModeComplete established (security header type 0x02, NOT 0x04: the
+// context is no longer new by this message).
+//
+// A real UE sends this only when RegistrationAccept carried a 5G-GUTI, an NSSCI indication, or a
+// configured NSSAI (UERANSIM's own receiveInitialRegistrationAccept). AMF's
+// encode_registration_accept does carry a real 5G-GUTI (ADR-0075), so this is genuinely owed.
+std::vector<std::uint8_t> build_registration_complete(const NasKeys& keys,
+                                                      std::uint32_t uplink_count);
+
+// UlNasTransport (TS 24.501 §8.2.10) wrapping a real 5GSM PDU Session Establishment Request
+// (§8.3.1) in its payload container, plus the transport-level IEs AMF routes on: PDU session ID,
+// request type, S-NSSAI and DNN. Integrity protected and ciphered (security header type 0x02).
+//
+// The inner 5GSM message is a genuine one, not a header-shaped stub: EPD/pduSessionId/PTI/message
+// type, the mandatory integrityProtectionMaximumDataRate, then pduSessionType=IPv4 and
+// sscMode=SSC-mode-1 -- the combination SMF's own encode_establishment_accept answers with.
+std::vector<std::uint8_t> build_pdu_session_establishment_request(const NasKeys& keys,
+                                                                  std::uint32_t uplink_count,
+                                                                  std::uint8_t pdu_session_id,
+                                                                  std::uint8_t pti,
+                                                                  const std::string& dnn,
+                                                                  std::uint8_t sst,
+                                                                  std::uint32_t sd);
+
+// Verifies the MAC of a secured DOWNLINK NAS PDU and deciphers it, returning the inner plain
+// message. std::nullopt means the PDU was not security-protected in a form this understands, or
+// its MAC did not verify -- an independent check on AMF's own downlink protection, since these
+// keys were derived by the UE side and never sent to AMF.
+std::optional<std::vector<std::uint8_t>> open_secured_downlink(
+    const NasKeys& keys, std::uint32_t downlink_count, const std::vector<std::uint8_t>& nas_pdu);
+
+// Pulls the opaque N1 SM payload container out of a plain DlNasTransport (TS 24.501 §8.2.9) --
+// AMF's delivery vehicle for the PDU Session Establishment Accept SMF built. std::nullopt if the
+// message is not a DlNasTransport carrying an N1 SM container.
+std::optional<std::vector<std::uint8_t>>
+extract_dl_nas_payload_container(const std::vector<std::uint8_t>& plain_inner);
+
 } // namespace nf_test

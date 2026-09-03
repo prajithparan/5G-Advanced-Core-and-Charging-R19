@@ -179,13 +179,16 @@ struct RegistrationCompleteOutcome {
 // uplink_count: this association's second secured uplink message (the first was
 // SecurityModeComplete's uplink_count=0) -- callers always pass 1 in this project's current scope.
 //
-// NOT CURRENTLY CALLED by any production handler (nfs/amf/src/ngap_task.cpp): confirmed via real
-// interop and by reading UERANSIM's own receiveInitialRegistrationAccept
-// (simulators/ransim/vendor/UERANSIM/src/ue/nas/mm/register.cpp:346-426) that a real UE only
-// sends RegistrationComplete if RegistrationAccept carried a 5G-GUTI, an NSSCI=CHANGED
-// indication, or a configuredNSSAI -- encode_registration_accept sends none of those (disclosed
-// simplification, see its own comment), so this decoder is currently unreachable in practice.
-// Kept (unit-tested, spec-correct) for when a future turn adds GUTI reassignment.
+// CORRECTED (ADR-0267): this comment used to say "NOT CURRENTLY CALLED ... unreachable in
+// practice", on the reasoning that a real UE only sends RegistrationComplete if
+// RegistrationAccept carried a 5G-GUTI, an NSSCI=CHANGED indication, or a configuredNSSAI
+// (UERANSIM's own receiveInitialRegistrationAccept,
+// simulators/ransim/vendor/UERANSIM/src/ue/nas/mm/register.cpp:346-426) -- and that
+// encode_registration_accept sends none of those. The second half stopped being true when
+// ADR-0075 added a real 5G-GUTI to encode_registration_accept, so a real UE now genuinely owes a
+// RegistrationComplete. It is called: handle_uplink_nas_transport_registration_complete in
+// nfs/amf/src/ngap_task.cpp, on the AwaitingRegistrationComplete phase, and ADR-0267's test drives
+// it end to end.
 std::optional<RegistrationCompleteOutcome>
 decode_registration_complete(const aka_crypto::NasIntKey& knas_int,
                              const aka_crypto::NasEncKey& knas_enc,
@@ -234,9 +237,12 @@ struct UlNasTransportInfo {
 // DNN) are additionally extracted; requestType/oldPduSessionId/additionalInformation are walked
 // past (skipped) to reach them but not surfaced -- unused by SMF's current CreateSMContext handler.
 //
-// uplink_count: this association's second secured uplink message (SecurityModeComplete=0; no
-// RegistrationComplete is ever sent, see UeAuthState::Phase's own comment in ngap_task.cpp) --
-// callers pass 1 in this project's current single-PDU-session scope.
+// uplink_count: this association's THIRD secured uplink message -- SecurityModeComplete=0,
+// RegistrationComplete=1, so this UlNasTransport is 2. CORRECTED (ADR-0267): this comment said
+// "second ... no RegistrationComplete is ever sent ... callers pass 1", which was already
+// contradicted by the caller (handle_uplink_nas_transport_pdu_session_establishment passes 2, and
+// says why in its own comment) after ADR-0075 gave RegistrationAccept a real 5G-GUTI. The code was
+// right and this comment was stale; ADR-0267's test drives a real UE through both counts.
 std::optional<UlNasTransportInfo> decode_ul_nas_transport(const aka_crypto::NasIntKey& knas_int,
                                                           const aka_crypto::NasEncKey& knas_enc,
                                                           std::uint32_t uplink_count,

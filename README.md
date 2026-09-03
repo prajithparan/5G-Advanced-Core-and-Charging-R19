@@ -41,7 +41,10 @@ NAS-5GS in a single `nr-gnb`/`nr-ue` interop run: NG Setup → Initial Registrat
 SQN resynchronization) → SecurityModeCommand/Complete → RegistrationAccept → AM Policy Association
 with PCF → PDU Session Establishment, built from PCF's real QoS decision and delivered to the UE
 via `Namf_Communication`. See `docs/DECISIONS.md` ADR-0032–ADR-0038 and
-[`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) for exactly what was proven how.
+[`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) for exactly what was proven how. That flow was
+originally a manual `nr-gnb`/`nr-ue` interop run; ADR-0264–ADR-0267 turned it into an automated
+regression test, driving the same procedures from the project's own test gNB and UE over a real
+SCTP association (`AmfNgapTestGnb.RegisteredUeEstablishesARealPduSession`).
 
 **Phase 3** — UPF registers with NRF, answers PFCP Heartbeat/Association/Session Establishment;
 SMF discovers UPF via `Nnrf_NFDiscovery` and creates a real N4 session on every PDU Session

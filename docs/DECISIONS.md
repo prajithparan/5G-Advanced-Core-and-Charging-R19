@@ -22822,3 +22822,103 @@ The remaining piece is a second `NgapTestGnb` as the target gNB, NGSetup'd befor
 10 s awaiting the target's reply (ADR-0258), so the target gNB's receive must be driven on its own
 thread -- a single-threaded test that sends `HandoverRequired` and then reads the source socket
 will deadlock. Recorded in ADR-0265 and in `.claude/skills/ngap-message-support.md`.
+
+## ADR-0267: a real UE through RegistrationComplete to a real PDU session
+
+### What was built
+
+The last of the UE side of TS 24.501 that the N2 handover relay depends on, plus the test that
+drives it. `tests/integration/ue_nas_driver.{hpp,cpp}` gains:
+
+- **`build_registration_complete`** -- TS 24.501 §8.2.5, integrity protected and ciphered at
+  security header type **0x02**, not SecurityModeComplete's 0x04: the context is no longer new by
+  this message.
+- **`build_pdu_session_establishment_request`** -- a real UlNasTransport (§8.2.10) whose payload
+  container is a real 5GSM PDU Session Establishment Request (§8.3.1): EPD/pduSessionId/PTI/message
+  type, the mandatory integrityProtectionMaximumDataRate, pduSessionType=IPv4 and sscMode=1, plus
+  the transport-level IEs AMF routes on (PDU session ID, requestType, S-NSSAI, DNN in TS 23.003
+  §9.1 label form).
+- **`open_secured_downlink` / `extract_dl_nas_payload_container`** -- the UE finally reads AMF's
+  downlink for real: MAC-verify, decipher, then pull the opaque N1 SM container out of the
+  DlNasTransport.
+
+`seal_uplink` factors the envelope every secured uplink message shares, so `build_security_mode_
+complete` and the two new builders cannot drift apart on the MAC-covers-the-ciphered-bytes rule.
+
+The new test, `RegisteredUeEstablishesARealPduSession`, drives one real UE over one real SCTP
+association through:
+
+```
+(ADR-0265/0266 registration, now factored into register_ue)
+RegistrationComplete            (uplink_count=1)  -> AMF -> PCF AM Policy Association
+UlNasTransport(PDU Session Est) (uplink_count=2)  -> AMF -> SMF CreateSMContext -> PCF SM policy
+                                <- N1N2MessageTransfer -> DlNasTransport (downlink_count=2)
+                                   carrying SMF's PDU Session Establishment Accept
+```
+
+It spans the widest set of real processes in the suite -- NRF, UDR, UDM, AUSF, AMF, PCF, SMF --
+over real NGAP/SCTP for N1/N2 and real TLS 1.3 + mTLS HTTP/2 for every SBI hop.
+
+### Why this was the prerequisite, not a detour
+
+AMF prepares a handover **per PDU session**, asking SMF for each session's real N2 transfer keyed
+on an `smContextRef` it only holds if it really created an SM context (ADR-0249/0258). A session it
+has no ref for is skipped, not filled with a fabricated tunnel, and a HandoverRequired whose
+sessions are all skipped is answered with HandoverPreparationFailure. So a registered UE with no
+PDU session can never reach the target gNB, however correct the rest of the chain is. That is what
+this increment fixes.
+
+### What the assertions actually prove
+
+The uplink messages are MAC'd with the UE's own KNASint at the exact NAS COUNTs AMF's phase machine
+expects. A wrong count or key is rejected in silence, not answered, so reaching the next step at
+all is the check. AMF's own log confirms each step rather than the green test being taken on trust:
+
+```
+amf-ngap: RegistrationComplete verified OK for SUPI imsi-999700000000001
+amf-ngap: AM Policy Association established with PCF -- UE registration procedure fully complete
+amf-ngap: PDU Session Establishment Request verified OK, pduSessionId=5, dnn=internet
+```
+
+The downlink is the genuinely new kind of check. Until this increment every downlink assertion only
+read the security-header byte AMF wrote, which a wrong key would not have changed. The UE now
+MAC-verifies and deciphers RegistrationAccept (downlink_count=1) and the DlNasTransport
+(downlink_count=2) with keys AMF never saw, and asserts on the deciphered content: message type
+0x42 for the Accept, and for the PDU session, a 5GSM message whose PTI and PDU session ID are
+echoed back and whose type is 0xC2. Those bytes were encoded by **SMF**, a separate process that
+never touched this driver's key material, from PCF's real policy decision -- AMF only carried them.
+
+### Disclosed: what this test does not cover
+
+- **No UPF.** SMF logs `no UPF Sx Association established yet, skipping N4 Session Establishment`
+  and still builds and delivers the Accept, which is the behaviour under test here. The session
+  therefore carries no real N3 F-TEID, so this UE's session is not yet one AMF could hand over --
+  the next increment adds UPF for exactly that reason.
+- **No CHF**, so SMF logs a failed `Nchf_ConvergedCharging_Create`. Not in this test's scope.
+- After the assertions pass, the test's own teardown kills AMF while SMF is still reading AMF's
+  N1N2MessageTransfer response, so SMF logs `AMF N1N2MessageTransfer call failed`. That line is
+  teardown noise **after** delivery, not a failure to deliver: the test could not have passed
+  without the Accept arriving, being MAC-verified and decoding correctly.
+- The UE still does not check SQN freshness (ADR-0265's disclosed deviation, unchanged).
+
+### Two stale comments corrected
+
+Same discipline as ADR-0250/0256/0257/0258/0265 -- a comment that justifies current behaviour with
+an obsolete reason is worse than none:
+
+- `decode_registration_complete` claimed it was "NOT CURRENTLY CALLED ... unreachable in practice"
+  because `encode_registration_accept` sent no 5G-GUTI. **ADR-0075 added a real 5G-GUTI**, so a real
+  UE owes a RegistrationComplete, and `handle_uplink_nas_transport_registration_complete` has been
+  calling this decoder ever since.
+- `decode_ul_nas_transport` claimed "no RegistrationComplete is ever sent ... callers pass 1". Its
+  only caller passes **2**, and explains why in its own comment. The code was right; the header was
+  stale.
+
+### Next, with the trap still standing
+
+What remains for the full relay is a second `NgapTestGnb` as the target gNB, NGSetup'd before
+`HandoverRequired` is sent, and UPF in the lab so the session carries a real N3 F-TEID.
+`handle_handover_required` **blocks the source association** for up to 10 s awaiting the target's
+reply (ADR-0258), so the target gNB's receive must be driven on its own thread -- a single-threaded
+test that sends `HandoverRequired` and then reads the source socket will deadlock. Recorded in
+ADR-0265/0266 and in `.claude/skills/ngap-message-support.md`, and still true.
