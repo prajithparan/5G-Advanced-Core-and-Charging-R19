@@ -11,23 +11,31 @@
 extern "C" {
 #include <AMF-UE-NGAP-ID.h>
 #include <Cause.h>
+#include <DownlinkNASTransport.h>
 #include <GlobalGNB-ID.h>
 #include <GlobalRANNodeID.h>
 #include <HandoverCancel.h>
 #include <HandoverRequired.h>
 #include <HandoverType.h>
+#include <InitialUEMessage.h>
 #include <InitiatingMessage.h>
+#include <NAS-PDU.h>
 #include <NGAP-PDU.h>
 #include <NGSetupRequest.h>
+#include <NR-CGI.h>
 #include <PDUSessionResourceItemHORqd.h>
 #include <PDUSessionResourceListHORqd.h>
 #include <PLMNIdentity.h>
 #include <RAN-UE-NGAP-ID.h>
+#include <RRCEstablishmentCause.h>
 #include <SourceToTarget-TransparentContainer.h>
 #include <SuccessfulOutcome.h>
 #include <TargetID.h>
 #include <TargetRANNodeID.h>
 #include <UnsuccessfulOutcome.h>
+#include <UplinkNASTransport.h>
+#include <UserLocationInformation.h>
+#include <UserLocationInformationNR.h>
 }
 
 namespace nf_test {
@@ -284,6 +292,154 @@ std::vector<std::uint8_t> NgapTestGnb::build_handover_cancel(std::uint64_t amf_u
     const auto bytes = ::ngap::encode_pdu(pdu);
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
     return bytes;
+}
+
+namespace {
+
+// Mandatory on both InitialUEMessage and UplinkNASTransport. A real, structurally-valid NR CGI +
+// TAI in this lab's own PLMN -- AMF logs it and does not act on it, so a fixed cell is honest.
+void fill_user_location(UserLocationInformation_t& uli) {
+    uli.present = UserLocationInformation_PR_userLocationInformationNR;
+    auto* nr = static_cast<UserLocationInformationNR_t*>(
+        std::calloc(1, sizeof(UserLocationInformationNR_t)));
+    std::uint8_t plmn[3];
+    encode_plmn_identity(kMcc, kMnc, plmn);
+    nr->nR_CGI.pLMNIdentity = make_octet_string(plmn, 3);
+    nr->nR_CGI.nRCellIdentity = make_bit_string_from_uint(1, 36);
+    nr->tAI.pLMNIdentity = make_octet_string(plmn, 3);
+    const std::uint8_t tac[3] = {0x00, 0x00, 0x01};
+    nr->tAI.tAC = make_octet_string(tac, 3);
+    uli.choice.userLocationInformationNR = nr;
+}
+
+} // namespace
+
+std::vector<std::uint8_t>
+NgapTestGnb::build_initial_ue_message(std::uint32_t ran_ue_id,
+                                      const std::vector<std::uint8_t>& nas_pdu) {
+    InitialUEMessage_t msg{};
+
+    RAN_UE_NGAP_ID_t ran_id = static_cast<RAN_UE_NGAP_ID_t>(ran_ue_id);
+    ::ngap::add_ie(
+        msg.protocolIEs,
+        ::ngap::make_ie(
+            85 /* id-RAN-UE-NGAP-ID */, Criticality_reject, &asn_DEF_RAN_UE_NGAP_ID, &ran_id));
+
+    NAS_PDU_t nas = make_octet_string(nas_pdu.data(), nas_pdu.size());
+    ::ngap::add_ie(
+        msg.protocolIEs,
+        ::ngap::make_ie(38 /* id-NAS-PDU */, Criticality_reject, &asn_DEF_NAS_PDU, &nas));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NAS_PDU, &nas);
+
+    UserLocationInformation_t uli{};
+    fill_user_location(uli);
+    ::ngap::add_ie(msg.protocolIEs,
+                   ::ngap::make_ie(121 /* id-UserLocationInformation */,
+                                   Criticality_reject,
+                                   &asn_DEF_UserLocationInformation,
+                                   &uli));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_UserLocationInformation, &uli);
+
+    RRCEstablishmentCause_t cause = RRCEstablishmentCause_mo_Signalling;
+    ::ngap::add_ie(msg.protocolIEs,
+                   ::ngap::make_ie(90 /* id-RRCEstablishmentCause */,
+                                   Criticality_ignore,
+                                   &asn_DEF_RRCEstablishmentCause,
+                                   &cause));
+
+    NGAP_PDU_t pdu{};
+    pdu.present = NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage =
+        static_cast<InitiatingMessage_t*>(std::calloc(1, sizeof(InitiatingMessage_t)));
+    pdu.choice.initiatingMessage->procedureCode = kProcInitialUeMessage;
+    pdu.choice.initiatingMessage->criticality = Criticality_ignore;
+    pdu.choice.initiatingMessage->value.present = InitiatingMessage__value_PR_InitialUEMessage;
+    pdu.choice.initiatingMessage->value.choice.InitialUEMessage = msg;
+    const auto bytes = ::ngap::encode_pdu(pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
+    return bytes;
+}
+
+std::vector<std::uint8_t> NgapTestGnb::build_uplink_nas_transport(
+    std::uint64_t amf_ue_id, std::uint32_t ran_ue_id, const std::vector<std::uint8_t>& nas_pdu) {
+    UplinkNASTransport_t msg{};
+
+    AMF_UE_NGAP_ID_t amf_id{};
+    asn_ulong2INTEGER(&amf_id, static_cast<unsigned long>(amf_ue_id));
+    ::ngap::add_ie(
+        msg.protocolIEs,
+        ::ngap::make_ie(
+            10 /* id-AMF-UE-NGAP-ID */, Criticality_reject, &asn_DEF_AMF_UE_NGAP_ID, &amf_id));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_AMF_UE_NGAP_ID, &amf_id);
+
+    RAN_UE_NGAP_ID_t ran_id = static_cast<RAN_UE_NGAP_ID_t>(ran_ue_id);
+    ::ngap::add_ie(
+        msg.protocolIEs,
+        ::ngap::make_ie(
+            85 /* id-RAN-UE-NGAP-ID */, Criticality_reject, &asn_DEF_RAN_UE_NGAP_ID, &ran_id));
+
+    NAS_PDU_t nas = make_octet_string(nas_pdu.data(), nas_pdu.size());
+    ::ngap::add_ie(
+        msg.protocolIEs,
+        ::ngap::make_ie(38 /* id-NAS-PDU */, Criticality_reject, &asn_DEF_NAS_PDU, &nas));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NAS_PDU, &nas);
+
+    UserLocationInformation_t uli{};
+    fill_user_location(uli);
+    ::ngap::add_ie(msg.protocolIEs,
+                   ::ngap::make_ie(121 /* id-UserLocationInformation */,
+                                   Criticality_ignore,
+                                   &asn_DEF_UserLocationInformation,
+                                   &uli));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_UserLocationInformation, &uli);
+
+    NGAP_PDU_t pdu{};
+    pdu.present = NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage =
+        static_cast<InitiatingMessage_t*>(std::calloc(1, sizeof(InitiatingMessage_t)));
+    pdu.choice.initiatingMessage->procedureCode = kProcUplinkNasTransport;
+    pdu.choice.initiatingMessage->criticality = Criticality_ignore;
+    pdu.choice.initiatingMessage->value.present = InitiatingMessage__value_PR_UplinkNASTransport;
+    pdu.choice.initiatingMessage->value.choice.UplinkNASTransport = msg;
+    const auto bytes = ::ngap::encode_pdu(pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
+    return bytes;
+}
+
+bool NgapTestGnb::extract_downlink_nas(const std::vector<std::uint8_t>& pdu_bytes,
+                                       DownlinkNas& out) {
+    NGAP_PDU_t* pdu = ::ngap::decode_pdu(pdu_bytes);
+    if (pdu == nullptr) {
+        return false;
+    }
+    bool ok = false;
+    if (pdu->present == NGAP_PDU_PR_initiatingMessage &&
+        pdu->choice.initiatingMessage->procedureCode == kProcDownlinkNasTransport) {
+        const auto& container =
+            pdu->choice.initiatingMessage->value.choice.DownlinkNASTransport.protocolIEs;
+        const auto* amf_id_ie = ::ngap::find_ie(container, 10 /* id-AMF-UE-NGAP-ID */);
+        const auto* nas_ie = ::ngap::find_ie(container, 38 /* id-NAS-PDU */);
+        if (amf_id_ie != nullptr && nas_ie != nullptr) {
+            auto* amf_id = static_cast<AMF_UE_NGAP_ID_t*>(
+                ::ngap::decode_ie_value(&asn_DEF_AMF_UE_NGAP_ID, *amf_id_ie));
+            auto* nas = static_cast<NAS_PDU_t*>(::ngap::decode_ie_value(&asn_DEF_NAS_PDU, *nas_ie));
+            if (amf_id != nullptr && nas != nullptr) {
+                unsigned long value = 0;
+                asn_INTEGER2ulong(amf_id, &value);
+                out.amf_ue_id = value;
+                out.nas_pdu.assign(nas->buf, nas->buf + nas->size);
+                ok = true;
+            }
+            if (amf_id != nullptr) {
+                ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_id);
+            }
+            if (nas != nullptr) {
+                ASN_STRUCT_FREE(asn_DEF_NAS_PDU, nas);
+            }
+        }
+    }
+    ASN_STRUCT_FREE(asn_DEF_NGAP_PDU, pdu);
+    return ok;
 }
 
 NgapTestGnb::PduSummary NgapTestGnb::summarize(const std::vector<std::uint8_t>& pdu_bytes) {

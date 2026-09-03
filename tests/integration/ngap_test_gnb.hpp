@@ -63,6 +63,27 @@ public:
     std::vector<std::uint8_t> build_handover_cancel(std::uint64_t amf_ue_id,
                                                     std::uint32_t ran_ue_id);
 
+    // --- UE-associated signalling (ADR-0265), for procedures that need a registered UE. ---
+
+    // Real InitialUEMessage carrying `nas_pdu`: id-RAN-UE-NGAP-ID(85), id-NAS-PDU(38), plus the
+    // mandatory UserLocationInformation and RRCEstablishmentCause.
+    std::vector<std::uint8_t> build_initial_ue_message(std::uint32_t ran_ue_id,
+                                                       const std::vector<std::uint8_t>& nas_pdu);
+
+    // Real UplinkNASTransport: id-AMF-UE-NGAP-ID(10), id-RAN-UE-NGAP-ID(85), id-NAS-PDU(38),
+    // plus UserLocationInformation.
+    std::vector<std::uint8_t> build_uplink_nas_transport(std::uint64_t amf_ue_id,
+                                                         std::uint32_t ran_ue_id,
+                                                         const std::vector<std::uint8_t>& nas_pdu);
+
+    // Pulls the NAS-PDU and the AMF-UE-NGAP-ID out of a DownlinkNASTransport. Returns false if
+    // the PDU is not one, or is missing either IE.
+    struct DownlinkNas {
+        std::uint64_t amf_ue_id = 0;
+        std::vector<std::uint8_t> nas_pdu;
+    };
+    static bool extract_downlink_nas(const std::vector<std::uint8_t>& pdu_bytes, DownlinkNas& out);
+
     // --- Questions a test can ask about a received PDU, without touching ASN.1 itself. ---
 
     enum class Outcome { Initiating, Successful, Unsuccessful, Undecodable };
@@ -75,9 +96,12 @@ public:
     static PduSummary summarize(const std::vector<std::uint8_t>& pdu_bytes);
 
     // NGAP procedure codes, read from specs/NGAP/ngap-17.9.asn rather than remembered.
+    static constexpr long kProcDownlinkNasTransport = 4;
     static constexpr long kProcHandoverCancel = 10;
     static constexpr long kProcHandoverPreparation = 12;
+    static constexpr long kProcInitialUeMessage = 15;
     static constexpr long kProcNgSetup = 21;
+    static constexpr long kProcUplinkNasTransport = 46;
 
 private:
     struct Impl;

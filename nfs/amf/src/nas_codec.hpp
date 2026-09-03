@@ -79,10 +79,14 @@ struct AuthenticationOutcome {
     // AuthenticationFailureParameter) -- present for SYNCH_FAILURE, absent otherwise. 14 octets:
     // SQN xor AK (6) || MAC-S (8), confirmed against
     // simulators/ransim/vendor/UERANSIM/src/ue/nas/keys.cpp's CalculateAuts, not assumed from
-    // general AKA knowledge alone. Resynchronization (TS 33.501, using this AUTS to have UDM
-    // reissue a corrected-SQN vector) is NOT implemented -- disclosed gap, see ADR-0032. This
-    // field is decoded and surfaced so a future stage can implement it without another NAS-codec
-    // change, not because this stage acts on it.
+    // general AKA knowledge alone.
+    //
+    // STALE COMMENT CORRECTED (ADR-0265): this used to read "Resynchronization ... is NOT
+    // implemented -- disclosed gap, see ADR-0032". That stopped being true at ADR-0037, which
+    // implemented AMF-side SQN resynchronisation (see ngap_task.cpp's own `sqn_resync_attempted`
+    // and the `resync_info` it passes to AUSF). This field is decoded, surfaced, and now really
+    // acted on. Corrected rather than left to justify current behaviour with an obsolete reason --
+    // the same discipline ADR-0250/0256/0257/0258 applied elsewhere.
     std::optional<std::array<std::uint8_t, 14>> auts;
 };
 

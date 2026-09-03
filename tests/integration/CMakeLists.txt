@@ -40,6 +40,7 @@ add_executable(integration_tests
     test_smf_n2sminfo_dispatch.cpp
     test_amf_ngap_handover.cpp
     ngap_test_gnb.cpp
+    ue_nas_driver.cpp
     test_ausf_ue_authentication.cpp
     test_ausf_upu_protection.cpp
     test_pcf_policy_control.cpp

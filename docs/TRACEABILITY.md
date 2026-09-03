@@ -5091,3 +5091,18 @@ See ADR-0263 in `docs/DECISIONS.md`.
 | **Still NOT covered** | The full relay needs a registered UE (NAS registration from the driver); deliberately not faked by seeding AMF's stores |
 
 See ADR-0264 in `docs/DECISIONS.md`.
+
+## ADR-0265 -- UE NAS driver; registration through authentication
+
+| Requirement | Evidence |
+|---|---|
+| Real UE-associated NGAP | `InitialUEMessage`, `UplinkNASTransport` built by `ngap_test_gnb.cpp`; `DownlinkNASTransport` NAS-PDU + AMF-UE-NGAP-ID extracted |
+| Real NAS framing | `ue_nas_driver.cpp`: RegistrationRequest with null-scheme SUCI, AuthenticationResponse with RES* (IEI 0x2D) |
+| Network authenticated by the UE | AUTN's MAC-A recomputed via `aka_crypto::f1` before answering; mismatch returns nullopt rather than replying |
+| **Independent check is the crypto** | RES* from TS 35.207 K/OPc verified by AUSF against UDM/UDR's own stored credentials; test asserts AMF reached `SecurityModeCommand`, which requires AUSF confirmation |
+| Not circular | AMF's decoders were validated against UERANSIM's independent UE (ADR-0031/0032/0037); this re-encodes to an already-agreed format |
+| **Disclosed deviation** | Test UE does not enforce SQN freshness (a UE-side policy check); stated in source and ADR rather than depending silently on ADR-0037's resync |
+| Stale comment corrected | `nas_codec.hpp` claimed SQN resync "is NOT implemented"; ADR-0037 implemented it |
+| **Still missing for the full relay** | `SecurityModeComplete` (integrity-protected uplink), then a second `NgapTestGnb` as target gNB. `handle_handover_required` blocks the source association, so the target must be driven concurrently |
+
+See ADR-0265 in `docs/DECISIONS.md`.

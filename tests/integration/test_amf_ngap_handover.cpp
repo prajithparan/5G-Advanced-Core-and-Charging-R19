@@ -15,6 +15,7 @@
 
 #include "ngap_test_gnb.hpp"
 #include "spawn_guard.hpp"
+#include "ue_nas_driver.hpp"
 
 #include <gtest/gtest.h>
 
@@ -102,4 +103,67 @@ TEST(AmfNgapTestGnb, HandoverCancelForUnknownUeIsStillAcknowledged) {
     EXPECT_EQ(summary.outcome, NgapTestGnb::Outcome::Successful);
     EXPECT_EQ(summary.procedure_code, NgapTestGnb::kProcHandoverCancel)
         << "expected a successfulOutcome for id-HandoverCancel (HandoverCancelAcknowledge)";
+}
+
+// ADR-0265: a real UE, registering through authentication over real NGAP + NAS.
+//
+// This is the increment that makes the full handover relay reachable: AMF resolves a handover's UE
+// through amf_ue_id_index -> ue_security_contexts, and only a real registration populates those.
+//
+// What makes this a real test rather than a mirror of AMF's own encoders: RES* is computed here
+// from the subscriber's TS 35.207 credentials and checked by AUSF against what UDM/UDR
+// independently hold. Well-formed NAS framing does not get you past that -- only correct
+// cryptography does. The assertion is on AMF proceeding to SecurityModeCommand, which it does only
+// after AUSF confirms.
+TEST(AmfNgapTestGnb, RegistrationReachesAuthenticationAndSecurityModeCommand) {
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0);
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0);
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0);
+    nf_test::SpawnedProcess ausf(AUSF_PATH);
+    ASSERT_GT(ausf.pid(), 0);
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0);
+
+    NgapTestGnb gnb;
+    ASSERT_TRUE(gnb.connect(kAmfNgapAddress, kAmfNgapPort));
+    ASSERT_TRUE(gnb.ng_setup(kSourceGnbId));
+
+    constexpr std::uint32_t kUeRanId = 1;
+    const auto registration = nf_test::build_registration_request(nf_test::kTestSupi);
+    ASSERT_FALSE(registration.empty());
+    gnb.send_raw(gnb.build_initial_ue_message(kUeRanId, registration));
+
+    // AMF must fetch a real authentication vector from AUSF (which fetches from UDM/UDR) before it
+    // can send this, so reaching it at all already exercises the whole SBI chain.
+    const auto challenge_pdu = gnb.receive_raw();
+    ASSERT_FALSE(challenge_pdu.empty()) << "AMF sent nothing after the RegistrationRequest";
+    NgapTestGnb::DownlinkNas challenge_nas;
+    ASSERT_TRUE(NgapTestGnb::extract_downlink_nas(challenge_pdu, challenge_nas))
+        << "expected a DownlinkNASTransport carrying an AuthenticationRequest";
+    const auto challenge = nf_test::parse_authentication_request(challenge_nas.nas_pdu);
+    ASSERT_TRUE(challenge.has_value()) << "AMF's NAS PDU was not a decodable AuthenticationRequest";
+
+    // Verifies AUTN's MAC against the real credentials before answering -- a wrong vector fails
+    // here rather than being answered anyway.
+    const auto res_star = nf_test::compute_res_star(*challenge, "5G:mnc070.mcc999.3gppnetwork.org");
+    ASSERT_TRUE(res_star.has_value()) << "AUTN did not authenticate the network";
+
+    gnb.send_raw(gnb.build_uplink_nas_transport(
+        challenge_nas.amf_ue_id, kUeRanId, nf_test::build_authentication_response(*res_star)));
+
+    const auto smc_pdu = gnb.receive_raw();
+    ASSERT_FALSE(smc_pdu.empty()) << "AMF sent nothing after the AuthenticationResponse -- AUSF "
+                                     "rejected RES*, or the exchange stalled";
+    NgapTestGnb::DownlinkNas smc_nas;
+    ASSERT_TRUE(NgapTestGnb::extract_downlink_nas(smc_pdu, smc_nas));
+    // SecurityModeCommand is integrity-protected with a new context: 0x7E, SHT, MAC(4), SEQ(1),
+    // then the inner plain message whose type byte is 0x5D (TS 24.501 §8.2.25).
+    ASSERT_GE(smc_nas.nas_pdu.size(), 10u);
+    EXPECT_EQ(smc_nas.nas_pdu[0], 0x7E);
+    EXPECT_NE(smc_nas.nas_pdu[1], 0x00) << "SecurityModeCommand must be security-protected";
+    EXPECT_EQ(smc_nas.nas_pdu[9], 0x5D)
+        << "expected the inner NAS message to be a SecurityModeCommand";
 }
