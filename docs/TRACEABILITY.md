@@ -5047,3 +5047,33 @@ See ADR-0260 in `docs/DECISIONS.md`.
 | **AMF half NOT tested end-to-end** | UERANSIM's gNB implements no handover procedure; weakest-verified item in the ADR-0258..0261 sequence, stated as such |
 
 See ADR-0261 in `docs/DECISIONS.md`.
+
+## ADR-0262 -- TS 28.552 request/success/failure counter split (SMF, NRF)
+
+| Requirement | Evidence |
+|---|---|
+| SMF PDU-session creation measurements | `SM.PduSessionCreationReq`/`Succ`/`Fail` (28.552 5.3.1.3-5) as `smf_sm_pdu_session_creation_{req,succ,fail}_total` |
+| NRF registration + discovery measurements | `NFS.RegReq`/`RegSucc`/`RegFailEncodeErr` (5.10.1.1-3), `NFS.DiscReq`/`DiscSucc`/`DiscFailUnauth`/`DiscFailInputErr` (5.10.3.1-4) |
+| Asymmetric label sets follow the spec | Req/Succ per PLMN + S-NSSAI + ReqType; Fail per PLMN + cause -- read from each measurement's own `c)`/`e)` fields |
+| `requestType` optionality handled honestly | OPTIONAL in `SmContextCreateData` (YAML-checked); absent -> literal `absent`, never defaulted to a real `RequestType` |
+| "Receipt" boundary is a stated reading | 401 counted as neither request nor failure for CreateSMContext/NFRegister; discovery counts it as request + `DiscFailUnauth` because 5.10.3.3 defines that measurement |
+| Two measurements deliberately not exposed | `NFS.RegFailNrfErr` (5.10.1.4), `NFS.DiscFailNrfErr` (5.10.3.5): no internal-error path exists; a permanently-zero series would overclaim |
+| Pre-existing defect fixed | `smf_create_sm_context_total` increments after validation and never matched 5.3.1.3; left in place, accurately described, superseded by the spec-named counter |
+| TS 28.554 KPIs now computable | Expressions for 6.2.5/6.2.12/6.2.16, 6.2.14, 6.2.15 written out in ADR-0262; 6.4.1 explicitly NOT reachable (needs `SM.SessionNbrMean`, 5.3.1.2, an SI gauge not built) |
+
+See ADR-0262 in `docs/DECISIONS.md`.
+
+## ADR-0263 -- first measured performance baseline
+
+| Requirement | Evidence |
+|---|---|
+| Reproducible | `scripts/run-baseline-benchmark.sh`, results under `build/benchmark-results/` |
+| Real transport | `tools/sbi-loadgen` over HTTP/2 + TLS 1.3 + mTLS via the production `sbi_core::http2::Client` |
+| Measured, all-200 | c1 979 req/s p50 0.823 ms; c8 7,113 req/s p50 0.915 ms; c32 9,717 req/s p50 3.144 ms; open-loop 500 rps p50 1.691 ms |
+| Server-side corroboration | ADR-0262 counters: `nrf_nfs_disc_req_total` = `nrf_nfs_disc_succ_total` = 311,835, `disc_fail_unauth` never incremented |
+| Environment recorded | 8-core i7-11370H, 15.4 GiB, loadgen and SUT on one host over loopback |
+| Wrong result caught and guarded against | First run measured the 401 path at full speed after its token expired; script now re-authenticates per case and asserts all-200, failing otherwise |
+| **NOT a comparison** | ADR-0238 step (4) remains OPEN; no free5GC or other comparison was run |
+| **Still open** | Async HTTP/2 client (ADR-0009), HA/clustering, free5GC comparison |
+
+See ADR-0263 in `docs/DECISIONS.md`.

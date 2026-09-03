@@ -29,12 +29,15 @@
 //     real HTTP/2. It is NOT a synthetic socket benchmark.
 //
 // What this deliberately does NOT do:
-//   * It does not map anything onto TS 28.552 counter families or TS 28.554 KPIs. That is
-//     ADR-0238's step (1), and TS 28.552/28.554 are NOT vendored in specs/ -- inventing counter
-//     names to fill that gap is exactly the failure mode CLAUDE.md forbids. Blocked on real spec
-//     material, flagged, not faked.
-//   * It makes no comparison against free5GC or anything else. That is ADR-0238's step (4) and
-//     requires the mapping from step (1) first. No performance claim is made by this file.
+//   * It makes no comparison against free5GC or anything else. That is ADR-0238's step (4), which
+//     remains OPEN. No performance claim is made by this file.
+//
+// STALE COMMENT CORRECTED (ADR-0263): this header used to say TS 28.552/28.554 "are NOT vendored
+// in specs/" and that the mapping was therefore blocked. Both halves stopped being true. The user
+// vendored both specs, ADR-0247 produced the mapping (docs/PERFORMANCE_MAPPING.md), ADR-0250
+// corrected two errors in it, and ADR-0262 implemented the real request/success/per-cause-failure
+// counters for SMF and NRF using the spec's own measurement names. The correct current statement
+// is the one above: the mapping and the counters exist; the free5GC comparison does not.
 
 #include "sbi_core/http2_client.hpp"
 #include "sbi_core/tls_config.hpp"

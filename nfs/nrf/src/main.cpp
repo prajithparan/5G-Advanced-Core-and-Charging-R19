@@ -347,6 +347,42 @@ int main() {
                                                          "Total successful UpdateNFInstance calls");
     auto tokens_counter =
         meter->CreateUInt64Counter("nrf_tokens_issued_total", "Total OAuth2 access tokens issued");
+
+    // ADR-0262: the real TS 28.552 clause 5.10.1 / 5.10.3 measurements. Names are the spec's own,
+    // cited in help text; metric names keep this project's `nrf_*_total` exporter namespace.
+    //
+    // The registration failure split is the spec's, not a status-code convenience: §5.10.1.3 is
+    // failure due to ENCODING ERROR OF THE NF PROFILE (per TS 29.510) and §5.10.1.4 is failure due
+    // to NRF INTERNAL ERROR. This handler's 400s are all profile-encoding failures (malformed
+    // JSON, missing mandatory IE, invalid NFProfile), which is why they map to the first.
+    auto nfs_reg_req_counter = meter->CreateUInt64Counter(
+        "nrf_nfs_reg_req_total",
+        "TS 28.552 5.10.1.1 NFS.RegReq -- NF service registration requests");
+    auto nfs_reg_succ_counter = meter->CreateUInt64Counter(
+        "nrf_nfs_reg_succ_total",
+        "TS 28.552 5.10.1.2 NFS.RegSucc -- successful NF service registrations");
+    auto nfs_reg_fail_encode_counter = meter->CreateUInt64Counter(
+        "nrf_nfs_reg_fail_encode_err_total",
+        "TS 28.552 5.10.1.3 NFS.RegFailEncodeErr -- failed registrations "
+        "due to encoding error of the NF profile");
+    // TS 28.552 5.10.1.4 (NFS.RegFailNrfErr) and 5.10.3.5 (NFS.DiscFailNrfErr) are
+    // deliberately NOT exposed: neither handler has any internal-error path -- every
+    // rejection either can produce is a profile-encoding or input-parameter failure.
+    // Exporting a permanently-zero series would read as "measured, and none occurred",
+    // which is a stronger claim than this build can make. Absent and explained beats
+    // present and misleading.
+    auto nfs_disc_req_counter = meter->CreateUInt64Counter(
+        "nrf_nfs_disc_req_total", "TS 28.552 5.10.3.1 NFS.DiscReq -- NF discovery requests");
+    auto nfs_disc_succ_counter = meter->CreateUInt64Counter(
+        "nrf_nfs_disc_succ_total", "TS 28.552 5.10.3.2 NFS.DiscSucc -- successful NF discoveries");
+    auto nfs_disc_fail_unauth_counter =
+        meter->CreateUInt64Counter("nrf_nfs_disc_fail_unauth_total",
+                                   "TS 28.552 5.10.3.3 NFS.DiscFailUnauth -- discoveries failed "
+                                   "because the requester is unauthorized");
+    auto nfs_disc_fail_input_counter =
+        meter->CreateUInt64Counter("nrf_nfs_disc_fail_input_err_total",
+                                   "TS 28.552 5.10.3.4 NFS.DiscFailInputErr -- discoveries failed "
+                                   "due to an input parameter error");
     auto registered_gauge = meter->CreateInt64ObservableGauge(
         "nrf_registered_nf_count", "Number of NF instances currently registered");
     registered_gauge->AddCallback(
@@ -534,26 +570,38 @@ int main() {
     server.add_route(
         "PUT",
         "/nnrf-nfm/v1/nf-instances/{nfInstanceID}",
-        [&verifier, nf_registry, &notify, &registrations_counter](
-            const sbi_core::http2::Request& req) {
+        [&verifier,
+         nf_registry,
+         &notify,
+         &registrations_counter,
+         &nfs_reg_req_counter,
+         &nfs_reg_succ_counter,
+         &nfs_reg_fail_encode_counter](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return problem_response(401, "Unauthorized", auth->error);
             }
+            // TS 28.552 5.10.1.1(c): counted on RECEIPT of the NFRegister request. An
+            // unauthenticated caller is not an NFRegister request from an NF, so 401 is counted as
+            // neither a request nor a failure -- the same reading ADR-0262 applies in SMF.
+            nfs_reg_req_counter->Add(1);
             const auto path_id = req.path_params.at("nfInstanceID");
             json profile;
             try {
                 profile = json::parse(req.body);
             } catch (const json::parse_error& e) {
+                nfs_reg_fail_encode_counter->Add(1);
                 return problem_response(400, "Malformed JSON", e.what());
             }
             for (const char* required : {"nfInstanceId", "nfType", "nfStatus"}) {
                 if (!profile.contains(required)) {
+                    nfs_reg_fail_encode_counter->Add(1);
                     return problem_response(400,
                                             "Missing mandatory IE",
                                             std::string("NFProfile missing '") + required + "'");
                 }
             }
             if (auto err = validate_nf_profile(profile); err.has_value()) {
+                nfs_reg_fail_encode_counter->Add(1);
                 return problem_response(400, "Invalid NFProfile", *err);
             }
             const bool is_new = nf_registry->put(path_id, profile);
@@ -563,6 +611,9 @@ int main() {
                          profile.value("nfType", "?"),
                          profile.value("nfStatus", "?"));
             registrations_counter->Add(1);
+            // 5.10.1.2(c): on transmission of a response indicating SUCCESS. Both 201 (new) and
+            // 200 (profile replaced) are successful registrations.
+            nfs_reg_succ_counter->Add(1);
             notify(is_new ? "NF_REGISTERED" : "NF_PROFILE_CHANGED",
                    path_id,
                    std::make_optional(profile));
@@ -663,8 +714,20 @@ int main() {
     server.add_route(
         "GET",
         "/nnrf-disc/v1/nf-instances",
-        [&verifier, nf_registry, stored_searches](const sbi_core::http2::Request& req) {
+        [&verifier,
+         nf_registry,
+         stored_searches,
+         &nfs_disc_req_counter,
+         &nfs_disc_succ_counter,
+         &nfs_disc_fail_unauth_counter,
+         &nfs_disc_fail_input_counter](const sbi_core::http2::Request& req) {
+            // TS 28.552 5.10.3.1(c): counted on receipt of the NFDiscover request. Unlike
+            // registration, discovery HAS a defined unauthorized-failure measurement
+            // (5.10.3.3 NFS.DiscFailUnauth), so a rejected token is counted here as both a
+            // request and an unauthorized failure rather than dropped.
+            nfs_disc_req_counter->Add(1);
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
+                nfs_disc_fail_unauth_counter->Add(1);
                 return problem_response(401, "Unauthorized", auth->error);
             }
             // Query string parsing: http2::Request doesn't split query params out (Phase 0's
@@ -678,6 +741,7 @@ int main() {
                 }
             }
             if (target_type.empty()) {
+                nfs_disc_fail_input_counter->Add(1);
                 return problem_response(
                     400, "Missing mandatory query parameter", "target-nf-type is required");
             }
@@ -693,6 +757,7 @@ int main() {
                 {"nfInstances", instances},
                 {"searchId", search_id},
             };
+            nfs_disc_succ_counter->Add(1);
             return sbi_core::http2::Response::json(200, result.dump());
         });
 

@@ -1712,13 +1712,34 @@ int main() {
     auto transfer_mo_data_counter = meter->CreateUInt64Counter(
         "smf_transfer_mo_data_total", "Total Nsmf_PDUSession TransferMoData calls");
 
+    // ADR-0262: the real TS 28.552 clause 5.3.1.3/5.3.1.4/5.3.1.5 measurements, which is what
+    // makes the TS 28.554 PDU-session KPIs computable at all (they are ratios of exactly these
+    // three). Spec measurement names are cited in the help text; the metric names keep this
+    // project's own `smf_*_total` exporter namespace rather than inventing a second one.
+    //
+    // The label sets are ASYMMETRIC, and that is the spec's doing, not an oversight here:
+    // Req/Succ are filtered per PLMN *and* S-NSSAI with a subcounter per request type
+    // (§5.3.1.3(c), §5.3.1.4(c)); Fail is filtered per PLMN *only*, with a subcounter per
+    // rejection cause (§5.3.1.5(c)).
+    auto pdu_session_creation_req_counter = meter->CreateUInt64Counter(
+        "smf_sm_pdu_session_creation_req_total",
+        "TS 28.552 5.3.1.3 SM.PduSessionCreationReq -- PDU sessions requested to be created");
+    auto pdu_session_creation_succ_counter = meter->CreateUInt64Counter(
+        "smf_sm_pdu_session_creation_succ_total",
+        "TS 28.552 5.3.1.4 SM.PduSessionCreationSucc -- PDU sessions successfully created");
+    auto pdu_session_creation_fail_counter = meter->CreateUInt64Counter(
+        "smf_sm_pdu_session_creation_fail_total",
+        "TS 28.552 5.3.1.5 SM.PduSessionCreationFail -- PDU sessions failed to be created");
+
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
     sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
-    server.add_route(
-        "POST",
-        std::string(kApiRoot) + "/sm-contexts",
+    // ADR-0262: the real handler is a named lambda so the TS 28.552 §5.3.1.3-5
+    // measurements can be taken around it by classifying its own response, rather than
+    // by threading counters through every one of its exit paths.
+    const auto create_sm_context_inner =
+
         [&verifier,
          &sm_contexts,
          &create_counter,
@@ -2046,6 +2067,94 @@ int main() {
             resp.headers.emplace("location",
                                  std::string(kApiRoot) + "/sm-contexts/" + sm_context_ref);
             resp.body = j.dump();
+            return resp;
+        };
+
+    // ADR-0262: TS 28.552 clause 5.3.1.3-5, taken around the real handler.
+    //
+    // Where "receipt" begins, stated as a reading rather than left implicit: §5.3.1.3(c) says
+    // "on receipt by the SMF from AMF of Nsmf_PDUSession_CreateSMContext Request". A request that
+    // fails the OAuth2 check is not a CreateSMContext Request from AMF -- it is an unauthenticated
+    // caller -- so 401 is counted as neither a request nor a failure. Everything past
+    // authentication is counted, including a request whose body will not parse.
+    //
+    // This also FIXES a real defect rather than only adding counters: the pre-existing
+    // `smf_create_sm_context_total` increments AFTER validation, so it silently under-counts every
+    // request rejected during validation and never matched §5.3.1.3's own definition. It is left
+    // in place, unchanged, as the "reached the point of allocating an SM context ref" counter it
+    // actually is -- renaming or repurposing it would break existing dashboards -- and the
+    // spec-named counter above is the one that means what 28.552 says.
+    server.add_route(
+        "POST",
+        std::string(kApiRoot) + "/sm-contexts",
+        [create_sm_context_inner,
+         &pdu_session_creation_req_counter,
+         &pdu_session_creation_succ_counter,
+         &pdu_session_creation_fail_counter](const sbi_core::http2::Request& req) {
+            auto resp = create_sm_context_inner(req);
+            if (resp.status == 401) {
+                return resp;
+            }
+
+            // Filter/subcounter values come from the request itself. `requestType` is OPTIONAL in
+            // SmContextCreateData (checked against the YAML, not assumed), so an absent one is
+            // reported as the literal "absent" rather than defaulted to a real RequestType value
+            // this project would then be inventing.
+            std::string plmn = "unknown";
+            std::string snssai = "unknown";
+            std::string req_type = "absent";
+            const auto content_type_it = req.headers.find("content-type");
+            const auto parts =
+                content_type_it != req.headers.end() &&
+                        sbi_core::multipart::is_multipart_related(content_type_it->second)
+                    ? sbi_core::multipart::parse(content_type_it->second, req.body)
+                    : tl::expected<std::vector<sbi_core::multipart::Part>, std::string>(
+                          tl::unexpect, "not multipart");
+            if (parts.has_value() && !parts->empty()) {
+                try {
+                    const auto body = json::parse((*parts)[0].body);
+                    if (body.contains("servingNetwork")) {
+                        const auto& sn = body.at("servingNetwork");
+                        if (sn.contains("mcc") && sn.contains("mnc")) {
+                            plmn = sn.at("mcc").get<std::string>() + "-" +
+                                   sn.at("mnc").get<std::string>();
+                        }
+                    }
+                    if (body.contains("sNssai")) {
+                        const auto& sn = body.at("sNssai");
+                        snssai = std::to_string(sn.value("sst", 0));
+                        if (sn.contains("sd")) {
+                            snssai += "-" + sn.at("sd").get<std::string>();
+                        }
+                    }
+                    if (body.contains("requestType")) {
+                        req_type = body.at("requestType").get<std::string>();
+                    }
+                } catch (const nlohmann::json::exception&) {
+                    // Leave the "unknown" defaults: an unparseable body is still a received
+                    // request per §5.3.1.3(c), and is counted as one below.
+                }
+            }
+
+            pdu_session_creation_req_counter->Add(
+                1, {{"plmn", plmn}, {"snssai", snssai}, {"reqType", req_type}});
+            if (resp.status == 201) {
+                pdu_session_creation_succ_counter->Add(
+                    1, {{"plmn", plmn}, {"snssai", snssai}, {"reqType", req_type}});
+            } else {
+                // §5.3.1.5's subcounter is "per rejection cause". This build's rejection cause is
+                // the ProblemDetails `title` it already returns -- a real value carried on the
+                // wire, not a parallel taxonomy invented for metrics.
+                std::string cause = "status-" + std::to_string(resp.status);
+                try {
+                    const auto problem = json::parse(resp.body);
+                    if (problem.contains("title")) {
+                        cause = problem.at("title").get<std::string>();
+                    }
+                } catch (const nlohmann::json::exception&) {
+                }
+                pdu_session_creation_fail_counter->Add(1, {{"plmn", plmn}, {"cause", cause}});
+            }
             return resp;
         });
 

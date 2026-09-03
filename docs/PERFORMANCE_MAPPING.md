@@ -106,9 +106,9 @@ and this project's counters mostly count only "it happened".
 
 | NF | 28.552 clause | Project metrics today | Assessment |
 |---|---|---|---|
-| NRF | 5.10 (13 meas.) | 5 | Mapped in full above: 0 conformant, 2 partial |
+| NRF | 5.10 (13 meas.) | 5 + **7 conformant (ADR-0262)** | `NFS.RegReq`/`RegSucc`/`RegFailEncodeErr` and `NFS.DiscReq`/`DiscSucc`/`DiscFailUnauth`/`DiscFailInputErr` implemented under their own spec names. `NFS.RegFailNrfErr`/`DiscFailNrfErr` deliberately not exposed -- no internal-error path exists, and a permanently-zero series would overclaim |
 | AMF | 5.2 (RM.*/MM.*, ~166 meas.) | 19 | Large gap; RM.*/MM.* is the biggest family in the spec |
-| SMF | 5.3 (SM.*, ~54 meas.) | 13 | Large gap |
+| SMF | 5.3 (SM.*, ~54 meas.) | 13 + **3 conformant (ADR-0262)** | `SM.PduSessionCreationReq`/`Succ`/`Fail` with the spec's own asymmetric filters (Req/Succ per PLMN+S-NSSAI+ReqType; Fail per PLMN+cause). Still a large gap overall; `SM.SessionNbrMean` (5.3.1.2, an SI gauge) is not built, so TS 28.554 6.4.1 stays out of reach |
 | UPF | 5.4 (GTP.*, ~46 meas.) | 4 | Large gap; datapath counters not exposed |
 | PCF | 5.5 | 34 | Needs per-measurement audit |
 | UDM | 5.6 | 44 | Needs per-measurement audit |
@@ -156,4 +156,11 @@ specs (already vendored as R19 YAML).
 ## What this document does NOT do
 
 It does not claim conformance, and it does not compare against free5GC (ADR-0238 step (4), which
-needs the counters split first). It is the mapping, with the gaps stated plainly.
+remains OPEN). It is the mapping, with the gaps stated plainly.
+
+**Updated by ADR-0262/ADR-0263**: the counter split this document called "the single
+highest-leverage instrumentation change" is now done for SMF and NRF only -- see those two rows
+above and the KPI expressions in ADR-0262. Every other per-NF row still needs the same line-by-line
+treatment NRF got and is deliberately left marked owed rather than filled in by inference.
+ADR-0263 records the project's first measured baseline; it is a baseline of this build on one
+machine, not a comparison.
