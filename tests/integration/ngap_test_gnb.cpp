@@ -112,6 +112,13 @@ bool NgapTestGnb::connect(const std::string& address, std::uint16_t port, int ma
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
         try {
             impl_->socket.connect(address, port);
+            // Every receive in these tests is bounded, so a peer that never answers fails the
+            // test with its own assertion message instead of hanging until the CI job is killed
+            // -- a hang there is indistinguishable from the runner dying mid-job. Generous
+            // relative to what the exchanges actually take (the widest, the PDU session round
+            // trip through SMF and PCF, is ~250ms locally): this is a deadlock guard, not a
+            // performance assertion.
+            impl_->socket.set_receive_timeout(std::chrono::seconds(30));
             return true;
         } catch (const std::exception&) {
             // AMF's NGAP listener starts on its own thread after the process does; retry.

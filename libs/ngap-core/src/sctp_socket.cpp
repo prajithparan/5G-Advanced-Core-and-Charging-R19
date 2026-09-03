@@ -7,6 +7,7 @@
 #include <netinet/sctp.h>
 #include <stdexcept>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 namespace ngap_core {
@@ -130,6 +131,15 @@ void SctpSocket::send(const std::vector<std::uint8_t>& data, std::uint16_t strea
     }
 }
 
+void SctpSocket::set_receive_timeout(std::chrono::milliseconds timeout) {
+    timeval tv{};
+    tv.tv_sec = static_cast<time_t>(timeout.count() / 1000);
+    tv.tv_usec = static_cast<suseconds_t>((timeout.count() % 1000) * 1000);
+    if (::setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, static_cast<socklen_t>(sizeof(tv))) < 0) {
+        throw_errno("setsockopt(SO_RCVTIMEO) failed");
+    }
+}
+
 std::vector<std::uint8_t> SctpSocket::receive() {
     std::vector<std::uint8_t> buffer(kReceiveBufferSize);
     sockaddr_in from{};
@@ -146,6 +156,12 @@ std::vector<std::uint8_t> SctpSocket::receive() {
                                         &flags);
     if (received < 0) {
         if (errno == ECONNRESET) {
+            return {};
+        }
+        // SO_RCVTIMEO expiry -- reported as "nothing came back", the same answer a closed
+        // association already gives, rather than as an error. Only reachable if a caller asked
+        // for a deadline; the default is an indefinite block.
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return {};
         }
         throw_errno("sctp_recvmsg() failed");

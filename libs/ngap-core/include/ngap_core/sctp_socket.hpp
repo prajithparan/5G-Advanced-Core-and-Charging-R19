@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -62,9 +63,18 @@ public:
     // unlike a TCP stream -- no length-prefixing needed). Throws std::runtime_error on failure.
     void send(const std::vector<std::uint8_t>& data, std::uint16_t stream = 0);
 
+    // Bounds how long receive() blocks. Zero -- the default -- means block indefinitely, which is
+    // what every production caller relies on (each association gets its own thread, ADR-0030, and
+    // an idle gNB legitimately sends nothing for hours). Set by tests that must fail rather than
+    // hang when a peer never answers: an unbounded wait there is indistinguishable from a CI
+    // runner dying mid-job. Throws std::runtime_error if the socket rejects the option.
+    void set_receive_timeout(std::chrono::milliseconds timeout);
+
     // Blocking receive of one SCTP message. Returns an empty vector on graceful peer shutdown
     // (ECONNRESET) rather than throwing, since that's an expected, routine event (a gNB
-    // disconnecting), not an error condition. Throws std::runtime_error on any other failure.
+    // disconnecting), not an error condition -- and, when set_receive_timeout is in effect, on
+    // that timeout expiring, which is the same "nothing came back" answer callers already handle.
+    // Throws std::runtime_error on any other failure.
     std::vector<std::uint8_t> receive();
 
     bool valid() const { return fd_ >= 0; }

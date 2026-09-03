@@ -22842,8 +22842,8 @@ drives it. `tests/integration/ue_nas_driver.{hpp,cpp}` gains:
   downlink for real: MAC-verify, decipher, then pull the opaque N1 SM container out of the
   DlNasTransport.
 
-`seal_uplink` factors the envelope every secured uplink message shares, so `build_security_mode_
-complete` and the two new builders cannot drift apart on the MAC-covers-the-ciphered-bytes rule.
+`seal_uplink` factors the envelope every secured uplink message shares, so `build_security_mode_complete`
+and the two new builders cannot drift apart on the MAC-covers-the-ciphered-bytes rule.
 
 The new test, `RegisteredUeEstablishesARealPduSession`, drives one real UE over one real SCTP
 association through:
@@ -22914,11 +22914,48 @@ an obsolete reason is worse than none:
   only caller passes **2**, and explains why in its own comment. The code was right; the header was
   stale.
 
-### Next, with the trap still standing
+### Bounded receives, added here rather than after the first hung job
+
+`ngap_core::SctpSocket` gains `set_receive_timeout`, and `NgapTestGnb::connect` sets 30 s on its
+association. Zero -- still the default -- means block indefinitely, which is what every production
+caller relies on (each association gets its own thread, ADR-0030, and an idle gNB legitimately
+sends nothing for hours), so no NF behaviour changes. On expiry `receive()` returns an empty
+vector, the same "nothing came back" answer a closed association already gives, which the tests'
+existing assertions already report properly.
+
+The reason is this increment specifically. Every earlier assertion in this file waited on AMF
+answering on its own NGAP thread; the Accept arrives only after AMF -> SMF -> PCF -> SMF -> AMF
+completes, and AMF does not close the association when SMF fails. An unbounded wait there hangs
+until the CI job is killed, which is indistinguishable from the free-runner deaths this project
+already sees -- so the failure would be diagnosed as the wrong thing.
+
+The expiry path was checked directly rather than assumed, against a peer that accepts an
+association and then deliberately sends nothing: `receive()` returned empty after 815 ms on an
+800 ms deadline, instead of blocking or throwing. (Throwaway program, not committed -- a
+committed test for this would have to spend its timeout in CI to prove anything.)
+
+### Next, with three traps recorded rather than rediscovered
 
 What remains for the full relay is a second `NgapTestGnb` as the target gNB, NGSetup'd before
-`HandoverRequired` is sent, and UPF in the lab so the session carries a real N3 F-TEID.
-`handle_handover_required` **blocks the source association** for up to 10 s awaiting the target's
-reply (ADR-0258), so the target gNB's receive must be driven on its own thread -- a single-threaded
-test that sends `HandoverRequired` and then reads the source socket will deadlock. Recorded in
-ADR-0265/0266 and in `.claude/skills/ngap-message-support.md`, and still true.
+`HandoverRequired` is sent, and UPF in the lab. Three things will bite, and all three produce the
+*same* symptom -- `HandoverPreparationFailure` that reads like an AMF or SMF bug and is actually
+test sequencing:
+
+1. **`handle_handover_required` blocks the source association** for up to 10 s awaiting the
+   target's reply (ADR-0258). A single-threaded test that sends `HandoverRequired` and then reads
+   the source socket will deadlock; the target gNB's receive must be driven on its own thread.
+   Recorded since ADR-0265, and in `.claude/skills/ngap-message-support.md`.
+2. **Spawning UPF is not sufficient.** SMF establishes the N4 session *inline* during
+   CreateSMContext and, when no Sx Association exists yet, logs `skipping N4 Session
+   Establishment` -- it does not come back to the session later. SMF's discovery retries on a 2 s
+   cadence, so the test must gate on the association being up **before the UE sends the PDU
+   Session Establishment Request**. The gate already exists in
+   `tests/integration/test_smf_handover_n2sminfo.cpp`: create a session on a throwaway SUPI over
+   SBI and probe `HANDOVER_REQUIRED` until it answers 200 instead of 500.
+3. **AMF's stores are in a shared, long-lived Redis**, not per-process: each test spawns a fresh
+   AMF, but `ue_contexts`/`ue_security_contexts`/`amf_ue_id_index` survive in the one container
+   across tests and across runs (visibly, in the TMSI counter). So the relay test must establish
+   its PDU session **in its own body** rather than leaning on
+   `RegisteredUeEstablishesARealPduSession` having run first -- a stale `smContextRef` from an
+   earlier run, POSTed to a freshly spawned SMF, 404s and the session is skipped. Same failure
+   class as the `udr_amf_context` row that has to be deleted before a local full `ctest`.
