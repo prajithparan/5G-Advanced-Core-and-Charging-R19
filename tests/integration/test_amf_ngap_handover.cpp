@@ -907,3 +907,102 @@ TEST(AmfNgapTestGnb, RegistrationAndPduSessionReachNsacf) {
     EXPECT_GE(report.at("sliceStautsInfo").at("reachedNumUes").at("numericValNumUes").get<int>(), 1)
         << "the report must count the UE this test registered";
 }
+
+// ADR-0278: NSAC is now ENFORCED, not just reported. A UE whose slice NSACF refuses is sent a real
+// RegistrationReject instead of a RegistrationAccept, and is never counted as registered.
+//
+// The slice is emptied of capacity with NSACF's own LocalNumberUpdate (maxUesNumber: 0) rather
+// than by registering 100 UEs -- that operation exists precisely so an operator can change the
+// maximum at runtime, so using it here exercises a real path instead of brute force.
+//
+// The assertion is on the DECIPHERED downlink: message type 0x44 (RegistrationReject, TS 24.501
+// §8.2.8) carrying 5GMM cause 0x45 (insufficient resources for slice), where a passing UE would
+// have received 0x42. The UE verifies it with its own KNASint, so this also proves AMF protected
+// the reject with the security context it had just established rather than sending it in the
+// clear.
+TEST(AmfNgapTestGnb, UeIsRejectedWhenNsacfRefusesItsSlice) {
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0);
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0);
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0);
+    nf_test::SpawnedProcess ausf(AUSF_PATH);
+    ASSERT_GT(ausf.pid(), 0);
+    nf_test::SpawnedProcess pcf(PCF_PATH);
+    ASSERT_GT(pcf.pid(), 0);
+    nf_test::SpawnedProcess nsacf(NSACF_PATH);
+    ASSERT_GT(nsacf.pid(), 0);
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0);
+
+    ASSERT_NO_FATAL_FAILURE(
+        wait_for_sbi_peers({kUdrProbe, kUdmProbe, kAusfProbe, kPcfProbe, kNsacfProbe}));
+
+    // Take the lab slice's UE capacity to zero, through the real operation for it.
+    {
+        auto client = make_client();
+        sbi_core::http2::ClientRequest req;
+        req.method = "POST";
+        req.url = "https://127.0.0.1:7797/nnsacf-nsac/v1/slices/local-configs/update";
+        req.headers.emplace("content-type", "application/json");
+        req.body =
+            json{{"snssai", json{{"sst", kSst}, {"sd", "000001"}}}, {"maxUesNumber", 0}}.dump();
+        auto resp = client.send(req);
+        ASSERT_TRUE(resp.has_value());
+        ASSERT_EQ(resp->status, 204) << resp->body;
+    }
+
+    NgapTestGnb gnb;
+    ASSERT_TRUE(gnb.connect(kAmfNgapAddress, kAmfNgapPort));
+    ASSERT_TRUE(gnb.ng_setup(kSourceGnbId));
+
+    // The registration exchange, up to SecurityModeComplete -- identical to register_ue's, which
+    // cannot be reused here because it asserts on the RegistrationAccept this UE must not get.
+    constexpr std::uint32_t kUeRanId = 1;
+    const auto registration = nf_test::build_registration_request(nf_test::kTestSupi);
+    ASSERT_FALSE(registration.empty());
+    gnb.send_raw(gnb.build_initial_ue_message(kUeRanId, registration));
+
+    const auto challenge_pdu = gnb.receive_raw();
+    ASSERT_FALSE(challenge_pdu.empty());
+    NgapTestGnb::DownlinkNas challenge_nas;
+    ASSERT_TRUE(NgapTestGnb::extract_downlink_nas(challenge_pdu, challenge_nas));
+    const auto challenge = nf_test::parse_authentication_request(challenge_nas.nas_pdu);
+    ASSERT_TRUE(challenge.has_value());
+    const auto res_star = nf_test::compute_res_star(*challenge, kServingNetworkName);
+    ASSERT_TRUE(res_star.has_value());
+    gnb.send_raw(gnb.build_uplink_nas_transport(
+        challenge_nas.amf_ue_id, kUeRanId, nf_test::build_authentication_response(*res_star)));
+
+    const auto smc_pdu = gnb.receive_raw();
+    ASSERT_FALSE(smc_pdu.empty());
+    NgapTestGnb::DownlinkNas smc_nas;
+    ASSERT_TRUE(NgapTestGnb::extract_downlink_nas(smc_pdu, smc_nas));
+    const auto keys = nf_test::derive_nas_keys(*challenge, nf_test::kTestSupi, kServingNetworkName);
+    gnb.send_raw(gnb.build_uplink_nas_transport(
+        challenge_nas.amf_ue_id,
+        kUeRanId,
+        nf_test::build_security_mode_complete(keys, /*uplink_count=*/0)));
+
+    // Where a passing UE gets RegistrationAccept, this one must get RegistrationReject.
+    const auto reject_pdu = gnb.receive_raw();
+    ASSERT_FALSE(reject_pdu.empty())
+        << "AMF answered nothing after SecurityModeComplete -- a refused UE must still be told, "
+           "not left waiting";
+    NgapTestGnb::DownlinkNas reject_nas;
+    ASSERT_TRUE(NgapTestGnb::extract_downlink_nas(reject_pdu, reject_nas));
+    ASSERT_GE(reject_nas.nas_pdu.size(), 8u);
+    EXPECT_EQ(reject_nas.nas_pdu[1], 0x02)
+        << "the reject must be integrity protected AND ciphered with the context just established";
+
+    const auto plain =
+        nf_test::open_secured_downlink(keys, /*downlink_count=*/1, reject_nas.nas_pdu);
+    ASSERT_TRUE(plain.has_value())
+        << "the RegistrationReject's MAC did not verify against the UE's own KNASint";
+    ASSERT_GE(plain->size(), 4u);
+    EXPECT_EQ((*plain)[2], 0x44)
+        << "expected RegistrationReject (0x44); 0x42 would mean the UE was accepted onto a slice "
+           "NSACF had refused";
+    EXPECT_EQ((*plain)[3], 0x45) << "expected 5GMM cause 0x45, insufficient resources for slice";
+}

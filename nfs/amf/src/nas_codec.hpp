@@ -168,6 +168,23 @@ std::vector<std::uint8_t> encode_registration_accept(const aka_crypto::NasIntKey
                                                      std::uint16_t amf_set_id,
                                                      std::uint8_t amf_pointer);
 
+// RegistrationReject (TS 24.501 §8.2.8) -- ADR-0278, sent when Network Slice Admission Control
+// refuses the UE's slice. SECURED, because this is only reachable after SecurityModeComplete has
+// succeeded and a NAS security context therefore exists (contrast encode_service_reject_plain,
+// whose plain form exists precisely for the case where there is none).
+//
+// mm_cause: TS 24.501 §9.11.3.2 5GMM cause. The NSAC case is 0x45
+// INSUFFICIENT_RESOURCES_FOR_SLICE, read from
+// simulators/ransim/vendor/UERANSIM/src/lib/nas/enums.hpp's EMmCause, the same real source this
+// file's other cause values cite.
+//
+// downlink_count: 1 -- it replaces RegistrationAccept, which is this association's second secured
+// downlink message (SecurityModeCommand was 0). A rejected UE never receives both.
+std::vector<std::uint8_t> encode_registration_reject(const aka_crypto::NasIntKey& knas_int,
+                                                     const aka_crypto::NasEncKey& knas_enc,
+                                                     std::uint32_t downlink_count,
+                                                     std::uint8_t mm_cause);
+
 struct RegistrationCompleteOutcome {
     // Same split as SecurityModeCompleteOutcome::mac_valid -- see that struct's own comment.
     bool mac_valid = false;

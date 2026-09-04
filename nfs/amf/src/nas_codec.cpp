@@ -22,6 +22,10 @@ constexpr std::uint8_t kMessageTypeAuthenticationFailure = 0x59;
 constexpr std::uint8_t kMessageTypeSecurityModeCommand = 0x5D;
 constexpr std::uint8_t kMessageTypeSecurityModeComplete = 0x5E;
 constexpr std::uint8_t kMessageTypeRegistrationAccept = 0x42;
+// ADR-0278. 0x44, from the same real source every other message type here cites --
+// simulators/ransim/vendor/UERANSIM/src/lib/nas/enums.hpp's EMessageType::REGISTRATION_REJECT
+// (0b01000100), the file this codec already reads REGISTRATION_ACCEPT = 0x42 from.
+constexpr std::uint8_t kMessageTypeRegistrationReject = 0x44;
 constexpr std::uint8_t kMessageTypeRegistrationComplete = 0x43;
 constexpr std::uint8_t kMessageTypeUlNasTransport = 0x67;
 constexpr std::uint8_t kMessageTypeDlNasTransport = 0x68;
@@ -528,6 +532,33 @@ std::vector<std::uint8_t> encode_registration_accept(const aka_crypto::NasIntKey
     inner.push_back(static_cast<std::uint8_t>(guti_value.size() & 0xFF));
     inner.insert(inner.end(), guti_value.begin(), guti_value.end());
 
+    return encode_secured_downlink(knas_int,
+                                   knas_enc,
+                                   kShtIntegrityProtectedAndCiphered,
+                                   /*ciphered=*/true,
+                                   downlink_count,
+                                   inner);
+}
+
+std::vector<std::uint8_t> encode_registration_reject(const aka_crypto::NasIntKey& knas_int,
+                                                     const aka_crypto::NasEncKey& knas_enc,
+                                                     std::uint32_t downlink_count,
+                                                     std::uint8_t mm_cause) {
+    // Inner plaintext message (TS 24.501 §8.2.8): own header, then the ONE mandatory IE --
+    // 5GMM cause, a Type-3 single octet with no length prefix, exactly as
+    // encode_service_reject_plain already encodes it for ServiceReject. T3346/T3502 are optional
+    // and not sent.
+    std::vector<std::uint8_t> inner;
+    inner.push_back(kEpdMobilityManagement);
+    inner.push_back(kSecurityHeaderNotProtected);
+    inner.push_back(kMessageTypeRegistrationReject);
+    inner.push_back(mm_cause);
+
+    // SECURED, unlike encode_service_reject_plain. The difference is real, not stylistic: this
+    // reject is only ever sent after SecurityModeComplete has succeeded, so a NAS security context
+    // exists and TS 24.501 §4.4.4.2 has the message protected with it. The plain form exists for
+    // the case where there is no context to protect WITH (see encode_service_reject_plain's own
+    // comment); using it here would throw away protection the network already has.
     return encode_secured_downlink(knas_int,
                                    knas_enc,
                                    kShtIntegrityProtectedAndCiphered,

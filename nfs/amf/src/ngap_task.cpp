@@ -1316,7 +1316,82 @@ void handle_uplink_nas_transport(const PeerEndpoints& peers,
 // the now-confirmed normal context, downlink_count=1). Real, load-bearing consequence of sending a
 // GUTI (see UeAuthState::Phase's own updated comment): a real UE now sends RegistrationComplete in
 // response, handled by handle_uplink_nas_transport_registration_complete below, NOT here anymore.
-void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
+// ADR-0278: returns false ONLY when NSACF really refused the slice. Every other outcome -- NSACF
+// unreachable, no token, an unexpected status -- returns true, because a UE must not be denied
+// service by an admission controller that failed to answer. A deliberate fail-open, named here
+// rather than left implicit in the control flow: NSAC is an operator quota mechanism, not an
+// authentication step, and TS 23.501 §5.15.11 gives it no authority over a registration it could
+// not evaluate.
+bool report_ue_to_nsacf(const PeerEndpoints& peers,
+                        sbi_core::http2::Client& nsacf_client,
+                        sbi_core::OAuth2Client& nsacf_oauth,
+                        const std::string& supi,
+                        bool increase) {
+    if (peers.nsacf_base.empty()) {
+        return true;
+    }
+    const auto token = nsacf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::error("amf-ngap: could not obtain an NSACF token for slice admission control: {}",
+                      token.error());
+        return true;
+    }
+
+    // The UE's own slice. kSst/kSd are this lab's single configured S-NSSAI -- the same pair the
+    // Allowed NSSAI and the PDU session carry, so the admission control counts the slice the UE is
+    // really on.
+    nlohmann::json snssai{{"sst", kSst}};
+    snssai["sd"] = fmt::format("{:06x}", kSd);
+
+    nlohmann::json request;
+    request["ueACRequestInfo"] = nlohmann::json::array({nlohmann::json{
+        {"supi", supi},
+        {"anType", "3GPP_ACCESS"},
+        {"acuOperationList",
+         nlohmann::json::array({nlohmann::json{{"updateFlag", increase ? "INCREASE" : "DECREASE"},
+                                               {"snssai", snssai}}})}}});
+    request["nfId"] = "00000000-0000-4000-8000-0000000000aa";
+
+    sbi_core::http2::ClientRequest http_req;
+    http_req.method = "POST";
+    http_req.url = peers.nsacf_base + "/nnsacf-nsac/v1/slices/ues";
+    http_req.headers.emplace("content-type", "application/json");
+    http_req.headers.emplace("authorization", "Bearer " + *token);
+    http_req.body = request.dump();
+
+    auto resp = nsacf_client.send(http_req);
+    if (!resp.has_value()) {
+        spdlog::warn("amf-ngap: NSACF NumOfUEsUpdate call failed for SUPI {}: {} -- admitting, see "
+                     "this function's own fail-open note",
+                     supi,
+                     resp.error());
+        return true;
+    }
+    if (resp->status == 204) {
+        spdlog::info("amf-ngap: NSACF admitted SUPI {} onto slice sst={} ({})",
+                     supi,
+                     static_cast<int>(kSst),
+                     increase ? "INCREASE" : "DECREASE");
+        return true;
+    }
+    if (resp->status == 200) {
+        // 200 is the YAML's "Partial successful ACU operation": the body carries the real
+        // AcuFailureList, and for a single-slice request like this one that means the one slice
+        // asked about was refused.
+        spdlog::warn("amf-ngap: NSACF REFUSED SUPI {} for its slice: {}", supi, resp->body);
+        return false;
+    }
+    spdlog::warn("amf-ngap: NSACF NumOfUEsUpdate returned unexpected status {} for SUPI {} -- "
+                 "admitting, see this function's own fail-open note",
+                 resp->status,
+                 supi);
+    return true;
+}
+
+void handle_uplink_nas_transport_smc_complete(const PeerEndpoints& peers,
+                                              sbi_core::http2::Client& nsacf_client,
+                                              sbi_core::OAuth2Client& nsacf_oauth,
+                                              ngap_core::SctpSocket& assoc,
                                               UeSecurityContextStore& ue_security_contexts,
                                               AmfUeIdIndexStore& amf_ue_id_index,
                                               std::uint8_t amf_region_id,
@@ -1353,6 +1428,39 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
     spdlog::info("amf-ngap: SecurityModeComplete verified OK for SUPI {} -- NAS security context "
                  "active",
                  auth_state.supi);
+
+    // ADR-0278: Network Slice Admission Control, BEFORE the UE is told it is registered.
+    //
+    // Placement is the whole point. ADR-0277 called NSACF after RegistrationAccept, which counts
+    // the UE correctly but can only ever report a refusal -- by then the UE has been told it is
+    // registered. TS 23.501 §5.15.11 makes NSAC a control on how many UEs may BE registered, so
+    // the decision has to precede the Accept. The count is still taken here (the UE is admitted
+    // the moment AMF decides to accept it), so a refusal consumes nothing.
+    if (!report_ue_to_nsacf(peers, nsacf_client, nsacf_oauth, auth_state.supi, /*increase=*/true)) {
+        // TS 24.501 §8.2.8 RegistrationReject with 5GMM cause 0x45
+        // (INSUFFICIENT_RESOURCES_FOR_SLICE). Secured, because SecurityModeComplete just
+        // succeeded and a NAS context exists -- see encode_registration_reject.
+        constexpr std::uint8_t kMmCauseInsufficientResourcesForSlice = 0x45;
+        const auto reject_nas =
+            amf::nas::encode_registration_reject(*auth_state.knas_int,
+                                                 *auth_state.knas_enc,
+                                                 /*downlink_count=*/1,
+                                                 kMmCauseInsufficientResourcesForSlice);
+        send_downlink_nas_transport(assoc, auth_state.amf_ue_id, auth_state.ran_ue_id, reject_nas);
+        spdlog::warn("amf-ngap: REGISTRATION REJECTED for SUPI {} -- NSACF refused its slice "
+                     "(5GMM cause 0x45, insufficient resources for slice)",
+                     auth_state.supi);
+        // No security context is persisted and no PCF association is created: this UE is not
+        // registered, so leaving either behind would make it look like it was.
+        //
+        // The phase is deliberately NOT rewound. This association's UeAuthState has no
+        // "awaiting a fresh RegistrationRequest" phase to go back to (the machine starts at
+        // AwaitingAuthenticationResponse), and inventing one would be a state-machine change
+        // dressed as an error path. A retrying UE arrives as a new InitialUEMessage, which gets a
+        // fresh UeAuthState of its own -- so the real retry path already works, and this
+        // association is simply finished.
+        return;
+    }
 
     const auto tmsi = ue_security_contexts.allocate_tmsi();
     const auto reg_accept_nas = amf::nas::encode_registration_accept(*auth_state.knas_int,
@@ -1411,75 +1519,9 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
 // PCF association already created, which is a behaviour change to the registration procedure
 // itself rather than a call. So a rejection is logged loudly and the count is left accurate; the
 // enforcement step is named as the next increment, not implied to exist.
-void report_ue_to_nsacf(const PeerEndpoints& peers,
-                        sbi_core::http2::Client& nsacf_client,
-                        sbi_core::OAuth2Client& nsacf_oauth,
-                        const std::string& supi,
-                        bool increase) {
-    if (peers.nsacf_base.empty()) {
-        return;
-    }
-    const auto token = nsacf_oauth.get_bearer_token();
-    if (!token.has_value()) {
-        spdlog::error("amf-ngap: could not obtain an NSACF token for slice admission control: {}",
-                      token.error());
-        return;
-    }
-
-    // The UE's own slice. kSst/kSd are this lab's single configured S-NSSAI -- the same pair the
-    // Allowed NSSAI and the PDU session carry, so the admission control counts the slice the UE is
-    // really on.
-    nlohmann::json snssai{{"sst", kSst}};
-    snssai["sd"] = fmt::format("{:06x}", kSd);
-
-    nlohmann::json request;
-    request["ueACRequestInfo"] = nlohmann::json::array({nlohmann::json{
-        {"supi", supi},
-        {"anType", "3GPP_ACCESS"},
-        {"acuOperationList",
-         nlohmann::json::array({nlohmann::json{{"updateFlag", increase ? "INCREASE" : "DECREASE"},
-                                               {"snssai", snssai}}})}}});
-    request["nfId"] = "00000000-0000-4000-8000-0000000000aa";
-
-    sbi_core::http2::ClientRequest http_req;
-    http_req.method = "POST";
-    http_req.url = peers.nsacf_base + "/nnsacf-nsac/v1/slices/ues";
-    http_req.headers.emplace("content-type", "application/json");
-    http_req.headers.emplace("authorization", "Bearer " + *token);
-    http_req.body = request.dump();
-
-    auto resp = nsacf_client.send(http_req);
-    if (!resp.has_value()) {
-        spdlog::warn(
-            "amf-ngap: NSACF NumOfUEsUpdate call failed for SUPI {}: {}", supi, resp.error());
-        return;
-    }
-    if (resp->status == 204) {
-        spdlog::info("amf-ngap: NSACF admitted SUPI {} onto slice sst={} ({})",
-                     supi,
-                     static_cast<int>(kSst),
-                     increase ? "INCREASE" : "DECREASE");
-        return;
-    }
-    if (resp->status == 200) {
-        // 200 means the ACU operation only partially succeeded: the body carries the real
-        // AcuFailureList. See this function's own scope note -- reported, not yet enforced.
-        spdlog::warn("amf-ngap: NSACF REJECTED SUPI {} for its slice: {} -- this registration is "
-                     "NOT being refused (enforcement is a separate increment, ADR-0277)",
-                     supi,
-                     resp->body);
-        return;
-    }
-    spdlog::warn("amf-ngap: NSACF NumOfUEsUpdate returned unexpected status {} for SUPI {}",
-                 resp->status,
-                 supi);
-}
-
 void handle_uplink_nas_transport_registration_complete(const PeerEndpoints& peers,
                                                        sbi_core::http2::Client& pcf_client,
                                                        sbi_core::OAuth2Client& pcf_oauth,
-                                                       sbi_core::http2::Client& nsacf_client,
-                                                       sbi_core::OAuth2Client& nsacf_oauth,
                                                        UeContextStore& ue_contexts,
                                                        NgapUeRegistry& ue_ngap_registry,
                                                        ngap_core::SctpSocket& assoc,
@@ -1576,9 +1618,6 @@ void handle_uplink_nas_transport_registration_complete(const PeerEndpoints& peer
     spdlog::info("amf-ngap: AM Policy Association established with PCF for SUPI {} -- UE "
                  "registration procedure fully complete",
                  auth_state.supi);
-
-    // TS 23.502 §4.2.2.2.2: the UE is now REGISTERED, which is exactly the thing NSAC counts.
-    report_ue_to_nsacf(peers, nsacf_client, nsacf_oauth, auth_state.supi, /*increase=*/true);
 }
 
 // PDU Session Establishment (TS 23.502 §4.3.2.2.1), AMF's side of it: decodes+verifies the
@@ -1901,7 +1940,10 @@ void handle_association(const PeerEndpoints& peers,
                                                 *pdu->choice.initiatingMessage);
                     break;
                 case UeAuthState::Phase::AwaitingSecurityModeComplete:
-                    handle_uplink_nas_transport_smc_complete(assoc,
+                    handle_uplink_nas_transport_smc_complete(peers,
+                                                             nsacf_client,
+                                                             nsacf_oauth,
+                                                             assoc,
                                                              ue_security_contexts,
                                                              amf_ue_id_index,
                                                              amf_region_id,
@@ -1915,8 +1957,6 @@ void handle_association(const PeerEndpoints& peers,
                         peers,
                         pcf_client,
                         pcf_oauth,
-                        nsacf_client,
-                        nsacf_oauth,
                         ue_contexts,
                         ue_ngap_registry,
                         assoc,
