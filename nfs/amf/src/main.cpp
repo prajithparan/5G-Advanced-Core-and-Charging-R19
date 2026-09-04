@@ -230,7 +230,9 @@ std::optional<T> parse_multipart_json_body(const sbi_core::http2::Request& req,
 // while a heartbeat call is in flight. A dedicated thread with its own Client instance is a
 // minimal, disclosed resolution -- not the full curl_multi/Asio integration ADR-0006 names as the
 // eventual real fix, which remains future work.
-void run_nrf_lifecycle(const std::string& amf_instance_id, const std::string& nrf_base) {
+void run_nrf_lifecycle(const std::string& amf_instance_id,
+                       const std::string& nrf_base,
+                       const std::string& advertised_ipv4) {
     sbi_core::http2::TlsConfig client_tls{
         .cert_path = CERTS_DIR "/amf/cert.pem",
         .key_path = CERTS_DIR "/amf/key.pem",
@@ -256,7 +258,7 @@ void run_nrf_lifecycle(const std::string& amf_instance_id, const std::string& nr
         {"nfInstanceId", amf_instance_id},
         {"nfType", kNfType},
         {"nfStatus", "REGISTERED"},
-        {"ipv4Addresses", json::array({"127.0.0.1"})},
+        {"ipv4Addresses", json::array({advertised_ipv4})},
         {"heartBeatTimer", kHeartbeatSeconds},
     };
 
@@ -343,9 +345,14 @@ int main() {
     peers.ausf_base = nf_config::require<std::string>(config, "ausf_base_url", "AMF_AUSF_BASE_URL");
     peers.pcf_base = nf_config::require<std::string>(config, "pcf_base_url", "AMF_PCF_BASE_URL");
     peers.smf_base = nf_config::require<std::string>(config, "smf_base_url", "AMF_SMF_BASE_URL");
-    // Derived, not configured: this is the address AMF advertises to NRF, so a fifth key would
-    // have to be kept in sync with `port` by hand -- the exact drift this task removes.
-    peers.self_base = "https://127.0.0.1:" + std::to_string(port);
+    // AMF's own advertised address. The HOST comes from config (`advertised_ipv4`), the PORT is
+    // reused from `port` rather than given a key of its own -- a separate self-port key would have
+    // to be hand-synced with the listener's, which is the drift this task removes. The same
+    // `advertised_ipv4` feeds the NRF profile's ipv4Addresses below, so the address AMF publishes
+    // to NRF and the one it puts in its own callback URIs cannot disagree.
+    const auto advertised_ipv4 =
+        nf_config::require<std::string>(config, "advertised_ipv4", "AMF_ADVERTISED_IPV4");
+    peers.self_base = "https://" + advertised_ipv4 + ":" + std::to_string(port);
 
     const auto amf_region_id = nf_config::require<std::uint8_t>(config, "amf_region_id");
     const auto amf_set_id = nf_config::require<std::uint16_t>(config, "amf_set_id");
@@ -1322,7 +1329,7 @@ int main() {
             return sbi_core::http2::Response::json(200, j.dump());
         });
 
-    std::thread(run_nrf_lifecycle, amf_instance_id, nrf_base).detach();
+    std::thread(run_nrf_lifecycle, amf_instance_id, nrf_base, advertised_ipv4).detach();
     // NGAP/N2 (SCTP), its own dedicated thread -- see docs/DECISIONS.md ADR-0030/ADR-0031.
     // ngap_bind_address/ngap_bind_port default (config/amf.json) to 127.0.0.5:38412, matching
     // simulators/ransim/config/gnb.yaml's pre-agreed AMF target exactly (ADR-0016) -- now a real

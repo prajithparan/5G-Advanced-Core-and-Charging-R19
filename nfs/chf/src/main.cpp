@@ -337,6 +337,14 @@ int main() {
     const std::string chf_instance_id = sbi_core::generate_uuid_v4();
     spdlog::info("chf: starting, nfInstanceId={}", chf_instance_id);
 
+    // Task #109 (ADR-0274): touch both peer base URLs now so a missing/misspelled key in
+    // config/chf.json fails fast at boot, with the resolved path in the message, rather than
+    // throwing out of a charging request later. charging_engine caches them in a function-local
+    // static, so this is the read that populates it.
+    spdlog::info("chf: product catalog at {}, balance management at {}",
+                 chf::product_catalog_base(),
+                 chf::balance_management_base());
+
     sbi_core::http2::TlsConfig server_tls{
         .cert_path = CERTS_DIR "/chf/cert.pem",
         .key_path = CERTS_DIR "/chf/key.pem",

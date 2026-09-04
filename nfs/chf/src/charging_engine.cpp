@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <nf_config/nf_config.hpp>
 
 namespace chf {
 
@@ -16,18 +17,36 @@ using nlohmann::json;
 
 } // namespace
 
+// Task #109 (ADR-0274): these two returned in-source literals
+// (https://127.0.0.1:7785/7786) when their env var was unset. The env override stays -- it is how
+// the existing integration tests point CHF at their own instances -- but the fallback is now
+// config/chf.json, because the standing rule is that a deployment endpoint never lives in a .cpp
+// literal. nf_config::require applies the env override itself, so the two paths collapse into one.
+//
+// Read once via a function-local static rather than per call: these sit on CHF's charging hot
+// path (six call sites across offering lookup, reserve and adjust), and re-reading a JSON file per
+// HTTP request would be a real cost for a value that cannot change while the process runs.
+// main() touches both at startup (see its own comment) so a missing key fails fast at boot
+// instead of surfacing mid-request.
+namespace {
+
+std::string load_peer_base(const char* key, const char* env_name) {
+    const auto config = nf_config::load("chf", CONFIG_DIR);
+    return nf_config::require<std::string>(config, key, env_name);
+}
+
+} // namespace
+
 std::string product_catalog_base() {
-    if (const char* env = std::getenv("CHF_PRODUCT_CATALOG_BASE")) {
-        return env;
-    }
-    return "https://127.0.0.1:7785";
+    static const std::string base =
+        load_peer_base("product_catalog_base_url", "CHF_PRODUCT_CATALOG_BASE");
+    return base;
 }
 
 std::string balance_management_base() {
-    if (const char* env = std::getenv("CHF_BALANCE_MANAGEMENT_BASE")) {
-        return env;
-    }
-    return "https://127.0.0.1:7786";
+    static const std::string base =
+        load_peer_base("balance_management_base_url", "CHF_BALANCE_MANAGEMENT_BASE");
+    return base;
 }
 
 // ADR-0072 (gap-closure: real N40 product-configurability). Real TMF620 extension-point lookup:
