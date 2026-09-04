@@ -67,6 +67,9 @@ void handle_handover_cancel(ngap_core::SctpSocket& source_assoc,
                             const InitiatingMessage_t& msg);
 
 void handle_handover_notify(ngap_core::SctpSocket& target_assoc,
+                            sbi_core::http2::Client& smf_client,
+                            sbi_core::OAuth2Client& smf_oauth,
+                            amf::UeContextStore& ue_contexts,
                             NgapUeRegistry& ue_ngap_registry,
                             UeSecurityContextStore& ue_security_contexts,
                             AmfUeIdIndexStore& amf_ue_id_index,

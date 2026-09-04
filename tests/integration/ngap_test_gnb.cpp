@@ -17,6 +17,7 @@ extern "C" {
 #include <GlobalRANNodeID.h>
 #include <HandoverCancel.h>
 #include <HandoverCommand.h>
+#include <HandoverNotify.h>
 #include <HandoverRequest.h>
 #include <HandoverRequestAcknowledge.h>
 #include <HandoverRequestAcknowledgeTransfer.h>
@@ -581,6 +582,46 @@ NgapTestGnb::build_initial_ue_message(std::uint32_t ran_ue_id,
     pdu.choice.initiatingMessage->criticality = Criticality_ignore;
     pdu.choice.initiatingMessage->value.present = InitiatingMessage__value_PR_InitialUEMessage;
     pdu.choice.initiatingMessage->value.choice.InitialUEMessage = msg;
+    const auto bytes = ::ngap::encode_pdu(pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
+    return bytes;
+}
+
+std::vector<std::uint8_t> NgapTestGnb::build_handover_notify(std::uint64_t amf_ue_id,
+                                                             std::uint32_t ran_ue_id) {
+    HandoverNotify_t notify{};
+
+    AMF_UE_NGAP_ID_t amf_id{};
+    asn_ulong2INTEGER(&amf_id, static_cast<unsigned long>(amf_ue_id));
+    ::ngap::add_ie(
+        notify.protocolIEs,
+        ::ngap::make_ie(
+            10 /* id-AMF-UE-NGAP-ID */, Criticality_reject, &asn_DEF_AMF_UE_NGAP_ID, &amf_id));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_AMF_UE_NGAP_ID, &amf_id);
+
+    RAN_UE_NGAP_ID_t ran_id = static_cast<RAN_UE_NGAP_ID_t>(ran_ue_id);
+    ::ngap::add_ie(
+        notify.protocolIEs,
+        ::ngap::make_ie(
+            85 /* id-RAN-UE-NGAP-ID */, Criticality_reject, &asn_DEF_RAN_UE_NGAP_ID, &ran_id));
+
+    UserLocationInformation_t uli{};
+    fill_user_location(uli);
+    ::ngap::add_ie(notify.protocolIEs,
+                   ::ngap::make_ie(121 /* id-UserLocationInformation */,
+                                   Criticality_ignore,
+                                   &asn_DEF_UserLocationInformation,
+                                   &uli));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_UserLocationInformation, &uli);
+
+    NGAP_PDU_t pdu{};
+    pdu.present = NGAP_PDU_PR_initiatingMessage;
+    pdu.choice.initiatingMessage =
+        static_cast<InitiatingMessage_t*>(std::calloc(1, sizeof(InitiatingMessage_t)));
+    pdu.choice.initiatingMessage->procedureCode = kProcHandoverNotification;
+    pdu.choice.initiatingMessage->criticality = Criticality_ignore;
+    pdu.choice.initiatingMessage->value.present = InitiatingMessage__value_PR_HandoverNotify;
+    pdu.choice.initiatingMessage->value.choice.HandoverNotify = notify;
     const auto bytes = ::ngap::encode_pdu(pdu);
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
     return bytes;

@@ -1782,6 +1782,9 @@ void handle_association(ngap_core::SctpSocket assoc,
             // Real HandoverNotify -- arrives on the TARGET association's own thread. See
             // handle_handover_notify's own header comment.
             handle_handover_notify(assoc,
+                                   smf_client,
+                                   smf_oauth,
+                                   ue_contexts,
                                    ue_ngap_registry,
                                    ue_security_contexts,
                                    amf_ue_id_index,

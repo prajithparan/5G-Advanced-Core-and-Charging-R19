@@ -554,7 +554,7 @@ struct TargetGnbOutcome {
 // association gates on it; (3) AMF's stores live in a shared, long-lived Redis across runs, so
 // this test establishes its own session in its own body rather than leaning on ADR-0267's test
 // having run first.
-TEST(AmfNgapTestGnb, FullN2HandoverRelayReachesHandoverCommand) {
+TEST(AmfNgapTestGnb, FullN2HandoverRelayThroughExecutionAndSourceRelease) {
     nf_test::SpawnedProcess nrf(NRF_PATH);
     ASSERT_GT(nrf.pid(), 0);
     nf_test::SpawnedProcess udr(UDR_PATH);
@@ -669,4 +669,23 @@ TEST(AmfNgapTestGnb, FullN2HandoverRelayReachesHandoverCommand) {
            "source gNB without telling SMF where the target wants downlink, so UPF is still "
            "pointed at the source";
     EXPECT_EQ(switched[0], kPduSessionId);
+
+    // --- ADR-0271: the execution phase (TS 23.502 §4.9.1.3.3) ---
+    //
+    // The UE arrives at the target, which says so with HandoverNotify. AMF then owes two things:
+    // tell SMF the handover completed (hoState=COMPLETED, per PDU session) and release what the
+    // SOURCE gNB is still holding. It does them in that order, so the release arriving here is
+    // also evidence the SMF loop ran ahead of it -- SMF's own log
+    // ("handover COMPLETED for smContextRef ... recorded") is what confirms SMF answered, and this
+    // test deliberately does not assert on SMF's internal state, which it has no read path to.
+    target.send_raw(target.build_handover_notify(ue.amf_ue_id, kTargetRanUeId));
+
+    const auto release = source.receive_raw();
+    ASSERT_FALSE(release.empty())
+        << "the source gNB was never released after the UE arrived at the target -- it would hold "
+           "that UE's resources forever";
+    const auto release_summary = NgapTestGnb::summarize(release);
+    EXPECT_EQ(release_summary.outcome, NgapTestGnb::Outcome::Initiating);
+    EXPECT_EQ(release_summary.procedure_code, NgapTestGnb::kProcUeContextRelease)
+        << "expected an AMF-initiated UEContextReleaseCommand to the source gNB";
 }

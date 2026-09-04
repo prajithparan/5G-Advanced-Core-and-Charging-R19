@@ -1018,6 +1018,9 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
 // only real 3GPP-conformant behavior when this AMF itself tracked the whole handover), matching
 // TS 38.413's own real "if present, indicates..." optional-hint semantics rather than a hard gate.
 void handle_handover_notify(ngap_core::SctpSocket& target_assoc,
+                            sbi_core::http2::Client& smf_client,
+                            sbi_core::OAuth2Client& smf_oauth,
+                            amf::UeContextStore& ue_contexts,
                             NgapUeRegistry& ue_ngap_registry,
                             UeSecurityContextStore& ue_security_contexts,
                             AmfUeIdIndexStore& amf_ue_id_index,
@@ -1064,6 +1067,65 @@ void handle_handover_notify(ngap_core::SctpSocket& target_assoc,
         ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_ue_id);
         ASN_STRUCT_FREE(asn_DEF_RAN_UE_NGAP_ID, ran_ue_id);
         return;
+    }
+
+    // ADR-0271: tell SMF the handover actually happened, BEFORE releasing the source.
+    //
+    // TS 23.502 §4.9.1.3.3. `hoState=COMPLETED` is a real value of the real `HoState` enum in
+    // TS29502_Nsmf_PDUSession.yaml (NONE/PREPARING/PREPARED/COMPLETED/CANCELLED) -- the same field
+    // ADR-0261 already sends as CANCELLED down the abandon path. Until now the completion path
+    // sent SMF nothing at all: SMF's session stayed in whatever handover state preparation left
+    // it in, with no record that the UE had arrived.
+    //
+    // Ordering is the spec's, not a convenience: SMF is told the handover completed first, then
+    // the source's resources are released. A session with no stored smContextRef is skipped with
+    // a warning rather than given an invented reference -- ADR-0258's policy, unchanged.
+    {
+        const auto ue_ctx = ue_contexts.get(ctx->supi);
+        if (ue_ctx.has_value() && ue_ctx->contains("smContextRefs")) {
+            const auto token = smf_oauth.get_bearer_token();
+            if (!token.has_value()) {
+                spdlog::error("amf-ngap: could not obtain an SMF token to report handover "
+                              "completion for SUPI {}: {}",
+                              ctx->supi,
+                              token.error());
+            } else {
+                for (const auto& [pdu_session_id, ref] : ue_ctx->at("smContextRefs").items()) {
+                    nlohmann::json update_data;
+                    update_data["hoState"] = "COMPLETED";
+                    sbi_core::http2::ClientRequest http_req;
+                    http_req.method = "POST";
+                    http_req.url = std::string(kSmfBase) + "/nsmf-pdusession/v1/sm-contexts/" +
+                                   ref.get<std::string>() + "/modify";
+                    http_req.headers.emplace("content-type", "application/json");
+                    http_req.headers.emplace("authorization", "Bearer " + *token);
+                    http_req.body = update_data.dump();
+                    auto resp = smf_client.send(http_req);
+                    if (!resp.has_value()) {
+                        spdlog::error("amf-ngap: SMF UpdateSMContext(hoState=COMPLETED) failed for "
+                                      "SUPI {} pduSessionId={}: {}",
+                                      ctx->supi,
+                                      pdu_session_id,
+                                      resp.error());
+                    } else if (resp->status != 200 && resp->status != 204) {
+                        spdlog::error("amf-ngap: SMF UpdateSMContext(hoState=COMPLETED) returned "
+                                      "{} for SUPI {} pduSessionId={}",
+                                      resp->status,
+                                      ctx->supi,
+                                      pdu_session_id);
+                    } else {
+                        spdlog::info("amf-ngap: SMF acknowledged hoState=COMPLETED for SUPI {} "
+                                     "pduSessionId={}",
+                                     ctx->supi,
+                                     pdu_session_id);
+                    }
+                }
+            }
+        } else {
+            spdlog::warn("amf-ngap: no SM context refs stored for SUPI {} -- SMF is not told this "
+                         "handover completed",
+                         ctx->supi);
+        }
     }
 
     // Real, AMF-initiated UEContextReleaseCommand to the SOURCE (still the registry's current

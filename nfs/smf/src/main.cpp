@@ -2834,6 +2834,40 @@ int main() {
                 return resp;
             }
 
+            // ADR-0271: handover completion reaches SMF the same way cancellation does -- as a
+            // real `hoState` value, not an N2SmInfoType -- so it is checked here beside CANCELLED
+            // rather than inside the N2 dispatch below. TS 23.502 §4.9.1.3.3: AMF sends this once
+            // the UE has actually arrived at the target gNB.
+            //
+            // Real, disclosed, and the reason matters as much as it did for CANCELLED. A
+            // production SMF does two things at this point: switch the downlink path if it had
+            // not already, and release any indirect data forwarding tunnel. Neither applies to
+            // this build, for reasons that are already recorded rather than convenient: the
+            // downlink FAR was really repointed at the target's tunnel back at HANDOVER_REQ_ACK
+            // (ADR-0248/ADR-0270, confirmed by UPF's own log), and indirect forwarding is not
+            // implemented at all -- SMF's HandoverCommandTransfer deliberately carries no
+            // dLForwardingUP-TNLInformation (ADR-0248), so there is no forwarding tunnel in
+            // existence to tear down. SMF therefore records the completion truthfully and
+            // answers, rather than performing a PFCP modification with nothing to change.
+            if (body->hoState.has_value() && body->hoState->value == sbi_gen::HoState::COMPLETED) {
+                auto completed_ctx = *stored_ctx;
+                completed_ctx["hoState"] = sbi_gen::HoState::COMPLETED;
+                sm_contexts.update(sm_context_ref, completed_ctx);
+                spdlog::info("smf: handover COMPLETED for smContextRef {} -- recorded; the "
+                             "downlink FAR already points at the target gNB (HANDOVER_REQ_ACK) and "
+                             "this build has no indirect forwarding tunnel to release",
+                             sm_context_ref);
+
+                sbi_gen::SmContextUpdatedData resp_data{};
+                resp_data.hoState = sbi_gen::HoState{};
+                resp_data.hoState->value = sbi_gen::HoState::COMPLETED;
+                sbi_core::http2::Response resp;
+                resp.status = 200;
+                resp.headers.emplace("content-type", "application/json");
+                resp.body = json(resp_data).dump();
+                return resp;
+            }
+
             // ADR-0260: the remainder of TS 29.502's 26 N2SmInfoType values, so the enum is fully
             // accounted for rather than falling through to a blanket 204 that acknowledged
             // anything at all.

@@ -101,6 +101,14 @@ public:
     static bool parse_handover_command(const std::vector<std::uint8_t>& pdu_bytes,
                                        std::vector<std::uint8_t>& switched_pdu_session_ids);
 
+    // Real HandoverNotify (TS 38.413 §9.2.3.5) -- what the TARGET gNB sends once the UE has
+    // actually arrived on it, opening the execution phase (TS 23.502 §4.9.1.3.3). Mandatory IE
+    // set per HandoverNotifyIEs: AMF-UE-NGAP-ID(10), RAN-UE-NGAP-ID(85),
+    // UserLocationInformation(121). `ran_ue_id` is the target's own, the one it allocated in its
+    // HandoverRequestAcknowledge.
+    std::vector<std::uint8_t> build_handover_notify(std::uint64_t amf_ue_id,
+                                                    std::uint32_t ran_ue_id);
+
     // --- UE-associated signalling (ADR-0265), for procedures that need a registered UE. ---
 
     // Real InitialUEMessage carrying `nas_pdu`: id-RAN-UE-NGAP-ID(85), id-NAS-PDU(38), plus the
@@ -136,10 +144,12 @@ public:
     // NGAP procedure codes, read from specs/NGAP/ngap-17.9.asn rather than remembered.
     static constexpr long kProcDownlinkNasTransport = 4;
     static constexpr long kProcHandoverCancel = 10;
+    static constexpr long kProcHandoverNotification = 11;
     static constexpr long kProcHandoverPreparation = 12;
     static constexpr long kProcHandoverResourceAllocation = 13;
     static constexpr long kProcInitialUeMessage = 15;
     static constexpr long kProcNgSetup = 21;
+    static constexpr long kProcUeContextRelease = 41;
     static constexpr long kProcUplinkNasTransport = 46;
 
 private:
