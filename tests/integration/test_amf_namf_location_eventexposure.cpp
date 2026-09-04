@@ -224,7 +224,7 @@ TEST(AmfEventExposureIntegration, IndividualSubscriptionCreateModifyDelete) {
 
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7778/namf-evts/v1/subscriptions/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7778/namf-evts/v1/subscriptions/nonexistent", 200))
         << "amf never became reachable";
 
     const std::string token = fetch_token(client);

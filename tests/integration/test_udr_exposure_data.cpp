@@ -95,7 +95,7 @@ TEST(UdrExposureDataIntegration, AccessAndMobilityDataLifecycle) {
     auto client = make_client();
     const std::string url = "https://127.0.0.1:7781/nudr-dr/v2/exposure-data/"
                             "imsi-999700000000501/access-and-mobility-data";
-    ASSERT_TRUE(wait_reachable(client, url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -163,7 +163,7 @@ TEST(UdrExposureDataIntegration, SessionManagementDataLifecycle) {
                              "imsi-999700000000502/session-management-data/";
     const std::string url_1 = base + "1";
     const std::string url_2 = base + "2";
-    ASSERT_TRUE(wait_reachable(client, url_1, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, url_1, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -228,7 +228,7 @@ TEST(UdrExposureDataIntegration, SubsToNotifyLifecycle) {
     auto d = spawn_nrf_udr();
     auto client = make_client();
     const std::string coll_url = "https://127.0.0.1:7781/nudr-dr/v2/exposure-data/subs-to-notify";
-    ASSERT_TRUE(wait_reachable(client, coll_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, coll_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";

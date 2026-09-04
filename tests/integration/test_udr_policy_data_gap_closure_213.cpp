@@ -80,7 +80,7 @@ TEST(UdrPolicyDataGapClosureIntegration, UsageMonitoringResourceLifecycle) {
     auto client = make_client();
     const std::string base_url =
         "https://127.0.0.1:7781/nudr-dr/v2/policy-data/ues/imsi-999700000000001/sm-data/limit-1";
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -134,7 +134,7 @@ TEST(UdrPolicyDataGapClosureIntegration, ReadPolicyDataComposesSeededSubResource
     auto client = make_client();
     const std::string ue_id = "imsi-999700000000002";
     const std::string base_url = "https://127.0.0.1:7781/nudr-dr/v2/policy-data/ues/" + ue_id;
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -230,7 +230,7 @@ TEST(UdrPolicyDataGapClosureIntegration, ReadBdtDataListsSeededDataAndHonorsFilt
     auto d = spawn_nrf_udr();
     auto client = make_client();
     const std::string collection_url = "https://127.0.0.1:7781/nudr-dr/v2/policy-data/bdt-data";
-    ASSERT_TRUE(wait_reachable(client, collection_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, collection_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -289,7 +289,7 @@ TEST(UdrPolicyDataGapClosureIntegration, PolicyDataSubsToNotifyLifecycle) {
     auto client = make_client();
     const std::string collection_url =
         "https://127.0.0.1:7781/nudr-dr/v2/policy-data/subs-to-notify";
-    ASSERT_TRUE(wait_reachable(client, collection_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, collection_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";

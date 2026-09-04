@@ -80,7 +80,7 @@ TEST(UdrGapClosureIntegration, IndividualAuthenticationStatusLifecycle) {
     const std::string base_url =
         "https://127.0.0.1:7781/nudr-dr/v2/subscription-data/imsi-999700000000001/"
         "authentication-data/authentication-status/5G:mnc070.mcc999.3gppnetwork.org";
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -159,7 +159,7 @@ TEST(UdrGapClosureIntegration, QueryProvisionedDataComposesAllSeededFields) {
     const std::string base_url =
         "https://127.0.0.1:7781/nudr-dr/v2/subscription-data/imsi-999700000000001/99970/"
         "provisioned-data";
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";

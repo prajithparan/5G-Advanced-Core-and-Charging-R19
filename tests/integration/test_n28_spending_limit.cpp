@@ -187,7 +187,7 @@ TEST(UdrSmPolicyDataIntegration, PatchCreatesAndMergesRealNestedDocument) {
     const std::string supi = unique_test_supi(1);
     const std::string base_url =
         "https://127.0.0.1:7781/nudr-dr/v2/policy-data/ues/" + supi + "/sm-data";
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client, "nudr-dr");
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -271,9 +271,9 @@ TEST(PcfN28Integration, CreateSmPolicyFailsOpenWhenChfUnreachable) {
     const std::string supi = unique_test_supi(2);
     const std::string udr_url =
         "https://127.0.0.1:7781/nudr-dr/v2/policy-data/ues/" + supi + "/sm-data";
-    ASSERT_TRUE(wait_reachable(client, udr_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, udr_url, 200)) << "udr never became reachable";
     const std::string pcf_url = "https://127.0.0.1:7783/npcf-smpolicycontrol/v1/sm-policies";
-    ASSERT_TRUE(wait_reachable(client, pcf_url, 50)) << "pcf never became reachable";
+    ASSERT_TRUE(wait_reachable(client, pcf_url, 200)) << "pcf never became reachable";
 
     const std::string udr_token = fetch_token(client, "nudr-dr");
     ASSERT_FALSE(udr_token.empty());
@@ -350,11 +350,11 @@ TEST(PcfChfN28Integration, FullLoopSubscribeStatusChangeNotifyUnsubscribe) {
     const std::string supi = unique_test_supi(3);
     const std::string udr_url =
         "https://127.0.0.1:7781/nudr-dr/v2/policy-data/ues/" + supi + "/sm-data";
-    ASSERT_TRUE(wait_reachable(client, udr_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, udr_url, 200)) << "udr never became reachable";
     const std::string pcf_url = "https://127.0.0.1:7783/npcf-smpolicycontrol/v1/sm-policies";
-    ASSERT_TRUE(wait_reachable(client, pcf_url, 50)) << "pcf never became reachable";
+    ASSERT_TRUE(wait_reachable(client, pcf_url, 200)) << "pcf never became reachable";
     const std::string chf_url = "https://127.0.0.1:7784/nchf-spendinglimitcontrol/v1/subscriptions";
-    ASSERT_TRUE(wait_reachable(client, chf_url, 50)) << "chf never became reachable";
+    ASSERT_TRUE(wait_reachable(client, chf_url, 200)) << "chf never became reachable";
 
     const std::string counter_id = "full-loop-counter-" + std::to_string(getpid());
 

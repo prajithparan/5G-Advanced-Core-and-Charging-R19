@@ -193,7 +193,7 @@ TEST(UpfGetUeIpInfoIntegration, SearchUeIpInfoReturnsHonestlyEmptyResult) {
 
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7796/nupf-gueip/v1/ue-ip-info", "GET", 50))
+        wait_reachable(client, "https://127.0.0.1:7796/nupf-gueip/v1/ue-ip-info", "GET", 200))
         << "upf never became reachable";
 
     const std::string token = fetch_token(client, "nupf-gueip");

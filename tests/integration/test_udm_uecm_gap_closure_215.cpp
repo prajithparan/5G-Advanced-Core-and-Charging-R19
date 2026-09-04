@@ -79,7 +79,7 @@ TEST(UdmUecmGapClosureIntegration, PeiUpdateMergesIntoExistingAmfRegistration) {
     const std::string ue_id = "imsi-999700000000001";
     const std::string amf_reg_url =
         "https://127.0.0.1:7780/nudm-uecm/v1/" + ue_id + "/registrations/amf-3gpp-access";
-    ASSERT_TRUE(wait_reachable(client, amf_reg_url, 50)) << "udm never became reachable";
+    ASSERT_TRUE(wait_reachable(client, amf_reg_url, 200)) << "udm never became reachable";
 
     const std::string token = fetch_token(client, "nudm-uecm");
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";

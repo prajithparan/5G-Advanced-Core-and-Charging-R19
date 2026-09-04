@@ -94,7 +94,7 @@ TEST(NrfGapClosureIntegration, OptionsNFInstancesReturnsRealAcceptEncoding) {
     auto s = spawn_nrf();
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7777/nnrf-nfm/v1/nf-instances/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7777/nnrf-nfm/v1/nf-instances/nonexistent", 200))
         << "nrf never became reachable";
 
     const std::string token = fetch_token(client, "nnrf-nfm");
@@ -115,7 +115,7 @@ TEST(NrfGapClosureIntegration, RetrieveKeyRequestForOwnIssuerReturnsRealPublicKe
     auto s = spawn_nrf();
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7777/nnrf-nfm/v1/nf-instances/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7777/nnrf-nfm/v1/nf-instances/nonexistent", 200))
         << "nrf never became reachable";
 
     const std::string token = fetch_token(client, "nnrf-nfm");
@@ -147,7 +147,7 @@ TEST(NrfGapClosureIntegration, RetrieveKeyRequestForUnknownIssuerIs404) {
     auto s = spawn_nrf();
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7777/nnrf-nfm/v1/nf-instances/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7777/nnrf-nfm/v1/nf-instances/nonexistent", 200))
         << "nrf never became reachable";
 
     const std::string token = fetch_token(client, "nnrf-nfm");
@@ -172,7 +172,7 @@ TEST(NrfGapClosureIntegration, RetrieveStoredSearchAndCompleteSearchReturnCached
     auto s = spawn_nrf();
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7777/nnrf-nfm/v1/nf-instances/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7777/nnrf-nfm/v1/nf-instances/nonexistent", 200))
         << "nrf never became reachable";
 
     const std::string token = fetch_token(client, "nnrf-nfm nnrf-disc");

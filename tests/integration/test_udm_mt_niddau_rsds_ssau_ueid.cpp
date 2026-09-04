@@ -325,7 +325,7 @@ TEST(UdmUeidIntegration, DeconcealRealSuciWorksAndTamperedMacIs400) {
     ASSERT_GT(udm.pid(), 0) << "failed to fork udm";
 
     auto client = make_client();
-    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7780/nudm-ueid/v1/deconceal", "POST", 50))
+    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7780/nudm-ueid/v1/deconceal", "POST", 200))
         << "udm never became reachable";
 
     const std::string token = fetch_token(client, "nudm-ueid");

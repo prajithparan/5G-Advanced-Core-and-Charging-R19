@@ -689,3 +689,101 @@ TEST(AmfNgapTestGnb, FullN2HandoverRelayThroughExecutionAndSourceRelease) {
     EXPECT_EQ(release_summary.procedure_code, NgapTestGnb::kProcUeContextRelease)
         << "expected an AMF-initiated UEContextReleaseCommand to the source gNB";
 }
+
+// ADR-0272: the reject branch. The target gNB refuses the handover, and AMF must relay that
+// refusal to the source gNB as a HandoverPreparationFailure carrying the TARGET's own cause.
+//
+// Why this needed its own test rather than being assumed from the accept path: that relay is a
+// distinct branch of handle_handover_required with its own decode (HandoverFailure's Cause IE is
+// pulled out and copied into the HandoverPreparationFailure), and every OTHER failure in the whole
+// chain also ends in HandoverPreparationFailure -- an unregistered target, a decode failure, a
+// timeout, no preparable session. So "the source got a HandoverPreparationFailure" proves almost
+// nothing on its own. Asserting the CAUSE is what separates "AMF relayed the target's refusal"
+// from "AMF gave up for one of six other reasons and happened to look the same".
+//
+// The setup is the accept path's, unchanged, right up to the target's answer -- the same real UE,
+// real PDU session and real UPF Sx association -- because AMF only ever contacts the target if it
+// really prepared at least one session.
+TEST(AmfNgapTestGnb, TargetGnbRefusalIsRelayedToTheSourceWithItsOwnCause) {
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0);
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0);
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0);
+    nf_test::SpawnedProcess ausf(AUSF_PATH);
+    ASSERT_GT(ausf.pid(), 0);
+    nf_test::SpawnedProcess pcf(PCF_PATH);
+    ASSERT_GT(pcf.pid(), 0);
+    nf_test::SpawnedProcess upf(UPF_PATH);
+    ASSERT_GT(upf.pid(), 0);
+    nf_test::SpawnedProcess smf(SMF_PATH);
+    ASSERT_GT(smf.pid(), 0);
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0);
+
+    ASSERT_NO_FATAL_FAILURE(
+        wait_for_sbi_peers({kUdrProbe, kUdmProbe, kAusfProbe, kPcfProbe, kSmfProbe}));
+    ASSERT_NO_FATAL_FAILURE(wait_for_upf_sx_association());
+
+    NgapTestGnb source;
+    ASSERT_TRUE(source.connect(kAmfNgapAddress, kAmfNgapPort));
+    ASSERT_TRUE(source.ng_setup(kSourceGnbId));
+
+    NgapTestGnb target;
+    ASSERT_TRUE(target.connect(kAmfNgapAddress, kAmfNgapPort));
+    ASSERT_TRUE(target.ng_setup(kTargetGnbId));
+
+    constexpr std::uint32_t kUeRanId = 1;
+    constexpr std::uint8_t kPduSessionId = 5;
+    RegisteredUe ue;
+    ASSERT_NO_FATAL_FAILURE(register_ue(source, kUeRanId, ue));
+    ASSERT_NO_FATAL_FAILURE(establish_pdu_session(source, ue, kUeRanId, kPduSessionId, /*pti=*/1));
+
+    // Same threading rule as the accept path: AMF blocks the source association while it waits
+    // for this answer, so the refusal has to be sent from the target's own thread.
+    TargetGnbOutcome target_outcome;
+    std::thread target_thread([&] {
+        const auto request = target.receive_raw();
+        if (request.empty()) {
+            target_outcome.failure = "no HandoverRequest ever arrived on the target association";
+            return;
+        }
+        if (!NgapTestGnb::parse_handover_request(request, target_outcome.request)) {
+            target_outcome.failure = "the PDU AMF sent the target was not a decodable "
+                                     "HandoverRequest";
+            return;
+        }
+        target_outcome.received_request = true;
+        target.send_raw(target.build_handover_failure(target_outcome.request.amf_ue_id));
+        target_outcome.sent_acknowledge = true; // a refusal, but the same "answered" flag
+    });
+
+    const auto required =
+        source.build_handover_required(ue.amf_ue_id, kUeRanId, kTargetGnbId, kPduSessionId);
+    ASSERT_FALSE(required.empty());
+    source.send_raw(required);
+
+    const auto reply = source.receive_raw();
+    target_thread.join();
+
+    ASSERT_TRUE(target_outcome.failure.empty()) << target_outcome.failure;
+    ASSERT_TRUE(target_outcome.received_request)
+        << "AMF never asked the target at all, so nothing here tests the refusal path";
+
+    ASSERT_FALSE(reply.empty()) << "AMF answered the source gNB nothing at all";
+    const auto summary = NgapTestGnb::summarize(reply);
+    EXPECT_EQ(summary.outcome, NgapTestGnb::Outcome::Unsuccessful);
+    EXPECT_EQ(summary.procedure_code, NgapTestGnb::kProcHandoverPreparation)
+        << "expected an unsuccessfulOutcome for id-HandoverPreparation "
+           "(HandoverPreparationFailure)";
+
+    // The assertion that actually distinguishes this branch from the other five ways the same
+    // message gets sent.
+    long relayed_cause = -1;
+    ASSERT_TRUE(NgapTestGnb::parse_handover_preparation_failure_cause(reply, relayed_cause))
+        << "the HandoverPreparationFailure carried no radioNetwork Cause to relay";
+    EXPECT_EQ(relayed_cause, NgapTestGnb::kCauseRadioNoResourcesInTargetCell)
+        << "AMF substituted its own cause instead of relaying the target gNB's -- the source gNB "
+           "is told the wrong reason its handover failed";
+}

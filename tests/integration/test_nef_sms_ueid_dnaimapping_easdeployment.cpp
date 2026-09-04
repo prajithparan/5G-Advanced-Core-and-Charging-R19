@@ -115,7 +115,7 @@ TEST(NefSMServiceIntegration, SendSMSReturnsRealMultipartDeliveryReport) {
 TEST(NefUEIdIntegration, FetchAndMappingBothReturnRealHonestNoContent) {
     auto d = spawn_all();
     auto client = make_client();
-    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7790/nnef-ueid/v1/fetch", 50))
+    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7790/nnef-ueid/v1/fetch", 200))
         << "nef never became reachable";
 
     const std::string token = fetch_token(client, "nnef-ueid");

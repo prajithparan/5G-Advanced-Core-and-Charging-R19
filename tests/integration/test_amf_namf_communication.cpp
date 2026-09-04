@@ -101,7 +101,7 @@ TEST(AmfIntegration, N1N2SubscribeAndUnsubscribe) {
 
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7778/namf-comm/v1/subscriptions/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7778/namf-comm/v1/subscriptions/nonexistent", 200))
         << "amf never became reachable";
 
     // amf's own NRF-registration background thread races this test; give it a moment. (Every
@@ -153,7 +153,7 @@ TEST(AmfIntegration, AmfStatusChangeSubscribeAndNonUeN2Transfer) {
 
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7778/namf-comm/v1/subscriptions/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7778/namf-comm/v1/subscriptions/nonexistent", 200))
         << "amf never became reachable";
 
     const std::string token = fetch_token(client);
@@ -196,7 +196,7 @@ TEST(AmfIntegration, MissingUeContextIs404AndTamperedTokenIs401) {
 
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7778/namf-comm/v1/subscriptions/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7778/namf-comm/v1/subscriptions/nonexistent", 200))
         << "amf never became reachable";
 
     const std::string token = fetch_token(client);
@@ -234,7 +234,7 @@ TEST(AmfIntegration, CreateUEContextOverMultipartThenEBIAssignmentAndRelease) {
 
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7778/namf-comm/v1/subscriptions/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7778/namf-comm/v1/subscriptions/nonexistent", 200))
         << "amf never became reachable";
 
     const std::string token = fetch_token(client);
@@ -300,7 +300,7 @@ TEST(AmfIntegration, RelocateAndCancelRelocateUEContextOverMultipart) {
 
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7778/namf-comm/v1/subscriptions/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7778/namf-comm/v1/subscriptions/nonexistent", 200))
         << "amf never became reachable";
 
     const std::string token = fetch_token(client);

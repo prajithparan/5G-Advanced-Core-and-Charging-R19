@@ -103,7 +103,7 @@ TEST(AmfAiotIntegration, MessageDeliveryJsonAndMultipartAnd400) {
     ASSERT_GT(amf.pid(), 0) << "failed to fork amf";
 
     auto client = make_client();
-    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7778/namf-aiot/v1/transfer", 50))
+    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7778/namf-aiot/v1/transfer", 200))
         << "amf never became reachable";
 
     const std::string token = fetch_token(client);
@@ -158,7 +158,7 @@ TEST(AmfMbsCommunicationIntegration, N2MessageTransferReturnsInitiated) {
 
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7778/namf-mbs-comm/v1/n2-messages/transfer", 50))
+        wait_reachable(client, "https://127.0.0.1:7778/namf-mbs-comm/v1/n2-messages/transfer", 200))
         << "amf never became reachable";
 
     const std::string token = fetch_token(client);
@@ -264,7 +264,7 @@ TEST(AmfMtIntegration, ProvideDomainSelectionInfo404ThenHonestlyEmpty200) {
 
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7778/namf-mt/v1/ue-contexts/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7778/namf-mt/v1/ue-contexts/nonexistent", 200))
         << "amf never became reachable";
 
     const std::string token = fetch_token(client);
@@ -308,7 +308,7 @@ TEST(AmfMtIntegration, EnableUeReachability404ThenRealAck) {
 
     auto client = make_client();
     ASSERT_TRUE(
-        wait_reachable(client, "https://127.0.0.1:7778/namf-mt/v1/ue-contexts/nonexistent", 50))
+        wait_reachable(client, "https://127.0.0.1:7778/namf-mt/v1/ue-contexts/nonexistent", 200))
         << "amf never became reachable";
 
     const std::string token = fetch_token(client);

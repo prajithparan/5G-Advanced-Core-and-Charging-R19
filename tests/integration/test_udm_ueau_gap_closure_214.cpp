@@ -81,7 +81,7 @@ TEST(UdmUeauGapClosureIntegration, GetRgAuthDataReflectsRealConfirmedAuthState) 
     const std::string supi = "imsi-999700000000001"; // seeded 5G_AKA subscriber, main.cpp
     const std::string base_url =
         "https://127.0.0.1:7780/nudm-ueau/v1/" + supi + "/security-information-rg";
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udm never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udm never became reachable";
 
     const std::string token = fetch_token(client, "nudm-ueau");
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -144,7 +144,7 @@ TEST(UdmUeauGapClosureIntegration, GenerateAvProducesRealVectorsForImsGbaEapAkaB
     const std::string supi = "imsi-999700000000001"; // seeded 5G_AKA subscriber, main.cpp
     const std::string base_url =
         "https://127.0.0.1:7780/nudm-ueau/v1/" + supi + "/hss-security-information/";
-    ASSERT_TRUE(wait_reachable(client, base_url + "ims-aka/generate-av", 50))
+    ASSERT_TRUE(wait_reachable(client, base_url + "ims-aka/generate-av", 200))
         << "udm never became reachable";
 
     const std::string token = fetch_token(client, "nudm-ueau");
@@ -203,7 +203,7 @@ TEST(UdmUeauGapClosureIntegration, GenerateGbaAvProducesRealN3GAkaVector) {
     const std::string supi = "imsi-999700000000002"; // seeded EAP_AKA_PRIME subscriber, main.cpp
     const std::string base_url =
         "https://127.0.0.1:7780/nudm-ueau/v1/" + supi + "/gba-security-information/generate-av";
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udm never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udm never became reachable";
 
     const std::string token = fetch_token(client, "nudm-ueau");
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";

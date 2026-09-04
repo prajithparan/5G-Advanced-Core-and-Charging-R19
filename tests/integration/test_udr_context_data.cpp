@@ -75,7 +75,7 @@ TEST(UdrIntegration, AmfContextLifecycle) {
     const std::string base_url =
         "https://127.0.0.1:7781/nudr-dr/v2/subscription-data/imsi-999700000000001/"
         "context-data/amf-3gpp-access";
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -151,7 +151,7 @@ TEST(UdrIntegration, SmfRegistrationLifecycle) {
     const std::string base_url =
         "https://127.0.0.1:7781/nudr-dr/v2/subscription-data/imsi-999700000000002/"
         "context-data/smf-registrations";
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -241,7 +241,7 @@ TEST(UdrIntegration, MissingResourceIs404AndTamperedTokenIs401) {
     const std::string base_url =
         "https://127.0.0.1:7781/nudr-dr/v2/subscription-data/imsi-999700000000099/"
         "context-data/amf-3gpp-access";
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";

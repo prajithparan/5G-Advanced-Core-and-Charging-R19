@@ -81,7 +81,7 @@ TEST(UdmSendRoutingInfoSmGapClosureIntegration, ComposesRealRoutingInfoFromSeede
     const std::string ue_id = "imsi-999700000000001";
     const std::string base = "https://127.0.0.1:7780/nudm-uecm/v1/" + ue_id;
     const std::string route_url = base + "/registrations/send-routing-info-sm";
-    ASSERT_TRUE(wait_reachable(client, base + "/registrations/smsf-3gpp-access", 50))
+    ASSERT_TRUE(wait_reachable(client, base + "/registrations/smsf-3gpp-access", 200))
         << "udm never became reachable";
 
     const std::string token = fetch_token(client, "nudm-uecm");

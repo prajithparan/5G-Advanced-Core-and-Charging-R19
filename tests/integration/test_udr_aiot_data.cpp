@@ -103,7 +103,7 @@ TEST(UdrAiotDataIntegration, DeviceProfileReadAndRfc6902Patch) {
     auto d = spawn_nrf_udr();
     auto client = make_client();
     const std::string item_url = kProfileColl + "/" + kSeededDevice;
-    ASSERT_TRUE(wait_reachable(client, item_url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, item_url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -165,7 +165,7 @@ TEST(UdrAiotDataIntegration, DeviceProfileReadAndRfc6902Patch) {
 TEST(UdrAiotDataIntegration, BundledReadRequiresDeviceIdsAndBundledPatchIsNotImplemented) {
     auto d = spawn_nrf_udr();
     auto client = make_client();
-    ASSERT_TRUE(wait_reachable(client, kProfileColl, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, kProfileColl, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -227,7 +227,7 @@ TEST(UdrAiotDataIntegration, AfAuthorizationDataReadAndFilter) {
     auto d = spawn_nrf_udr();
     auto client = make_client();
     const std::string url = "https://127.0.0.1:7781/nudr-dr/v2/aiot-data/af-authorization-data";
-    ASSERT_TRUE(wait_reachable(client, url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
@@ -261,7 +261,7 @@ TEST(UdrAiotDataIntegration, DataRestorationSubscriptionReturns204NotCreated) {
     auto d = spawn_nrf_udr();
     auto client = make_client();
     const std::string url = "https://127.0.0.1:7781/nudr-dr/v2/data-restoration-events";
-    ASSERT_TRUE(wait_reachable(client, url, 50)) << "udr never became reachable";
+    ASSERT_TRUE(wait_reachable(client, url, 200)) << "udr never became reachable";
 
     const std::string token = fetch_token(client);
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";

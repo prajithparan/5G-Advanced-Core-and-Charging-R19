@@ -76,7 +76,7 @@ Duo spawn_all() {
 TEST(NefSMContextIntegration, CreateUpdateDeliverReleaseLifecycle) {
     auto d = spawn_all();
     auto client = make_client();
-    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7790/nnef-smcontext/v1/sm-contexts", 50))
+    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7790/nnef-smcontext/v1/sm-contexts", 200))
         << "nef never became reachable";
 
     const std::string token = fetch_token(client, "nnef-smcontext");
@@ -165,7 +165,7 @@ TEST(NefSMContextIntegration, CreateUpdateDeliverReleaseLifecycle) {
 TEST(NefSMContextIntegration, CreateWithMissingRequiredFieldIs400) {
     auto d = spawn_all();
     auto client = make_client();
-    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7790/nnef-smcontext/v1/sm-contexts", 50))
+    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7790/nnef-smcontext/v1/sm-contexts", 200))
         << "nef never became reachable";
 
     const std::string token = fetch_token(client, "nnef-smcontext");

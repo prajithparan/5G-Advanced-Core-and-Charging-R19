@@ -101,6 +101,22 @@ public:
     static bool parse_handover_command(const std::vector<std::uint8_t>& pdu_bytes,
                                        std::vector<std::uint8_t>& switched_pdu_session_ids);
 
+    // Real HandoverFailure (TS 38.413 §9.2.3.3) -- the target gNB REJECTING a handover it cannot
+    // admit. Mandatory IE set per HandoverFailureIEs: AMF-UE-NGAP-ID(10), Cause(15). AMF relays
+    // that cause to the source gNB inside its own HandoverPreparationFailure, so the cause a test
+    // sends here is the one it should see come back out.
+    std::vector<std::uint8_t> build_handover_failure(std::uint64_t amf_ue_id);
+
+    // The radioNetwork Cause build_handover_failure sends, so a test can assert AMF relayed the
+    // TARGET's cause rather than substituting one of its own. Value read from the generated
+    // enum (CauseRadioNetwork_no_radio_resources_available_in_target_cell = 13), not remembered.
+    static constexpr long kCauseRadioNoResourcesInTargetCell = 13;
+
+    // Pulls the Cause out of a HandoverPreparationFailure. Returns false if the PDU is not one,
+    // or carries no Cause.
+    static bool parse_handover_preparation_failure_cause(const std::vector<std::uint8_t>& pdu_bytes,
+                                                         long& radio_network_cause);
+
     // Real HandoverNotify (TS 38.413 §9.2.3.5) -- what the TARGET gNB sends once the UE has
     // actually arrived on it, opening the execution phase (TS 23.502 §4.9.1.3.3). Mandatory IE
     // set per HandoverNotifyIEs: AMF-UE-NGAP-ID(10), RAN-UE-NGAP-ID(85),

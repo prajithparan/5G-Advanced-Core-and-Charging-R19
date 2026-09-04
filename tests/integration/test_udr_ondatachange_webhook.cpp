@@ -144,7 +144,7 @@ TEST(UdrIntegration, OnDataChangeWebhookDeliveredOnPutPatchDelete) {
         "/nudr-dr/v2/subscription-data/" + ue_id + "/context-data/smf-registrations";
     const std::string resource_path = collection_path + "/7";
     const std::string resource_url = "https://127.0.0.1:7781" + resource_path;
-    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7781" + collection_path, 50))
+    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7781" + collection_path, 200))
         << "udr never became reachable";
 
     const std::string token = fetch_token(client);

@@ -17,7 +17,9 @@ extern "C" {
 #include <GlobalRANNodeID.h>
 #include <HandoverCancel.h>
 #include <HandoverCommand.h>
+#include <HandoverFailure.h>
 #include <HandoverNotify.h>
+#include <HandoverPreparationFailure.h>
 #include <HandoverRequest.h>
 #include <HandoverRequestAcknowledge.h>
 #include <HandoverRequestAcknowledgeTransfer.h>
@@ -585,6 +587,66 @@ NgapTestGnb::build_initial_ue_message(std::uint32_t ran_ue_id,
     const auto bytes = ::ngap::encode_pdu(pdu);
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
     return bytes;
+}
+
+std::vector<std::uint8_t> NgapTestGnb::build_handover_failure(std::uint64_t amf_ue_id) {
+    HandoverFailure_t failure{};
+
+    AMF_UE_NGAP_ID_t amf_id{};
+    asn_ulong2INTEGER(&amf_id, static_cast<unsigned long>(amf_ue_id));
+    ::ngap::add_ie(
+        failure.protocolIEs,
+        ::ngap::make_ie(
+            10 /* id-AMF-UE-NGAP-ID */, Criticality_ignore, &asn_DEF_AMF_UE_NGAP_ID, &amf_id));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_AMF_UE_NGAP_ID, &amf_id);
+
+    // A real reason a target gNB refuses: it has no radio resources left in the target cell.
+    Cause_t cause{};
+    cause.present = Cause_PR_radioNetwork;
+    cause.choice.radioNetwork = CauseRadioNetwork_no_radio_resources_available_in_target_cell;
+    ::ngap::add_ie(failure.protocolIEs,
+                   ::ngap::make_ie(15 /* id-Cause */, Criticality_ignore, &asn_DEF_Cause, &cause));
+
+    NGAP_PDU_t pdu{};
+    pdu.present = NGAP_PDU_PR_unsuccessfulOutcome;
+    pdu.choice.unsuccessfulOutcome =
+        static_cast<UnsuccessfulOutcome_t*>(std::calloc(1, sizeof(UnsuccessfulOutcome_t)));
+    pdu.choice.unsuccessfulOutcome->procedureCode = kProcHandoverResourceAllocation;
+    pdu.choice.unsuccessfulOutcome->criticality = Criticality_reject;
+    pdu.choice.unsuccessfulOutcome->value.present = UnsuccessfulOutcome__value_PR_HandoverFailure;
+    pdu.choice.unsuccessfulOutcome->value.choice.HandoverFailure = failure;
+    const auto bytes = ::ngap::encode_pdu(pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
+    return bytes;
+}
+
+bool NgapTestGnb::parse_handover_preparation_failure_cause(
+    const std::vector<std::uint8_t>& pdu_bytes, long& radio_network_cause) {
+    NGAP_PDU_t* pdu = ::ngap::decode_pdu(pdu_bytes);
+    if (pdu == nullptr) {
+        return false;
+    }
+    if (pdu->present != NGAP_PDU_PR_unsuccessfulOutcome ||
+        pdu->choice.unsuccessfulOutcome->procedureCode != kProcHandoverPreparation) {
+        ASN_STRUCT_FREE(asn_DEF_NGAP_PDU, pdu);
+        return false;
+    }
+    const auto& container =
+        pdu->choice.unsuccessfulOutcome->value.choice.HandoverPreparationFailure.protocolIEs;
+    bool ok = false;
+    const auto* cause_ie = ::ngap::find_ie(container, 15 /* id-Cause */);
+    if (cause_ie != nullptr) {
+        auto* cause = static_cast<Cause_t*>(::ngap::decode_ie_value(&asn_DEF_Cause, *cause_ie));
+        if (cause != nullptr) {
+            if (cause->present == Cause_PR_radioNetwork) {
+                radio_network_cause = cause->choice.radioNetwork;
+                ok = true;
+            }
+            ASN_STRUCT_FREE(asn_DEF_Cause, cause);
+        }
+    }
+    ASN_STRUCT_FREE(asn_DEF_NGAP_PDU, pdu);
+    return ok;
 }
 
 std::vector<std::uint8_t> NgapTestGnb::build_handover_notify(std::uint64_t amf_ue_id,

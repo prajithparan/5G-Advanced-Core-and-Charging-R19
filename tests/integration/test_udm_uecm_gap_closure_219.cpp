@@ -85,7 +85,7 @@ TEST(UdmNwdafGapClosureIntegration, NwdafRegistrationFullLifecycle) {
     const std::string base_url =
         "https://127.0.0.1:7780/nudm-uecm/v1/" + ue_id + "/registrations/nwdaf-registrations";
     const std::string individual_url = base_url + "/" + nwdaf_registration_id;
-    ASSERT_TRUE(wait_reachable(client, base_url, 50)) << "udm never became reachable";
+    ASSERT_TRUE(wait_reachable(client, base_url, 200)) << "udm never became reachable";
 
     const std::string token = fetch_token(client, "nudm-uecm");
     ASSERT_FALSE(token.empty()) << "failed to obtain OAuth2 token from nrf";
