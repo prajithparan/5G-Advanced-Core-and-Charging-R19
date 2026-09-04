@@ -57,6 +57,7 @@
 #include <spdlog/spdlog.h>
 
 #include <cstdlib>
+#include <nf_config/nf_config.hpp>
 
 #include "bss_sid/product.hpp"
 #include "store.hpp"
@@ -69,31 +70,41 @@ namespace {
 
 using nlohmann::json;
 
-constexpr unsigned short kPort = 7785;
-constexpr const char* kMetricsBindAddress = "0.0.0.0:9473";
-constexpr const char* kSelfBase = "https://127.0.0.1:7785";
+// The TMF620-defined API root. Stays in source: it is the spec's own path, not deployment
+// configuration -- the same line ADR-0273/ADR-0274 drew for the 3GPP service paths.
 constexpr const char* kApiRoot = "/tmf-api/productCatalogManagement/v4";
 
-// First getenv-based config in this repo (every other NF so far uses compile-time constants) --
-// a database connection string is exactly the kind of value that must never be hardcoded, so this
-// is a deliberate, disclosed departure from the rest of this codebase's convention, not an
-// inconsistency. Default matches this project's lab/dev convention (local Postgres, dedicated
-// product_catalog role/database) -- override for any real deployment.
-std::string database_conninfo() {
-    if (const char* env = std::getenv("PRODUCT_CATALOG_DATABASE_URL")) {
-        return env;
-    }
-    return "postgresql://product_catalog:product_catalog@localhost:5432/product_catalog";
-}
+// Task #109 (ADR-0275): port (7785), metrics_bind_address and self_base were compile-time
+// literals, and database_url was this repo's first getenv-with-a-literal-fallback. All
+// four now come from config/product-catalog.json through nf_config, the same mechanism every NF
+// uses -- this component was the last holder of deployment endpoints in source.
+//
+// PRODUCT_CATALOG_DATABASE_URL keeps working: nf_config::require applies the env override itself,
+// and the CI workflow and compose files already set it. That was the one value here that was
+// never allowed to be a literal, and it stays overridable.
 
 } // namespace
 
 int main() {
     sbi_core::init_logging("product-catalog");
     sbi_core::init_tracing("product-catalog");
-    sbi_core::init_metrics(kMetricsBindAddress);
 
-    spdlog::info("product-catalog: starting (TM Forum TMF620 Product Catalog Management)");
+    const auto config = nf_config::load("product-catalog", CONFIG_DIR);
+    const auto port = nf_config::require<unsigned short>(config, "port");
+    const auto metrics_bind_address =
+        nf_config::require<std::string>(config, "metrics_bind_address");
+    // Host and port of this component's own advertised base come from the same two keys the
+    // listener binds, so they cannot disagree -- the drift ADR-0274 found in AMF.
+    const auto advertised_ipv4 = nf_config::require<std::string>(
+        config, "advertised_ipv4", "PRODUCT_CATALOG_ADVERTISED_IPV4");
+    const std::string self_base = "https://" + advertised_ipv4 + ":" + std::to_string(port);
+    const auto database_url =
+        nf_config::require<std::string>(config, "database_url", "PRODUCT_CATALOG_DATABASE_URL");
+
+    sbi_core::init_metrics(metrics_bind_address);
+
+    spdlog::info("product-catalog: starting (TM Forum TMF620 Product Catalog Management) on {}",
+                 self_base);
 
     sbi_core::http2::TlsConfig server_tls{
         .cert_path = CERTS_DIR "/product-catalog/cert.pem",
@@ -101,13 +112,13 @@ int main() {
         .ca_path = CERTS_DIR "/ca/ca.crt",
     };
 
-    const auto conninfo = database_conninfo();
+    const auto conninfo = database_url;
     product_catalog::ProductOfferingStore offering_store(
-        std::string(kSelfBase) + kApiRoot + "/productOffering", conninfo);
+        std::string(self_base) + kApiRoot + "/productOffering", conninfo);
     product_catalog::ProductOfferingPriceStore price_store(
-        std::string(kSelfBase) + kApiRoot + "/productOfferingPrice", conninfo);
+        std::string(self_base) + kApiRoot + "/productOfferingPrice", conninfo);
     product_catalog::ProductSpecificationStore spec_store(
-        std::string(kSelfBase) + kApiRoot + "/productSpecification", conninfo);
+        std::string(self_base) + kApiRoot + "/productSpecification", conninfo);
     spdlog::info("product-catalog: connected to PostgreSQL");
 
     auto meter = sbi_core::get_meter("product-catalog");
@@ -119,7 +130,7 @@ int main() {
         "product_catalog_specification_create_total", "Total ProductSpecification creates");
 
     boost::asio::io_context ioc;
-    sbi_core::http2::Server server(ioc, "0.0.0.0", kPort, server_tls);
+    sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
 
     // --- ProductOffering ---
 
@@ -287,8 +298,8 @@ int main() {
                      });
 
     server.start();
-    spdlog::info("product-catalog: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", kPort);
-    spdlog::info("product-catalog: Prometheus metrics at http://{}/metrics", kMetricsBindAddress);
+    spdlog::info("product-catalog: listening on https://0.0.0.0:{} (TLS 1.3 + mTLS)", port);
+    spdlog::info("product-catalog: Prometheus metrics at http://{}/metrics", metrics_bind_address);
     ioc.run();
     return 0;
 }
