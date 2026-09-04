@@ -40,6 +40,7 @@ add_executable(integration_tests
     test_smf_n2sminfo_dispatch.cpp
     test_amf_ngap_handover.cpp
     test_ngap_codec_presence.cpp
+    test_nsacf_slice_admission.cpp
     ngap_test_gnb.cpp
     ue_nas_driver.cpp
     test_ausf_ue_authentication.cpp
@@ -62,7 +63,7 @@ add_executable(integration_tests
 # enough for those -- the branches only run on a transfer that actually decodes, so the test
 # has to be able to encode one.
 target_link_libraries(integration_tests PRIVATE sbi_core sbi_generated aka_crypto product_catalog_store subscriber_management_store roaming_interconnect_store ngap_core ngap_generated GTest::gtest GTest::gtest_main)
-add_dependencies(integration_tests nrf amf smf udm udr ausf pcf chf hello-nf upf nef)
+add_dependencies(integration_tests nrf amf smf udm udr ausf pcf chf hello-nf upf nef nsacf)
 target_compile_definitions(integration_tests PRIVATE
     NRF_PATH="$<TARGET_FILE:nrf>"
     AMF_PATH="$<TARGET_FILE:amf>"
@@ -75,6 +76,7 @@ target_compile_definitions(integration_tests PRIVATE
     CHF_PATH="$<TARGET_FILE:chf>"
     HELLO_NF_PATH="$<TARGET_FILE:hello-nf>"
     NEF_PATH="$<TARGET_FILE:nef>"
+    NSACF_PATH="$<TARGET_FILE:nsacf>"
     CERTS_DIR="${CMAKE_SOURCE_DIR}/certs"
 )
 

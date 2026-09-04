@@ -101,6 +101,10 @@ set(SBI_CODEGEN_PILOT_FILES
     TS29520_Nnwdaf_VFLInference.yaml
     TS29591_Nnef_VFLTraining.yaml
     TS29520_Nnwdaf_VFLTraining.yaml
+    # ADR-0276: NSACF (TS 29.536) -- both of its real R19 API files, so the NF is generated
+    # from its complete YAML surface rather than half of it.
+    TS29536_Nnsacf_NSAC.yaml
+    TS29536_Nnsacf_SliceEventExposure.yaml
 )
 set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29510_Nnrf_NFManagement.yaml
@@ -187,6 +191,12 @@ set(SBI_CODEGEN_PILOT_PATHS
     ${SBI_CODEGEN_SPECS_DIR}/TS29520_Nnwdaf_VFLInference.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29591_Nnef_VFLTraining.yaml
     ${SBI_CODEGEN_SPECS_DIR}/TS29520_Nnwdaf_VFLTraining.yaml
+    # ADR-0276: NSACF (TS 29.536), this project's fifth Tier 2 NF -- Network Slice Admission
+    # Control. Both of its real R19 API files, added together: the NSAC service itself and
+    # its own event-exposure service, so the NF is generated from the complete YAML surface
+    # rather than half of it.
+    ${SBI_CODEGEN_SPECS_DIR}/TS29536_Nnsacf_NSAC.yaml
+    ${SBI_CODEGEN_SPECS_DIR}/TS29536_Nnsacf_SliceEventExposure.yaml
 )
 
 file(GLOB_RECURSE SBI_CODEGEN_TOOL_SOURCES

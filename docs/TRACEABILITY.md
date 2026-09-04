@@ -5140,3 +5140,24 @@ See ADR-0266 in `docs/DECISIONS.md`.
 | Test | `AmfNgapTestGnb.RegisteredUeEstablishesARealPduSession` |
 
 See ADR-0267 in `docs/DECISIONS.md`.
+
+## ADR-0276 -- NSACF: `Nnsacf_NSAC` + `Nnsacf_SliceEventExposure` (both files, all 8 operations)
+
+Source: `specs/5G_APIs-REL-19/TS29536_Nnsacf_NSAC.yaml` and
+`specs/5G_APIs-REL-19/TS29536_Nnsacf_SliceEventExposure.yaml`, commit
+`bca84b60a37773133bcae97e5c6c0d10a93b47b6`. Stage 2: TS 23.501 §5.15.11 (Network Slice Admission
+Control), TS 23.502 §4.2.11 / §4.3.2.2.1 for the AMF/SMF invocation points.
+
+| Requirement | TS clause | Source | Test |
+|---|---|---|---|
+| `NumOfUEsUpdate` admits below the maximum | TS 29.536 §5.2.2.2 | `nfs/nsacf/src/main.cpp` `/slices/ues` | `NsacfIntegration.SliceMaximumIsEnforcedAndReleasedCapacityIsReusable` -- 10 distinct SUPIs each answered `204` |
+| `NumOfUEsUpdate` rejects at the maximum with the spec's own reason | TS 29.536 §6.1.6.3.5 (`AcuFailureReason`) | same | same test -- 11th UE answered `200` with `acuFailureList[0].reason == EXCEED_MAX_UE_NUM` |
+| INCREASE is idempotent (re-sent request consumes no quota) | TS 29.536 §5.2.2.2 | `nfs/nsacf/src/stores.cpp` `admit_ue` | same test -- a repeat SUPI answers `204` and the 11th distinct UE still fits |
+| `DECREASE` frees capacity for reuse | TS 29.536 §5.2.2.2 | same | same test -- after DECREASE the previously-rejected UE is admitted |
+| `NumOfPDUsUpdate` keyed per (SUPI, pduSessionId) | TS 29.536 §5.2.2.3 | `nfs/nsacf/src/main.cpp` `/slices/pdus` | Covered by construction + `admit_pdu`; no separate end-to-end case this increment (disclosed in ADR-0276) |
+| `QuotaUpdate` honours `quotaType` | TS 29.536 §5.2.2.5 | `nfs/nsacf/src/main.cpp` `/slices/roaming-quotas/query` | `NsacfIntegration.QuotaQueryAndLocalNumberUpdateAreReal` -- `BOTH` returns both, `MAX_UE_NUM` returns only the UE maximum |
+| `QuotaUpdate` unknown slice is a real 404 | TS 29.500 §5.2.7 (`ProblemDetails`) | same | same test -- `sst=99` answers `404` |
+| `LocalNumberUpdate` changes the maximum at runtime | TS 29.536 §5.2.2.4 | `nfs/nsacf/src/main.cpp` `/slices/local-configs/update` | same test -- `maxUesNumber: 42` then read back as 42 |
+| `LocalNumberUpdate` leaves the unsent maximum alone | TS 29.536 §6.1.6.2.5 (both fields OPTIONAL) | same | same test -- PDU maximum still 20 after a UE-only update |
+| `CreateSubscription` returns 201 + Location | TS 29.536 §5.3.2.2 | `nfs/nsacf/src/main.cpp` `/subscriptions` | Not covered end-to-end this increment -- disclosed in ADR-0276 (CRUD is real; nothing publishes to it) |
+| NRF registration with `nfType=NSACF` | TS 29.510 §6.1.6.3.3 | `run_nrf_lifecycle` | Live: NRF accepts the profile (the enum value is in this project's own `known_nf_types()`) |
