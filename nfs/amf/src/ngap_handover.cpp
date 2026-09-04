@@ -77,11 +77,10 @@ namespace amf::ngap {
 
 namespace {
 
-// SMF's own address (nfs/smf/src/main.cpp's kPort=7779). Duplicated here rather than shared with
-// ngap_task.cpp deliberately: that file states the "locally-duplicated-constant convention" for
-// kAusfBase/kPcfBase/kSmfBase explicitly. The real fix for all of them is the config-file retrofit
-// tracked as gap-closure task #109 (ADR-0077), not a new one-off header.
-constexpr const char* kSmfBase = "https://127.0.0.1:7779";
+// Task #109 (ADR-0273): SMF's base URL was a compile-time literal here
+// (https://127.0.0.1:7779), duplicated from ngap_task.cpp under that file's own
+// "locally-duplicated-constant convention". It now arrives in `peers`, loaded from
+// config/amf.json -- which is what this file's own comment said the real fix was.
 
 // This lab's fixed test PLMN/S-NSSAI, matching nfs/amf/src/ngap_task.cpp's own kMcc/kMnc/kSst/kSd
 // exactly -- deliberately duplicated here (not shared via a common header) since these handlers
@@ -145,7 +144,8 @@ BIT_STRING_t make_bit_string_from_uint(unsigned long value, std::size_t bits) {
 // session rather than substituting a fabricated tunnel -- a handover that silently carries a
 // TEID=0 transfer is worse than one that reports it could not prepare the session.
 std::optional<std::vector<std::uint8_t>>
-fetch_ho_request_transfer_from_smf(sbi_core::http2::Client& smf_client,
+fetch_ho_request_transfer_from_smf(const PeerEndpoints& peers,
+                                   sbi_core::http2::Client& smf_client,
                                    sbi_core::OAuth2Client& smf_oauth,
                                    amf::UeContextStore& ue_contexts,
                                    const std::string& supi,
@@ -183,8 +183,7 @@ fetch_ho_request_transfer_from_smf(sbi_core::http2::Client& smf_client,
 
     sbi_core::http2::ClientRequest http_req;
     http_req.method = "POST";
-    http_req.url =
-        std::string(kSmfBase) + "/nsmf-pdusession/v1/sm-contexts/" + sm_context_ref + "/modify";
+    http_req.url = peers.smf_base + "/nsmf-pdusession/v1/sm-contexts/" + sm_context_ref + "/modify";
     http_req.headers.emplace("content-type", "application/json");
     http_req.headers.emplace("authorization", "Bearer " + *token);
     http_req.body = update_data.dump();
@@ -268,7 +267,8 @@ fetch_ho_request_transfer_from_smf(sbi_core::http2::Client& smf_client,
 // belongs in the HandoverCommand's own PDUSessionResourceHandoverList. std::nullopt means this
 // session's downlink was NOT repointed -- the caller says so rather than pretending otherwise.
 std::optional<std::vector<std::uint8_t>>
-send_ho_req_ack_to_smf(sbi_core::http2::Client& smf_client,
+send_ho_req_ack_to_smf(const PeerEndpoints& peers,
+                       sbi_core::http2::Client& smf_client,
                        sbi_core::OAuth2Client& smf_oauth,
                        amf::UeContextStore& ue_contexts,
                        const std::string& supi,
@@ -316,8 +316,7 @@ send_ho_req_ack_to_smf(sbi_core::http2::Client& smf_client,
 
     sbi_core::http2::ClientRequest http_req;
     http_req.method = "POST";
-    http_req.url =
-        std::string(kSmfBase) + "/nsmf-pdusession/v1/sm-contexts/" + sm_context_ref + "/modify";
+    http_req.url = peers.smf_base + "/nsmf-pdusession/v1/sm-contexts/" + sm_context_ref + "/modify";
     http_req.headers.emplace("content-type", encoded.content_type_header);
     http_req.headers.emplace("authorization", "Bearer " + *token);
     http_req.body = encoded.body;
@@ -464,6 +463,7 @@ void send_handover_preparation_failure(ngap_core::SctpSocket& source_assoc,
 // authoritative source per spec, not implicit association state) -- auth_state is deliberately not
 // a parameter of this function.
 void handle_handover_required(ngap_core::SctpSocket& source_assoc,
+                              const PeerEndpoints& peers,
                               sbi_core::http2::Client& smf_client,
                               sbi_core::OAuth2Client& smf_oauth,
                               amf::UeContextStore& ue_contexts,
@@ -663,7 +663,7 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
     for (int i = 0; i < pdu_list->list.count; ++i) {
         const auto pdu_session_id = pdu_list->list.array[i]->pDUSessionID;
         auto transfer_bytes = fetch_ho_request_transfer_from_smf(
-            smf_client, smf_oauth, ue_contexts, ctx->supi, pdu_session_id);
+            peers, smf_client, smf_oauth, ue_contexts, ctx->supi, pdu_session_id);
         if (!transfer_bytes.has_value()) {
             spdlog::warn("amf-ngap: skipping pduSessionId={} in HandoverRequest for SUPI {} -- SMF "
                          "gave no real handover transfer, and this build will not substitute a "
@@ -917,7 +917,8 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
                     item->handoverRequestAcknowledgeTransfer.buf,
                     item->handoverRequestAcknowledgeTransfer.buf +
                         item->handoverRequestAcknowledgeTransfer.size);
-                auto cmd_transfer = send_ho_req_ack_to_smf(smf_client,
+                auto cmd_transfer = send_ho_req_ack_to_smf(peers,
+                                                           smf_client,
                                                            smf_oauth,
                                                            ue_contexts,
                                                            ctx->supi,
@@ -1018,6 +1019,7 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
 // only real 3GPP-conformant behavior when this AMF itself tracked the whole handover), matching
 // TS 38.413's own real "if present, indicates..." optional-hint semantics rather than a hard gate.
 void handle_handover_notify(ngap_core::SctpSocket& target_assoc,
+                            const PeerEndpoints& peers,
                             sbi_core::http2::Client& smf_client,
                             sbi_core::OAuth2Client& smf_oauth,
                             amf::UeContextStore& ue_contexts,
@@ -1095,7 +1097,7 @@ void handle_handover_notify(ngap_core::SctpSocket& target_assoc,
                     update_data["hoState"] = "COMPLETED";
                     sbi_core::http2::ClientRequest http_req;
                     http_req.method = "POST";
-                    http_req.url = std::string(kSmfBase) + "/nsmf-pdusession/v1/sm-contexts/" +
+                    http_req.url = peers.smf_base + "/nsmf-pdusession/v1/sm-contexts/" +
                                    ref.get<std::string>() + "/modify";
                     http_req.headers.emplace("content-type", "application/json");
                     http_req.headers.emplace("authorization", "Bearer " + *token);
@@ -1206,6 +1208,7 @@ void handle_handover_notify(ngap_core::SctpSocket& target_assoc,
 // which is the main real case -- and NOT a cancel racing an in-flight preparation. Same root
 // cause as ADR-0258's own per-session blocking disclosure: ADR-0009's synchronous client.
 void handle_handover_cancel(ngap_core::SctpSocket& source_assoc,
+                            const PeerEndpoints& peers,
                             sbi_core::http2::Client& smf_client,
                             sbi_core::OAuth2Client& smf_oauth,
                             amf::UeContextStore& ue_contexts,
@@ -1277,7 +1280,7 @@ void handle_handover_cancel(ngap_core::SctpSocket& source_assoc,
                     update_data["hoState"] = "CANCELLED";
                     sbi_core::http2::ClientRequest http_req;
                     http_req.method = "POST";
-                    http_req.url = std::string(kSmfBase) + "/nsmf-pdusession/v1/sm-contexts/" +
+                    http_req.url = peers.smf_base + "/nsmf-pdusession/v1/sm-contexts/" +
                                    ref.get<std::string>() + "/modify";
                     http_req.headers.emplace("content-type", "application/json");
                     http_req.headers.emplace("authorization", "Bearer " + *token);

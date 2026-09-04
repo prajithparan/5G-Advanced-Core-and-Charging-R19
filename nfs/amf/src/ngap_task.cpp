@@ -134,23 +134,19 @@ constexpr std::uint8_t kSst = 1;
 constexpr std::uint32_t kSd = 1;
 constexpr const char* kAmfName = "5gc-r19-amf";
 
-// AUSF's own address/API root (nfs/ausf/src/main.cpp's kPort=7782, kApiRoot="/nausf-auth/v1") --
-// not shared via a common header, matching this file's existing pattern of locally duplicating
-// the other NFs' fixed lab constants (kMcc/kMnc above) rather than reaching into another NF's
-// private headers (CLAUDE.md's "no NF includes another NF's private headers" rule).
-constexpr const char* kAusfBase = "https://127.0.0.1:7782";
-
-// PCF's own address/API root (nfs/pcf/src/main.cpp's kPort=7783), and this AMF's own address --
-// same locally-duplicated-constant convention as kAusfBase above. kSelfBase feeds
-// PolicyAssociationRequest.notificationUri, a mandatory field PCF's schema requires even though
-// nothing here implements a receiver for it yet -- same disclosed, deliberately-deferred gap
-// nfs/pcf/src/main.cpp's own file header already states for both directions of this callback.
-constexpr const char* kPcfBase = "https://127.0.0.1:7783";
-constexpr const char* kSelfBase = "https://127.0.0.1:7778";
-
-// SMF's own address (nfs/smf/src/main.cpp's kPort=7779) -- same locally-duplicated-constant
-// convention as kAusfBase/kPcfBase above.
-constexpr const char* kSmfBase = "https://127.0.0.1:7779";
+// Task #109 (ADR-0273): AUSF's, PCF's and SMF's base URLs, and this AMF's own advertised base,
+// were four compile-time literals here (https://127.0.0.1:7782/7783/7779/7778). They now arrive
+// in `peers` (amf::ngap::PeerEndpoints), loaded from config/amf.json in main() -- the standing
+// rule is that a deployment endpoint never lives in a .cpp literal. The API roots they are
+// concatenated with (/nausf-auth/v1, /npcf-am-policy-control/v1, /nsmf-pdusession/v1) stay here:
+// those are the peers' 3GPP-defined service paths, not deployment configuration, and reaching
+// into another NF's headers for them would break CLAUDE.md's "no NF includes another NF's private
+// headers" rule.
+//
+// peers.self_base feeds PolicyAssociationRequest.notificationUri, a mandatory field PCF's schema
+// requires even though nothing here implements a receiver for it yet -- the same disclosed,
+// deliberately-deferred gap nfs/pcf/src/main.cpp's own file header states for both directions of
+// this callback. Unchanged by the retrofit.
 
 // TS 23.003 §28.3.2.5 serving network name format ("5G:mnc<3-digit>.mcc<3-digit>.
 // 3gppnetwork.org"), zero-padded MNC even for this lab's 2-digit mnc=70 -- same string this
@@ -507,6 +503,7 @@ void send_downlink_nas_transport(ngap_core::SctpSocket& assoc,
 // (having already logged why) on any failure; auth_state.confirmation_path/last_auth_rand are
 // only updated on success.
 bool initiate_5g_aka_authentication(
+    const PeerEndpoints& peers,
     ngap_core::SctpSocket& assoc,
     sbi_core::http2::Client& ausf_client,
     sbi_core::OAuth2Client& ausf_oauth,
@@ -525,7 +522,7 @@ bool initiate_5g_aka_authentication(
 
     sbi_core::http2::ClientRequest http_req;
     http_req.method = "POST";
-    http_req.url = std::string(kAusfBase) + "/nausf-auth/v1/ue-authentications";
+    http_req.url = peers.ausf_base + "/nausf-auth/v1/ue-authentications";
     http_req.headers.emplace("content-type", "application/json");
     http_req.headers.emplace("authorization", "Bearer " + *token);
     http_req.body = nlohmann::json(req).dump();
@@ -1104,7 +1101,8 @@ void handle_path_switch_request(ngap_core::SctpSocket& assoc,
     ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceToBeSwitchedDLList, dl_list);
 }
 
-void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
+void handle_initial_ue_message(const PeerEndpoints& peers,
+                               ngap_core::SctpSocket& assoc,
                                sbi_core::http2::Client& ausf_client,
                                sbi_core::OAuth2Client& ausf_oauth,
                                UeSecurityContextStore& ue_security_contexts,
@@ -1162,7 +1160,7 @@ void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
     auth_state.ue_security_capability = reg_info->ue_security_capability;
     auth_state.supi = reg_info->supi;
 
-    initiate_5g_aka_authentication(assoc, ausf_client, ausf_oauth, auth_state, std::nullopt);
+    initiate_5g_aka_authentication(peers, assoc, ausf_client, ausf_oauth, auth_state, std::nullopt);
 }
 
 // Stage 3: decodes the NAS-PDU carried in UplinkNASTransport (the UE's response to Stage 2's
@@ -1175,7 +1173,8 @@ void handle_initial_ue_message(ngap_core::SctpSocket& assoc,
 // fresh AuthenticationRequest is sent using the corrected vector, staying in
 // AwaitingAuthenticationResponse to receive its response. Capped at one retry per association --
 // see UeAuthState::sqn_resync_attempted's own comment.
-void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc,
+void handle_uplink_nas_transport(const PeerEndpoints& peers,
+                                 ngap_core::SctpSocket& assoc,
                                  sbi_core::http2::Client& ausf_client,
                                  sbi_core::OAuth2Client& ausf_oauth,
                                  UeAuthState& auth_state,
@@ -1218,7 +1217,8 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc,
         resync_info.rand = aka_crypto::to_hex(*auth_state.last_auth_rand);
         resync_info.auts = aka_crypto::to_hex(*outcome->auts);
 
-        initiate_5g_aka_authentication(assoc, ausf_client, ausf_oauth, auth_state, resync_info);
+        initiate_5g_aka_authentication(
+            peers, assoc, ausf_client, ausf_oauth, auth_state, resync_info);
         return; // stay in AwaitingAuthenticationResponse either way -- success just sent a fresh
                 // AuthenticationRequest; failure was already logged by
                 // initiate_5g_aka_authentication itself
@@ -1241,7 +1241,7 @@ void handle_uplink_nas_transport(ngap_core::SctpSocket& assoc,
 
     sbi_core::http2::ClientRequest http_req;
     http_req.method = "PUT";
-    http_req.url = std::string(kAusfBase) + auth_state.confirmation_path;
+    http_req.url = peers.ausf_base + auth_state.confirmation_path;
     http_req.headers.emplace("content-type", "application/json");
     http_req.headers.emplace("authorization", "Bearer " + *token);
     http_req.body = nlohmann::json(creq).dump();
@@ -1398,7 +1398,8 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
 // handling -- see UeAuthState::Phase's own comment for why this now genuinely fires (a real UE
 // acknowledging the 5G-GUTI RegistrationAccept just assigned). uplink_count=1: the first secured
 // uplink message after SecurityModeComplete's own uplink_count=0.
-void handle_uplink_nas_transport_registration_complete(sbi_core::http2::Client& pcf_client,
+void handle_uplink_nas_transport_registration_complete(const PeerEndpoints& peers,
+                                                       sbi_core::http2::Client& pcf_client,
                                                        sbi_core::OAuth2Client& pcf_oauth,
                                                        UeContextStore& ue_contexts,
                                                        NgapUeRegistry& ue_ngap_registry,
@@ -1454,8 +1455,8 @@ void handle_uplink_nas_transport_registration_complete(sbi_core::http2::Client& 
     sbi_gen::PolicyAssociationRequest_Npcf_AMPolicyControl preq{};
     preq.supi = auth_state.supi;
     // Mandatory per TS 29.507's schema even though nothing here implements a receiver yet -- see
-    // kSelfBase's own comment.
-    preq.notificationUri = std::string(kSelfBase) + "/namf-callback/v1/am-policy-notify";
+    // the PeerEndpoints comment above.
+    preq.notificationUri = peers.self_base + "/namf-callback/v1/am-policy-notify";
     // Mandatory (TS 29.571 §5.2.2 SupportedFeatures, a hex-encoded optional-feature bitmask) --
     // empty string means "none of PCF's optional features requested," the correct value given
     // this project doesn't implement any of them. Found via a real POST to PCF returning 400
@@ -1465,7 +1466,7 @@ void handle_uplink_nas_transport_registration_complete(sbi_core::http2::Client& 
 
     sbi_core::http2::ClientRequest http_req;
     http_req.method = "POST";
-    http_req.url = std::string(kPcfBase) + "/npcf-am-policy-control/v1/policies";
+    http_req.url = peers.pcf_base + "/npcf-am-policy-control/v1/policies";
     http_req.headers.emplace("content-type", "application/json");
     http_req.headers.emplace("authorization", "Bearer " + *token);
     http_req.body = nlohmann::json(preq).dump();
@@ -1512,7 +1513,8 @@ void handle_uplink_nas_transport_registration_complete(sbi_core::http2::Client& 
 // real PDU Session Establishment Accept, handled by the N1N2MessageTransfer route in main.cpp, not
 // here) -- see ADR-0038, which closed the "no N1 SM Accept to forward" gap this comment used to
 // describe.
-void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Client& smf_client,
+void handle_uplink_nas_transport_pdu_session_establishment(const PeerEndpoints& peers,
+                                                           sbi_core::http2::Client& smf_client,
                                                            sbi_core::OAuth2Client& smf_oauth,
                                                            const std::string& amf_instance_id,
                                                            UeAuthState& auth_state,
@@ -1576,8 +1578,8 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
     create_data.servingNetwork.mnc = kMnc;
     create_data.anType.value = sbi_gen::AccessType::V3GPP_ACCESS;
     // Mandatory per TS 29.502's schema even though nothing here implements a receiver yet -- same
-    // disclosed-deferred-callback shape as kSelfBase's other uses (PCF's notificationUri).
-    create_data.smContextStatusUri = std::string(kSelfBase) + "/namf-callback/v1/sm-context-status";
+    // disclosed-deferred-callback shape as peers.self_base's other use (PCF's notificationUri).
+    create_data.smContextStatusUri = peers.self_base + "/namf-callback/v1/sm-context-status";
     create_data.supi = auth_state.supi;
     create_data.pduSessionId = outcome->pdu_session_id;
     create_data.dnn = *outcome->dnn;
@@ -1613,7 +1615,7 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
 
     sbi_core::http2::ClientRequest http_req;
     http_req.method = "POST";
-    http_req.url = std::string(kSmfBase) + "/nsmf-pdusession/v1/sm-contexts";
+    http_req.url = peers.smf_base + "/nsmf-pdusession/v1/sm-contexts";
     http_req.headers.emplace("content-type", encoded.content_type_header);
     http_req.headers.emplace("authorization", "Bearer " + *token);
     http_req.body = encoded.body;
@@ -1674,7 +1676,8 @@ void handle_uplink_nas_transport_pdu_session_establishment(sbi_core::http2::Clie
                  sm_context_ref.empty() ? "<none>" : sm_context_ref);
 }
 
-void handle_association(ngap_core::SctpSocket assoc,
+void handle_association(const PeerEndpoints& peers,
+                        ngap_core::SctpSocket assoc,
                         sbi_core::http2::Client& ausf_client,
                         sbi_core::OAuth2Client& ausf_oauth,
                         sbi_core::http2::Client& pcf_client,
@@ -1753,6 +1756,7 @@ void handle_association(ngap_core::SctpSocket assoc,
             // lookup via amf_ue_id_index (same as PathSwitchRequest), NOT this association's own
             // auth_state -- see handle_handover_required's own header comment for why.
             handle_handover_required(assoc,
+                                     peers,
                                      smf_client,
                                      smf_oauth,
                                      ue_contexts,
@@ -1769,6 +1773,7 @@ void handle_association(ngap_core::SctpSocket assoc,
             // SOURCE association's own thread, same cold-lookup discipline as
             // handle_handover_required.
             handle_handover_cancel(assoc,
+                                   peers,
                                    smf_client,
                                    smf_oauth,
                                    ue_contexts,
@@ -1782,6 +1787,7 @@ void handle_association(ngap_core::SctpSocket assoc,
             // Real HandoverNotify -- arrives on the TARGET association's own thread. See
             // handle_handover_notify's own header comment.
             handle_handover_notify(assoc,
+                                   peers,
                                    smf_client,
                                    smf_oauth,
                                    ue_contexts,
@@ -1791,7 +1797,8 @@ void handle_association(ngap_core::SctpSocket assoc,
                                    *pdu->choice.initiatingMessage);
         } else if (pdu->present == NGAP_PDU_PR_initiatingMessage &&
                    pdu->choice.initiatingMessage->procedureCode == 15 /* id-InitialUEMessage */) {
-            handle_initial_ue_message(assoc,
+            handle_initial_ue_message(peers,
+                                      assoc,
                                       ausf_client,
                                       ausf_oauth,
                                       ue_security_contexts,
@@ -1802,8 +1809,12 @@ void handle_association(ngap_core::SctpSocket assoc,
                    pdu->choice.initiatingMessage->procedureCode == 46 /* id-UplinkNASTransport */) {
             switch (auth_state.phase) {
                 case UeAuthState::Phase::AwaitingAuthenticationResponse:
-                    handle_uplink_nas_transport(
-                        assoc, ausf_client, ausf_oauth, auth_state, *pdu->choice.initiatingMessage);
+                    handle_uplink_nas_transport(peers,
+                                                assoc,
+                                                ausf_client,
+                                                ausf_oauth,
+                                                auth_state,
+                                                *pdu->choice.initiatingMessage);
                     break;
                 case UeAuthState::Phase::AwaitingSecurityModeComplete:
                     handle_uplink_nas_transport_smc_complete(assoc,
@@ -1817,6 +1828,7 @@ void handle_association(ngap_core::SctpSocket assoc,
                     break;
                 case UeAuthState::Phase::AwaitingRegistrationComplete:
                     handle_uplink_nas_transport_registration_complete(
+                        peers,
                         pcf_client,
                         pcf_oauth,
                         ue_contexts,
@@ -1827,6 +1839,7 @@ void handle_association(ngap_core::SctpSocket assoc,
                     break;
                 case UeAuthState::Phase::AwaitingPduSessionEstablishmentRequest:
                     handle_uplink_nas_transport_pdu_session_establishment(
+                        peers,
                         smf_client,
                         smf_oauth,
                         amf_instance_id,
@@ -1917,6 +1930,7 @@ bool NgapUeRegistry::send_raw(const std::string& supi, const std::vector<std::ui
 // otherwise race on the same non-thread-safe client -- a real correctness requirement, not
 // stylistic.
 void run_association_thread(ngap_core::SctpSocket assoc,
+                            PeerEndpoints peers,
                             const std::string& amf_instance_id,
                             const std::string& nrf_base,
                             UeContextStore& ue_contexts,
@@ -1954,7 +1968,8 @@ void run_association_thread(ngap_core::SctpSocket assoc,
     sbi_core::OAuth2Client smf_oauth(
         smf_client, nrf_base + "/oauth2/token", amf_instance_id, "nsmf-pdusession", "SMF");
 
-    handle_association(std::move(assoc),
+    handle_association(peers,
+                       std::move(assoc),
                        ausf_client,
                        ausf_oauth,
                        pcf_client,
@@ -1976,6 +1991,7 @@ void run_ngap_lifecycle(const std::string& bind_address,
                         unsigned short bind_port,
                         const std::string& amf_instance_id,
                         const std::string& nrf_base,
+                        const PeerEndpoints& peers,
                         UeContextStore& ue_contexts,
                         NgapUeRegistry& ue_ngap_registry,
                         UeSecurityContextStore& ue_security_contexts,
@@ -1998,6 +2014,11 @@ void run_ngap_lifecycle(const std::string& bind_address,
         // already carries), the process exiting is what ends them.
         std::thread(run_association_thread,
                     std::move(assoc),
+                    // By value, not std::ref: this thread is detached and outlives the frame that
+                    // owns `peers` in main()'s caller chain. The stores below are std::ref'd
+                    // because main() owns them for the whole process lifetime; a 4-string copy
+                    // per association costs nothing and removes the lifetime question entirely.
+                    peers,
                     amf_instance_id,
                     nrf_base,
                     std::ref(ue_contexts),

@@ -10,6 +10,7 @@
 #include "aka_crypto/kdf.hpp"
 #include "amf_ue_id_index_store.hpp"
 #include "gnb_association_registry.hpp"
+#include "peer_endpoints.hpp"
 #include "ue_context_store.hpp"
 #include "ue_security_context_store.hpp"
 
@@ -106,6 +107,7 @@ void run_ngap_lifecycle(const std::string& bind_address,
                         unsigned short bind_port,
                         const std::string& amf_instance_id,
                         const std::string& nrf_base,
+                        const PeerEndpoints& peers,
                         UeContextStore& ue_contexts,
                         NgapUeRegistry& ue_ngap_registry,
                         UeSecurityContextStore& ue_security_contexts,

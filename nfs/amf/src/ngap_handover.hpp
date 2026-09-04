@@ -8,6 +8,7 @@
 #include "amf_ue_id_index_store.hpp"
 #include "gnb_association_registry.hpp"
 #include "ngap_task.hpp"
+#include "peer_endpoints.hpp"
 #include "ue_context_store.hpp"
 #include "ue_security_context_store.hpp"
 
@@ -38,6 +39,7 @@ namespace amf::ngap {
 // N2 SM info the target gNB needs. Before this, AMF fabricated that transfer locally; the SM
 // context refs ADR-0249 started persisting are what make the real call possible.
 void handle_handover_required(ngap_core::SctpSocket& source_assoc,
+                              const PeerEndpoints& peers,
                               sbi_core::http2::Client& smf_client,
                               sbi_core::OAuth2Client& smf_oauth,
                               amf::UeContextStore& ue_contexts,
@@ -58,6 +60,7 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
 // disclosed limit: with ADR-0258's synchronous relay this covers cancellation of an
 // already-PREPARED handover, not one racing an in-flight preparation.
 void handle_handover_cancel(ngap_core::SctpSocket& source_assoc,
+                            const PeerEndpoints& peers,
                             sbi_core::http2::Client& smf_client,
                             sbi_core::OAuth2Client& smf_oauth,
                             amf::UeContextStore& ue_contexts,
@@ -67,6 +70,7 @@ void handle_handover_cancel(ngap_core::SctpSocket& source_assoc,
                             const InitiatingMessage_t& msg);
 
 void handle_handover_notify(ngap_core::SctpSocket& target_assoc,
+                            const PeerEndpoints& peers,
                             sbi_core::http2::Client& smf_client,
                             sbi_core::OAuth2Client& smf_oauth,
                             amf::UeContextStore& ue_contexts,

@@ -335,6 +335,18 @@ int main() {
     // Real, disclosed lab AMF identity (TS 24.501 §9.11.3.4's own 5G-GUTI structure) -- MUST
     // match ngap_task.cpp's own build_ng_setup_response, which broadcasts this same AMF
     // Region/Set/Pointer to the gNB via NGSetupResponse's own GUAMI (docs/DECISIONS.md ADR-0076).
+    // Task #109 (ADR-0273): AMF's peer NF base URLs, previously compile-time literals in
+    // ngap_task.cpp/ngap_handover.cpp. Env overrides follow nf_config's existing per-key
+    // convention, which is what lets a deployment (or a test) point this AMF at a different SMF
+    // without a rebuild.
+    amf::ngap::PeerEndpoints peers;
+    peers.ausf_base = nf_config::require<std::string>(config, "ausf_base_url", "AMF_AUSF_BASE_URL");
+    peers.pcf_base = nf_config::require<std::string>(config, "pcf_base_url", "AMF_PCF_BASE_URL");
+    peers.smf_base = nf_config::require<std::string>(config, "smf_base_url", "AMF_SMF_BASE_URL");
+    // Derived, not configured: this is the address AMF advertises to NRF, so a fifth key would
+    // have to be kept in sync with `port` by hand -- the exact drift this task removes.
+    peers.self_base = "https://127.0.0.1:" + std::to_string(port);
+
     const auto amf_region_id = nf_config::require<std::uint8_t>(config, "amf_region_id");
     const auto amf_set_id = nf_config::require<std::uint16_t>(config, "amf_set_id");
     const auto amf_pointer = nf_config::require<std::uint8_t>(config, "amf_pointer");
@@ -1320,6 +1332,7 @@ int main() {
                 ngap_bind_port,
                 amf_instance_id,
                 nrf_base,
+                peers,
                 std::ref(ue_contexts),
                 std::ref(ue_ngap_registry),
                 std::ref(ue_security_contexts),
