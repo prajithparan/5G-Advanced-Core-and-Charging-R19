@@ -4,6 +4,7 @@
   "nrf_base_url": "https://127.0.0.1:7777",
   "self_base_url": "https://127.0.0.1:7779",
   "pcf_base_url": "https://127.0.0.1:7783",
+  "nsacf_base_url": "https://127.0.0.1:7797",
   "amf_base_url": "https://127.0.0.1:7778",
   "chf_base_url": "https://127.0.0.1:7784"
 }

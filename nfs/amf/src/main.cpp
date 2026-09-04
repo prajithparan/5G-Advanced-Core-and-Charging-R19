@@ -345,6 +345,8 @@ int main() {
     peers.ausf_base = nf_config::require<std::string>(config, "ausf_base_url", "AMF_AUSF_BASE_URL");
     peers.pcf_base = nf_config::require<std::string>(config, "pcf_base_url", "AMF_PCF_BASE_URL");
     peers.smf_base = nf_config::require<std::string>(config, "smf_base_url", "AMF_SMF_BASE_URL");
+    peers.nsacf_base =
+        nf_config::require<std::string>(config, "nsacf_base_url", "AMF_NSACF_BASE_URL");
     // AMF's own advertised address. The HOST comes from config (`advertised_ipv4`), the PORT is
     // reused from `port` rather than given a key of its own -- a separate self-port key would have
     // to be hand-synced with the listener's, which is the drift this task removes. The same

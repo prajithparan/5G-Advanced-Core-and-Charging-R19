@@ -24,6 +24,10 @@ struct PeerEndpoints {
     std::string pcf_base;
     std::string smf_base;
 
+    // ADR-0277: NSACF, for Network Slice Admission Control during Registration
+    // (TS 23.501 §5.15.11, TS 23.502 §4.2.2.2.2).
+    std::string nsacf_base;
+
     // AMF's OWN advertised base, not a peer. It is derived in main() from the same address and
     // port AMF registers with NRF rather than given its own config key -- a fifth key would have
     // to be kept in sync with `port` by hand, which is the exact drift this task removes.

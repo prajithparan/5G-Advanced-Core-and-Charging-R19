@@ -1336,6 +1336,75 @@ bool perform_n4_session_modification_update_urr(smf::PfcpPeer& pfcp_peer,
     return true;
 }
 
+// ADR-0277: report an established/released PDU session to NSACF (Nnsacf_NSAC NumOfPDUsUpdate).
+//
+// Keyed per (SUPI, pduSessionId) on NSACF's side, which is why both are sent: one UE may hold
+// several sessions on the same slice, and NSAC counts sessions, not UEs, on this service.
+void report_pdu_session_to_nsacf(sbi_core::http2::Client& nsacf_client,
+                                 sbi_core::OAuth2Client& nsacf_oauth,
+                                 const std::string& nsacf_base_url,
+                                 const std::string& supi,
+                                 std::int64_t pdu_session_id,
+                                 std::int64_t sst,
+                                 const std::optional<std::string>& sd,
+                                 bool increase) {
+    if (nsacf_base_url.empty() || supi.empty()) {
+        return;
+    }
+    const auto token = nsacf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::error("smf: could not obtain an NSACF token for slice admission control: {}",
+                      token.error());
+        return;
+    }
+
+    json snssai{{"sst", sst}};
+    if (sd.has_value()) {
+        snssai["sd"] = *sd;
+    }
+    json request;
+    request["pduACRequestInfo"] =
+        json::array({json{{"supi", supi},
+                          {"anType", "3GPP_ACCESS"},
+                          {"pduSessionId", pdu_session_id},
+                          {"acuOperationList",
+                           json::array({json{{"updateFlag", increase ? "INCREASE" : "DECREASE"},
+                                             {"snssai", snssai}}})}}});
+
+    sbi_core::http2::ClientRequest http_req;
+    http_req.method = "POST";
+    http_req.url = nsacf_base_url + "/nnsacf-nsac/v1/slices/pdus";
+    http_req.headers.emplace("content-type", "application/json");
+    http_req.headers.emplace("authorization", "Bearer " + *token);
+    http_req.body = request.dump();
+
+    auto resp = nsacf_client.send(http_req);
+    if (!resp.has_value()) {
+        spdlog::warn("smf: NSACF NumOfPDUsUpdate call failed for SUPI {} pduSessionId {}: {}",
+                     supi,
+                     pdu_session_id,
+                     resp.error());
+        return;
+    }
+    if (resp->status == 204) {
+        spdlog::info("smf: NSACF admitted pduSessionId {} for SUPI {} on slice sst={}",
+                     pdu_session_id,
+                     supi,
+                     sst);
+        return;
+    }
+    if (resp->status == 200) {
+        spdlog::warn("smf: NSACF REJECTED pduSessionId {} for SUPI {}: {} -- this session is NOT "
+                     "being torn down (enforcement is a separate increment, ADR-0277)",
+                     pdu_session_id,
+                     supi,
+                     resp->body);
+        return;
+    }
+    spdlog::warn(
+        "smf: NSACF NumOfPDUsUpdate returned unexpected status {} for SUPI {}", resp->status, supi);
+}
+
 } // namespace
 
 int main() {
@@ -1349,6 +1418,10 @@ int main() {
         nf_config::require<std::string>(config, "self_base_url", "SMF_SELF_BASE_URL");
     const auto pcf_base_url =
         nf_config::require<std::string>(config, "pcf_base_url", "SMF_PCF_BASE_URL");
+    // ADR-0277: NSACF, for Network Slice Admission Control on the number of PDU sessions
+    // (TS 23.501 §5.15.11, TS 23.502 §4.3.2.2.1).
+    const auto nsacf_base_url =
+        nf_config::require<std::string>(config, "nsacf_base_url", "SMF_NSACF_BASE_URL");
     const auto amf_base_url =
         nf_config::require<std::string>(config, "amf_base_url", "SMF_AMF_BASE_URL");
     const auto chf_base_url =
@@ -1390,6 +1463,16 @@ int main() {
     sbi_core::http2::Client pcf_client(std::move(pcf_client_tls));
     sbi_core::OAuth2Client pcf_oauth(
         pcf_client, nrf_base_url + "/oauth2/token", smf_instance_id, "npcf-smpolicycontrol", "PCF");
+
+    // ADR-0277: SMF's own client for Nnsacf_NSAC, same one-client-per-peer pattern as PCF's above.
+    sbi_core::http2::TlsConfig nsacf_client_tls{
+        .cert_path = CERTS_DIR "/smf/cert.pem",
+        .key_path = CERTS_DIR "/smf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client nsacf_client(std::move(nsacf_client_tls));
+    sbi_core::OAuth2Client nsacf_oauth(
+        nsacf_client, nrf_base_url + "/oauth2/token", smf_instance_id, "nnsacf-nsac", "NSACF");
 
     // SMF's own client identity + token source for calling AMF's Namf_Communication
     // N1N2MessageTransfer (TS29518_Namf_Communication.yaml) -- the real mechanism for delivering
@@ -2090,7 +2173,10 @@ int main() {
         [create_sm_context_inner,
          &pdu_session_creation_req_counter,
          &pdu_session_creation_succ_counter,
-         &pdu_session_creation_fail_counter](const sbi_core::http2::Request& req) {
+         &pdu_session_creation_fail_counter,
+         &nsacf_client,
+         &nsacf_oauth,
+         &nsacf_base_url](const sbi_core::http2::Request& req) {
             auto resp = create_sm_context_inner(req);
             if (resp.status == 401) {
                 return resp;
@@ -2102,6 +2188,10 @@ int main() {
             // this project would then be inventing.
             std::string plmn = "unknown";
             std::string snssai = "unknown";
+            std::string supi_for_nsac;
+            std::int64_t pdu_session_id_for_nsac = 0;
+            std::int64_t sst_for_nsac = 0;
+            std::optional<std::string> sd_for_nsac;
             std::string req_type = "absent";
             const auto content_type_it = req.headers.find("content-type");
             const auto parts =
@@ -2130,6 +2220,21 @@ int main() {
                     if (body.contains("requestType")) {
                         req_type = body.at("requestType").get<std::string>();
                     }
+                    // ADR-0277: the same parsed body already gives NSAC everything it needs, so
+                    // no second parse is added for it.
+                    if (body.contains("supi")) {
+                        supi_for_nsac = body.at("supi").get<std::string>();
+                    }
+                    if (body.contains("pduSessionId")) {
+                        pdu_session_id_for_nsac = body.at("pduSessionId").get<std::int64_t>();
+                    }
+                    if (body.contains("sNssai")) {
+                        const auto& sn = body.at("sNssai");
+                        sst_for_nsac = sn.value("sst", 0);
+                        if (sn.contains("sd")) {
+                            sd_for_nsac = sn.at("sd").get<std::string>();
+                        }
+                    }
                 } catch (const nlohmann::json::exception&) {
                     // Leave the "unknown" defaults: an unparseable body is still a received
                     // request per §5.3.1.3(c), and is counted as one below.
@@ -2141,6 +2246,21 @@ int main() {
             if (resp.status == 201) {
                 pdu_session_creation_succ_counter->Add(
                     1, {{"plmn", plmn}, {"snssai", snssai}, {"reqType", req_type}});
+
+                // ADR-0277: TS 23.501 §5.15.11 / TS 23.502 §4.3.2.2.1 -- a PDU session was just
+                // ESTABLISHED, which is what NSAC counts on the PDU-number side. Reported here,
+                // after the 201, and deliberately NOT used to refuse the session: refusing means
+                // failing the establishment back to the UE and unwinding the N4 session and the
+                // PCF association already created, a behaviour change to the procedure rather than
+                // a call. Same disclosed boundary as AMF's own UE-count report.
+                report_pdu_session_to_nsacf(nsacf_client,
+                                            nsacf_oauth,
+                                            nsacf_base_url,
+                                            supi_for_nsac,
+                                            pdu_session_id_for_nsac,
+                                            sst_for_nsac,
+                                            sd_for_nsac,
+                                            /*increase=*/true);
             } else {
                 // §5.3.1.5's subcounter is "per rejection cause". This build's rejection cause is
                 // the ProblemDetails `title` it already returns -- a real value carried on the

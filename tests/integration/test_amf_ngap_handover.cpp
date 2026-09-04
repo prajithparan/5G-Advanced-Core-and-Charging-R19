@@ -16,12 +16,15 @@
 // transfer and skips any session it has no smContextRef for.
 
 #include "sbi_core/http2_client.hpp"
+#include "sbi_core/http2_server.hpp"
 #include "sbi_core/multipart.hpp"
 
+#include <boost/asio/io_context.hpp>
 #include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -75,6 +78,7 @@ constexpr const char* kUdrProbe =
 constexpr const char* kPcfProbe = "https://127.0.0.1:7783/npcf-am-policy-control/v1/policies/none";
 constexpr const char* kSmfProbe =
     "https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts/nonexistent/retrieve";
+constexpr const char* kNsacfProbe = "https://127.0.0.1:7797/nnsacf-nsac/v1/slices/ues";
 
 sbi_core::http2::Client make_client() {
     sbi_core::http2::TlsConfig tls{
@@ -786,4 +790,120 @@ TEST(AmfNgapTestGnb, TargetGnbRefusalIsRelayedToTheSourceWithItsOwnCause) {
     EXPECT_EQ(relayed_cause, NgapTestGnb::kCauseRadioNoResourcesInTargetCell)
         << "AMF substituted its own cause instead of relaying the target gNB's -- the source gNB "
            "is told the wrong reason its handover failed";
+}
+
+// ADR-0277: the wiring. A real UE registering through AMF, and a real PDU session through SMF,
+// must reach NSACF -- proved by receiving NSACF's own event report rather than by reading a log.
+//
+// Why the report is the evidence: Nnsacf_NSAC has no operation that returns the CURRENT count
+// (QuotaUpdate returns the configured maxima), so a test cannot ask NSACF "how many UEs do you
+// hold". What it can do is subscribe to NUM_OF_REGD_UES with a threshold of 1 and let NSACF say
+// so itself. The count in that report came from AMF's own call, made during a registration this
+// test drove over real NGAP/NAS -- four processes and two protocols away from the assertion.
+TEST(AmfNgapTestGnb, RegistrationAndPduSessionReachNsacf) {
+    boost::asio::io_context receiver_ioc;
+    sbi_core::http2::TlsConfig receiver_tls{
+        .cert_path = CERTS_DIR "/hello-nf/cert.pem",
+        .key_path = CERTS_DIR "/hello-nf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Server receiver(receiver_ioc, "127.0.0.1", 19997, receiver_tls);
+
+    std::mutex reports_mutex;
+    std::vector<json> reports;
+    receiver.add_route(
+        "POST", "/sac-report", [&reports_mutex, &reports](const sbi_core::http2::Request& req) {
+            std::lock_guard<std::mutex> lock(reports_mutex);
+            reports.push_back(json::parse(req.body));
+            sbi_core::http2::Response resp;
+            resp.status = 204;
+            return resp;
+        });
+    receiver.start();
+    std::thread receiver_thread([&receiver_ioc] { receiver_ioc.run(); });
+
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0);
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0);
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0);
+    nf_test::SpawnedProcess ausf(AUSF_PATH);
+    ASSERT_GT(ausf.pid(), 0);
+    nf_test::SpawnedProcess pcf(PCF_PATH);
+    ASSERT_GT(pcf.pid(), 0);
+    nf_test::SpawnedProcess upf(UPF_PATH);
+    ASSERT_GT(upf.pid(), 0);
+    nf_test::SpawnedProcess smf(SMF_PATH);
+    ASSERT_GT(smf.pid(), 0);
+    nf_test::SpawnedProcess nsacf(NSACF_PATH);
+    ASSERT_GT(nsacf.pid(), 0);
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0);
+
+    ASSERT_NO_FATAL_FAILURE(
+        wait_for_sbi_peers({kUdrProbe, kUdmProbe, kAusfProbe, kPcfProbe, kSmfProbe, kNsacfProbe}));
+    ASSERT_NO_FATAL_FAILURE(wait_for_upf_sx_association());
+
+    // Subscribe before the UE registers, threshold 1, on the lab's own S-NSSAI (sst=1, sd=000001)
+    // -- the slice AMF reports and the one config/nsacf.json configures.
+    {
+        auto client = make_client();
+        sbi_core::http2::ClientRequest sub_req;
+        sub_req.method = "POST";
+        sub_req.url = "https://127.0.0.1:7797/nnsacf-slice-ee/v1/subscriptions";
+        sub_req.headers.emplace("content-type", "application/json");
+        sub_req.body =
+            json{
+                {"event",
+                 json{{"eventType", "NUM_OF_REGD_UES"},
+                      {"eventTrigger", "THRESHOLD"},
+                      {"eventFilter", json::array({json{{"sst", 1}, {"sd", "000001"}}})},
+                      {"notifThreshold", json{{"numericValNumUes", 1}}}}},
+                {"eventNotifyUri", "https://127.0.0.1:19997/sac-report"},
+                {"nfId", "00000000-0000-4000-8000-0000000000bb"},
+            }
+                .dump();
+        auto sub_resp = client.send(sub_req);
+        ASSERT_TRUE(sub_resp.has_value());
+        ASSERT_EQ(sub_resp->status, 201) << sub_resp->body;
+    }
+
+    NgapTestGnb gnb;
+    ASSERT_TRUE(gnb.connect(kAmfNgapAddress, kAmfNgapPort));
+    ASSERT_TRUE(gnb.ng_setup(kSourceGnbId));
+
+    constexpr std::uint32_t kUeRanId = 1;
+    RegisteredUe ue;
+    ASSERT_NO_FATAL_FAILURE(register_ue(gnb, kUeRanId, ue));
+    ASSERT_NO_FATAL_FAILURE(establish_pdu_session(gnb,
+                                                  ue,
+                                                  kUeRanId,
+                                                  /*pdu_session_id=*/5,
+                                                  /*pti=*/1));
+
+    for (int attempt = 0; attempt < 60; ++attempt) {
+        {
+            std::lock_guard<std::mutex> lock(reports_mutex);
+            if (!reports.empty()) {
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    receiver_ioc.stop();
+    if (receiver_thread.joinable()) {
+        receiver_thread.join();
+    }
+
+    std::lock_guard<std::mutex> lock(reports_mutex);
+    ASSERT_FALSE(reports.empty())
+        << "NSACF never reported a registered UE -- AMF's Nnsacf_NSAC call during Registration "
+           "(TS 23.502 §4.2.2.2.2) did not reach it";
+    const auto& report = reports.front().at("report");
+    EXPECT_EQ(report.at("eventType").get<std::string>(), "NUM_OF_REGD_UES");
+    EXPECT_EQ(report.at("eventFilter").at("sst").get<int>(), 1);
+    EXPECT_GE(report.at("sliceStautsInfo").at("reachedNumUes").at("numericValNumUes").get<int>(), 1)
+        << "the report must count the UE this test registered";
 }

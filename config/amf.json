@@ -6,6 +6,7 @@
   "ausf_base_url": "https://127.0.0.1:7782",
   "pcf_base_url": "https://127.0.0.1:7783",
   "smf_base_url": "https://127.0.0.1:7779",
+  "nsacf_base_url": "https://127.0.0.1:7797",
   "redis_url": "tcp://127.0.0.1:6379",
   "ngap_bind_address": "127.0.0.5",
   "ngap_bind_port": 38412,

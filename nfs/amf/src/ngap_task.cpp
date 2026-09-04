@@ -1398,9 +1398,88 @@ void handle_uplink_nas_transport_smc_complete(ngap_core::SctpSocket& assoc,
 // handling -- see UeAuthState::Phase's own comment for why this now genuinely fires (a real UE
 // acknowledging the 5G-GUTI RegistrationAccept just assigned). uplink_count=1: the first secured
 // uplink message after SecurityModeComplete's own uplink_count=0.
+// ADR-0277: Network Slice Admission Control during Registration.
+//
+// TS 23.501 §5.15.11 makes NSAC the operator's control on how many UEs may be REGISTERED on a
+// slice; TS 23.502 §4.2.2.2.2 puts the invocation in the Registration procedure, with AMF as the
+// requesting NF. NSACF has existed in this project since ADR-0276 and nothing called it -- this is
+// that call.
+//
+// Real, disclosed scope, stated here rather than left to be discovered: this AMF admits the UE
+// and then reports it. It does not yet REFUSE a registration whose slice NSACF rejected -- doing
+// that means failing the registration back to the UE with the right 5GMM cause and unwinding the
+// PCF association already created, which is a behaviour change to the registration procedure
+// itself rather than a call. So a rejection is logged loudly and the count is left accurate; the
+// enforcement step is named as the next increment, not implied to exist.
+void report_ue_to_nsacf(const PeerEndpoints& peers,
+                        sbi_core::http2::Client& nsacf_client,
+                        sbi_core::OAuth2Client& nsacf_oauth,
+                        const std::string& supi,
+                        bool increase) {
+    if (peers.nsacf_base.empty()) {
+        return;
+    }
+    const auto token = nsacf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::error("amf-ngap: could not obtain an NSACF token for slice admission control: {}",
+                      token.error());
+        return;
+    }
+
+    // The UE's own slice. kSst/kSd are this lab's single configured S-NSSAI -- the same pair the
+    // Allowed NSSAI and the PDU session carry, so the admission control counts the slice the UE is
+    // really on.
+    nlohmann::json snssai{{"sst", kSst}};
+    snssai["sd"] = fmt::format("{:06x}", kSd);
+
+    nlohmann::json request;
+    request["ueACRequestInfo"] = nlohmann::json::array({nlohmann::json{
+        {"supi", supi},
+        {"anType", "3GPP_ACCESS"},
+        {"acuOperationList",
+         nlohmann::json::array({nlohmann::json{{"updateFlag", increase ? "INCREASE" : "DECREASE"},
+                                               {"snssai", snssai}}})}}});
+    request["nfId"] = "00000000-0000-4000-8000-0000000000aa";
+
+    sbi_core::http2::ClientRequest http_req;
+    http_req.method = "POST";
+    http_req.url = peers.nsacf_base + "/nnsacf-nsac/v1/slices/ues";
+    http_req.headers.emplace("content-type", "application/json");
+    http_req.headers.emplace("authorization", "Bearer " + *token);
+    http_req.body = request.dump();
+
+    auto resp = nsacf_client.send(http_req);
+    if (!resp.has_value()) {
+        spdlog::warn(
+            "amf-ngap: NSACF NumOfUEsUpdate call failed for SUPI {}: {}", supi, resp.error());
+        return;
+    }
+    if (resp->status == 204) {
+        spdlog::info("amf-ngap: NSACF admitted SUPI {} onto slice sst={} ({})",
+                     supi,
+                     static_cast<int>(kSst),
+                     increase ? "INCREASE" : "DECREASE");
+        return;
+    }
+    if (resp->status == 200) {
+        // 200 means the ACU operation only partially succeeded: the body carries the real
+        // AcuFailureList. See this function's own scope note -- reported, not yet enforced.
+        spdlog::warn("amf-ngap: NSACF REJECTED SUPI {} for its slice: {} -- this registration is "
+                     "NOT being refused (enforcement is a separate increment, ADR-0277)",
+                     supi,
+                     resp->body);
+        return;
+    }
+    spdlog::warn("amf-ngap: NSACF NumOfUEsUpdate returned unexpected status {} for SUPI {}",
+                 resp->status,
+                 supi);
+}
+
 void handle_uplink_nas_transport_registration_complete(const PeerEndpoints& peers,
                                                        sbi_core::http2::Client& pcf_client,
                                                        sbi_core::OAuth2Client& pcf_oauth,
+                                                       sbi_core::http2::Client& nsacf_client,
+                                                       sbi_core::OAuth2Client& nsacf_oauth,
                                                        UeContextStore& ue_contexts,
                                                        NgapUeRegistry& ue_ngap_registry,
                                                        ngap_core::SctpSocket& assoc,
@@ -1497,6 +1576,9 @@ void handle_uplink_nas_transport_registration_complete(const PeerEndpoints& peer
     spdlog::info("amf-ngap: AM Policy Association established with PCF for SUPI {} -- UE "
                  "registration procedure fully complete",
                  auth_state.supi);
+
+    // TS 23.502 §4.2.2.2.2: the UE is now REGISTERED, which is exactly the thing NSAC counts.
+    report_ue_to_nsacf(peers, nsacf_client, nsacf_oauth, auth_state.supi, /*increase=*/true);
 }
 
 // PDU Session Establishment (TS 23.502 §4.3.2.2.1), AMF's side of it: decodes+verifies the
@@ -1678,6 +1760,8 @@ void handle_uplink_nas_transport_pdu_session_establishment(const PeerEndpoints& 
 
 void handle_association(const PeerEndpoints& peers,
                         ngap_core::SctpSocket assoc,
+                        sbi_core::http2::Client& nsacf_client,
+                        sbi_core::OAuth2Client& nsacf_oauth,
                         sbi_core::http2::Client& ausf_client,
                         sbi_core::OAuth2Client& ausf_oauth,
                         sbi_core::http2::Client& pcf_client,
@@ -1831,6 +1915,8 @@ void handle_association(const PeerEndpoints& peers,
                         peers,
                         pcf_client,
                         pcf_oauth,
+                        nsacf_client,
+                        nsacf_oauth,
                         ue_contexts,
                         ue_ngap_registry,
                         assoc,
@@ -1959,6 +2045,17 @@ void run_association_thread(ngap_core::SctpSocket assoc,
     sbi_core::OAuth2Client pcf_oauth(
         pcf_client, nrf_base + "/oauth2/token", amf_instance_id, "npcf-am-policy-control", "PCF");
 
+    // ADR-0277: this association's own NSACF client, same per-association ownership as every other
+    // client here (see this function's own comment) rather than a shared one.
+    sbi_core::http2::TlsConfig nsacf_client_tls{
+        .cert_path = CERTS_DIR "/amf/cert.pem",
+        .key_path = CERTS_DIR "/amf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client nsacf_client(std::move(nsacf_client_tls));
+    sbi_core::OAuth2Client nsacf_oauth(
+        nsacf_client, nrf_base + "/oauth2/token", amf_instance_id, "nnsacf-nsac", "NSACF");
+
     sbi_core::http2::TlsConfig smf_client_tls{
         .cert_path = CERTS_DIR "/amf/cert.pem",
         .key_path = CERTS_DIR "/amf/key.pem",
@@ -1970,6 +2067,8 @@ void run_association_thread(ngap_core::SctpSocket assoc,
 
     handle_association(peers,
                        std::move(assoc),
+                       nsacf_client,
+                       nsacf_oauth,
                        ausf_client,
                        ausf_oauth,
                        pcf_client,
