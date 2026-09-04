@@ -12,9 +12,13 @@ extern "C" {
 #include <AMF-UE-NGAP-ID.h>
 #include <Cause.h>
 #include <DownlinkNASTransport.h>
+#include <GTPTunnel.h>
 #include <GlobalGNB-ID.h>
 #include <GlobalRANNodeID.h>
 #include <HandoverCancel.h>
+#include <HandoverRequest.h>
+#include <HandoverRequestAcknowledge.h>
+#include <HandoverRequestAcknowledgeTransfer.h>
 #include <HandoverRequired.h>
 #include <HandoverType.h>
 #include <InitialUEMessage.h>
@@ -23,15 +27,23 @@ extern "C" {
 #include <NGAP-PDU.h>
 #include <NGSetupRequest.h>
 #include <NR-CGI.h>
+#include <PDUSessionResourceAdmittedItem.h>
+#include <PDUSessionResourceAdmittedList.h>
 #include <PDUSessionResourceItemHORqd.h>
 #include <PDUSessionResourceListHORqd.h>
+#include <PDUSessionResourceSetupItemHOReq.h>
+#include <PDUSessionResourceSetupListHOReq.h>
 #include <PLMNIdentity.h>
+#include <QosFlowItemWithDataForwarding.h>
+#include <QosFlowListWithDataForwarding.h>
 #include <RAN-UE-NGAP-ID.h>
 #include <RRCEstablishmentCause.h>
 #include <SourceToTarget-TransparentContainer.h>
 #include <SuccessfulOutcome.h>
 #include <TargetID.h>
 #include <TargetRANNodeID.h>
+#include <TargetToSource-TransparentContainer.h>
+#include <UPTransportLayerInformation.h>
 #include <UnsuccessfulOutcome.h>
 #include <UplinkNASTransport.h>
 #include <UserLocationInformation.h>
@@ -258,6 +270,181 @@ std::vector<std::uint8_t> NgapTestGnb::build_handover_required(std::uint64_t amf
     pdu.choice.initiatingMessage->criticality = Criticality_reject;
     pdu.choice.initiatingMessage->value.present = InitiatingMessage__value_PR_HandoverRequired;
     pdu.choice.initiatingMessage->value.choice.HandoverRequired = required;
+    const auto bytes = ::ngap::encode_pdu(pdu);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
+    return bytes;
+}
+
+// --- ADR-0269: the target gNB's half of Handover Resource Allocation (TS 38.413 §8.4.3) -------
+
+namespace {
+
+// This target gNB's own DL N3 tunnel -- the endpoint it tells the core to send downlink user
+// plane to once the UE arrives. Deliberately distinct from UPF's own N3 address so a transfer
+// that ends up carrying the wrong side's tunnel is visible rather than plausible.
+constexpr std::uint32_t kTargetGnbDlTeid = 0x0000BEEF;
+constexpr std::uint8_t kTargetGnbIpv4[4] = {127, 0, 0, 22};
+
+// The QoS flow this lab's SM policy establishes (PCF's own default 5QI flow, QFI 1) -- the flow a
+// target gNB would be admitting here. Nothing in the current relay decodes it (see ADR-0269's own
+// disclosure that AMF does not yet call SMF with HANDOVER_REQ_ACK), so this is honesty about what
+// the message says, not a value any assertion depends on.
+constexpr long kAdmittedQfi = 1;
+
+// A real gTPTunnel CHOICE for this gNB's own DL endpoint, heap-allocated the way the generated
+// codec expects so ASN_STRUCT_FREE_CONTENTS_ONLY owns it. Same shape as
+// tests/integration/test_smf_n2sminfo_dispatch.cpp's own fill_gtp_tunnel, for the same reason.
+void fill_target_dl_tunnel(UPTransportLayerInformation_t& tnl) {
+    tnl.present = UPTransportLayerInformation_PR_gTPTunnel;
+    auto* tunnel = static_cast<GTPTunnel_t*>(std::calloc(1, sizeof(GTPTunnel_t)));
+    const std::uint8_t teid[4] = {static_cast<std::uint8_t>((kTargetGnbDlTeid >> 24) & 0xFF),
+                                  static_cast<std::uint8_t>((kTargetGnbDlTeid >> 16) & 0xFF),
+                                  static_cast<std::uint8_t>((kTargetGnbDlTeid >> 8) & 0xFF),
+                                  static_cast<std::uint8_t>(kTargetGnbDlTeid & 0xFF)};
+    tunnel->gTP_TEID = make_octet_string(teid, 4);
+    tunnel->transportLayerAddress.buf = static_cast<std::uint8_t*>(std::malloc(4));
+    std::memcpy(tunnel->transportLayerAddress.buf, kTargetGnbIpv4, 4);
+    tunnel->transportLayerAddress.size = 4;
+    tunnel->transportLayerAddress.bits_unused = 0;
+    tnl.choice.gTPTunnel = tunnel;
+}
+
+// The real inner structure PDUSessionResourceAdmittedItem carries. Both fields written here are
+// MANDATORY in the ASN.1 (specs/NGAP/ngap-17.9.asn:6454) -- dL-NGU-UP-TNLInformation and
+// qosFlowSetupResponseList; everything else in it is OPTIONAL and omitted.
+std::vector<std::uint8_t> encode_handover_request_acknowledge_transfer() {
+    HandoverRequestAcknowledgeTransfer_t transfer{};
+    fill_target_dl_tunnel(transfer.dL_NGU_UP_TNLInformation);
+    auto* flow = static_cast<QosFlowItemWithDataForwarding_t*>(
+        std::calloc(1, sizeof(QosFlowItemWithDataForwarding_t)));
+    flow->qosFlowIdentifier = kAdmittedQfi;
+    ASN_SEQUENCE_ADD(&transfer.qosFlowSetupResponseList.list, flow);
+    const auto bytes = ::ngap::encode_value(&asn_DEF_HandoverRequestAcknowledgeTransfer, &transfer);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_HandoverRequestAcknowledgeTransfer, &transfer);
+    return bytes;
+}
+
+} // namespace
+
+bool NgapTestGnb::parse_handover_request(const std::vector<std::uint8_t>& pdu_bytes,
+                                         HandoverRequestInfo& out) {
+    NGAP_PDU_t* pdu = ::ngap::decode_pdu(pdu_bytes);
+    if (pdu == nullptr) {
+        return false;
+    }
+    if (pdu->present != NGAP_PDU_PR_initiatingMessage ||
+        pdu->choice.initiatingMessage->procedureCode != kProcHandoverResourceAllocation) {
+        ASN_STRUCT_FREE(asn_DEF_NGAP_PDU, pdu);
+        return false;
+    }
+    const auto& container = pdu->choice.initiatingMessage->value.choice.HandoverRequest.protocolIEs;
+
+    bool ok = false;
+    const auto* amf_id_ie = ::ngap::find_ie(container, 10 /* id-AMF-UE-NGAP-ID */);
+    if (amf_id_ie != nullptr) {
+        auto* amf_id = static_cast<AMF_UE_NGAP_ID_t*>(
+            ::ngap::decode_ie_value(&asn_DEF_AMF_UE_NGAP_ID, *amf_id_ie));
+        if (amf_id != nullptr) {
+            unsigned long value = 0;
+            if (asn_INTEGER2ulong(amf_id, &value) == 0) {
+                out.amf_ue_id = value;
+                ok = true;
+            }
+            ASN_STRUCT_FREE(asn_DEF_AMF_UE_NGAP_ID, amf_id);
+        }
+    }
+
+    // The sessions AMF really prepared. An empty list is not an error here -- it is a real answer
+    // (AMF sends no list at all when it could prepare none), and the caller's own assertion is a
+    // better place to say so than a silent false.
+    out.pdu_session_ids.clear();
+    const auto* setup_ie = ::ngap::find_ie(container, 73 /* id-PDUSessionResourceSetupListHOReq */);
+    if (setup_ie != nullptr) {
+        auto* setup_list = static_cast<PDUSessionResourceSetupListHOReq_t*>(
+            ::ngap::decode_ie_value(&asn_DEF_PDUSessionResourceSetupListHOReq, *setup_ie));
+        if (setup_list != nullptr) {
+            for (int i = 0; i < setup_list->list.count; ++i) {
+                out.pdu_session_ids.push_back(
+                    static_cast<std::uint8_t>(setup_list->list.array[i]->pDUSessionID));
+            }
+            ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceSetupListHOReq, setup_list);
+        }
+    }
+
+    ASN_STRUCT_FREE(asn_DEF_NGAP_PDU, pdu);
+    return ok;
+}
+
+std::vector<std::uint8_t>
+NgapTestGnb::build_handover_request_acknowledge(std::uint64_t amf_ue_id,
+                                                std::uint32_t ran_ue_id,
+                                                const std::vector<std::uint8_t>& pdu_session_ids) {
+    HandoverRequestAcknowledge_t ack{};
+
+    AMF_UE_NGAP_ID_t amf_id{};
+    asn_ulong2INTEGER(&amf_id, static_cast<unsigned long>(amf_ue_id));
+    ::ngap::add_ie(
+        ack.protocolIEs,
+        ::ngap::make_ie(
+            10 /* id-AMF-UE-NGAP-ID */, Criticality_ignore, &asn_DEF_AMF_UE_NGAP_ID, &amf_id));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_AMF_UE_NGAP_ID, &amf_id);
+
+    RAN_UE_NGAP_ID_t ran_id = static_cast<RAN_UE_NGAP_ID_t>(ran_ue_id);
+    ::ngap::add_ie(
+        ack.protocolIEs,
+        ::ngap::make_ie(
+            85 /* id-RAN-UE-NGAP-ID */, Criticality_ignore, &asn_DEF_RAN_UE_NGAP_ID, &ran_id));
+
+    // PDUSessionResourceAdmittedList is MANDATORY and SIZE(1..maxnoofPDUSessions) -- a zero-length
+    // list would not be a legal encoding, so a caller with nothing to admit must send a
+    // HandoverFailure instead. Returning empty bytes says that here rather than emitting an
+    // out-of-constraint PDU that AMF would then fail to decode for a confusing reason.
+    if (pdu_session_ids.empty()) {
+        ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_HandoverRequestAcknowledge, &ack);
+        return {};
+    }
+    const auto transfer = encode_handover_request_acknowledge_transfer();
+    if (transfer.empty()) {
+        ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_HandoverRequestAcknowledge, &ack);
+        return {};
+    }
+    PDUSessionResourceAdmittedList_t admitted{};
+    for (const std::uint8_t session_id : pdu_session_ids) {
+        auto* item = static_cast<PDUSessionResourceAdmittedItem_t*>(
+            std::calloc(1, sizeof(PDUSessionResourceAdmittedItem_t)));
+        item->pDUSessionID = session_id;
+        item->handoverRequestAcknowledgeTransfer =
+            make_octet_string(transfer.data(), transfer.size());
+        ASN_SEQUENCE_ADD(&admitted.list, item);
+    }
+    ::ngap::add_ie(ack.protocolIEs,
+                   ::ngap::make_ie(53 /* id-PDUSessionResourceAdmittedList */,
+                                   Criticality_ignore,
+                                   &asn_DEF_PDUSessionResourceAdmittedList,
+                                   &admitted));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PDUSessionResourceAdmittedList, &admitted);
+
+    // Opaque to AMF by design (TS 38.413 §9.3.1.32) -- it relays these bytes to the source gNB
+    // without decoding them, so a short marker is honest: this driver is not a real RRC stack and
+    // does not pretend to produce a real HandoverCommand RRC container.
+    const std::uint8_t opaque[4] = {0xCA, 0xFE, 0xBA, 0xBE};
+    TargetToSource_TransparentContainer_t t2s = make_octet_string(opaque, 4);
+    ::ngap::add_ie(ack.protocolIEs,
+                   ::ngap::make_ie(106 /* id-TargetToSource-TransparentContainer */,
+                                   Criticality_reject,
+                                   &asn_DEF_TargetToSource_TransparentContainer,
+                                   &t2s));
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_TargetToSource_TransparentContainer, &t2s);
+
+    NGAP_PDU_t pdu{};
+    pdu.present = NGAP_PDU_PR_successfulOutcome;
+    pdu.choice.successfulOutcome =
+        static_cast<SuccessfulOutcome_t*>(std::calloc(1, sizeof(SuccessfulOutcome_t)));
+    pdu.choice.successfulOutcome->procedureCode = kProcHandoverResourceAllocation;
+    pdu.choice.successfulOutcome->criticality = Criticality_reject;
+    pdu.choice.successfulOutcome->value.present =
+        SuccessfulOutcome__value_PR_HandoverRequestAcknowledge;
+    pdu.choice.successfulOutcome->value.choice.HandoverRequestAcknowledge = ack;
     const auto bytes = ::ngap::encode_pdu(pdu);
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
     return bytes;

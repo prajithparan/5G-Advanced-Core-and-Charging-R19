@@ -63,6 +63,36 @@ public:
     std::vector<std::uint8_t> build_handover_cancel(std::uint64_t amf_ue_id,
                                                     std::uint32_t ran_ue_id);
 
+    // --- Target-gNB side of the relay (ADR-0269). ---
+
+    // What a target gNB needs out of the HandoverRequest AMF sends it: the AMF-UE-NGAP-ID it must
+    // echo, and the PDU sessions AMF actually managed to prepare. Both are read from the real
+    // message rather than assumed, so an acknowledge always answers about the sessions AMF asked
+    // for -- AMF SKIPS any session SMF could not answer for (ADR-0258), so the list is a real
+    // answer to a real question, not a constant.
+    struct HandoverRequestInfo {
+        std::uint64_t amf_ue_id = 0;
+        std::vector<std::uint8_t> pdu_session_ids;
+    };
+    static bool parse_handover_request(const std::vector<std::uint8_t>& pdu_bytes,
+                                       HandoverRequestInfo& out);
+
+    // Real HandoverRequestAcknowledge (TS 38.413 §9.2.3.2). Mandatory IE set per
+    // HandoverRequestAcknowledgeIEs: AMF-UE-NGAP-ID(10), RAN-UE-NGAP-ID(85),
+    // PDUSessionResourceAdmittedList(53), TargetToSource-TransparentContainer(106).
+    //
+    // `ran_ue_id` is the TARGET's own newly allocated RAN-UE-NGAP-ID, not the source's -- the
+    // target gNB assigns it, which is the whole reason the IE is in this message.
+    //
+    // Each admitted session carries a REAL PER-encoded HandoverRequestAcknowledgeTransfer (the
+    // target's own DL N3 tunnel plus the QoS flows it accepted), not an opaque marker: the ASN.1
+    // makes it `OCTET STRING (CONTAINING HandoverRequestAcknowledgeTransfer)`, a structure with a
+    // real consumer, unlike the transparent containers which are opaque by design.
+    std::vector<std::uint8_t>
+    build_handover_request_acknowledge(std::uint64_t amf_ue_id,
+                                       std::uint32_t ran_ue_id,
+                                       const std::vector<std::uint8_t>& pdu_session_ids);
+
     // --- UE-associated signalling (ADR-0265), for procedures that need a registered UE. ---
 
     // Real InitialUEMessage carrying `nas_pdu`: id-RAN-UE-NGAP-ID(85), id-NAS-PDU(38), plus the
@@ -99,6 +129,7 @@ public:
     static constexpr long kProcDownlinkNasTransport = 4;
     static constexpr long kProcHandoverCancel = 10;
     static constexpr long kProcHandoverPreparation = 12;
+    static constexpr long kProcHandoverResourceAllocation = 13;
     static constexpr long kProcInitialUeMessage = 15;
     static constexpr long kProcNgSetup = 21;
     static constexpr long kProcUplinkNasTransport = 46;

@@ -16,6 +16,9 @@
 // transfer and skips any session it has no smContextRef for.
 
 #include "sbi_core/http2_client.hpp"
+#include "sbi_core/multipart.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <cstdint>
@@ -39,6 +42,10 @@ constexpr std::uint16_t kAmfNgapPort = 38412;
 
 constexpr std::uint32_t kSourceGnbId = 0x000011;
 constexpr std::uint32_t kTargetGnbId = 0x000022;
+
+// The RAN-UE-NGAP-ID the TARGET gNB allocates for the incoming UE. Its own, not the source's --
+// that is exactly what HandoverRequestAcknowledge's own RAN-UE-NGAP-ID IE means.
+constexpr std::uint32_t kTargetRanUeId = 7777;
 
 // An AMF-UE-NGAP-ID no registration ever allocated, so the cold lookup through amf_ue_id_index
 // deliberately misses.
@@ -195,6 +202,68 @@ void register_ue(NgapTestGnb& gnb, std::uint32_t ran_ue_id, RegisteredUe& out) {
     ASSERT_EQ((*accept_plain)[2], 0x42) << "deciphered downlink was not a RegistrationAccept";
 }
 
+// ADR-0267's own sequence, factored out so ADR-0269's relay test can reach the same UE state
+// without duplicating it: RegistrationComplete, then a real PDU Session Establishment Request,
+// then the Accept SMF builds and AMF delivers back on the same association. Assertions live here
+// for the same reason they do in register_ue -- a failure names the step that broke.
+//
+// The NAS COUNTs are not free parameters: AMF's phase machine expects uplink 1 for
+// RegistrationComplete and 2 for the UlNasTransport, and answers a message at the wrong count
+// with silence rather than an error.
+void establish_pdu_session(NgapTestGnb& gnb,
+                           const RegisteredUe& ue,
+                           std::uint32_t ran_ue_id,
+                           std::uint8_t pdu_session_id,
+                           std::uint8_t pti) {
+    gnb.send_raw(
+        gnb.build_uplink_nas_transport(ue.amf_ue_id,
+                                       ran_ue_id,
+                                       nf_test::build_registration_complete(ue.keys,
+                                                                            /*uplink_count=*/1)));
+
+    gnb.send_raw(gnb.build_uplink_nas_transport(
+        ue.amf_ue_id,
+        ran_ue_id,
+        nf_test::build_pdu_session_establishment_request(ue.keys,
+                                                         /*uplink_count=*/2,
+                                                         pdu_session_id,
+                                                         pti,
+                                                         kDnn,
+                                                         kSst,
+                                                         kSd)));
+
+    // The Accept comes back on this same association, but written from AMF's SBI server thread
+    // (SMF calls N1N2MessageTransfer, ADR-0038) rather than as a reply on the NGAP thread.
+    const auto accept_pdu = gnb.receive_raw();
+    ASSERT_FALSE(accept_pdu.empty())
+        << "nothing came back after the PDU Session Establishment Request -- AMF rejected the MAC "
+           "or NAS COUNT, SMF never created the SM context, or the N1N2MessageTransfer failed";
+    NgapTestGnb::DownlinkNas dl;
+    ASSERT_TRUE(NgapTestGnb::extract_downlink_nas(accept_pdu, dl))
+        << "expected a DownlinkNASTransport carrying the DlNasTransport with the Accept";
+
+    // downlink_count=2: SecurityModeCommand was 0 and RegistrationAccept 1, which is exactly what
+    // AMF registers for this UE (next_downlink_count=2). A desync here fails the MAC check.
+    const auto plain = nf_test::open_secured_downlink(ue.keys, /*downlink_count=*/2, dl.nas_pdu);
+    ASSERT_TRUE(plain.has_value())
+        << "the DlNasTransport's MAC did not verify against the UE's own KNASint";
+
+    const auto n1_sm = nf_test::extract_dl_nas_payload_container(*plain);
+    ASSERT_TRUE(n1_sm.has_value())
+        << "deciphered downlink was not a DlNasTransport carrying an N1 SM container";
+
+    // The payload is SMF's own 5GSM message (nfs/smf/src/nas_5gsm_codec.cpp): EPD 0x2E, the PDU
+    // session ID and PTI echoed back from the request, then message type 0xC2 -- PDU Session
+    // Establishment Accept (TS 24.501 §8.3.5). AMF never decoded any of this; it relayed the
+    // bytes.
+    ASSERT_GE(n1_sm->size(), 4u);
+    EXPECT_EQ((*n1_sm)[0], 0x2E) << "not a 5GSM message";
+    EXPECT_EQ((*n1_sm)[1], pdu_session_id) << "SMF answered about a different PDU session";
+    EXPECT_EQ((*n1_sm)[2], pti) << "TS 24.501 requires the PTI to be echoed back";
+    EXPECT_EQ((*n1_sm)[3], 0xC2)
+        << "expected a PDU Session Establishment Accept; 0xC3 would be a Reject";
+}
+
 } // namespace
 
 TEST(AmfNgapTestGnb, NgSetupOverRealSctpSucceeds) {
@@ -349,53 +418,239 @@ TEST(AmfNgapTestGnb, RegisteredUeEstablishesARealPduSession) {
     RegisteredUe ue;
     ASSERT_NO_FATAL_FAILURE(register_ue(gnb, kUeRanId, ue));
 
-    // RegistrationComplete. AMF answers nothing to this one -- it moves its own phase machine on
-    // and registers the association so SMF's later N1N2MessageTransfer can reach this UE -- so
-    // there is no reply to read here, and the assertion is that the NEXT exchange works at all.
-    gnb.send_raw(gnb.build_uplink_nas_transport(
-        ue.amf_ue_id, kUeRanId, nf_test::build_registration_complete(ue.keys, /*uplink_count=*/1)));
+    // RegistrationComplete, then the PDU session -- see establish_pdu_session, which carries this
+    // test's own assertions and is shared with ADR-0269's relay test rather than copied into it.
+    ASSERT_NO_FATAL_FAILURE(
+        establish_pdu_session(gnb, ue, kUeRanId, /*pdu_session_id=*/5, /*pti=*/1));
+}
 
+namespace {
+
+using nlohmann::json;
+
+std::string fetch_smf_token(sbi_core::http2::Client& client) {
+    sbi_core::http2::ClientRequest req;
+    req.method = "POST";
+    req.url = "https://127.0.0.1:7777/oauth2/token";
+    req.headers.emplace("content-type", "application/x-www-form-urlencoded");
+    req.body = "grant_type=client_credentials&nfInstanceId=test-client&scope=nsmf-pdusession&"
+               "targetNfType=SMF";
+    auto resp = client.send(req);
+    if (!resp.has_value() || resp->status != 200) {
+        return "";
+    }
+    return json::parse(resp->body).at("access_token").get<std::string>();
+}
+
+// The same minimal CreateSmContext body tests/integration/test_smf_handover_n2sminfo.cpp builds.
+// Duplicated rather than shared: each integration test in this suite is a standalone translation
+// unit and the file already duplicates make_client/wait_for_* for the same reason.
+sbi_core::multipart::Encoded encode_create_sm_context_body(const std::string& supi,
+                                                           std::int64_t pdu_session_id) {
+    sbi_core::multipart::Part part;
+    part.content_type = "application/json";
+    part.body =
+        json{
+            {"servingNfId", "00000000-0000-4000-8000-0000000000aa"},
+            {"servingNetwork", json{{"mcc", "999"}, {"mnc", "70"}}},
+            {"anType", "3GPP_ACCESS"},
+            {"smContextStatusUri", "https://example.com/sm-status"},
+            {"supi", supi},
+            {"pduSessionId", pdu_session_id},
+            {"dnn", kDnn},
+            {"sNssai", json{{"sst", kSst}}},
+        }
+            .dump();
+    return sbi_core::multipart::encode({part});
+}
+
+// Blocks until SMF can actually answer HANDOVER_REQUIRED with a real transfer.
+//
+// Load-bearing, and the trap ADR-0267 recorded as the second of three. SMF only holds a real N3
+// uplink F-TEID once it has discovered UPF through NRF and completed a PFCP Sx Association -- its
+// own retry loop, on a 2 s cadence -- and it establishes the N4 session INLINE during
+// CreateSmContext rather than coming back to the session later. A PDU session created before that
+// association exists therefore carries no tunnel forever, HANDOVER_REQUIRED correctly answers 500
+// rather than fabricating one, AMF skips the only session it has, and the relay ends in
+// HandoverPreparationFailure that reads exactly like an AMF bug.
+//
+// This gates on the real thing rather than sleeping a guessed interval: a throwaway SUPI's own
+// session is created and probed until SMF answers 200. It must run BEFORE the UE establishes its
+// session, not after.
+void wait_for_upf_sx_association(int max_attempts = 40) {
+    auto client = make_client();
+    const std::string token = fetch_smf_token(client);
+    ASSERT_FALSE(token.empty()) << "failed to obtain an OAuth2 token from NRF for SMF";
+
+    // Deliberately not kTestSupi: this probe session must not collide with the UE's own.
+    const std::string supi = "imsi-999700000000042";
+    std::string last_failure = "never attempted";
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        const auto encoded = encode_create_sm_context_body(supi, 100 + attempt);
+        sbi_core::http2::ClientRequest create_req;
+        create_req.method = "POST";
+        create_req.url = "https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts";
+        create_req.headers.emplace("content-type", encoded.content_type_header);
+        create_req.headers.emplace("authorization", "Bearer " + token);
+        create_req.body = encoded.body;
+        auto create_resp = client.send(create_req);
+        ASSERT_TRUE(create_resp.has_value()) << "SMF stopped answering CreateSmContext entirely";
+        ASSERT_EQ(create_resp->status, 201) << create_resp->body;
+        const auto location = create_resp->headers.find("location");
+        ASSERT_NE(location, create_resp->headers.end())
+            << "TS 29.502 requires Location on the 201 -- AMF derives its smContextRef from it";
+        const std::string ref = location->second.substr(location->second.rfind('/') + 1);
+
+        sbi_core::http2::ClientRequest ho_req;
+        ho_req.method = "POST";
+        ho_req.url = "https://127.0.0.1:7779/nsmf-pdusession/v1/sm-contexts/" + ref + "/modify";
+        ho_req.headers.emplace("content-type", "application/json");
+        ho_req.headers.emplace("authorization", "Bearer " + token);
+        ho_req.body = json{{"n2SmInfoType", "HANDOVER_REQUIRED"}}.dump();
+        auto resp = client.send(ho_req);
+        ASSERT_TRUE(resp.has_value());
+        if (resp->status == 200) {
+            return;
+        }
+        last_failure = std::to_string(resp->status) + " " + resp->body;
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    FAIL() << "SMF never answered HANDOVER_REQUIRED with a real transfer, so no PDU session in "
+              "this lab can be handed over. Last answer: "
+           << last_failure;
+}
+
+// What the target gNB's own thread did, reported back to the test body. A thread cannot carry a
+// gtest fatal assertion out of itself, so it records instead and the body asserts.
+struct TargetGnbOutcome {
+    bool received_request = false;
+    bool sent_acknowledge = false;
+    NgapTestGnb::HandoverRequestInfo request;
+    std::string failure;
+};
+
+} // namespace
+
+// ADR-0269: the whole N2 handover relay, end to end, over two real SCTP associations.
+//
+// This is the assertion every ADR from ADR-0090 through ADR-0261 was written towards and none
+// could make. The chain is: a registered UE with a real PDU session sends HandoverRequired from
+// the SOURCE gNB; AMF resolves the UE, asks SMF for that session's real N2 transfer
+// (n2SmInfoType=HANDOVER_REQUIRED, ADR-0258), builds a real HandoverRequest, sends it to the
+// TARGET gNB over that gNB's own separate association, waits for the target's
+// HandoverRequestAcknowledge, and answers the source with a real HandoverCommand.
+//
+// Why it needs both gNBs to be real. AMF keys the target association on the PER-encoded
+// GlobalGNB-ID bytes captured from that gNB's own NGSetupRequest, and resolves the target of a
+// handover by re-encoding the TargetID the source sent. A test gNB that did not really NGSetup
+// under kTargetGnbId would leave AMF with nowhere to send the HandoverRequest, and the failure
+// would be indistinguishable from every other failure in this chain -- all of them end in
+// HandoverPreparationFailure on the source association.
+//
+// The three traps ADR-0267 recorded, all of which produce that same symptom, and what handles
+// each here: (1) handle_handover_required BLOCKS the source association while awaiting the
+// target's reply, so the target must be driven on its own thread -- it is; (2) spawning UPF is not
+// enough, the Sx association must exist BEFORE the UE's session is created -- wait_for_upf_sx_-
+// association gates on it; (3) AMF's stores live in a shared, long-lived Redis across runs, so
+// this test establishes its own session in its own body rather than leaning on ADR-0267's test
+// having run first.
+TEST(AmfNgapTestGnb, FullN2HandoverRelayReachesHandoverCommand) {
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0);
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0);
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0);
+    nf_test::SpawnedProcess ausf(AUSF_PATH);
+    ASSERT_GT(ausf.pid(), 0);
+    nf_test::SpawnedProcess pcf(PCF_PATH);
+    ASSERT_GT(pcf.pid(), 0);
+    // UPF is what makes this different from ADR-0267's test: without a real PFCP session there is
+    // no real N3 uplink F-TEID, and SMF answers HANDOVER_REQUIRED with 500 rather than a
+    // fabricated tunnel -- correctly, which is exactly why the relay could not be reached before.
+    nf_test::SpawnedProcess upf(UPF_PATH);
+    ASSERT_GT(upf.pid(), 0);
+    nf_test::SpawnedProcess smf(SMF_PATH);
+    ASSERT_GT(smf.pid(), 0);
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0);
+
+    ASSERT_NO_FATAL_FAILURE(
+        wait_for_sbi_peers({kUdrProbe, kUdmProbe, kAusfProbe, kPcfProbe, kSmfProbe}));
+    ASSERT_NO_FATAL_FAILURE(wait_for_upf_sx_association());
+
+    NgapTestGnb source;
+    ASSERT_TRUE(source.connect(kAmfNgapAddress, kAmfNgapPort));
+    ASSERT_TRUE(source.ng_setup(kSourceGnbId));
+
+    // A second, genuinely separate association -- AMF holds one thread per accepted association
+    // (ADR-0096), and this is the first test to make it hold two at once.
+    NgapTestGnb target;
+    ASSERT_TRUE(target.connect(kAmfNgapAddress, kAmfNgapPort));
+    ASSERT_TRUE(target.ng_setup(kTargetGnbId))
+        << "the target gNB never completed NGSetup, so AMF has no association to relay to";
+
+    constexpr std::uint32_t kUeRanId = 1;
     constexpr std::uint8_t kPduSessionId = 5;
-    constexpr std::uint8_t kPti = 1;
-    gnb.send_raw(gnb.build_uplink_nas_transport(
-        ue.amf_ue_id,
-        kUeRanId,
-        nf_test::build_pdu_session_establishment_request(ue.keys,
-                                                         /*uplink_count=*/2,
-                                                         kPduSessionId,
-                                                         kPti,
-                                                         kDnn,
-                                                         kSst,
-                                                         kSd)));
+    RegisteredUe ue;
+    ASSERT_NO_FATAL_FAILURE(register_ue(source, kUeRanId, ue));
+    ASSERT_NO_FATAL_FAILURE(establish_pdu_session(source, ue, kUeRanId, kPduSessionId, /*pti=*/1));
 
-    // The Accept comes back on this same association, but written from AMF's SBI server thread
-    // (SMF calls N1N2MessageTransfer, ADR-0038) rather than as a reply on the NGAP thread.
-    const auto accept_pdu = gnb.receive_raw();
-    ASSERT_FALSE(accept_pdu.empty())
-        << "nothing came back after the PDU Session Establishment Request -- AMF rejected the MAC "
-           "or NAS COUNT, SMF never created the SM context, or the N1N2MessageTransfer failed";
-    NgapTestGnb::DownlinkNas dl;
-    ASSERT_TRUE(NgapTestGnb::extract_downlink_nas(accept_pdu, dl))
-        << "expected a DownlinkNASTransport carrying the DlNasTransport with the Accept";
+    // Started before HandoverRequired is sent, because AMF sends the HandoverRequest and blocks
+    // for the answer within that one call. Its receive is bounded by the driver's own socket
+    // timeout, so a HandoverRequest that never arrives fails this test with a message rather than
+    // hanging until ctest kills the binary.
+    TargetGnbOutcome target_outcome;
+    std::thread target_thread([&] {
+        const auto request = target.receive_raw();
+        if (request.empty()) {
+            target_outcome.failure = "no HandoverRequest ever arrived on the target association";
+            return;
+        }
+        if (!NgapTestGnb::parse_handover_request(request, target_outcome.request)) {
+            target_outcome.failure = "the PDU AMF sent the target was not a decodable "
+                                     "HandoverRequest carrying an AMF-UE-NGAP-ID";
+            return;
+        }
+        target_outcome.received_request = true;
+        const auto ack =
+            target.build_handover_request_acknowledge(target_outcome.request.amf_ue_id,
+                                                      kTargetRanUeId,
+                                                      target_outcome.request.pdu_session_ids);
+        if (ack.empty()) {
+            target_outcome.failure = "could not build a HandoverRequestAcknowledge -- AMF prepared "
+                                     "no PDU session, so there was nothing to admit";
+            return;
+        }
+        target.send_raw(ack);
+        target_outcome.sent_acknowledge = true;
+    });
 
-    // downlink_count=2: SecurityModeCommand was 0 and RegistrationAccept 1, which is exactly what
-    // AMF registers for this UE (next_downlink_count=2). A desync here fails the MAC check.
-    const auto plain = nf_test::open_secured_downlink(ue.keys, /*downlink_count=*/2, dl.nas_pdu);
-    ASSERT_TRUE(plain.has_value())
-        << "the DlNasTransport's MAC did not verify against the UE's own KNASint";
+    const auto required =
+        source.build_handover_required(ue.amf_ue_id, kUeRanId, kTargetGnbId, kPduSessionId);
+    ASSERT_FALSE(required.empty());
+    source.send_raw(required);
 
-    const auto n1_sm = nf_test::extract_dl_nas_payload_container(*plain);
-    ASSERT_TRUE(n1_sm.has_value())
-        << "deciphered downlink was not a DlNasTransport carrying an N1 SM container";
+    const auto reply = source.receive_raw();
+    target_thread.join();
 
-    // The payload is SMF's own 5GSM message (nfs/smf/src/nas_5gsm_codec.cpp): EPD 0x2E, the PDU
-    // session ID and PTI echoed back from the request, then message type 0xC2 -- PDU Session
-    // Establishment Accept (TS 24.501 §8.3.5). AMF never decoded any of this; it relayed the
-    // bytes.
-    ASSERT_GE(n1_sm->size(), 4u);
-    EXPECT_EQ((*n1_sm)[0], 0x2E) << "not a 5GSM message";
-    EXPECT_EQ((*n1_sm)[1], kPduSessionId) << "SMF answered about a different PDU session";
-    EXPECT_EQ((*n1_sm)[2], kPti) << "TS 24.501 requires the PTI to be echoed back";
-    EXPECT_EQ((*n1_sm)[3], 0xC2)
-        << "expected a PDU Session Establishment Accept; 0xC3 would be a Reject";
+    // The target's own report first: it names which step broke, where the source's reply can only
+    // say "not a HandoverCommand".
+    ASSERT_TRUE(target_outcome.failure.empty()) << target_outcome.failure;
+    ASSERT_TRUE(target_outcome.received_request);
+    EXPECT_EQ(target_outcome.request.amf_ue_id, ue.amf_ue_id)
+        << "AMF addressed the HandoverRequest to a different UE than the one that registered";
+    ASSERT_EQ(target_outcome.request.pdu_session_ids.size(), 1u)
+        << "AMF prepared a different number of PDU sessions than the one this UE has -- a session "
+           "SMF could not answer for is SKIPPED, never fabricated (ADR-0258)";
+    EXPECT_EQ(target_outcome.request.pdu_session_ids[0], kPduSessionId);
+    EXPECT_TRUE(target_outcome.sent_acknowledge);
+
+    ASSERT_FALSE(reply.empty()) << "AMF answered the source gNB nothing at all";
+    const auto summary = NgapTestGnb::summarize(reply);
+    EXPECT_EQ(summary.outcome, NgapTestGnb::Outcome::Successful)
+        << "an unsuccessfulOutcome here is HandoverPreparationFailure -- AMF could not complete "
+           "the relay; its own log names which step";
+    EXPECT_EQ(summary.procedure_code, NgapTestGnb::kProcHandoverPreparation)
+        << "expected a successfulOutcome for id-HandoverPreparation (HandoverCommand)";
 }
