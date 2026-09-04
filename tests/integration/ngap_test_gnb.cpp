@@ -16,6 +16,7 @@ extern "C" {
 #include <GlobalGNB-ID.h>
 #include <GlobalRANNodeID.h>
 #include <HandoverCancel.h>
+#include <HandoverCommand.h>
 #include <HandoverRequest.h>
 #include <HandoverRequestAcknowledge.h>
 #include <HandoverRequestAcknowledgeTransfer.h>
@@ -29,6 +30,8 @@ extern "C" {
 #include <NR-CGI.h>
 #include <PDUSessionResourceAdmittedItem.h>
 #include <PDUSessionResourceAdmittedList.h>
+#include <PDUSessionResourceHandoverItem.h>
+#include <PDUSessionResourceHandoverList.h>
 #include <PDUSessionResourceItemHORqd.h>
 #include <PDUSessionResourceListHORqd.h>
 #include <PDUSessionResourceSetupItemHOReq.h>
@@ -448,6 +451,35 @@ NgapTestGnb::build_handover_request_acknowledge(std::uint64_t amf_ue_id,
     const auto bytes = ::ngap::encode_pdu(pdu);
     ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_PDU, &pdu);
     return bytes;
+}
+
+bool NgapTestGnb::parse_handover_command(const std::vector<std::uint8_t>& pdu_bytes,
+                                         std::vector<std::uint8_t>& switched_pdu_session_ids) {
+    switched_pdu_session_ids.clear();
+    NGAP_PDU_t* pdu = ::ngap::decode_pdu(pdu_bytes);
+    if (pdu == nullptr) {
+        return false;
+    }
+    if (pdu->present != NGAP_PDU_PR_successfulOutcome ||
+        pdu->choice.successfulOutcome->procedureCode != kProcHandoverPreparation) {
+        ASN_STRUCT_FREE(asn_DEF_NGAP_PDU, pdu);
+        return false;
+    }
+    const auto& container = pdu->choice.successfulOutcome->value.choice.HandoverCommand.protocolIEs;
+    const auto* list_ie = ::ngap::find_ie(container, 59 /* id-PDUSessionResourceHandoverList */);
+    if (list_ie != nullptr) {
+        auto* list = static_cast<PDUSessionResourceHandoverList_t*>(
+            ::ngap::decode_ie_value(&asn_DEF_PDUSessionResourceHandoverList, *list_ie));
+        if (list != nullptr) {
+            for (int i = 0; i < list->list.count; ++i) {
+                switched_pdu_session_ids.push_back(
+                    static_cast<std::uint8_t>(list->list.array[i]->pDUSessionID));
+            }
+            ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceHandoverList, list);
+        }
+    }
+    ASN_STRUCT_FREE(asn_DEF_NGAP_PDU, pdu);
+    return true;
 }
 
 std::vector<std::uint8_t> NgapTestGnb::build_handover_cancel(std::uint64_t amf_ue_id,

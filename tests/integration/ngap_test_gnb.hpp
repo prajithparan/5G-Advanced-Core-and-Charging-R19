@@ -93,6 +93,14 @@ public:
                                        std::uint32_t ran_ue_id,
                                        const std::vector<std::uint8_t>& pdu_session_ids);
 
+    // Pulls the PDU session IDs out of a HandoverCommand's PDUSessionResourceHandoverList. That
+    // IE is OPTIONAL in the ASN.1 and AMF only fills it for sessions SMF confirmed it had really
+    // switched to the target's downlink tunnel (ADR-0270) -- so an empty result is the real
+    // signal that no session's downlink moved, not a parse failure. Returns false only if the PDU
+    // is not a HandoverCommand at all.
+    static bool parse_handover_command(const std::vector<std::uint8_t>& pdu_bytes,
+                                       std::vector<std::uint8_t>& switched_pdu_session_ids);
+
     // --- UE-associated signalling (ADR-0265), for procedures that need a registered UE. ---
 
     // Real InitialUEMessage carrying `nas_pdu`: id-RAN-UE-NGAP-ID(85), id-NAS-PDU(38), plus the

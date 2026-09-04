@@ -653,4 +653,20 @@ TEST(AmfNgapTestGnb, FullN2HandoverRelayReachesHandoverCommand) {
            "the relay; its own log names which step";
     EXPECT_EQ(summary.procedure_code, NgapTestGnb::kProcHandoverPreparation)
         << "expected a successfulOutcome for id-HandoverPreparation (HandoverCommand)";
+
+    // ADR-0270: the HandoverCommand must name the sessions whose downlink SMF really switched.
+    //
+    // This is what stops the relay from passing while the user plane is left behind. AMF fills
+    // PDUSessionResourceHandoverList only for sessions SMF answered HANDOVER_REQ_ACK for -- which
+    // it can only do after a real PFCP Session Modification repointing UPF's downlink FAR at the
+    // target's tunnel. An empty list here means the NGAP relay completed while UPF still sends
+    // downlink to the SOURCE gNB, which is exactly the state ADR-0269 found and disclosed and
+    // ADR-0270 fixed. Without this assertion that regression passes silently.
+    std::vector<std::uint8_t> switched;
+    ASSERT_TRUE(NgapTestGnb::parse_handover_command(reply, switched));
+    ASSERT_EQ(switched.size(), 1u)
+        << "the HandoverCommand carried no PDUSessionResourceHandoverList -- AMF answered the "
+           "source gNB without telling SMF where the target wants downlink, so UPF is still "
+           "pointed at the source";
+    EXPECT_EQ(switched[0], kPduSessionId);
 }

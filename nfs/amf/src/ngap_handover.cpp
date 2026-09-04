@@ -41,6 +41,10 @@ extern "C" {
 #include <HandoverType.h>
 #include <NGAP-PDU.h>
 #include <NonDynamic5QIDescriptor.h>
+#include <PDUSessionResourceAdmittedItem.h>
+#include <PDUSessionResourceAdmittedList.h>
+#include <PDUSessionResourceHandoverItem.h>
+#include <PDUSessionResourceHandoverList.h>
 #include <PDUSessionResourceItemHORqd.h>
 #include <PDUSessionResourceListHORqd.h>
 #include <PDUSessionResourceSetupItemHOReq.h>
@@ -238,6 +242,139 @@ fetch_ho_request_transfer_from_smf(sbi_core::http2::Client& smf_client,
         }
     }
     spdlog::error("amf-ngap: SMF's HANDOVER_REQUIRED answer for SUPI {} pduSessionId={} carried no "
+                  "part with contentId '{}'",
+                  supi,
+                  pdu_session_id,
+                  wanted_content_id);
+    return std::nullopt;
+}
+
+// ADR-0270: the ACKNOWLEDGE direction of the same relay -- TS 23.502 §4.9.1.3.2, the step that
+// tells SMF where the target gNB wants downlink delivered.
+//
+// This is the exact mirror of fetch_ho_request_transfer_from_smf above, and its absence was the
+// gap ADR-0269 found and disclosed: AMF completed the NGAP relay and answered the source gNB with
+// a HandoverCommand while UPF's downlink FAR still pointed at the SOURCE gNB's tunnel. A real UE
+// would have lost downlink the moment it arrived at the target. SMF's side has existed since
+// ADR-0248; nothing called it.
+//
+// Unlike the HANDOVER_REQUIRED direction, this one carries real N2 SM info UP to SMF, so the
+// request is multipart/related: a jsonData root part naming the binary part by contentId, plus
+// the target's own HandoverRequestAcknowledgeTransfer bytes. Read from SMF's own handler
+// (nfs/smf/src/main.cpp), which resolves the binary part by the contentId the root part names and
+// ignores a body that carries none.
+//
+// Returns the real HandoverCommandTransfer SMF answers with (n2SmInfoType=HANDOVER_CMD), which
+// belongs in the HandoverCommand's own PDUSessionResourceHandoverList. std::nullopt means this
+// session's downlink was NOT repointed -- the caller says so rather than pretending otherwise.
+std::optional<std::vector<std::uint8_t>>
+send_ho_req_ack_to_smf(sbi_core::http2::Client& smf_client,
+                       sbi_core::OAuth2Client& smf_oauth,
+                       amf::UeContextStore& ue_contexts,
+                       const std::string& supi,
+                       long pdu_session_id,
+                       const std::vector<std::uint8_t>& ack_transfer) {
+    const auto ue_ctx = ue_contexts.get(supi);
+    if (!ue_ctx.has_value() || !ue_ctx->contains("smContextRefs")) {
+        spdlog::warn("amf-ngap: no SM context refs stored for SUPI {} -- cannot tell SMF about the "
+                     "target's accepted downlink tunnel (pduSessionId={})",
+                     supi,
+                     pdu_session_id);
+        return std::nullopt;
+    }
+    const auto key = std::to_string(pdu_session_id);
+    if (!ue_ctx->at("smContextRefs").contains(key)) {
+        spdlog::warn("amf-ngap: no SM context ref for SUPI {} pduSessionId={} -- cannot relay the "
+                     "target's HandoverRequestAcknowledgeTransfer to SMF",
+                     supi,
+                     pdu_session_id);
+        return std::nullopt;
+    }
+    const auto sm_context_ref = ue_ctx->at("smContextRefs").at(key).get<std::string>();
+
+    const auto token = smf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::error("amf-ngap: could not obtain an SMF token for the handover acknowledge leg: "
+                      "{}",
+                      token.error());
+        return std::nullopt;
+    }
+
+    sbi_core::multipart::Part json_part;
+    json_part.content_type = "application/json";
+    nlohmann::json update_data;
+    update_data["n2SmInfoType"] = "HANDOVER_REQ_ACK";
+    update_data["n2SmInfo"]["contentId"] = "n2SmInfo";
+    json_part.body = update_data.dump();
+
+    sbi_core::multipart::Part binary_part;
+    binary_part.content_type = "application/vnd.3gpp.ngap";
+    binary_part.content_id = "n2SmInfo";
+    binary_part.body = std::string(ack_transfer.begin(), ack_transfer.end());
+
+    const auto encoded = sbi_core::multipart::encode({json_part, binary_part});
+
+    sbi_core::http2::ClientRequest http_req;
+    http_req.method = "POST";
+    http_req.url =
+        std::string(kSmfBase) + "/nsmf-pdusession/v1/sm-contexts/" + sm_context_ref + "/modify";
+    http_req.headers.emplace("content-type", encoded.content_type_header);
+    http_req.headers.emplace("authorization", "Bearer " + *token);
+    http_req.body = encoded.body;
+
+    auto resp = smf_client.send(http_req);
+    if (!resp.has_value()) {
+        spdlog::error("amf-ngap: SMF UpdateSMContext(HANDOVER_REQ_ACK) failed for SUPI {} "
+                      "pduSessionId={}: {}",
+                      supi,
+                      pdu_session_id,
+                      resp.error());
+        return std::nullopt;
+    }
+    if (resp->status != 200) {
+        spdlog::error("amf-ngap: SMF UpdateSMContext(HANDOVER_REQ_ACK) returned {} for SUPI {} "
+                      "pduSessionId={} -- the target gNB's downlink tunnel was NOT installed in "
+                      "UPF: {}",
+                      resp->status,
+                      supi,
+                      pdu_session_id,
+                      resp->body);
+        return std::nullopt;
+    }
+
+    const auto content_type_it = resp->headers.find("content-type");
+    if (content_type_it == resp->headers.end() ||
+        !sbi_core::multipart::is_multipart_related(content_type_it->second)) {
+        spdlog::error("amf-ngap: SMF's HANDOVER_REQ_ACK answer for SUPI {} pduSessionId={} was not "
+                      "multipart/related -- no HandoverCommandTransfer to relay",
+                      supi,
+                      pdu_session_id);
+        return std::nullopt;
+    }
+    auto parts = sbi_core::multipart::parse(content_type_it->second, resp->body);
+    if (!parts.has_value() || parts->size() < 2) {
+        spdlog::error("amf-ngap: could not parse SMF's HANDOVER_REQ_ACK answer for SUPI {} "
+                      "pduSessionId={}",
+                      supi,
+                      pdu_session_id);
+        return std::nullopt;
+    }
+    std::string wanted_content_id = "n2SmInfo";
+    try {
+        const auto root = nlohmann::json::parse((*parts)[0].body);
+        if (root.contains("n2SmInfo") && root.at("n2SmInfo").contains("contentId")) {
+            wanted_content_id = root.at("n2SmInfo").at("contentId").get<std::string>();
+        }
+    } catch (const nlohmann::json::exception&) {
+        // Same fall-through as the HANDOVER_REQUIRED direction: the lookup below reports a
+        // malformed root part rather than throwing here.
+    }
+    for (const auto& part : *parts) {
+        if (part.content_id.has_value() && *part.content_id == wanted_content_id) {
+            return std::vector<std::uint8_t>(part.body.begin(), part.body.end());
+        }
+    }
+    spdlog::error("amf-ngap: SMF's HANDOVER_REQ_ACK answer for SUPI {} pduSessionId={} carried no "
                   "part with contentId '{}'",
                   supi,
                   pdu_session_id,
@@ -744,12 +881,71 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
         return;
     }
 
-    spdlog::info("amf-ngap: real HandoverRequestAcknowledge received from target gNB -- sending "
-                 "real HandoverCommand to source gNB");
+    spdlog::info("amf-ngap: real HandoverRequestAcknowledge received from target gNB");
 
-    // Build real HandoverCommand (TS 38.413 §9.2.3.4). PDUSessionResourceHandoverList is real,
-    // OPTIONAL per spec -- omitted, a real, disclosed scope narrowing (same class as
-    // PathSwitchRequestAcknowledge's own empty_transfer precedent, ADR-0090).
+    // ADR-0270: tell SMF where the target wants downlink, BEFORE answering the source gNB.
+    //
+    // TS 23.502 §4.9.1.3.2. The target's PDUSessionResourceAdmittedList carries, per admitted
+    // session, its own HandoverRequestAcknowledgeTransfer -- the DL N3 tunnel it just reserved.
+    // SMF is the only party that can act on it (it owns the PFCP session that programs UPF's
+    // downlink FAR), and AMF is the only party that has it. Until ADR-0270 AMF simply dropped it:
+    // the relay completed, the source gNB got its HandoverCommand, and UPF kept sending downlink
+    // to the SOURCE gNB -- so a real UE lost downlink exactly when it arrived at the target.
+    //
+    // SMF answers each call with a real HandoverCommandTransfer, which belongs in the
+    // HandoverCommand's own PDUSessionResourceHandoverList below. A session SMF cannot answer for
+    // is left OUT of that list rather than given a fabricated transfer -- the same rule the
+    // HandoverRequest direction already follows (ADR-0258).
+    PDUSessionResourceHandoverList_t handover_list{};
+    int sessions_switched = 0;
+    const auto* admitted_ie =
+        ::ngap::find_ie(ack_container, 53 /* id-PDUSessionResourceAdmittedList */);
+    if (admitted_ie == nullptr) {
+        spdlog::warn("amf-ngap: target gNB's HandoverRequestAcknowledge carried no "
+                     "PDUSessionResourceAdmittedList -- nothing to tell SMF, so UPF's downlink "
+                     "still points at the source gNB");
+    } else {
+        auto* admitted = static_cast<PDUSessionResourceAdmittedList_t*>(
+            ::ngap::decode_ie_value(&asn_DEF_PDUSessionResourceAdmittedList, *admitted_ie));
+        if (admitted == nullptr) {
+            spdlog::warn("amf-ngap: target gNB's PDUSessionResourceAdmittedList failed to "
+                         "PER-decode -- UPF's downlink still points at the source gNB");
+        } else {
+            for (int i = 0; i < admitted->list.count; ++i) {
+                const auto* item = admitted->list.array[i];
+                const std::vector<std::uint8_t> ack_transfer(
+                    item->handoverRequestAcknowledgeTransfer.buf,
+                    item->handoverRequestAcknowledgeTransfer.buf +
+                        item->handoverRequestAcknowledgeTransfer.size);
+                auto cmd_transfer = send_ho_req_ack_to_smf(smf_client,
+                                                           smf_oauth,
+                                                           ue_contexts,
+                                                           ctx->supi,
+                                                           item->pDUSessionID,
+                                                           ack_transfer);
+                if (!cmd_transfer.has_value()) {
+                    spdlog::warn("amf-ngap: pduSessionId={} is admitted by the target gNB but SMF "
+                                 "did not confirm the downlink switch -- it is left OUT of the "
+                                 "HandoverCommand rather than carrying a fabricated transfer",
+                                 item->pDUSessionID);
+                    continue;
+                }
+                auto* ho_item = static_cast<PDUSessionResourceHandoverItem_t*>(
+                    std::calloc(1, sizeof(PDUSessionResourceHandoverItem_t)));
+                ho_item->pDUSessionID = item->pDUSessionID;
+                ho_item->handoverCommandTransfer =
+                    make_octet_string(cmd_transfer->data(), cmd_transfer->size());
+                ASN_SEQUENCE_ADD(&handover_list.list, ho_item);
+                ++sessions_switched;
+            }
+            ASN_STRUCT_FREE(asn_DEF_PDUSessionResourceAdmittedList, admitted);
+        }
+    }
+    spdlog::info("amf-ngap: {} PDU session(s) switched to the target gNB's downlink tunnel via SMF "
+                 "-- sending real HandoverCommand to source gNB",
+                 sessions_switched);
+
+    // Build real HandoverCommand (TS 38.413 §9.2.3.4).
     HandoverCommand_t cmd{};
     ::ngap::add_ie(
         cmd.protocolIEs,
@@ -765,6 +961,17 @@ void handle_handover_required(ngap_core::SctpSocket& source_assoc,
         cmd.protocolIEs,
         ::ngap::make_ie(
             29 /* id-HandoverType */, Criticality_reject, &asn_DEF_HandoverType, ho_type));
+    // PDUSessionResourceHandoverList is OPTIONAL per the ASN.1 and SIZE(1..maxnoofPDUSessions),
+    // so it is added only when at least one session really switched -- an empty list would not be
+    // a legal encoding, and its absence honestly means "no session's downlink was moved".
+    if (sessions_switched > 0) {
+        ::ngap::add_ie(cmd.protocolIEs,
+                       ::ngap::make_ie(59 /* id-PDUSessionResourceHandoverList */,
+                                       Criticality_ignore,
+                                       &asn_DEF_PDUSessionResourceHandoverList,
+                                       &handover_list));
+    }
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_PDUSessionResourceHandoverList, &handover_list);
     ::ngap::add_ie(cmd.protocolIEs,
                    ::ngap::make_ie(106 /* id-TargetToSource-TransparentContainer */,
                                    Criticality_reject,
