@@ -267,7 +267,8 @@ TEST(NefInferenceIntegration, CreatePutPatchDeleteLifecycleNoGet) {
 TEST(NefTrainingIntegration, CreatePutPatchDeleteLifecycleNoGet) {
     auto d = spawn_all();
     auto client = make_client();
-    ASSERT_TRUE(wait_reachable(client, "https://127.0.0.1:7790/nnef-training/v1/subscriptions", 200))
+    ASSERT_TRUE(
+        wait_reachable(client, "https://127.0.0.1:7790/nnef-training/v1/subscriptions", 200))
         << "nef never became reachable";
 
     const std::string token = fetch_token(client, "nnef-training");
