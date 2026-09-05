@@ -1,5 +1,6 @@
 #include "sbi_core/http2_server.hpp"
 
+#include "sbi_core/metrics.hpp"
 #include "sbi_core/rate_limit.hpp"
 
 #include <boost/asio/bind_executor.hpp>
@@ -375,6 +376,14 @@ private:
         // before the handler is posted, because the whole point is to spend less on a shed request
         // than on a served one.
         if (rate_limit_ != nullptr && !rate_limit_->try_acquire()) {
+            // P12 (ADR-0282): shedding is a business-visible condition, not just an internal
+            // decision -- an NF at its ceiling is refusing real traffic, and an operator needs to
+            // see it without reading logs. One counter per process, created on first shed.
+            static auto shed_counter = sbi_core::get_meter("sbi_core")
+                                           ->CreateUInt64Counter("sbi_requests_shed_total",
+                                                                 "Requests shed by the configured "
+                                                                 "TPS ceiling (P15)");
+            shed_counter->Add(1);
             Response resp;
             resp.status = 503;
             resp.headers.emplace("content-type", "application/problem+json");

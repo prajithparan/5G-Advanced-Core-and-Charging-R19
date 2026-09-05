@@ -1,0 +1,80 @@
+# P12 -- business-level alarming (ADR-0282, part of P4.12).
+#
+# CHARGING_PROMPT.md's P12 asks for BUSINESS-level alarms, not host metrics: conditions an operator
+# loses money or customers over. docs/DATA_MODEL.md already named two of them (E4's CDR
+# sequence gap, E7's settlement dispute exposure) and neither was wired to anything -- the
+# conditions were documented, the alarms did not exist.
+#
+# Every rule below fires on a metric this project really exports today. Nothing here is aspirational:
+# if a metric does not exist yet, its rule is NOT in this file, and the gap is named in
+# docs/COMPLIANCE_P1_P15.md instead. Deliberate, because an alert on a metric nobody emits is worse
+# than no alert -- it looks like coverage and is silence.
+#
+# Load into Prometheus with:  rule_files: [ /etc/prometheus/business_alerts.yml ]
+
+groups:
+  - name: charging-business-alarms
+    interval: 30s
+    rules:
+      # E4 (docs/DATA_MODEL.md): "a gap is itself a P12 business-level alarm condition, not just a
+      # log line". Each increment is a charging record that never reached the CDR store for a
+      # session that has already ended -- usage that was served and cannot be billed.
+      - alert: ChfCdrSequenceGap
+        expr: increase(chf_cdr_sequence_gap_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          domain: charging
+        annotations:
+          summary: "CDR sequence gap detected -- billable usage is missing from the CDR store"
+          description: >
+            CHF detected {{ $value }} missing invocationSequenceNumber(s) at session release in the
+            last 15 minutes. Each one is a charging record that was generated but never reached the
+            CDR store, so the usage it represents cannot be billed. Check CHF's Doris connectivity
+            and the chf logs for "CDR SEQUENCE GAP".
+
+      # A balance reservation that could not be made is a session being served with no money behind
+      # it. Distinct from the gap above: this is revenue at risk in flight, not revenue already lost.
+      - alert: ChfBalanceReservationRejected
+        expr: increase(chf_balance_reserve_rejected_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          domain: charging
+        annotations:
+          summary: "CHF could not reserve balance -- traffic may be served unfunded"
+          description: >
+            {{ $value }} balance reservations were rejected or unreachable in the last 10 minutes.
+            The usual cause is bss/balance-management being down or partitioned; CHF deliberately
+            does NOT record a reservation it could not make (ADR-0281), so these sessions are
+            proceeding without a funded reservation.
+
+  - name: overload-alarms
+    interval: 30s
+    rules:
+      # P15's counterpart (ADR-0280): shedding means an NF is refusing real traffic. It is the
+      # protection working, and simultaneously a signal that capacity or a peer is wrong.
+      - alert: SbiRequestsBeingShed
+        expr: increase(sbi_requests_shed_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          domain: signalling
+        annotations:
+          summary: "An NF is shedding requests at its configured TPS ceiling"
+          description: >
+            {{ $value }} requests were shed in the last 5 minutes. The TPS ceiling is doing its job,
+            but sustained shedding means either the ceiling is set below real demand or a peer is
+            misbehaving. Sheds return 503 + Retry-After, so callers should be backing off.
+
+      - alert: SbiSustainedShedding
+        expr: increase(sbi_requests_shed_total[30m]) > 1000
+        for: 5m
+        labels:
+          severity: critical
+          domain: signalling
+        annotations:
+          summary: "Sustained request shedding -- the network is running above capacity"
+          description: >
+            More than 1000 requests shed in 30 minutes. This is no longer a spike being absorbed;
+            capacity, the configured ceiling, or an upstream retry storm needs attention.

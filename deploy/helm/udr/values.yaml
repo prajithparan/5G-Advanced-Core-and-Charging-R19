@@ -13,3 +13,13 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
+
+# P8 (ADR-0282): OFF by default. UDR is the one NF whose state is entirely in PostgreSQL and can
+# therefore be scaled horizontally without changing behaviour -- see templates/hpa.yaml for why
+# the other NFs do not get one. Off by default because a cluster without metrics-server would
+# otherwise get an HPA that never scales and reports as unhealthy.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70

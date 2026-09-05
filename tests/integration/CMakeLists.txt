@@ -42,6 +42,7 @@ add_executable(integration_tests
     test_ngap_codec_presence.cpp
     test_nsacf_slice_admission.cpp
     test_tps_spike_protection.cpp
+    test_chaos_charging.cpp
     ngap_test_gnb.cpp
     ue_nas_driver.cpp
     test_ausf_ue_authentication.cpp

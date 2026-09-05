@@ -1,0 +1,45 @@
+{{- if .Values.autoscaling.enabled }}
+# P8 / P10 (ADR-0282, part of P4.12): horizontal autoscaling.
+#
+# UDR gets one and almost nothing else does, and the reason is architectural rather than a
+# packaging oversight -- see docs/COMPLIANCE_P1_P15.md. UDR holds NO in-process state: every
+# resource it serves lives in PostgreSQL (ADR-0068), so a second replica serves exactly what the
+# first would. NRF, AMF, SMF, UDM, PCF, AUSF and NSACF all keep live state in in-process
+# std::unordered_map stores, so a second replica would answer from a different, inconsistent view
+# of the network. Giving those an HPA would not be scaling, it would be a data-consistency bug
+# with a manifest in front of it.
+#
+# CPU-based deliberately: metrics-server ships with every conformant cluster, so this works as
+# written. Scaling on real signalling load (sbi_requests_shed_total, request rate) needs the
+# Prometheus Adapter to expose custom metrics to the HPA API, which this project does not deploy --
+# named in the compliance matrix rather than written here as a rule that would silently never fire.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-udr
+  labels:
+    app.kubernetes.io/name: udr
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-udr
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleUp:
+      # A signalling storm arrives in seconds, so scale-up is allowed to be aggressive.
+      stabilizationWindowSeconds: 30
+    scaleDown:
+      # Scale-down is deliberately slow: shedding traffic because the cluster removed a replica
+      # during a lull that had not actually ended is a self-inflicted outage.
+      stabilizationWindowSeconds: 300
+{{- end }}

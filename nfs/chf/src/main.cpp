@@ -458,6 +458,11 @@ int main() {
     auto meter = sbi_core::get_meter("chf");
     auto create_counter = meter->CreateUInt64Counter("chf_charging_data_create_total",
                                                      "Total Nchf_ConvergedCharging_Create calls");
+    // P12 (ADR-0282): a business-level alarm signal, not an operational one -- each increment is a
+    // charging record that never reached the CDR store for a session that has now ended.
+    auto cdr_sequence_gap_counter = meter->CreateUInt64Counter(
+        "chf_cdr_sequence_gap_total",
+        "Missing CDR invocationSequenceNumbers detected at session release (P12 business alarm)");
     auto release_counter = meter->CreateUInt64Counter("chf_charging_data_release_total",
                                                       "Total Nchf_ConvergedCharging_Release calls");
     auto update_counter = meter->CreateUInt64Counter("chf_charging_data_update_total",
@@ -860,6 +865,7 @@ int main() {
          &release_counter,
          &balance_client,
          &cdr_writer,
+         &cdr_sequence_gap_counter,
          &chf_instance_id](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -914,6 +920,28 @@ int main() {
                         .value_or(
                             std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
                 cdr_writer.write(cdr);
+
+                // P12 (ADR-0282): CDR sequence-gap detection, raised as a business alarm.
+                //
+                // docs/DATA_MODEL.md's E4 says a gap "is itself a P12 business-level alarm
+                // condition, not just a log line". CdrWriter::detect_gaps has existed since
+                // ADR-0058 and was never called by anything -- the detection was built, the alarm
+                // was not. Release is the right moment: the session is over, so its sequence
+                // numbers should be contiguous, and a hole means a charging record for this
+                // session never reached the CDR store. That is lost revenue, not a diagnostic.
+                const auto gaps = cdr_writer.detect_gaps(ref);
+                if (!gaps.empty()) {
+                    cdr_sequence_gap_counter->Add(static_cast<std::uint64_t>(gaps.size()));
+                    std::string missing;
+                    for (const auto gap : gaps) {
+                        missing += (missing.empty() ? "" : ",") + std::to_string(gap);
+                    }
+                    spdlog::error("chf: CDR SEQUENCE GAP for ChargingDataRef={} -- missing "
+                                  "invocationSequenceNumber(s) {}: a charging record for this "
+                                  "session never reached the CDR store",
+                                  ref,
+                                  missing);
+                }
             } catch (const std::exception& e) {
                 spdlog::warn(
                     "chf: CDR write to Doris failed for ChargingDataRef={}: {}", ref, e.what());
