@@ -24204,9 +24204,12 @@ them.
 
 `tests/integration/test_cdr_retention.cpp` drives CHF's **real** `CdrWriter` (its translation units
 are compiled into the test binary; CHF is an executable, so there is no library target to link).
-It `GTEST_SKIP`s without a reachable Doris and runs for real in CI, which has
-`apache/doris:all-in-one` on 9030 with the schema applied -- the same arrangement the
-PostgreSQL-backed store tests already use.
+It `GTEST_SKIP`s without a reachable Doris and runs for real in CI's **`build` job**, which is the
+one that attaches `apache/doris:all-in-one` on 9030 with the schema applied and sets the
+`CHF_DORIS_*` env. The two **sanitizer jobs have no Doris service, so it skips there** -- verified
+in run 33952950176 rather than assumed: `build` reports `Passed 0.21s`, `sanitize (tsan)` reports
+`Skipped`. Stated at this precision because "validated in CI" would otherwise imply all three legs
+exercise it.
 
 What it asserts is chosen deliberately:
 

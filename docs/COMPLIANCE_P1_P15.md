@@ -30,7 +30,7 @@ to this document more than to any other.
 | **P11** | Geo-redundant active/active, proven RPO/RTO | **Deferred** | By user decision, 2026-09-05. Nothing exists |
 | **P12** | Business-level alarming | **Done (first real slice)** | CDR sequence-gap alarm wired at Release + `chf_cdr_sequence_gap_total`; `sbi_requests_shed_total`; 4 Prometheus rules in `deploy/prometheus/business_alerts.yml`, every one verified against a metric this code really exports |
 | **P13** | Charging correctness under AI/ML/SON change | **Not started** | Belongs to P4.9, which is blocked on NWDAF |
-| **P14** | Retention-driven auto-archival | **Partial** | Archive-then-delete sweep in CHF (ADR-0283), hourly, **off by default**. Archives to newline-delimited JSON; a real deployment points it at object storage, which is not deployed here. Validated against CI's real Doris, skipped locally |
+| **P14** | Retention-driven auto-archival | **Partial** | Archive-then-delete sweep in CHF (ADR-0283), hourly, **off by default**. Archives to newline-delimited JSON; a real deployment points it at object storage, which is not deployed here. Validated against real Doris in CI's `build` job (the only leg with a Doris service); skips locally and in both sanitizer legs |
 | **P15** | Protocol-level spike protection / TPS governance | **Partial** | Token-bucket ceiling on all 22 SBI servers with spec-defined `503` shedding (ADR-0280) **and on CHF's Diameter front door** (ADR-0285, off by default -- its shed Result-Code semantics are not verifiable from spec material in hand). **SS7/M3UA still has no ceiling.** Validated as a mechanism, not under a load campaign |
 
 ---
