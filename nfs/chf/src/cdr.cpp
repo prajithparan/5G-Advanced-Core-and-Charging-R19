@@ -1,8 +1,12 @@
 #include "cdr.hpp"
 
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <set>
 #include <sstream>
 
@@ -135,6 +139,129 @@ void CdrWriter::write(const CdrRecord& record) {
                      record.charging_data_ref,
                      mysql_error(conn_));
     }
+}
+
+CdrWriter::RetentionResult CdrWriter::apply_retention(int retention_days,
+                                                      const std::string& archive_dir) {
+    RetentionResult result;
+    if (retention_days <= 0) {
+        return result; // disabled -- the default
+    }
+    if (conn_ == nullptr) {
+        spdlog::warn("chf: CDR retention sweep skipped -- Doris not connected");
+        return result;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Everything older than the window, read in full BEFORE anything is deleted.
+    const std::string cutoff =
+        "DATE_SUB(NOW(), INTERVAL " + std::to_string(retention_days) + " DAY)";
+    const std::string select =
+        "SELECT charging_data_ref, invocation_sequence_number, service_type, operation, "
+        "subscriber_identifier, nf_consumer_node_functionality, rating_group, "
+        "granted_total_volume, granted_service_specific_units, used_total_volume, reserved_cost, "
+        "reserved_cost_currency, invocation_time_stamp, recorded_at, asn1_cdr FROM cdr WHERE "
+        "recorded_at < " +
+        cutoff;
+    if (mysql_real_query(conn_, select.c_str(), static_cast<unsigned long>(select.size())) != 0) {
+        spdlog::error("chf: CDR retention SELECT failed: {}", mysql_error(conn_));
+        result.failed = true;
+        return result;
+    }
+    MYSQL_RES* rows = mysql_store_result(conn_);
+    if (rows == nullptr) {
+        spdlog::error("chf: CDR retention SELECT returned no result set: {}", mysql_error(conn_));
+        result.failed = true;
+        return result;
+    }
+
+    static const char* kColumns[] = {"charging_data_ref",
+                                     "invocation_sequence_number",
+                                     "service_type",
+                                     "operation",
+                                     "subscriber_identifier",
+                                     "nf_consumer_node_functionality",
+                                     "rating_group",
+                                     "granted_total_volume",
+                                     "granted_service_specific_units",
+                                     "used_total_volume",
+                                     "reserved_cost",
+                                     "reserved_cost_currency",
+                                     "invocation_time_stamp",
+                                     "recorded_at",
+                                     "asn1_cdr"};
+    const unsigned int column_count = mysql_num_fields(rows);
+
+    std::vector<nlohmann::json> archived_rows;
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(rows)) != nullptr) {
+        nlohmann::json entry;
+        for (unsigned int i = 0; i < column_count && i < std::size(kColumns); ++i) {
+            entry[kColumns[i]] = row[i] != nullptr ? nlohmann::json(row[i]) : nlohmann::json();
+        }
+        archived_rows.push_back(std::move(entry));
+    }
+    mysql_free_result(rows);
+
+    if (archived_rows.empty()) {
+        return result; // nothing old enough; not an error
+    }
+
+    // Write the archive and make sure it is really on disk before deleting anything. A real
+    // deployment points archive_dir at object storage (docs/DATA_MODEL.md's E4 assignment); this
+    // writes newline-delimited JSON, which is what an object-store loader would ingest.
+    std::error_code ec;
+    std::filesystem::create_directories(archive_dir, ec);
+    if (ec) {
+        spdlog::error(
+            "chf: CDR retention could not create archive dir {}: {}", archive_dir, ec.message());
+        result.failed = true;
+        return result;
+    }
+    const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+    const std::string path = archive_dir + "/cdr-archive-" + std::to_string(stamp) + ".jsonl";
+    {
+        std::ofstream out(path, std::ios::binary);
+        if (!out) {
+            spdlog::error("chf: CDR retention could not open archive file {}", path);
+            result.failed = true;
+            return result;
+        }
+        for (const auto& entry : archived_rows) {
+            out << entry.dump() << "\n";
+        }
+        out.flush();
+        if (!out) {
+            spdlog::error("chf: CDR retention failed writing archive {} -- deleting nothing", path);
+            result.failed = true;
+            return result;
+        }
+    }
+    result.archived = static_cast<std::int64_t>(archived_rows.size());
+
+    // Only now, with the archive written and flushed, delete. Same predicate as the SELECT: a row
+    // that became old between the two statements is archived on the NEXT sweep rather than being
+    // deleted unarchived by this one.
+    const std::string del = "DELETE FROM cdr WHERE recorded_at < " + cutoff;
+    if (mysql_real_query(conn_, del.c_str(), static_cast<unsigned long>(del.size())) != 0) {
+        spdlog::error("chf: CDR retention DELETE failed after archiving {} row(s) to {}: {} -- the "
+                      "archive is kept and the rows remain; the next sweep retries",
+                      result.archived,
+                      path,
+                      mysql_error(conn_));
+        result.failed = true;
+        return result;
+    }
+    result.deleted = static_cast<std::int64_t>(mysql_affected_rows(conn_));
+    spdlog::info("chf: CDR retention swept {} row(s) older than {} day(s) into {} and deleted {}",
+                 result.archived,
+                 retention_days,
+                 path,
+                 result.deleted);
+    return result;
 }
 
 std::vector<std::int64_t> CdrWriter::detect_gaps(const std::string& charging_data_ref) {

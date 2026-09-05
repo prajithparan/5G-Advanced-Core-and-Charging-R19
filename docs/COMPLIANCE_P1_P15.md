@@ -30,7 +30,7 @@ to this document more than to any other.
 | **P11** | Geo-redundant active/active, proven RPO/RTO | **Deferred** | By user decision, 2026-09-05. Nothing exists |
 | **P12** | Business-level alarming | **Done (first real slice)** | CDR sequence-gap alarm wired at Release + `chf_cdr_sequence_gap_total`; `sbi_requests_shed_total`; 4 Prometheus rules in `deploy/prometheus/business_alerts.yml`, every one verified against a metric this code really exports |
 | **P13** | Charging correctness under AI/ML/SON change | **Not started** | Belongs to P4.9, which is blocked on NWDAF |
-| **P14** | Retention-driven auto-archival | **Not started** | Storage assignment decided; no retention automation exists |
+| **P14** | Retention-driven auto-archival | **Partial** | Archive-then-delete sweep in CHF (ADR-0283), hourly, **off by default**. Archives to newline-delimited JSON; a real deployment points it at object storage, which is not deployed here. Validated against CI's real Doris, skipped locally |
 | **P15** | Protocol-level spike protection / TPS governance | **Partial** | Token-bucket ceiling with spec-defined `503` shedding across all 22 SBI servers (ADR-0280). **Diameter and SS7 front doors have no ceiling.** Validated as a mechanism, not under a load campaign |
 
 ---
@@ -60,6 +60,32 @@ Closing P8 properly means moving live state out of process for each NF (the work
 already had done to them), NF by NF. That is a real, sizeable programme and it is the honest
 blocker, not YAML.
 
+### Assigned: state externalisation belongs to the P11 geo-redundancy phase
+
+**User decision, 2026-09-05.** This work is scheduled with **P11**, not as a standalone P8 task,
+and that grouping is architecturally right rather than administratively convenient:
+
+P11 requires **active/active across two data centres**. Active/active is only meaningful if a UE
+registered in DC-A is visible in DC-B -- which is the *same* requirement as a second replica in one
+cluster seeing what the first replica did. Externalising NF state is therefore not a prerequisite
+*of* geo-redundancy so much as the first half *of* it. Doing it under P8 first and then again under
+P11 would be doing it twice.
+
+Concretely, that phase owns:
+
+| NF | What has to move out of process |
+|---|---|
+| NRF | NF profile registry (`unordered_map`) |
+| AMF | `UeContextStore` (its security contexts and AMF-UE-ID index are already Redis) |
+| SMF | SM context store |
+| UDM | subscription/registration maps |
+| PCF | policy association maps |
+| AUSF | the in-process half of its auth state |
+| NSACF | slice admission counters and subscriptions (ADR-0276 discloses these as in-memory) |
+
+Until then, P8 stays honestly **Blocked** in the matrix above, and the production-blocker list keeps
+"a single AMF pod is both the capacity ceiling and the failure domain" as its top entry.
+
 ---
 
 ## What would still block a production deployment
@@ -68,7 +94,9 @@ Ordered by how hard each would bite:
 
 1. **No horizontal scalability for 7 of 9 core NFs** (P8, above). A single AMF pod is the capacity
    ceiling *and* the failure domain.
-2. **No geo-redundancy, no measured RPO/RTO** (P11) — deferred by decision, but still absent.
+2. **No geo-redundancy, no measured RPO/RTO** (P11) — deferred by decision, but still absent. It
+   now also carries the state-externalisation work from blocker 1, by user decision (see above):
+   the two are the same problem at different distances.
 3. **No performance evidence against any reference implementation** (P10). The commercialization
    mandate (ADR-0049) requires exceeding free5GC; **no such comparison has ever been run**, and
    nothing in this repository claims otherwise.
@@ -77,7 +105,9 @@ Ordered by how hard each would bite:
 5. **Spike protection covers SBI only** (P15). Diameter and SS7 remain unprotected.
 6. **UPF's datapath is control-plane only in practice** — eBPF/XDP does not start without ambient
    capabilities, and downlink GTP-U encapsulation is not implemented in it at all.
-7. **No retention/archival automation** (P14); CDR storage grows without bound.
+7. **Retention exists but archives to a local directory, not object storage** (P14). The sweep is
+   real and off by default; `docs/DATA_MODEL.md`'s E4 assigns archival to an object store, and no
+   object store is deployed in this project.
 8. **Helm covers 7 of 18 NFs**; no multi-cluster story (P3).
 9. **N28/Sy is incomplete against the user's own directive**: PCF↔CHF works, but SMF has no
    `policyCounterId` code and no GUI exists for the data model that directive requires.

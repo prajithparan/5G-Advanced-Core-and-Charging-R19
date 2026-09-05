@@ -95,6 +95,24 @@ public:
     // have a gap in) or no gap is found.
     std::vector<std::int64_t> detect_gaps(const std::string& charging_data_ref);
 
+    // P14 (ADR-0283): retention-driven archival. Archives every `cdr` row older than
+    // `retention_days` into `archive_dir` as newline-delimited JSON, then deletes ONLY the rows it
+    // successfully archived.
+    //
+    // Order is the whole design. These are billing records: deleting one that was not archived
+    // destroys revenue evidence, so nothing is deleted until its archive file is written and
+    // flushed. A failed archive means nothing is deleted this cycle and the sweep is retried next
+    // time -- data kept twice is a storage cost, data deleted once is gone.
+    //
+    // Returns the number of rows archived-and-deleted. 0 with no error means nothing was old
+    // enough. retention_days <= 0 disables the sweep entirely (the default).
+    struct RetentionResult {
+        std::int64_t archived = 0;
+        std::int64_t deleted = 0;
+        bool failed = false;
+    };
+    RetentionResult apply_retention(int retention_days, const std::string& archive_dir);
+
     // True if the constructor connected successfully. False means CDR generation is disabled for
     // this process's lifetime (see this file's own header) -- callers use this only for an
     // accurate startup log line, not as a precondition check before write()/detect_gaps(), which

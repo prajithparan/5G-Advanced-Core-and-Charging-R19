@@ -377,6 +377,31 @@ int main() {
     // CDR, that spec isn't vendored -- schema.doris.sql explains why). ADR-0192: CDR storage is
     // Apache Doris.
     chf::CdrWriter cdr_writer(chf_doris_options(config));
+
+    // P14 (ADR-0283): retention-driven archival, OFF by default.
+    //
+    // Default off deliberately, and not out of caution alone: these are billing records, and a
+    // retention window is an operator policy decision (regulatory retention periods differ by
+    // jurisdiction). A default that silently deleted CDRs after N days would be this project
+    // choosing someone's compliance posture for them.
+    const auto cdr_retention_days =
+        config.contains("cdr_retention_days") ? config.at("cdr_retention_days").get<int>() : 0;
+    const auto cdr_archive_dir = config.contains("cdr_archive_dir")
+                                     ? config.at("cdr_archive_dir").get<std::string>()
+                                     : std::string("/var/lib/chf/cdr-archive");
+    if (cdr_retention_days > 0) {
+        spdlog::info("chf: CDR retention active -- archiving rows older than {} day(s) to {}",
+                     cdr_retention_days,
+                     cdr_archive_dir);
+        std::thread([&cdr_writer, cdr_retention_days, cdr_archive_dir] {
+            // Hourly. A retention sweep is not time-critical -- a row living an extra hour past
+            // its window is a non-event, while a tight loop against the CDR store is not.
+            while (true) {
+                std::this_thread::sleep_for(std::chrono::hours(1));
+                cdr_writer.apply_retention(cdr_retention_days, cdr_archive_dir);
+            }
+        }).detach();
+    }
     if (cdr_writer.is_connected()) {
         spdlog::info("chf: connected to Doris (CDF)");
     } else {
