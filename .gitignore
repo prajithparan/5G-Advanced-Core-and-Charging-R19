@@ -44,3 +44,10 @@ nfs/chf/training/.venv/
 nfs/chf/training/mlflow.db
 nfs/chf/training/models/
 nfs/chf/training/mlruns/
+
+# Conformance round-trip samples. The test writes these to
+# build/tests/conformance/samples (SBI_CONFORMANCE_SAMPLES_DIR, set by CMake); running the test
+# binary directly from the repo root instead falls back to "." and drops them here, which is how
+# they were committed once already.
+/guami.json
+/nftype_unknown.json
