@@ -474,6 +474,94 @@ void run_nrf_lifecycle(const std::string& pcf_instance_id, const std::string& nr
     }
 }
 
+// ADR-0286: push a policy change to the SMF that owns this SM policy association.
+//
+// The action table is operator data (config/pcf.json's `policy_counter_actions`), not code, for
+// the reason this file's header already gives: TS 29.594 leaves `currentStatus` a free-form string
+// and never enumerates it, so any status->policy rule written in C++ here would be invented. An
+// operator (later, a GUI editing the same JSON) owns the mapping; PCF owns the mechanics.
+//
+// Silent no-op when nothing matches -- a status change with no configured action is a normal
+// operational state, not an error.
+void notify_smf_of_policy_change(sbi_core::http2::Client& client,
+                                 pcf::SmPolicyStore& sm_policies,
+                                 const nlohmann::json& policy_counter_actions,
+                                 const std::string& sm_policy_id,
+                                 const nlohmann::json& status,
+                                 opentelemetry::metrics::Counter<std::uint64_t>* push_counter) {
+    if (!policy_counter_actions.is_array() || policy_counter_actions.empty()) {
+        return;
+    }
+    // The SmPolicyContextData SMF sent at creation carries the notificationUri SMF is listening on.
+    const auto policy = sm_policies.get(sm_policy_id);
+    if (!policy.has_value() || !policy->contains("context") ||
+        !policy->at("context").contains("notificationUri")) {
+        spdlog::warn("pcf: SM policy {} has no notificationUri -- its SMF cannot be told about a "
+                     "spending-limit status change",
+                     sm_policy_id);
+        return;
+    }
+    const auto notification_uri = policy->at("context").at("notificationUri").get<std::string>();
+
+    // TS 29.594's SpendingLimitStatus carries statusInfos as a map keyed by policyCounterId.
+    if (!status.contains("statusInfos") || !status.at("statusInfos").is_object()) {
+        return;
+    }
+
+    for (const auto& [counter_id, info] : status.at("statusInfos").items()) {
+        if (!info.contains("currentStatus")) {
+            continue;
+        }
+        const auto current = info.at("currentStatus").get<std::string>();
+        for (const auto& action : policy_counter_actions) {
+            if (!action.contains("policyCounterId") || !action.contains("currentStatus") ||
+                !action.contains("smPolicyDecision")) {
+                continue;
+            }
+            if (action.at("policyCounterId").get<std::string>() != counter_id ||
+                action.at("currentStatus").get<std::string>() != current) {
+                continue;
+            }
+
+            sbi_gen::SmPolicyNotification notification{};
+            notification.resourceUri = "/npcf-smpolicycontrol/v1/sm-policies/" + sm_policy_id;
+            try {
+                notification.smPolicyDecision =
+                    action.at("smPolicyDecision").get<sbi_gen::SmPolicyDecision>();
+            } catch (const nlohmann::json::exception& e) {
+                spdlog::error("pcf: policy_counter_actions entry for counter {} status {} is not a "
+                              "valid SmPolicyDecision: {}",
+                              counter_id,
+                              current,
+                              e.what());
+                continue;
+            }
+
+            sbi_core::http2::ClientRequest req;
+            req.method = "POST";
+            req.url = notification_uri;
+            req.headers.emplace("content-type", "application/json");
+            req.body = nlohmann::json(notification).dump();
+            auto resp = client.send(req);
+            if (!resp.has_value() || (resp->status != 204 && resp->status != 200)) {
+                spdlog::warn("pcf: pushing the policy change for counter {} ({}) to {} failed",
+                             counter_id,
+                             current,
+                             notification_uri);
+                continue;
+            }
+            if (push_counter != nullptr) {
+                push_counter->Add(1);
+            }
+            spdlog::info("pcf: policy counter {} is now {} -- pushed the operator-configured "
+                         "SmPolicyDecision to {}",
+                         counter_id,
+                         current,
+                         notification_uri);
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -507,6 +595,22 @@ int main() {
 
     pcf::AmPolicyStore am_policies;
     pcf::SmPolicyStore sm_policies;
+
+    // ADR-0286: the operator-owned status->policy mapping, and PCF's own client for pushing it.
+    const auto policy_counter_actions = config.contains("policy_counter_actions")
+                                            ? config.at("policy_counter_actions")
+                                            : nlohmann::json::array();
+    if (!policy_counter_actions.empty()) {
+        spdlog::info("pcf: {} policy-counter action(s) configured -- spending-limit status changes "
+                     "will be pushed to the owning SMF",
+                     policy_counter_actions.size());
+    }
+    sbi_core::http2::TlsConfig sm_notify_tls{
+        .cert_path = CERTS_DIR "/pcf/cert.pem",
+        .key_path = CERTS_DIR "/pcf/key.pem",
+        .ca_path = CERTS_DIR "/ca/ca.crt",
+    };
+    sbi_core::http2::Client sm_policy_notify_client(std::move(sm_notify_tls));
     pcf::SpendingLimitTrackingStore spending_limit_tracking;
     pcf::AppSessionStore app_sessions;
     pcf::UePolicyStore ue_policies;
@@ -558,6 +662,10 @@ int main() {
     auto spending_limit_subscribe_counter = meter->CreateUInt64Counter(
         "pcf_spending_limit_subscribe_total",
         "Total real Nchf_SpendingLimitControl subscriptions opened by this PCF");
+    // ADR-0286: the N28 chain's observable proof -- a spending-limit change that reached an SMF.
+    auto policy_update_push_counter = meter->CreateUInt64Counter(
+        "pcf_sm_policy_updates_pushed_total",
+        "SmPolicyDecisions pushed to an SMF after a spending-limit status change (N28/Sy)");
     auto spending_limit_notify_counter = meter->CreateUInt64Counter(
         "pcf_spending_limit_notify_total",
         "Total real Nchf_SpendingLimitControl statusNotification callbacks received");
@@ -922,7 +1030,11 @@ int main() {
         "POST",
         std::string(kSmApiRoot) + "/sm-policies/{smPolicyId}/spending-limit-notify/notify",
         [&spending_limit_tracking,
-         &spending_limit_notify_counter](const sbi_core::http2::Request& req) {
+         &spending_limit_notify_counter,
+         &sm_policy_notify_client,
+         &sm_policies,
+         &policy_counter_actions,
+         &policy_update_push_counter](const sbi_core::http2::Request& req) {
             // Real spec: this callback's own security scheme is the subscriber's choice (TS29594
             // `security: [{}, oAuth2ClientCredentials: [nchf-spendinglimitcontrol]]`) -- no bearer
             // check here, matching every other real callback endpoint already deferred/undefended
@@ -944,6 +1056,25 @@ int main() {
             spending_limit_notify_counter->Add(1);
             spdlog::info("pcf: received real spending-limit statusNotification for SM policy {}",
                          sm_policy_id);
+
+            // ADR-0286 (the user's standing N28/Sy directive): carry the status change through to
+            // SMF, which is what makes this chain end-to-end rather than PCF<->CHF only.
+            //
+            // The mapping from a policy counter's status to a policy change is OPERATOR-DEFINED --
+            // this file's own header already records why inventing one here would be fabrication
+            // (TS 29.594 makes PolicyCounterInfo.currentStatus a free-form string the spec never
+            // enumerates). So the mapping is DATA: `policy_counter_actions` in config/pcf.json,
+            // read at startup, each entry naming a policyCounterId, a currentStatus, and the
+            // SmPolicyDecision fragment to push when they match. That is this project's own P7
+            // ("product/tariff/policy is data, never code") applied to the one place it was still
+            // being deferred for lack of a rule to encode.
+            notify_smf_of_policy_change(sm_policy_notify_client,
+                                        sm_policies,
+                                        policy_counter_actions,
+                                        sm_policy_id,
+                                        status,
+                                        policy_update_push_counter.get());
+
             sbi_core::http2::Response resp;
             resp.status = 204;
             return resp;

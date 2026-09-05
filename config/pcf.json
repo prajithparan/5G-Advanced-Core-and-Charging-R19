@@ -4,5 +4,22 @@
   "nrf_base_url": "https://127.0.0.1:7777",
   "udr_base_url": "https://127.0.0.1:7781",
   "chf_base_url": "https://127.0.0.1:7784",
-  "self_base_url": "https://127.0.0.1:7783"
+  "self_base_url": "https://127.0.0.1:7783",
+  "policy_counter_actions": [
+    {
+      "policyCounterId": "quota-exhausted",
+      "currentStatus": "terminate",
+      "smPolicyDecision": {
+        "sessRules": {
+          "spending-limit-rule": {
+            "sessRuleId": "spending-limit-rule",
+            "authSessAmbr": {
+              "uplink": "1 Kbps",
+              "downlink": "1 Kbps"
+            }
+          }
+        }
+      }
+    }
+  ]
 }

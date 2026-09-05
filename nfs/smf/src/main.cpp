@@ -1947,6 +1947,11 @@ int main() {
     // Req/Succ are filtered per PLMN *and* S-NSSAI with a subcounter per request type
     // (§5.3.1.3(c), §5.3.1.4(c)); Fail is filtered per PLMN *only*, with a subcounter per
     // rejection cause (§5.3.1.5(c)).
+    // ADR-0286: how often PCF actually pushed a policy change to this SMF -- the N28 chain's own
+    // observable proof that it is live rather than merely wired.
+    auto pcf_policy_update_counter = meter->CreateUInt64Counter(
+        "smf_pcf_policy_updates_total",
+        "SM policy decisions pushed by PCF to SMF's notificationUri (N28/Sy chain)");
     auto pdu_session_creation_req_counter = meter->CreateUInt64Counter(
         "smf_sm_pdu_session_creation_req_total",
         "TS 28.552 5.3.1.3 SM.PduSessionCreationReq -- PDU sessions requested to be created");
@@ -2487,6 +2492,60 @@ int main() {
                 }
                 pdu_session_creation_fail_counter->Add(1, {{"plmn", plmn}, {"cause", cause}});
             }
+            return resp;
+        });
+
+    // ADR-0286 (the user's standing N28/Sy directive, SMF half): the callback SMF has been
+    // ADVERTISING to PCF since ADR-0038 and never implemented.
+    //
+    // SMF supplies `notificationUri` = .../sm-contexts/{ref}/pcf-notify when it creates the SM
+    // Policy Association, and until now nothing served that path -- PCF's own file header records
+    // the same gap from its side ("neither AMF nor SMF implements the receiver"). So a policy
+    // change PCF decided, including one driven by a CHF spending-limit status change over N28,
+    // had nowhere to land. This is that receiver.
+    //
+    // What it does NOT do, deliberately: invent enforcement semantics. The decision PCF sends is
+    // recorded against the SM context and logged; translating a specific decision into a PFCP
+    // re-authorisation is a separate increment with its own N4 work, and is named in ADR-0286
+    // rather than half-done here.
+    server.add_route(
+        "POST",
+        std::string(kApiRoot) + "/sm-contexts/{smContextRef}/pcf-notify",
+        [&sm_contexts, &pcf_policy_update_counter](const sbi_core::http2::Request& req) {
+            // No bearer check: this is a notification endpoint PCF calls back on a URI SMF itself
+            // supplied, matching how every other callback receiver in this project is reached.
+            const auto ref = req.path_params.at("smContextRef");
+            auto stored = sm_contexts.get(ref);
+            if (!stored.has_value()) {
+                return sbi_core::http2::problem_response(
+                    404, "Not Found", "No SM context " + ref + " for this policy notification");
+            }
+
+            sbi_core::http2::Response err;
+            auto body = sbi_core::http2::parse_json_body<sbi_gen::SmPolicyNotification>(req, err);
+            if (!body.has_value()) {
+                return err;
+            }
+
+            if (body->smPolicyDecision.has_value()) {
+                auto updated = *stored;
+                // Kept under its own key rather than overwriting the decision captured at
+                // establishment: an operator debugging a live session needs to see both what was
+                // decided originally and what changed it.
+                updated["pcfPolicyUpdate"] = json(*body->smPolicyDecision);
+                sm_contexts.update(ref, updated);
+                pcf_policy_update_counter->Add(1);
+                spdlog::info("smf: PCF pushed an updated SM policy decision for smContextRef {} "
+                             "-- recorded against the session",
+                             ref);
+            } else {
+                spdlog::info("smf: PCF notification for smContextRef {} carried no "
+                             "smPolicyDecision -- nothing to apply",
+                             ref);
+            }
+
+            sbi_core::http2::Response resp;
+            resp.status = 204;
             return resp;
         });
 

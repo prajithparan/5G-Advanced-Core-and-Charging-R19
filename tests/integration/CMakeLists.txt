@@ -46,6 +46,7 @@ add_executable(integration_tests
     test_nsacf_slice_admission.cpp
     test_tps_spike_protection.cpp
     test_chaos_charging.cpp
+    test_n28_sy_end_to_end.cpp
     test_cdr_retention.cpp
     # ADR-0283: the retention test drives CHF's REAL CdrWriter against a real Doris, so its
     # translation units are compiled in rather than the behaviour being re-implemented in a
