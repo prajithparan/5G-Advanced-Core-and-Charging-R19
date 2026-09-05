@@ -43,6 +43,7 @@
 #include "sbi_core/metrics.hpp"
 #include "sbi_core/otel.hpp"
 #include "sbi_core/problem_details.hpp"
+#include "sbi_core/rate_limit.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <nlohmann/json.hpp>
@@ -446,6 +447,16 @@ int main() {
     // See docs/DECISIONS.md ADR-0014. Still reachable at 127.0.0.1 for anything running on the
     // same host/network namespace (hello-nf's local dev usage is unaffected).
     sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
+
+    // P15 / P4.12 (ADR-0280): optional TPS ceiling from this NF's own config (`max_tps`,
+    // `tps_burst`), overridable per deployment via SBI_MAX_TPS. Absent means unlimited, so this
+    // changes nothing until an operator opts in.
+    if (const auto tps_limit = sbi_core::read_tps_limit(config); tps_limit.enabled()) {
+        server.set_tps_limit(tps_limit.sustained_tps, tps_limit.burst);
+        spdlog::info("TPS ceiling active: {} req/s sustained, burst {}",
+                     tps_limit.sustained_tps,
+                     tps_limit.burst > 0.0 ? tps_limit.burst : tps_limit.sustained_tps);
+    }
 
     // Nnrf_Bootstrapping (TS29510_Nnrf_Bootstrapping.yaml v1.3.0) -- gap-closure per ADR-0193/
     // ADR-0194 (docs/CAPABILITY_GAP_ANALYSIS.md's ADR-0193 audit section). Real path exactly as

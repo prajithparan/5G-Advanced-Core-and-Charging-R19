@@ -79,6 +79,18 @@ public:
     // path_pattern segments wrapped in {} are captured into Request::path_params.
     void add_route(std::string method, std::string path_pattern, Handler handler);
 
+    // P15 / P4.12 (ADR-0280): a TPS ceiling for this server. Beyond it, requests are shed with a
+    // real 503 + ProblemDetails (the status TS29571_CommonData.yaml defines for Service
+    // Unavailable) and a `Retry-After`, BEFORE the handler runs -- shedding is only protective if
+    // it is cheaper than serving.
+    //
+    // Not called, or called with sustained_tps <= 0, means no ceiling: every NF that has not
+    // opted in behaves exactly as it did before.
+    void set_tps_limit(double sustained_tps, double burst_capacity);
+
+    // Requests shed by the limit above. 0 when no limit is set.
+    std::uint64_t shed_count() const;
+
     // Begins accepting connections. Returns immediately; actual I/O happens on the io_context
     // passed to the constructor (caller owns the event loop, e.g. via ioc.run()).
     void start();

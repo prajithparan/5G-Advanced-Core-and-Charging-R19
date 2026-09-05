@@ -71,6 +71,7 @@
 #include "sbi_core/metrics.hpp"
 #include "sbi_core/oauth2_client.hpp"
 #include "sbi_core/otel.hpp"
+#include "sbi_core/rate_limit.hpp"
 #include "sbi_core/sbi_headers.hpp"
 #include "sbi_core/uuid.hpp"
 
@@ -413,7 +414,9 @@ void run_nrf_lifecycle(const std::string& upf_instance_id, const std::string& nr
 // io_context, same "never on another subsystem's thread" reasoning as run_nrf_lifecycle above and
 // AMF's own NGAP thread (ADR-0030/ADR-0031) -- blocks forever via its own ioc.run(), never
 // returns.
-void run_sbi_server(unsigned short port, upf::EventSubscriptionStore& event_subs) {
+void run_sbi_server(unsigned short port,
+                    upf::EventSubscriptionStore& event_subs,
+                    sbi_core::TpsLimitConfig tps_limit) {
     sbi_core::http2::TlsConfig server_tls{
         .cert_path = CERTS_DIR "/upf/cert.pem",
         .key_path = CERTS_DIR "/upf/key.pem",
@@ -435,6 +438,16 @@ void run_sbi_server(unsigned short port, upf::EventSubscriptionStore& event_subs
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as every other NF's own bind (ADR-0014).
     sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
+
+    // P15 / P4.12 (ADR-0280): optional TPS ceiling from this NF's own config (`max_tps`,
+    // `tps_burst`), overridable per deployment via SBI_MAX_TPS. Absent means unlimited, so this
+    // changes nothing until an operator opts in.
+    if (tps_limit.enabled()) {
+        server.set_tps_limit(tps_limit.sustained_tps, tps_limit.burst);
+        spdlog::info("TPS ceiling active: {} req/s sustained, burst {}",
+                     tps_limit.sustained_tps,
+                     tps_limit.burst > 0.0 ? tps_limit.burst : tps_limit.sustained_tps);
+    }
 
     // ---- TS29564_Nupf_EventExposure.yaml ----
 
@@ -1647,7 +1660,8 @@ int main() {
     }
 
     std::thread(run_nrf_lifecycle, upf_instance_id, nrf_base_url).detach();
-    std::thread(run_sbi_server, sbi_port, std::ref(event_subs)).detach();
+    std::thread(run_sbi_server, sbi_port, std::ref(event_subs), sbi_core::read_tps_limit(config))
+        .detach();
     run_pfcp_lifecycle(start_time,
                        datapath.has_value() ? &*datapath : nullptr,
                        teid_session_store,

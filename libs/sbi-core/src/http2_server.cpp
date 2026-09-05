@@ -1,5 +1,7 @@
 #include "sbi_core/http2_server.hpp"
 
+#include "sbi_core/rate_limit.hpp"
+
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/ssl.hpp>
@@ -177,9 +179,10 @@ public:
     Connection(boost::asio::io_context& ioc,
                boost::asio::ip::tcp::socket socket,
                boost::asio::ssl::context& ssl_ctx,
-               const std::vector<Route>& routes)
+               const std::vector<Route>& routes,
+               TokenBucket* rate_limit)
         : ioc_(ioc), socket_(std::move(socket), ssl_ctx), strand_(ioc.get_executor()),
-          routes_(routes) {}
+          routes_(routes), rate_limit_(rate_limit) {}
 
     ~Connection() {
         if (session_ != nullptr) {
@@ -366,6 +369,27 @@ private:
         }
 
         auto self = shared_from_this();
+
+        // P15 (ADR-0280): shed BEFORE dispatching. Checked after routing so a 404 is still a 404
+        // -- an unroutable request is a client error, not load worth protecting against -- but
+        // before the handler is posted, because the whole point is to spend less on a shed request
+        // than on a served one.
+        if (rate_limit_ != nullptr && !rate_limit_->try_acquire()) {
+            Response resp;
+            resp.status = 503;
+            resp.headers.emplace("content-type", "application/problem+json");
+            // Retry-After is plain HTTP (RFC 9110 §10.2.3), not a 3GPP addition: TS 29.571 defines
+            // the 503 + ProblemDetails shape but no retry hint, so this is standard HTTP
+            // semantics layered on the spec's own status, and is called out as such.
+            resp.headers.emplace("retry-after", "1");
+            resp.body = R"({"status":503,"title":"Service Unavailable",)"
+                        R"("detail":"This NF is shedding load above its configured TPS ceiling"})";
+            boost::asio::post(strand_, [self, stream_id, resp = std::move(resp)]() mutable {
+                self->submit_response(stream_id, std::move(resp));
+            });
+            return;
+        }
+
         if (matched_handler == nullptr) {
             Response resp;
             resp.status = 404;
@@ -539,6 +563,9 @@ private:
     SslStream socket_;
     boost::asio::strand<boost::asio::io_context::executor_type> strand_;
     const std::vector<Route>& routes_;
+    // P15 (ADR-0280): owned by Server::Impl and shared by every connection, so the ceiling is the
+    // NF's, not one client's. Null when no limit is configured.
+    TokenBucket* rate_limit_ = nullptr;
     nghttp2_session* session_ = nullptr;
     std::array<std::uint8_t, 65536> read_buf_{};
     std::vector<std::uint8_t> write_buf_;
@@ -633,8 +660,8 @@ private:
                         // Non-fatal: a connection with Nagle still on is slow, not broken.
                         spdlog::warn("sbi: could not set TCP_NODELAY: {}", nodelay_ec.message());
                     }
-                    auto conn =
-                        std::make_shared<Connection>(ioc_, std::move(socket), ssl_ctx_, routes_);
+                    auto conn = std::make_shared<Connection>(
+                        ioc_, std::move(socket), ssl_ctx_, routes_, rate_limit_.get());
                     conn->start();
                 }
                 do_accept();
@@ -645,6 +672,20 @@ private:
     boost::asio::ip::tcp::acceptor acceptor_;
     boost::asio::ssl::context ssl_ctx_;
     std::vector<Route> routes_;
+    std::unique_ptr<TokenBucket> rate_limit_;
+
+public:
+    void set_tps_limit(double sustained_tps, double burst_capacity) {
+        if (sustained_tps <= 0.0) {
+            rate_limit_.reset();
+            return;
+        }
+        rate_limit_ = std::make_unique<TokenBucket>(sustained_tps, burst_capacity);
+    }
+
+    std::uint64_t shed_count() const {
+        return rate_limit_ == nullptr ? 0 : rate_limit_->shed_count();
+    }
 };
 
 Server::Server(boost::asio::io_context& ioc,
@@ -654,6 +695,14 @@ Server::Server(boost::asio::io_context& ioc,
     : impl_(std::make_unique<Impl>(ioc, std::move(address), port, std::move(tls))) {}
 
 Server::~Server() = default;
+
+void Server::set_tps_limit(double sustained_tps, double burst_capacity) {
+    impl_->set_tps_limit(sustained_tps, burst_capacity);
+}
+
+std::uint64_t Server::shed_count() const {
+    return impl_->shed_count();
+}
 
 void Server::add_route(std::string method, std::string path_pattern, Handler handler) {
     impl_->add_route(std::move(method), std::move(path_pattern), std::move(handler));

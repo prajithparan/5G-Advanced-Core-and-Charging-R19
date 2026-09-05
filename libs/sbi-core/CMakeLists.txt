@@ -27,6 +27,7 @@ add_library(sbi_core STATIC
     src/jwt.cpp
     src/multipart.cpp
     src/json_body.cpp
+    src/rate_limit.cpp
 )
 
 target_include_directories(sbi_core PUBLIC

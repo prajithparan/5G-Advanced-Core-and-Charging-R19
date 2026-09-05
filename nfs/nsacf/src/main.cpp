@@ -61,6 +61,7 @@
 #include "sbi_core/metrics.hpp"
 #include "sbi_core/oauth2_client.hpp"
 #include "sbi_core/otel.hpp"
+#include "sbi_core/rate_limit.hpp"
 #include "sbi_core/sbi_headers.hpp"
 #include "sbi_core/uuid.hpp"
 
@@ -545,6 +546,16 @@ int main() {
     boost::asio::io_context ioc;
     // 0.0.0.0: same Docker-reachability reasoning as NRF's bind -- see docs/DECISIONS.md ADR-0014.
     sbi_core::http2::Server server(ioc, "0.0.0.0", port, server_tls);
+
+    // P15 / P4.12 (ADR-0280): optional TPS ceiling from this NF's own config (`max_tps`,
+    // `tps_burst`), overridable per deployment via SBI_MAX_TPS. Absent means unlimited, so this
+    // changes nothing until an operator opts in.
+    if (const auto tps_limit = sbi_core::read_tps_limit(config); tps_limit.enabled()) {
+        server.set_tps_limit(tps_limit.sustained_tps, tps_limit.burst);
+        spdlog::info("TPS ceiling active: {} req/s sustained, burst {}",
+                     tps_limit.sustained_tps,
+                     tps_limit.burst > 0.0 ? tps_limit.burst : tps_limit.sustained_tps);
+    }
 
     // --- Nnsacf_NSAC: NumOfUEsUpdate ---
     //
