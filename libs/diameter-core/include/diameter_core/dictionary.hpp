@@ -89,6 +89,9 @@ constexpr std::int32_t kDiameterSuccess = 2001;          // libfdproto.h:1854
 constexpr std::int32_t kDiameterUnknownSessionId = 5002; // libfdproto.h:1873
 constexpr std::int32_t kDiameterMissingAvp = 5005;       // libfdproto.h:1876
 constexpr std::int32_t kDiameterUnableToComply = 5012;   // libfdproto.h:1883
+// ADR-0291: the real transient-failure code for overload. 3xxx = protocol error a peer should
+// retry/failover on, unlike 5xxx permanent failures above.
+constexpr std::int32_t kDiameterTooBusy = 3004; // libfdproto.h:1860
 // RFC 4006 §9.9 extended result codes, registered by dict_dcca.c against the base Result-Code
 // enumerated type -- extensions/dict_dcca/dict_dcca.c:85-104 (not in libfdproto.h, which only
 // carries the base-protocol values; DCC's own extension registers these at dictionary load time).

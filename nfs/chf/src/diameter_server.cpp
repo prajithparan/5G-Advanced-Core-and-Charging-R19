@@ -849,17 +849,12 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
         // protective if it is cheaper than serving.
         if (auto* limiter = rate_limit_.load(std::memory_order_acquire);
             limiter != nullptr && !limiter->try_acquire()) {
-            // RESULT-CODE CAVEAT, disclosed rather than guessed (ADR-0285): RFC 6733's
-            // DIAMETER_TOO_BUSY is the semantically correct answer for transient overload, and its
-            // numeric value is NOT verifiable from material in this repository -- header.hpp's own
-            // comment already records that RFC 6733's text is not in hand, and the installed
-            // freeDiameter header carries no TOO_BUSY definition either. Rather than invent a
-            // constant, this answers with kDiameterUnableToComply, which IS verified in
-            // libs/diameter-core's dictionary.
-            //
-            // That is a 5xxx permanent-failure class where a 3xxx transient one belongs, and a
-            // peer may therefore stop retrying instead of backing off. It is precisely why this
-            // ceiling is OFF unless explicitly configured.
+            // ADR-0291: DIAMETER_TOO_BUSY (3004), the real transient-failure code for overload --
+            // a peer backs off and may fail over, rather than treating the request as permanently
+            // rejected. ADR-0285 shipped kDiameterUnableToComply (5012) instead because the value
+            // could not be verified from material believed to be in hand; it is in fact at
+            // simulators/reference/freeDiameter/include/libfdproto.h:1860, the same vendored
+            // reference every other Result-Code in this project's dictionary already cites.
             spdlog::warn("chf: Diameter request shed at the configured TPS ceiling "
                          "(command_code={})",
                          next_header->command_code);
@@ -867,7 +862,7 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
             Avp busy_result;
             busy_result.code = dictionary::Avp::kResultCode;
             busy_result.flags = AvpFlag::kMandatory;
-            busy_result.data = encode_integer32(dictionary::ResultCode::kDiameterUnableToComply);
+            busy_result.data = encode_integer32(dictionary::ResultCode::kDiameterTooBusy);
             encode_avp(busy_avps_bytes, busy_result);
 
             Header busy_header{};
