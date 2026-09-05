@@ -11,14 +11,14 @@
 // reads the archive file back and checks the rows are in it, rather than only checking that the
 // table shrank.
 
-#include "cdr.hpp"
-
 #include <nlohmann/json.hpp>
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+
+#include "cdr.hpp"
 
 #include <gtest/gtest.h>
 
@@ -68,7 +68,8 @@ TEST(CdrRetention, ArchivesBeforeDeletingAndTheArchiveReallyContainsTheRows) {
     }
 
     // A window that nothing can be older than: fresh rows must survive. This is the assertion that
-    // a retention sweep does not delete live data, which matters more than that it deletes old data.
+    // a retention sweep does not delete live data, which matters more than that it deletes old
+    // data.
     const auto untouched = writer.apply_retention(3650, archive_dir.string());
     EXPECT_FALSE(untouched.failed);
     EXPECT_EQ(untouched.archived, 0) << "rows written seconds ago were treated as expired";
