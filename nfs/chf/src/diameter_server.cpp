@@ -679,10 +679,14 @@ DiameterServer::~DiameterServer() {
 
 void DiameterServer::set_tps_limit(double sustained_tps, double burst_capacity) {
     if (sustained_tps <= 0.0) {
-        rate_limit_.reset();
+        rate_limit_.store(nullptr, std::memory_order_release);
+        rate_limit_owner_.reset();
         return;
     }
-    rate_limit_ = std::make_unique<sbi_core::TokenBucket>(sustained_tps, burst_capacity);
+    rate_limit_owner_ = std::make_unique<sbi_core::TokenBucket>(sustained_tps, burst_capacity);
+    // Release/acquire, not relaxed: a connection thread that sees this pointer must also see the
+    // fully-constructed bucket behind it.
+    rate_limit_.store(rate_limit_owner_.get(), std::memory_order_release);
 }
 
 void DiameterServer::accept_loop() {
@@ -843,7 +847,8 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
         // to be a supported request -- an unsupported command is a peer error, not load -- and
         // before the AVPs are decoded and the charging engine is entered, because shedding is only
         // protective if it is cheaper than serving.
-        if (rate_limit_ != nullptr && !rate_limit_->try_acquire()) {
+        if (auto* limiter = rate_limit_.load(std::memory_order_acquire);
+            limiter != nullptr && !limiter->try_acquire()) {
             // RESULT-CODE CAVEAT, disclosed rather than guessed (ADR-0285): RFC 6733's
             // DIAMETER_TOO_BUSY is the semantically correct answer for transient overload, and its
             // numeric value is NOT verifiable from material in this repository -- header.hpp's own

@@ -87,7 +87,12 @@ private:
     ss7_core::SctpSocket listener_;
     // P15 (ADR-0288): the SS7/M3UA front door's own ceiling, the third and last protocol. Null
     // unless configured -- see the .cpp for why a shed here drops rather than answers.
-    std::unique_ptr<sbi_core::TokenBucket> rate_limit_;
+    // ADR-0290: this server starts its accept thread in its own CONSTRUCTOR, so main() calls
+    // set_tps_limit() while connection threads are already running and reading this. The bucket
+    // itself is internally locked; the POINTER to it was the race. Owner + atomic view: the owner
+    // keeps it alive, the atomic is what the message loop reads.
+    std::unique_ptr<sbi_core::TokenBucket> rate_limit_owner_;
+    std::atomic<sbi_core::TokenBucket*> rate_limit_{nullptr};
     sbi_core::http2::TlsConfig client_tls_;
     ChargingDataStore& charging_data_store_;
     CdrWriter& cdr_writer_;

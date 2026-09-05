@@ -106,7 +106,12 @@ public:
     void set_tps_limit(double sustained_tps, double burst_capacity);
 
 private:
-    std::unique_ptr<sbi_core::TokenBucket> rate_limit_;
+    // ADR-0290: this server starts its accept thread in its own CONSTRUCTOR, so main() calls
+    // set_tps_limit() while connection threads are already running and reading this. The bucket
+    // itself is internally locked; the POINTER to it was the race. Owner + atomic view: the owner
+    // keeps it alive, the atomic is what the message loop reads.
+    std::unique_ptr<sbi_core::TokenBucket> rate_limit_owner_;
+    std::atomic<sbi_core::TokenBucket*> rate_limit_{nullptr};
 
     void accept_loop();
     void handle_connection(boost::asio::ip::tcp::socket socket);

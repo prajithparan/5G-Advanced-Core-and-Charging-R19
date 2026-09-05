@@ -174,10 +174,14 @@ CapServer::~CapServer() {
 
 void CapServer::set_tps_limit(double sustained_tps, double burst_capacity) {
     if (sustained_tps <= 0.0) {
-        rate_limit_.reset();
+        rate_limit_.store(nullptr, std::memory_order_release);
+        rate_limit_owner_.reset();
         return;
     }
-    rate_limit_ = std::make_unique<sbi_core::TokenBucket>(sustained_tps, burst_capacity);
+    rate_limit_owner_ = std::make_unique<sbi_core::TokenBucket>(sustained_tps, burst_capacity);
+    // Release/acquire, not relaxed: a connection thread that sees this pointer must also see the
+    // fully-constructed bucket behind it.
+    rate_limit_.store(rate_limit_owner_.get(), std::memory_order_release);
 }
 
 void CapServer::accept_loop() {
@@ -229,7 +233,8 @@ void CapServer::handle_connection(ss7_core::SctpSocket socket) {
         // message being shed and building a reply nearly as expensive as serving it. Dropping is
         // also what a real SS7 node does under congestion: TCAP dialogues are protected by the
         // peer's own invoke timers, which is the mechanism that exists for exactly this.
-        if (rate_limit_ != nullptr && !rate_limit_->try_acquire()) {
+        if (auto* limiter = rate_limit_.load(std::memory_order_acquire);
+            limiter != nullptr && !limiter->try_acquire()) {
             spdlog::warn("chf: CAP message dropped at the configured TPS ceiling -- the peer's own "
                          "TCAP invoke timer is what recovers this dialogue");
             continue;
