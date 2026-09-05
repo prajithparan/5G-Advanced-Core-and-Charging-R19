@@ -24391,3 +24391,80 @@ that used to hang it. It does **not** establish the original root cause -- ADR-0
 widening is the plausible mechanism, not a proven one, and no failing run was ever captured with
 diagnostics. If it ever hangs again, that is new evidence rather than a return to the old shrug,
 and the timeout bounds it.
+
+---
+
+## ADR-0288: SS7/M3UA spike protection -- P15 complete across all three protocols
+
+**Date:** 2026-09-05
+**Status:** Accepted
+
+The last protocol front door. `CapServer::set_tps_limit` gives CHF's CAP/gsmSCF listener its own
+token bucket, checked on each received M3UA message **before** the SCCP unwrap and the TCAP/CAP
+decode, which is where the real work is.
+
+Its own bucket, not shared with SBI's or Diameter's: a CAP storm and an SBI storm are different
+failures, and P15 asks for **per-protocol** governance.
+
+### A shed here DROPS rather than answers, and that is deliberate
+
+The SBI ceiling returns `503` and the Diameter ceiling returns an answer message. This one drops
+the message, for two reasons that are about protocol shape rather than convenience:
+
+1. A TCAP answer is not a status line. It is a TC-Abort inside a correctly addressed SCCP/M3UA
+   envelope quoting the peer's own transaction id -- which means decoding the very message being
+   shed and building a reply nearly as expensive as serving it. A shed that costs as much as
+   service is not protection.
+2. Dropping is what a real SS7 node does under congestion. TCAP dialogues are protected by the
+   peer's own invoke timers; that mechanism exists for exactly this case.
+
+### P15 status after this ADR
+
+| Front door | Ceiling | Shed behaviour |
+|---|---|---|
+| SBI (all 22 servers) | ADR-0280 | `503` + `ProblemDetails` + `Retry-After` |
+| Diameter (Gy/Rf/Sy) | ADR-0285 | answer with a verified Result-Code (see its own caveat) |
+| SS7/M3UA (CAP) | this ADR | drop; peer's TCAP invoke timer recovers |
+
+All three are **off unless configured**. What P15 still does not have, unchanged by this ADR: a
+load campaign. Every ceiling is validated as a mechanism, and `docs/COMPLIANCE_P1_P15.md` says so.
+
+---
+
+## ADR-0289: Phase 7 GUI scope -- all product configuration must be GUI-editable
+
+**Date:** 2026-09-05
+**Status:** Accepted (user decision)
+
+**User decision, 2026-09-05.** Two assignments recorded so they are not lost between phases:
+
+1. **The N28/Sy `policyCounterId` GUI** (the remaining half of the 2026-08-16 directive, ADR-0286)
+   is implemented during **Phase 7**, not before.
+2. **Every product configuration surface must be editable from the GUI.** No product, tariff,
+   quota, throttle or partner change may require hand-editing a file or a database.
+
+### The concrete surfaces that commits to
+
+| Surface | Where it lives today | API it is already behind |
+|---|---|---|
+| Product offerings and prices, including `prodSpecCharValueUse` (`ratingGroup`, `validityTime`, `quotaHoldingTime`, volume/time/unit quota thresholds, `unitOfMeasure`) | `bss/product-catalog` + PostgreSQL | TMF620 |
+| Balance buckets and top-ups | `bss/balance-management` + PostgreSQL | TMF654 |
+| N28 spending-limit mapping (`policy_counter_actions`) | `config/pcf.json` | read at PCF startup (ADR-0286) |
+| Slice admission quotas (`max_ues`, `max_pdus`) | `config/nsacf.json`, and `LocalNumberUpdate` at runtime | TS 29.536 `Nnsacf_NSAC` |
+| Interconnect/roaming agreements | `bss/roaming-interconnect` + PostgreSQL | TMF651 |
+
+### Why this is a rendering problem, not a re-architecture
+
+Every surface above is **already** JSON-shaped data behind a real API, because of principle P7
+("product/tariff/policy is data, never code") having been applied as each was built -- most
+recently to the N28 mapping, which existed as a gap precisely because TS 29.594 leaves
+`currentStatus` unspecified and no rule could honestly be written in C++.
+
+Two consequences follow, and both are load-bearing for Phase 7's estimate:
+
+- The GUI needs **no new business logic**; it needs schema-driven forms over existing APIs, which
+  is exactly what the brief's "JSON-schema-driven GUI" already calls for.
+- Two of the five surfaces are **config files rather than APIs today** (`policy_counter_actions`,
+  NSACF quotas). Those need a real read/write API before a GUI can edit them at runtime -- named
+  here rather than discovered in Phase 7. NSACF's already has a spec-defined runtime path
+  (`LocalNumberUpdate`); PCF's does not.

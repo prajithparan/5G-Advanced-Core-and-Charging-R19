@@ -31,9 +31,10 @@ spec text. Full conventions are in [`CLAUDE.md`](CLAUDE.md).
 | 3 | User plane: N4/PFCP, UPF datapath (including a real eBPF/XDP fast path) | Done |
 | 4 | Charging + TM Forum SID/BSS layer | Live-verified end to end |
 | 5 | NWDAF + AI/ML pipelines | Not started |
-| 6 | R19 feature NFs (AIOTF, 5MBS, SEPP, ...) | Not started |
-| 7 | GUI / operations console | Not started |
-| 8 | Lab packaging (`make lab-up`) | Not started |
+| 6 | R19 feature NFs (Tier 2/3) | In progress — 5 of 16 Tier 2 NFs built (5G-EIR, SMSF, GMLC, LMF, NSACF); Tier 3 not started |
+| 7 | GUI / operations console | Not started — stack decision (React + JSON Forms vs Dear ImGui) still open. Scope is fixed: **all** product/tariff/policy configuration must be GUI-editable (ADR-0289) |
+| 8 | Lab packaging (`make lab-up`) | Partial — Docker + Compose for all 22 NF/BSS components; Helm for 7 of 18 NFs; no `make lab-up` yet |
+| P4.12 | Telco-grade hardening (TPS governance, chaos, business alarming, retention, autoscaling) | Done except P11, which is deferred — see [`docs/COMPLIANCE_P1_P15.md`](docs/COMPLIANCE_P1_P15.md) |
 
 **Phase 2** — all 7 NFs implemented; both target procedures (TS 23.502 §4.2.2.2.2 UE Registration,
 §4.3.2.2.1 PDU Session Establishment) verified end-to-end over real NGAP/N2 (SCTP + ASN.1 PER) and
@@ -52,6 +53,13 @@ Establishment. The eBPF/XDP datapath passes the BPF verifier, registers TEIDs fr
 signalling in a live BPF map, and decapsulates a real GTP-U packet end-to-end to the TUN device.
 See ADR-0043.
 
+**N28/Sy** — the spending-limit chain now runs end to end, CHF → PCF → SMF: PCF pushes a real
+`SmPolicyNotification` to the `notificationUri` SMF supplies, and SMF serves the `pcf-notify`
+callback it had been advertising since ADR-0038 with nothing behind it. The status→policy mapping
+is **operator data** (`policy_counter_actions` in `config/pcf.json`), not code, because TS 29.594
+leaves `currentStatus` a free-form string the spec never enumerates — the GUI that edits that data
+lands with Phase 7 (ADR-0286).
+
 **Phase 4** — CHF live-verified for the full charging lifecycle (`Nchf_ConvergedCharging`
 Create/Update/Release, real quota-consumption tracking and re-authorization closing the loop
 through UPF usage measurement and a live PFCP Session Modification, ADR-0050). Real legacy
@@ -60,6 +68,52 @@ interconnect (SS7 M3UA+SCCP, TCAP, MAP, CAP/CAMEL, Diameter Gy/Rf) and a real TM
 roaming-interconnect/TMF651) are all live-verified over mTLS. GSMA TAP3 roaming-CDR encoding is
 wired end-to-end. See [`docs/CHARGING_MAPPING.md`](docs/CHARGING_MAPPING.md) for the SID/BSS field
 mapping.
+
+**P4.12 (telco-grade hardening)** — per-protocol TPS spike protection across **all three** protocol
+front doors (SBI on all 22 servers, Diameter, and SS7/M3UA — ADR-0280/0285/0288, each off unless
+configured); chaos tests that kill CHF mid-session and partition the balance store, asserting no
+lost usage and no double-charge (ADR-0281); business-level alarming wired to real exported metrics
+with Prometheus rules (ADR-0282); CDR retention that archives before it deletes (ADR-0283).
+
+Two things that hardening deliberately did **not** close, both recorded rather than glossed:
+**P8 autoscaling is blocked by architecture** — only UDR and CHF hold no in-process state, so only
+UDR has an HPA; moving the other NFs' state out of process is scheduled with **P11**
+(ADR-0284). And **P11 geo-redundancy itself is deferred** by decision. The full matrix, including a
+ranked list of what would still block a production deployment, is in
+[`docs/COMPLIANCE_P1_P15.md`](docs/COMPLIANCE_P1_P15.md).
+
+### Commercial products the CHF/BSS model supports today
+
+Product and tariff definitions are **TMF620 catalog data, not code** (principle P7): CHF's rating
+engine reads `ratingGroup`, `validityTime`, `quotaHoldingTime` and the volume/time/unit quota
+thresholds from a `ProductOfferingPrice`'s own `prodSpecCharValueUse` extension points, and grants
+from its `unitOfMeasure`. So the shapes below are expressed by configuring offerings, not by
+changing C++.
+
+Stated at the honest level of detail — what is really expressible today, and what is not:
+
+| Commercial product | Status | What backs it |
+|---|---|---|
+| **Data bundle** (e.g. 10 GB) | **Supported** | `unitOfMeasure` GB/MB → `GrantedUnit.totalVolume`, with real quota consumption tracking and re-authorization driven by UPF usage measurement over PFCP (ADR-0050) |
+| **Service-unit bundle** (e.g. N events/messages) | **Supported** | any non-GB/MB `unitOfMeasure` → `GrantedUnit.serviceSpecificUnits` |
+| **Prepaid / real-time balance** | **Supported** | reserve-then-finalize against a TMF654 balance bucket; CHF refuses to record a reservation it could not make, so no traffic is served against money that was never held (ADR-0281) |
+| **Tiered / fair-use throttling** | **Partial — decided, not yet enforced** | an operator maps a spending-limit status to an `authSessAmbr` change in `policy_counter_actions`, which PCF pushes to SMF (ADR-0286). SMF records the decision; applying it on the user plane over PFCP is a named, separate increment |
+| **Voice + data bundle** | **Partial** | voice/CS charging is real via CAMEL/CAP (gsmSCF) and Diameter Rf; data via `Nchf_ConvergedCharging` and Diameter Gy. A single offering spanning both is expressible only as separate rating groups — there is no combined-bundle allowance logic |
+| **Roaming bundle** | **Partial** | TMF651 `InterconnectAgreement` and real TAP3 encoders (`libs/tap3-core`) exist; **rating does not distinguish roaming from home traffic**, and settlement (P4.11) is blocked on GSMA TAP3/RAP/NRTRDE spec text this project will not fabricate |
+| **Time-based bundle** (e.g. 24-hour pass) | **Partial** | `validityTime`, `quotaHoldingTime` and `timeQuotaThreshold` are read from the offering and carried into the grant, but grants themselves are volume or service-units — there is no duration-denominated grant |
+| **Shared / family / group bundle** | **Not supported** | balance buckets are keyed by SUPI (`bucket.id = supi`); no group or shared bucket exists in the model |
+| **Postpaid billing / invoicing** | **Partial** | real TS 32.298 BER-encoded CDRs land in Doris with retention and archival (ADR-0283); there is no bill generation, invoicing or dunning |
+
+AI-assisted quota sizing (ONNX, in-process) adjusts **volume** grants only; service-specific-unit
+grants are deliberately excluded (ADR-0248's own disclosed scope).
+
+**Phase 7 requirement (user-directed, ADR-0289):** every product configuration surface above must be
+editable **from the GUI** — no product, tariff, quota, throttle or partner change may require editing
+a file or a database by hand. Concretely that means TMF620 offerings and prices including their
+`prodSpecCharValueUse` characteristics, TMF654 balance buckets and top-ups, the N28 spending-limit
+`policy_counter_actions` mapping, NSACF slice admission quotas, and TMF651 interconnect agreements.
+All of them are already JSON-shaped data behind real APIs, which is what makes the GUI a rendering
+problem rather than a re-architecture.
 
 Full phase plan: [`PROMPT.md`](PROMPT.md).
 

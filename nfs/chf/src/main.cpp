@@ -636,6 +636,22 @@ int main() {
                               reserve_rejected_counter.get(),
                               cap_initial_dp_counter.get(),
                               cap_apply_charging_counter.get());
+    // P15 (ADR-0288): the SS7/M3UA front door's own ceiling -- the third protocol, completing
+    // "per-protocol" TPS governance. Its own bucket, like Diameter's: a CAP storm and an SBI storm
+    // are different failures and must not share a budget.
+    if (config.contains("cap_max_tps") && !config.at("cap_max_tps").is_null()) {
+        const auto cap_tps = config.at("cap_max_tps").get<double>();
+        if (cap_tps > 0.0) {
+            const auto cap_burst = config.contains("cap_tps_burst")
+                                       ? config.at("cap_tps_burst").get<double>()
+                                       : cap_tps;
+            cap_server.set_tps_limit(cap_tps, cap_burst);
+            spdlog::info("chf: CAP/SS7 TPS ceiling active: {} msg/s sustained, burst {}",
+                         cap_tps,
+                         cap_burst);
+        }
+    }
+
     spdlog::info("chf: CAP (gsmSCF) listening on sctp://0.0.0.0:{}", kCapPort);
 
     boost::asio::io_context ioc;

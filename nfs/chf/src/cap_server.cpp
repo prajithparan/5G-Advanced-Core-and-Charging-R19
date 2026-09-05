@@ -172,6 +172,14 @@ CapServer::~CapServer() {
     }
 }
 
+void CapServer::set_tps_limit(double sustained_tps, double burst_capacity) {
+    if (sustained_tps <= 0.0) {
+        rate_limit_.reset();
+        return;
+    }
+    rate_limit_ = std::make_unique<sbi_core::TokenBucket>(sustained_tps, burst_capacity);
+}
+
 void CapServer::accept_loop() {
     while (!stop_) {
         try {
@@ -210,6 +218,23 @@ void CapServer::handle_connection(ss7_core::SctpSocket socket) {
             spdlog::info("chf: CAP peer association closed");
             return;
         }
+        // P15 (ADR-0288): the SS7/M3UA front door's ceiling -- the third and final protocol, after
+        // SBI (ADR-0280) and Diameter (ADR-0285). Checked on a received M3UA message, before the
+        // SCCP unwrap and the TCAP/CAP decode below, because those are where the real work is.
+        //
+        // A shed here DROPS the message rather than answering. That is a deliberate difference
+        // from the SBI and Diameter ceilings, and the reason is protocol shape, not convenience: a
+        // TCAP answer is not a status line, it is a TC-Abort inside a correctly-addressed SCCP/
+        // M3UA envelope quoting the peer's own transaction id -- which means decoding the very
+        // message being shed and building a reply nearly as expensive as serving it. Dropping is
+        // also what a real SS7 node does under congestion: TCAP dialogues are protected by the
+        // peer's own invoke timers, which is the mechanism that exists for exactly this.
+        if (rate_limit_ != nullptr && !rate_limit_->try_acquire()) {
+            spdlog::warn("chf: CAP message dropped at the configured TPS ceiling -- the peer's own "
+                         "TCAP invoke timer is what recovers this dialogue");
+            continue;
+        }
+
         const auto udt = unwrap_to_sccp(*msg);
         if (!udt.has_value()) {
             spdlog::warn("chf: CAP peer sent a malformed M3UA/SCCP message, ignoring");

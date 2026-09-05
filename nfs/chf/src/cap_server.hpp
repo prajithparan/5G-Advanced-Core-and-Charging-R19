@@ -1,9 +1,11 @@
 #pragma once
 
+#include "sbi_core/rate_limit.hpp"
 #include "sbi_core/tls_config.hpp"
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <thread>
 
 #include "charging_engine.hpp"
@@ -56,6 +58,9 @@ namespace chf {
 
 class CapServer {
 public:
+    // P15 (ADR-0288): sustained_tps <= 0 disables it, which is the default.
+    void set_tps_limit(double sustained_tps, double burst_capacity);
+
     // grant_counter/reserve_rejected_counter are the SAME real counters main.cpp's HTTP handlers
     // and DiameterServer already share (a real grant is a real grant regardless of which real
     // protocol triggered it -- CHARGING_PROMPT.md's own single-code-path property). initial_dp_
@@ -80,6 +85,9 @@ private:
     void handle_connection(ss7_core::SctpSocket socket);
 
     ss7_core::SctpSocket listener_;
+    // P15 (ADR-0288): the SS7/M3UA front door's own ceiling, the third and last protocol. Null
+    // unless configured -- see the .cpp for why a shed here drops rather than answers.
+    std::unique_ptr<sbi_core::TokenBucket> rate_limit_;
     sbi_core::http2::TlsConfig client_tls_;
     ChargingDataStore& charging_data_store_;
     CdrWriter& cdr_writer_;

@@ -102,7 +102,7 @@ Ordered by how hard each would bite:
    nothing in this repository claims otherwise.
 4. **The synchronous HTTP/2 client** (ADR-0006/0009). It is why handover preparation blocks a gNB
    association for up to 10 s and why per-session SMF calls are serial.
-5. **Spike protection covers SBI and Diameter; SS7/M3UA remains unprotected** (P15). The Diameter ceiling is off by default because the correct overload Result-Code (RFC 6733 DIAMETER_TOO_BUSY) could not be verified from material in this repository — see ADR-0285, which asks rather than guesses.
+5. **Spike protection exists on all three protocols but has never been load-tested** (P15). Each ceiling is validated as a mechanism under a small deliberate overload, not a campaign. The Diameter one is additionally off by default because RFC 6733's `DIAMETER_TOO_BUSY` value could not be verified from material in this repository — see ADR-0285, which asks rather than guesses.
 6. **UPF's datapath is control-plane only in practice** — eBPF/XDP does not start without ambient
    capabilities, and downlink GTP-U encapsulation is not implemented in it at all.
 7. **Retention exists but archives to a local directory, not object storage** (P14). The sweep is
