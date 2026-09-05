@@ -31,7 +31,7 @@ to this document more than to any other.
 | **P12** | Business-level alarming | **Done (first real slice)** | CDR sequence-gap alarm wired at Release + `chf_cdr_sequence_gap_total`; `sbi_requests_shed_total`; 4 Prometheus rules in `deploy/prometheus/business_alerts.yml`, every one verified against a metric this code really exports |
 | **P13** | Charging correctness under AI/ML/SON change | **Not started** | Belongs to P4.9, which is blocked on NWDAF |
 | **P14** | Retention-driven auto-archival | **Partial** | Archive-then-delete sweep in CHF (ADR-0283), hourly, **off by default**. Archives to newline-delimited JSON; a real deployment points it at object storage, which is not deployed here. Validated against CI's real Doris, skipped locally |
-| **P15** | Protocol-level spike protection / TPS governance | **Partial** | Token-bucket ceiling with spec-defined `503` shedding across all 22 SBI servers (ADR-0280). **Diameter and SS7 front doors have no ceiling.** Validated as a mechanism, not under a load campaign |
+| **P15** | Protocol-level spike protection / TPS governance | **Partial** | Token-bucket ceiling on all 22 SBI servers with spec-defined `503` shedding (ADR-0280) **and on CHF's Diameter front door** (ADR-0285, off by default -- its shed Result-Code semantics are not verifiable from spec material in hand). **SS7/M3UA still has no ceiling.** Validated as a mechanism, not under a load campaign |
 
 ---
 
@@ -102,7 +102,7 @@ Ordered by how hard each would bite:
    nothing in this repository claims otherwise.
 4. **The synchronous HTTP/2 client** (ADR-0006/0009). It is why handover preparation blocks a gNB
    association for up to 10 s and why per-session SMF calls are serial.
-5. **Spike protection covers SBI only** (P15). Diameter and SS7 remain unprotected.
+5. **Spike protection covers SBI and Diameter; SS7/M3UA remains unprotected** (P15). The Diameter ceiling is off by default because the correct overload Result-Code (RFC 6733 DIAMETER_TOO_BUSY) could not be verified from material in this repository — see ADR-0285, which asks rather than guesses.
 6. **UPF's datapath is control-plane only in practice** — eBPF/XDP does not start without ambient
    capabilities, and downlink GTP-U encapsulation is not implemented in it at all.
 7. **Retention exists but archives to a local directory, not object storage** (P14). The sweep is

@@ -677,6 +677,14 @@ DiameterServer::~DiameterServer() {
     }
 }
 
+void DiameterServer::set_tps_limit(double sustained_tps, double burst_capacity) {
+    if (sustained_tps <= 0.0) {
+        rate_limit_.reset();
+        return;
+    }
+    rate_limit_ = std::make_unique<sbi_core::TokenBucket>(sustained_tps, burst_capacity);
+}
+
 void DiameterServer::accept_loop() {
     while (!stop_) {
         boost::asio::ip::tcp::socket socket(ioc_);
@@ -829,6 +837,47 @@ void DiameterServer::handle_connection(boost::asio::ip::tcp::socket socket) {
                          next_header->command_code,
                          next_header->flags);
             return;
+        }
+
+        // P15 (ADR-0285): the Diameter front door's TPS ceiling. Checked once the message is known
+        // to be a supported request -- an unsupported command is a peer error, not load -- and
+        // before the AVPs are decoded and the charging engine is entered, because shedding is only
+        // protective if it is cheaper than serving.
+        if (rate_limit_ != nullptr && !rate_limit_->try_acquire()) {
+            // RESULT-CODE CAVEAT, disclosed rather than guessed (ADR-0285): RFC 6733's
+            // DIAMETER_TOO_BUSY is the semantically correct answer for transient overload, and its
+            // numeric value is NOT verifiable from material in this repository -- header.hpp's own
+            // comment already records that RFC 6733's text is not in hand, and the installed
+            // freeDiameter header carries no TOO_BUSY definition either. Rather than invent a
+            // constant, this answers with kDiameterUnableToComply, which IS verified in
+            // libs/diameter-core's dictionary.
+            //
+            // That is a 5xxx permanent-failure class where a 3xxx transient one belongs, and a
+            // peer may therefore stop retrying instead of backing off. It is precisely why this
+            // ceiling is OFF unless explicitly configured.
+            spdlog::warn("chf: Diameter request shed at the configured TPS ceiling "
+                         "(command_code={})",
+                         next_header->command_code);
+            std::vector<std::uint8_t> busy_avps_bytes;
+            Avp busy_result;
+            busy_result.code = dictionary::Avp::kResultCode;
+            busy_result.flags = AvpFlag::kMandatory;
+            busy_result.data = encode_integer32(dictionary::ResultCode::kDiameterUnableToComply);
+            encode_avp(busy_avps_bytes, busy_result);
+
+            Header busy_header{};
+            busy_header.command_code = next_header->command_code;
+            busy_header.application_id = next_header->application_id;
+            busy_header.hop_by_hop_id = next_header->hop_by_hop_id; // echoed, as every answer does
+            busy_header.end_to_end_id = next_header->end_to_end_id;
+            auto busy =
+                encode_header(busy_header, static_cast<std::uint32_t>(busy_avps_bytes.size()));
+            busy.insert(busy.end(), busy_avps_bytes.begin(), busy_avps_bytes.end());
+            boost::asio::write(socket, boost::asio::buffer(busy), ec);
+            if (ec) {
+                return;
+            }
+            continue;
         }
 
         const auto next_avps = decode_avps(next_avps_bytes);

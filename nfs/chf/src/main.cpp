@@ -597,6 +597,23 @@ int main() {
                                         slr_initial_counter.get(),
                                         slr_intermediate_counter.get(),
                                         str_counter.get());
+    // P15 (ADR-0285): the Diameter front door's own TPS ceiling, separate from the SBI one --
+    // "per-protocol" is what P15 asks for, and a shared budget would let an SBI storm starve Gy.
+    // OFF unless `diameter_max_tps` is configured; see diameter_server.cpp's own Result-Code
+    // caveat for the second reason it is off by default.
+    if (config.contains("diameter_max_tps") && !config.at("diameter_max_tps").is_null()) {
+        const auto diameter_tps = config.at("diameter_max_tps").get<double>();
+        if (diameter_tps > 0.0) {
+            const auto diameter_burst = config.contains("diameter_tps_burst")
+                                            ? config.at("diameter_tps_burst").get<double>()
+                                            : diameter_tps;
+            diameter_server.set_tps_limit(diameter_tps, diameter_burst);
+            spdlog::info("chf: Diameter TPS ceiling active: {} req/s sustained, burst {}",
+                         diameter_tps,
+                         diameter_burst);
+        }
+    }
+
     spdlog::info("chf: Diameter (Gy+Rf+Sy) listening on tcp://0.0.0.0:{}", kDiameterPort);
 
     // P4.5/ADR-0061: real CAP server -- CHF plays the real gsmSCF role, receiving InitialDP from

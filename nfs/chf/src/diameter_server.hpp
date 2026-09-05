@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sbi_core/rate_limit.hpp"
 #include "sbi_core/tls_config.hpp"
 
 #include <boost/asio/io_context.hpp>
@@ -7,6 +8,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -96,6 +98,16 @@ public:
     DiameterServer& operator=(const DiameterServer&) = delete;
 
 private:
+    // P15 (ADR-0285): a TPS ceiling for the Diameter front door, mirroring the SBI one
+    // (ADR-0280). OFF unless configured -- and off by default for a second reason beyond caution,
+    // see the .cpp: the shed answer's Result-Code semantics are not fully verifiable from spec
+    // material in this repository.
+public:
+    void set_tps_limit(double sustained_tps, double burst_capacity);
+
+private:
+    std::unique_ptr<sbi_core::TokenBucket> rate_limit_;
+
     void accept_loop();
     void handle_connection(boost::asio::ip::tcp::socket socket);
 
