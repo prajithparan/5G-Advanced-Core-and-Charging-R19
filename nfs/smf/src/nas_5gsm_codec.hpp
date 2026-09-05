@@ -66,4 +66,18 @@ std::vector<std::uint8_t> encode_establishment_accept(std::uint8_t pdu_session_i
                                                       const std::string& session_ambr_downlink,
                                                       std::uint8_t qfi);
 
+// Encodes a real TS 24.501 §8.3.6 PDU Session Establishment Reject (ADR-0279) -- what a UE is
+// owed when its session cannot be established, in place of the Accept.
+//
+// sm_cause: TS 24.501 §9.11.4.2 5GSM cause. The slice-admission case is 0x45
+// (INSUFFICIENT_RESOURCES_FOR_SPECIFIC_SLICE), read from
+// simulators/ransim/vendor/UERANSIM/src/lib/nas/enums.hpp's ESmCause, the same real source this
+// file's message types come from.
+//
+// Unsecured by construction, like the Accept: a 5GSM message is carried inside a 5GMM
+// DlNasTransport, and it is that OUTER message AMF protects with the NAS security context. This
+// container is the payload, not a NAS message on the wire by itself.
+std::vector<std::uint8_t>
+encode_establishment_reject(std::uint8_t pdu_session_id, std::uint8_t pti, std::uint8_t sm_cause);
+
 } // namespace smf::nas5gsm

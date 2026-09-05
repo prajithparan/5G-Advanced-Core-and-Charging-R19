@@ -1336,6 +1336,148 @@ bool perform_n4_session_modification_update_urr(smf::PfcpPeer& pfcp_peer,
     return true;
 }
 
+// ADR-0279. 0x45, from simulators/ransim/vendor/UERANSIM/src/lib/nas/enums.hpp's
+// ESmCause::INSUFFICIENT_RESOURCES_FOR_SPECIFIC_SLICE (0b01000101) -- the same real source
+// nas_5gsm_codec.cpp reads its message types from.
+constexpr std::uint8_t kSmCauseInsufficientResourcesForSlice = 0x45;
+
+// The PTI the UE used, so the reject can echo it. Re-extracts the n1SmMsg part rather than
+// hoisting the whole (much later) Accept-building block up here: this runs only on the refusal
+// path, and moving that block would restructure the success path for the sake of an error one.
+// A PTI of 0 is what the UE sent if there is no decodable request, which is also what the spec's
+// "no procedure transaction identity assigned" value is.
+std::optional<std::uint8_t> extract_request_pti(const sbi_core::http2::Request& req) {
+    const auto content_type_it = req.headers.find("content-type");
+    if (content_type_it == req.headers.end() ||
+        !sbi_core::multipart::is_multipart_related(content_type_it->second)) {
+        return std::nullopt;
+    }
+    auto parts = sbi_core::multipart::parse(content_type_it->second, req.body);
+    if (!parts.has_value()) {
+        return std::nullopt;
+    }
+    for (const auto& part : *parts) {
+        if (!part.content_id.has_value()) {
+            continue;
+        }
+        const std::vector<std::uint8_t> bytes(part.body.begin(), part.body.end());
+        const auto info = smf::nas5gsm::decode_establishment_request(bytes);
+        if (info.has_value()) {
+            return info->pti;
+        }
+    }
+    return std::nullopt;
+}
+
+// ADR-0279: distinguishes "this slice is full" from "this slice is not mine".
+//
+// TS 29.536's AcuFailureReason carries both: EXCEED_MAX_* means the quota is exhausted, while
+// SLICE_NOT_FOUND means NSACF holds no admission configuration for that S-NSSAI at all. Only the
+// first is a refusal. Treating the second as one would let an NSACF that simply does not manage a
+// slice block every session on it -- the same reasoning as the fail-open on an unreachable NSACF,
+// applied to an answer rather than to a failure to answer.
+//
+// Found by a test regression, not by review: the Sx-association gate creates sessions on sst=1
+// with no SD, a different S-NSSAI from the configured sst=1/sd=000001, so NSACF correctly answered
+// SLICE_NOT_FOUND and a blanket refusal turned that into a 403.
+bool acu_failure_is_a_real_refusal(const std::string& body) {
+    try {
+        const auto parsed = json::parse(body);
+        if (!parsed.contains("acuFailureList") || !parsed.at("acuFailureList").is_array()) {
+            return false;
+        }
+        for (const auto& item : parsed.at("acuFailureList")) {
+            if (!item.contains("reason")) {
+                continue;
+            }
+            if (item.at("reason").get<std::string>().rfind("EXCEED_MAX", 0) == 0) {
+                return true;
+            }
+        }
+    } catch (const json::exception&) {
+        // An unparseable failure list is not evidence of a refusal.
+        return false;
+    }
+    return false;
+}
+
+// ADR-0279: ask NSACF whether this PDU session may be established. Returns false ONLY on a real
+// refusal -- unreachable, no token, or an unexpected status all admit, the same deliberate
+// fail-open AMF's own report_ue_to_nsacf documents and for the same reason: NSAC is an operator
+// quota mechanism with no authority over a session it could not evaluate.
+bool admit_pdu_session_with_nsacf(sbi_core::http2::Client& nsacf_client,
+                                  sbi_core::OAuth2Client& nsacf_oauth,
+                                  const std::string& nsacf_base_url,
+                                  const std::string& supi,
+                                  std::int32_t pdu_session_id,
+                                  const sbi_gen::Snssai& snssai) {
+    if (nsacf_base_url.empty()) {
+        return true;
+    }
+    const auto token = nsacf_oauth.get_bearer_token();
+    if (!token.has_value()) {
+        spdlog::error("smf: could not obtain an NSACF token for slice admission control: {}",
+                      token.error());
+        return true;
+    }
+
+    json snssai_json{{"sst", snssai.sst}};
+    if (snssai.sd.has_value()) {
+        snssai_json["sd"] = *snssai.sd;
+    }
+    json request;
+    request["pduACRequestInfo"] = json::array(
+        {json{{"supi", supi},
+              {"anType", "3GPP_ACCESS"},
+              {"pduSessionId", pdu_session_id},
+              {"acuOperationList",
+               json::array({json{{"updateFlag", "INCREASE"}, {"snssai", snssai_json}}})}}});
+
+    sbi_core::http2::ClientRequest http_req;
+    http_req.method = "POST";
+    http_req.url = nsacf_base_url + "/nnsacf-nsac/v1/slices/pdus";
+    http_req.headers.emplace("content-type", "application/json");
+    http_req.headers.emplace("authorization", "Bearer " + *token);
+    http_req.body = request.dump();
+
+    auto resp = nsacf_client.send(http_req);
+    if (!resp.has_value()) {
+        spdlog::warn("smf: NSACF NumOfPDUsUpdate call failed for SUPI {} pduSessionId {}: {} -- "
+                     "admitting, see this function's own fail-open note",
+                     supi,
+                     pdu_session_id,
+                     resp.error());
+        return true;
+    }
+    if (resp->status == 204) {
+        spdlog::info("smf: NSACF admitted pduSessionId {} for SUPI {} on slice sst={}",
+                     pdu_session_id,
+                     supi,
+                     snssai.sst);
+        return true;
+    }
+    if (resp->status == 200) {
+        // Only an EXCEED_MAX_* reason is a refusal -- see acu_failure_is_a_real_refusal.
+        if (acu_failure_is_a_real_refusal(resp->body)) {
+            spdlog::warn("smf: NSACF REFUSED pduSessionId {} for SUPI {}: {}",
+                         pdu_session_id,
+                         supi,
+                         resp->body);
+            return false;
+        }
+        spdlog::info("smf: NSACF reported a non-quota ACU failure for pduSessionId {} ({}) -- "
+                     "admitting, it holds no quota for this slice",
+                     pdu_session_id,
+                     resp->body);
+        return true;
+    }
+    spdlog::warn("smf: NSACF NumOfPDUsUpdate returned unexpected status {} for SUPI {} -- "
+                 "admitting, see this function's own fail-open note",
+                 resp->status,
+                 supi);
+    return true;
+}
+
 // ADR-0277: report an established/released PDU session to NSACF (Nnsacf_NSAC NumOfPDUsUpdate).
 //
 // Keyed per (SUPI, pduSessionId) on NSACF's side, which is why both are sent: one UE may hold
@@ -1843,6 +1985,9 @@ int main() {
          &smf_instance_id,
          &pfcp_peer,
          &cp_seid_sessions,
+         &nsacf_client,
+         &nsacf_oauth,
+         &nsacf_base_url,
          &charging_data_invocation_seq](const sbi_core::http2::Request& req) {
             if (auto auth = check_bearer(req, verifier); auth.has_value() && !auth->valid) {
                 return sbi_core::http2::problem_response(401, "Unauthorized", auth->error);
@@ -1863,6 +2008,62 @@ int main() {
                     "Missing mandatory IE",
                     "This build requires supi, pduSessionId, dnn, and sNssai to establish an SM "
                     "Policy Association with PCF");
+            }
+
+            // ADR-0279: Network Slice Admission Control, BEFORE any state exists.
+            //
+            // Placement is the same lesson ADR-0278 learned on the AMF side: this must precede the
+            // N4 session, the PCF SM Policy Association and the SM context itself, because a
+            // refused session must leave nothing behind to unwind. TS 23.501 §5.15.11 controls how
+            // many PDU sessions may BE established on a slice, so the decision belongs before the
+            // establishment, not after the 201.
+            if (!admit_pdu_session_with_nsacf(nsacf_client,
+                                              nsacf_oauth,
+                                              nsacf_base_url,
+                                              *body->supi,
+                                              *body->pduSessionId,
+                                              *body->sNssai)) {
+                // The UE is owed a real NAS reason, not just an HTTP status. TS 29.502's
+                // SmContextCreateError is the schema that can carry one (`n1SmMsg`), which is why
+                // this operation departs from this file's own generic-ProblemDetails convention --
+                // see the file header and ADR-0279 for why the exception is confined to here.
+                const std::uint8_t pti = extract_request_pti(req).value_or(0);
+                const auto reject = smf::nas5gsm::encode_establishment_reject(
+                    static_cast<std::uint8_t>(*body->pduSessionId),
+                    pti,
+                    kSmCauseInsufficientResourcesForSlice);
+
+                sbi_gen::ExtProblemDetails_Nsmf_PDUSession problem{};
+                problem.status = 403;
+                problem.title = "Slice admission control refused this PDU session";
+                problem.detail = "NSACF refused S-NSSAI sst=" + std::to_string(body->sNssai->sst) +
+                                 " for SUPI " + *body->supi;
+                sbi_gen::SmContextCreateError error{};
+                error.error = problem;
+                sbi_gen::RefToBinaryData n1_ref{};
+                n1_ref.contentId = "n1SmMsg";
+                error.n1SmMsg = n1_ref;
+
+                sbi_core::multipart::Part json_part;
+                json_part.content_type = "application/problem+json";
+                json_part.body = json(error).dump();
+                sbi_core::multipart::Part n1_part;
+                n1_part.content_type = "application/vnd.3gpp.5gnas";
+                n1_part.content_id = "n1SmMsg";
+                n1_part.body = std::string(reject.begin(), reject.end());
+                const auto encoded = sbi_core::multipart::encode({json_part, n1_part});
+
+                spdlog::warn("smf: PDU SESSION REFUSED for SUPI {} pduSessionId {} -- NSACF "
+                             "refused the slice (5GSM cause {:#x})",
+                             *body->supi,
+                             *body->pduSessionId,
+                             kSmCauseInsufficientResourcesForSlice);
+
+                sbi_core::http2::Response resp;
+                resp.status = 403;
+                resp.headers.emplace("content-type", encoded.content_type_header);
+                resp.body = encoded.body;
+                return resp;
             }
 
             const auto sm_context_ref = sm_contexts.create(json::object());

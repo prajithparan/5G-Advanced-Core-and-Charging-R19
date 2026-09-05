@@ -1006,3 +1006,98 @@ TEST(AmfNgapTestGnb, UeIsRejectedWhenNsacfRefusesItsSlice) {
            "NSACF had refused";
     EXPECT_EQ((*plain)[3], 0x45) << "expected 5GMM cause 0x45, insufficient resources for slice";
 }
+
+// ADR-0279: SMF enforces slice admission too, and the UE is told why.
+//
+// This is the half ADR-0278 named as still open. It needed more than moving a call: SMF's error
+// responses used generic ProblemDetails, which has nowhere to carry a NAS message, and AMF
+// discarded SMF's error bodies entirely -- so a refused UE would have waited for a message that
+// never came. SMF now answers 403 with TS 29.502's SmContextCreateError carrying the reject in
+// n1SmMsg, and AMF relays it through the same registry path the Accept uses.
+//
+// The assertion is the whole point: the UE deciphers a DlNasTransport whose N1 SM container is a
+// PDU Session Establishment Reject (0xC3) with 5GSM cause 0x45, where a passing UE gets 0xC2.
+TEST(AmfNgapTestGnb, PduSessionIsRejectedWhenNsacfRefusesTheSlice) {
+    nf_test::SpawnedProcess nrf(NRF_PATH);
+    ASSERT_GT(nrf.pid(), 0);
+    nf_test::SpawnedProcess udr(UDR_PATH);
+    ASSERT_GT(udr.pid(), 0);
+    nf_test::SpawnedProcess udm(UDM_PATH);
+    ASSERT_GT(udm.pid(), 0);
+    nf_test::SpawnedProcess ausf(AUSF_PATH);
+    ASSERT_GT(ausf.pid(), 0);
+    nf_test::SpawnedProcess pcf(PCF_PATH);
+    ASSERT_GT(pcf.pid(), 0);
+    nf_test::SpawnedProcess upf(UPF_PATH);
+    ASSERT_GT(upf.pid(), 0);
+    nf_test::SpawnedProcess smf(SMF_PATH);
+    ASSERT_GT(smf.pid(), 0);
+    nf_test::SpawnedProcess nsacf(NSACF_PATH);
+    ASSERT_GT(nsacf.pid(), 0);
+    nf_test::SpawnedProcess amf(AMF_PATH);
+    ASSERT_GT(amf.pid(), 0);
+
+    ASSERT_NO_FATAL_FAILURE(
+        wait_for_sbi_peers({kUdrProbe, kUdmProbe, kAusfProbe, kPcfProbe, kSmfProbe, kNsacfProbe}));
+
+    // UE capacity stays as configured -- the UE must REGISTER successfully -- while the slice's
+    // PDU-session capacity goes to zero. That separation is what makes this test about SMF's half
+    // rather than AMF's: the same slice admits the UE and refuses its session.
+    {
+        auto client = make_client();
+        sbi_core::http2::ClientRequest req;
+        req.method = "POST";
+        req.url = "https://127.0.0.1:7797/nnsacf-nsac/v1/slices/local-configs/update";
+        req.headers.emplace("content-type", "application/json");
+        req.body =
+            json{{"snssai", json{{"sst", kSst}, {"sd", "000001"}}}, {"maxPdusNumber", 0}}.dump();
+        auto resp = client.send(req);
+        ASSERT_TRUE(resp.has_value());
+        ASSERT_EQ(resp->status, 204) << resp->body;
+    }
+
+    NgapTestGnb gnb;
+    ASSERT_TRUE(gnb.connect(kAmfNgapAddress, kAmfNgapPort));
+    ASSERT_TRUE(gnb.ng_setup(kSourceGnbId));
+
+    constexpr std::uint32_t kUeRanId = 1;
+    constexpr std::uint8_t kPduSessionId = 5;
+    constexpr std::uint8_t kPti = 1;
+    RegisteredUe ue;
+    ASSERT_NO_FATAL_FAILURE(register_ue(gnb, kUeRanId, ue));
+
+    gnb.send_raw(gnb.build_uplink_nas_transport(
+        ue.amf_ue_id, kUeRanId, nf_test::build_registration_complete(ue.keys, /*uplink_count=*/1)));
+    gnb.send_raw(gnb.build_uplink_nas_transport(
+        ue.amf_ue_id,
+        kUeRanId,
+        nf_test::build_pdu_session_establishment_request(ue.keys,
+                                                         /*uplink_count=*/2,
+                                                         kPduSessionId,
+                                                         kPti,
+                                                         kDnn,
+                                                         kSst,
+                                                         kSd)));
+
+    const auto reject_pdu = gnb.receive_raw();
+    ASSERT_FALSE(reject_pdu.empty())
+        << "nothing came back after the PDU Session Establishment Request -- a refused session "
+           "must still be answered, which is exactly what this increment fixed";
+    NgapTestGnb::DownlinkNas dl;
+    ASSERT_TRUE(NgapTestGnb::extract_downlink_nas(reject_pdu, dl));
+
+    const auto plain = nf_test::open_secured_downlink(ue.keys, /*downlink_count=*/2, dl.nas_pdu);
+    ASSERT_TRUE(plain.has_value())
+        << "the DlNasTransport carrying the reject did not verify against the UE's own KNASint";
+    const auto n1_sm = nf_test::extract_dl_nas_payload_container(*plain);
+    ASSERT_TRUE(n1_sm.has_value()) << "deciphered downlink carried no N1 SM container";
+
+    ASSERT_GE(n1_sm->size(), 5u);
+    EXPECT_EQ((*n1_sm)[0], 0x2E) << "not a 5GSM message";
+    EXPECT_EQ((*n1_sm)[1], kPduSessionId);
+    EXPECT_EQ((*n1_sm)[2], kPti) << "TS 24.501 requires the PTI to be echoed on the reject too";
+    EXPECT_EQ((*n1_sm)[3], 0xC3)
+        << "expected a PDU Session Establishment Reject; 0xC2 would mean the session was "
+           "established on a slice NSACF had refused";
+    EXPECT_EQ((*n1_sm)[4], 0x45) << "expected 5GSM cause 0x45, insufficient resources for slice";
+}

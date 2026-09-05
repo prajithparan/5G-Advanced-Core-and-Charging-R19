@@ -14,6 +14,10 @@ constexpr std::uint8_t kEpdSessionManagement = 0x2E;
 
 constexpr std::uint8_t kMessageTypeEstablishmentRequest = 0xC1;
 constexpr std::uint8_t kMessageTypeEstablishmentAccept = 0xC2;
+// ADR-0279. 0xC3, from the same real source this file's other message types cite --
+// simulators/ransim/vendor/UERANSIM/src/lib/nas/enums.hpp's
+// EMessageType::PDU_SESSION_ESTABLISHMENT_REJECT (0b11000011).
+constexpr std::uint8_t kMessageTypeEstablishmentReject = 0xC3;
 
 // TS 24.501 §9.11.4.11 PDU session type values.
 constexpr std::uint8_t kPduSessionTypeIpv4 = 0b001;
@@ -139,6 +143,23 @@ std::vector<std::uint8_t> encode_establishment_accept(std::uint8_t pdu_session_i
     out.push_back(static_cast<std::uint8_t>(ul.value >> 8));
     out.push_back(static_cast<std::uint8_t>(ul.value & 0xFF));
 
+    return out;
+}
+
+std::vector<std::uint8_t>
+encode_establishment_reject(std::uint8_t pdu_session_id, std::uint8_t pti, std::uint8_t sm_cause) {
+    // TS 24.501 §8.3.6. The 5GSM header is the same four bytes every message in this file uses
+    // (EPD, PDU session ID, PTI, message type), then the ONE mandatory IE: 5GSM cause, a Type-3
+    // single octet with no length prefix.
+    //
+    // The PTI is echoed from the request, exactly as the Accept echoes it -- a UE matches the
+    // answer to its own request by that value, so a reject that dropped it would be unmatchable.
+    std::vector<std::uint8_t> out;
+    out.push_back(kEpdSessionManagement);
+    out.push_back(pdu_session_id);
+    out.push_back(pti);
+    out.push_back(kMessageTypeEstablishmentReject);
+    out.push_back(sm_cause);
     return out;
 }
 

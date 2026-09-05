@@ -1316,6 +1316,40 @@ void handle_uplink_nas_transport(const PeerEndpoints& peers,
 // the now-confirmed normal context, downlink_count=1). Real, load-bearing consequence of sending a
 // GUTI (see UeAuthState::Phase's own updated comment): a real UE now sends RegistrationComplete in
 // response, handled by handle_uplink_nas_transport_registration_complete below, NOT here anymore.
+
+// ADR-0279: distinguishes "this slice is full" from "this slice is not mine".
+//
+// TS 29.536's AcuFailureReason carries both: EXCEED_MAX_* means the quota is exhausted, while
+// SLICE_NOT_FOUND means NSACF holds no admission configuration for that S-NSSAI at all. Only the
+// first is a refusal. Treating the second as one would let an NSACF that simply does not manage a
+// slice block every session on it -- the same reasoning as the fail-open on an unreachable NSACF,
+// applied to an answer rather than a failure to answer.
+//
+// Found by a test regression, not by review: the Sx-association gate creates sessions on
+// sst=1 with no SD, which is a different S-NSSAI from the configured sst=1/sd=000001, so NSACF
+// correctly answered SLICE_NOT_FOUND and a blanket refusal turned that into a 403.
+bool acu_failure_is_a_real_refusal(const std::string& body) {
+    try {
+        const auto parsed = nlohmann::json::parse(body);
+        if (!parsed.contains("acuFailureList") || !parsed.at("acuFailureList").is_array()) {
+            return false;
+        }
+        for (const auto& item : parsed.at("acuFailureList")) {
+            if (!item.contains("reason")) {
+                continue;
+            }
+            const auto reason = item.at("reason").get<std::string>();
+            if (reason.rfind("EXCEED_MAX", 0) == 0) {
+                return true;
+            }
+        }
+    } catch (const nlohmann::json::exception&) {
+        // An unparseable failure list is not evidence of a refusal.
+        return false;
+    }
+    return false;
+}
+
 // ADR-0278: returns false ONLY when NSACF really refused the slice. Every other outcome -- NSACF
 // unreachable, no token, an unexpected status -- returns true, because a UE must not be denied
 // service by an admission controller that failed to answer. A deliberate fail-open, named here
@@ -1376,10 +1410,17 @@ bool report_ue_to_nsacf(const PeerEndpoints& peers,
     }
     if (resp->status == 200) {
         // 200 is the YAML's "Partial successful ACU operation": the body carries the real
-        // AcuFailureList, and for a single-slice request like this one that means the one slice
-        // asked about was refused.
-        spdlog::warn("amf-ngap: NSACF REFUSED SUPI {} for its slice: {}", supi, resp->body);
-        return false;
+        // AcuFailureList. Only an EXCEED_MAX_* reason is a refusal -- see
+        // acu_failure_is_a_real_refusal.
+        if (acu_failure_is_a_real_refusal(resp->body)) {
+            spdlog::warn("amf-ngap: NSACF REFUSED SUPI {} for its slice: {}", supi, resp->body);
+            return false;
+        }
+        spdlog::info("amf-ngap: NSACF reported a non-quota ACU failure for SUPI {} ({}) -- "
+                     "admitting, it holds no quota for this slice",
+                     supi,
+                     resp->body);
+        return true;
     }
     spdlog::warn("amf-ngap: NSACF NumOfUEsUpdate returned unexpected status {} for SUPI {} -- "
                  "admitting, see this function's own fail-open note",
@@ -1640,6 +1681,7 @@ void handle_uplink_nas_transport_pdu_session_establishment(const PeerEndpoints& 
                                                            const std::string& amf_instance_id,
                                                            UeAuthState& auth_state,
                                                            UeContextStore& ue_contexts,
+                                                           NgapUeRegistry& ue_ngap_registry,
                                                            const InitiatingMessage_t& msg) {
     const auto nas_pdu_bytes_opt = extract_uplink_nas_pdu(msg);
     if (!nas_pdu_bytes_opt.has_value()) {
@@ -1750,6 +1792,54 @@ void handle_uplink_nas_transport_pdu_session_establishment(const PeerEndpoints& 
         spdlog::error("amf-ngap: SMF CreateSMContext returned unexpected status {} for SUPI {}",
                       resp->status,
                       auth_state.supi);
+
+        // ADR-0279: relay SMF's own NAS reject to the UE.
+        //
+        // Until now AMF discarded SMF's error body entirely, so a UE whose session SMF refused
+        // waited for a message that never came. TS 29.502's SmContextCreateError carries the
+        // reason the UE is owed in `n1SmMsg` -- AMF is the only party that can deliver it, since
+        // SMF has no session to run an N1N2MessageTransfer against. AMF does not decode the
+        // container (same opaque-payload discipline as the Accept path); it carries the bytes.
+        const auto error_ct = resp->headers.find("content-type");
+        if (error_ct == resp->headers.end() ||
+            !sbi_core::multipart::is_multipart_related(error_ct->second)) {
+            return;
+        }
+        auto error_parts = sbi_core::multipart::parse(error_ct->second, resp->body);
+        if (!error_parts.has_value() || error_parts->size() < 2) {
+            return;
+        }
+        std::string wanted = "n1SmMsg";
+        try {
+            const auto root = nlohmann::json::parse((*error_parts)[0].body);
+            if (root.contains("n1SmMsg") && root.at("n1SmMsg").contains("contentId")) {
+                wanted = root.at("n1SmMsg").at("contentId").get<std::string>();
+            }
+        } catch (const nlohmann::json::exception&) {
+            // Fall through to the default contentId, same as the success path's own handling.
+        }
+        for (const auto& part : *error_parts) {
+            if (!part.content_id.has_value() || *part.content_id != wanted) {
+                continue;
+            }
+            const std::vector<std::uint8_t> n1_sm(part.body.begin(), part.body.end());
+            // Through the registry, exactly as the ACCEPT is delivered (SMF's N1N2MessageTransfer
+            // lands on AMF's SBI server, which calls this same method). This handler holds no
+            // association of its own by design, and the registry owns the UE's downlink NAS COUNT
+            // -- so a reject and an accept consume the same one count, which is correct: a UE
+            // receives exactly one of them, never both.
+            if (!ue_ngap_registry.send_dl_nas_transport(
+                    auth_state.supi, static_cast<std::uint8_t>(outcome->pdu_session_id), n1_sm)) {
+                spdlog::warn("amf-ngap: no live association for SUPI {} -- SMF's PDU session "
+                             "reject could not be delivered",
+                             auth_state.supi);
+                break;
+            }
+            spdlog::warn("amf-ngap: relayed SMF's PDU session reject to SUPI {} (pduSessionId {})",
+                         auth_state.supi,
+                         outcome->pdu_session_id);
+            break;
+        }
         return;
     }
 
@@ -1971,6 +2061,7 @@ void handle_association(const PeerEndpoints& peers,
                         amf_instance_id,
                         auth_state,
                         ue_contexts,
+                        ue_ngap_registry,
                         *pdu->choice.initiatingMessage);
                     break;
                 case UeAuthState::Phase::Done:
