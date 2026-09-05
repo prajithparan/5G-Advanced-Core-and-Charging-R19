@@ -306,7 +306,7 @@ jobs:
         # ADR-0230's own new tests, which never flaked once they explicitly waited on udr
         # reachability before udm's first UDM->UDR-dependent request. Same fix applied to this
         # test; verified with 5 consecutive clean local runs before retracting the exclusion.
-        run: ctest --test-dir build --output-on-failure --timeout 120 -E "UdrIntegration.AmfContextLifecycle"
+        run: ctest --test-dir build --output-on-failure --timeout 120
 
   sanitize:
     runs-on: ubuntu-latest
@@ -553,14 +553,15 @@ jobs:
           TEST_ROAMING_INTERCONNECT_POSTGRES_URL: postgresql://roaming_interconnect:roaming_interconnect@localhost:5436/roaming_interconnect
           UDR_DATABASE_URL: postgresql://udr:udr@localhost:5437/udr
           TSAN_OPTIONS: suppressions=${{ github.workspace }}/.tsan-suppressions
-        # See the "build" job's identical -E exclusion above for the real, disclosed reason
+        # The -E exclusion that used to live here is GONE (task #165) -- see the build job's own
+        # note. Left as a comment rather than deleted so the history of the exclusion is findable
         # (ADR-0071/ADR-0072 pre-existing hang, never root-caused, task #165 open; this workflow's
         # ctest calls simply hadn't been kept in sync with local practice until 2026-08-18;
         # ADR-0223's own third exclusion was retracted by ADR-0224 once the real root cause --
         # `nef` missing from the PKI-generation NF list -- was found and fixed; ADR-0231/task #166
         # retracted the UdmIntegration.SdmDataRetrievalAndSubscriptions exclusion once its own real
         # root cause -- a udr-startup timing race, not an unexplained hang -- was found and fixed).
-        run: ctest --test-dir build --output-on-failure --timeout 120 -E "UdrIntegration.AmfContextLifecycle"
+        run: ctest --test-dir build --output-on-failure --timeout 120
 
   lint:
     runs-on: ubuntu-latest
